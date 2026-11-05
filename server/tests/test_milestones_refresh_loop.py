@@ -137,15 +137,21 @@ def test_loop_is_primary_only_started_and_torn_down():
 
 def test_orchestrator_refresh_seam_uses_partial_ok_graphql(monkeypatch):
     """The loop's refresh reaches GitHub through ``_pm_gh_graphql(partial_ok=True)``, so a
-    bad ref errors only its alias (Review Focus 3)."""
+    bad ref errors only its alias (Review Focus 3), and reads ``ci_metric`` through
+    ``actions_api.metrics_artifact``."""
+    from server.github import actions_api
     from server.pm import milestone_refresh
     from server.sessions.orchestrator import SessionOrchestrator
     seen: dict = {}
 
-    async def fake_refresh(project_id, *, graphql, list_runs, now, dry_run):
+    async def fake_refresh(project_id, *, graphql, list_runs, now, dry_run, read_metrics):
         seen.update(project_id=project_id, dry_run=dry_run,
-                    payload=await graphql("o", "query { x }"))
+                    payload=await graphql("o", "query { x }"),
+                    metrics=read_metrics("o/r", 7))
         return RefreshResult(0, 0)
+
+    monkeypatch.setattr(actions_api, "metrics_artifact",
+                        lambda repo, run_id: {"repo": repo, "run_id": run_id})
 
     async def fake_gql(self, owner, query, *, partial_ok):
         return {"owner": owner, "query": query, "partial_ok": partial_ok}
@@ -155,7 +161,8 @@ def test_orchestrator_refresh_seam_uses_partial_ok_graphql(monkeypatch):
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
     asyncio.run(SessionOrchestrator._milestones_refresh_run(orch, "p1", dry_run=True))
     assert seen == {"project_id": "p1", "dry_run": True,
-                    "payload": {"owner": "o", "query": "query { x }", "partial_ok": True}}
+                    "payload": {"owner": "o", "query": "query { x }", "partial_ok": True},
+                    "metrics": {"repo": "o/r", "run_id": 7}}
 
 
 def test_automatic_refresh_enabled_reads_the_automation_row(isolated_db):

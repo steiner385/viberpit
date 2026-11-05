@@ -364,7 +364,8 @@ registry.register(MilestonesRefresh(), oversight=AutomationOversight(
         'dry_run': 'Fetch every due ladder\'s GitHub readings and log what it would record; '
                    'write nothing.',
         'on': 'Every 10 minutes, or at once on a refresh request, fetch each ladder\'s '
-              'searches, issue and PR states, epic sub-issues and workflow streaks, and write '
+              'searches, issue and PR states, epic sub-issues, workflow streaks and CI-published '
+              'metrics (the viberpit-metrics artifact), and write '
               'the measurements with their times. Manual conditions are never touched.',
     },
     (Relationship('uses', 'pm-sync', 'Reads the ladder definitions pm-sync syncs from each '

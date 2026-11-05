@@ -15829,7 +15829,8 @@ class SessionOrchestrator:
 
         return await milestone_refresh.refresh_ladder(
             project_id, graphql=graphql, list_runs=actions_api.list_workflow_runs,
-            now=_utcnow(), dry_run=dry_run)
+            now=_utcnow(), dry_run=dry_run,
+            read_metrics=lambda repo, run_id: actions_api.metrics_artifact(repo, run_id))
 
     # ------------------------------------------------------------------
     # Archive Audit control-loop dependencies (injected into ArchiveAuditLoop)

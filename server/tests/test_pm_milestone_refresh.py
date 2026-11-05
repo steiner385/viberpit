@@ -19,7 +19,6 @@ from server.db import db_session
 from server.db.models import MilestoneLadder, MilestoneMeasurement, Project, ProjectRepo
 from server.pm.milestone_def import parse_ladder, to_json
 from server.pm.milestone_refresh import (
-    CI_METRIC_PHASE1_ERROR,
     RefreshResult,
     newest_fetched_at,
     refresh_ladder,
@@ -308,11 +307,12 @@ async def test_a_partial_failure_keeps_the_previous_leaves(isolated_db):
 
 
 @pytest.mark.asyncio
-async def test_ci_metric_unknown_in_phase1(isolated_db):
+async def test_ci_metric_without_reader_is_not_read(isolated_db):
+    """``read_metrics=None`` (callers that predate it) never reads the artifact."""
     pid = await _seed()
     await refresh_ladder(pid, graphql=_Gh(_payload()), list_runs=_Runs(), now=NOW)
     row = (await _rows())[("household", "rubric")]
-    assert row.status == "unknown" and row.error == CI_METRIC_PHASE1_ERROR
+    assert row.status == "unknown" and row.error == "not read"
     assert row.value is None and _naive(row.fetched_at) == NOW
 
 
@@ -429,3 +429,183 @@ milestones:
     await refresh_ladder(pid, graphql=gh, list_runs=_Runs(), now=NOW)
     assert gh.calls == []
     assert (await _rows())[("leaves:a", "leaves")].value == {"done": 0, "total": 0, "items": []}
+
+
+# ---------------------------------------------------------------- ci_metric (spec §6)
+
+CI_LADDER = """
+version: 1
+title: t
+milestones:
+  - key: a
+    name: A
+    gate:
+      - key: rubric
+        label: R
+        measure: {kind: ci_metric, workflow: metrics.yml, metric: gap, op: eq, target: 0}
+numbers:
+  - key: gap
+    label: gap
+    measure: {kind: ci_metric, workflow: metrics.yml, metric: gap}
+"""
+
+CI_RUNS = [  # newest first
+    {"id": 5, "status": "completed", "conclusion": "failure", "event": "push",
+     "updated_at": "2026-11-05T08:00:00Z", "html_url": "https://run/5"},
+    {"id": 4, "status": "completed", "conclusion": "success", "event": "push",
+     "updated_at": "2026-11-05T06:00:00Z", "html_url": "https://run/4"},
+    {"id": 3, "status": "completed", "conclusion": "success", "event": "schedule",
+     "updated_at": "2026-11-04T06:00:00Z", "html_url": "https://run/3"},
+    {"id": 2, "status": "completed", "conclusion": "success", "event": "schedule",
+     "updated_at": "2026-11-03T06:00:00Z", "html_url": "https://run/2"},
+    {"id": 1, "status": "completed", "conclusion": "success", "event": "schedule",
+     "updated_at": "2026-11-02T06:00:00Z", "html_url": "https://run/1"},
+]
+
+
+def _metrics(**metrics):
+    return {"version": 1, "metrics": metrics, "sha": "abc", "generated_at": "2026-11-05T06:00:00Z"}
+
+
+class _Metrics:
+    """``read_metrics(repo, run_id)``: a per-run-id answer (a dict, None, or an exception)."""
+
+    def __init__(self, by_run):
+        self.by_run = by_run
+        self.calls: list[tuple[str, int]] = []
+
+    def __call__(self, repo, run_id):
+        self.calls.append((repo, run_id))
+        out = self.by_run.get(run_id)
+        if isinstance(out, Exception):
+            raise out
+        return copy.deepcopy(out)
+
+
+class _Branch:
+    def __init__(self, branch="main"):
+        self.branch = branch
+        self.calls: list[str] = []
+
+    async def __call__(self, repo):
+        self.calls.append(repo)
+        return self.branch
+
+
+async def _ci_refresh(metrics, *, runs=None, text=CI_LADDER, branch=None):
+    pid = await _seed(text, primary="o/r")
+    list_runs, branch = _Runs(CI_RUNS if runs is None else runs), branch or _Branch()
+    await refresh_ladder(pid, graphql=_Gh(raises=AssertionError("no call expected")),
+                         list_runs=list_runs, now=NOW, read_metrics=metrics, default_branch=branch)
+    return await _rows(), list_runs, branch
+
+
+@pytest.mark.asyncio
+async def test_ci_metric_reads_newest_successful_run(isolated_db):
+    metrics = _Metrics({4: _metrics(gap=293), 3: _metrics(gap=0)})
+    rows, list_runs, branch = await _ci_refresh(metrics)
+    row = rows[("a", "rubric")]
+    assert row.status == "unmet" and row.error is None
+    assert row.value == {"n": 293.0} and row.target == {"op": "eq", "target": 0}
+    assert _naive(row.measured_at) == datetime(2026, 11, 5, 6, 0, 0)
+    assert row.source_url == "https://run/4"
+    assert list_runs.calls == [("o/r", "metrics.yml", "main", None)]
+    assert branch.calls == ["o/r"] and metrics.calls == [("o/r", 4)]
+
+
+@pytest.mark.asyncio
+async def test_ci_metric_branch_param_overrides_default_branch(isolated_db):
+    text = CI_LADDER.replace("metric: gap, op", "metric: gap, branch: release, op")
+    rows, list_runs, branch = await _ci_refresh(_Metrics({4: _metrics(gap=0)}), text=text)
+    assert rows[("a", "rubric")].status == "met"
+    assert ("o/r", "metrics.yml", "release", None) in list_runs.calls
+
+
+@pytest.mark.asyncio
+async def test_ci_metric_skips_runs_without_artifact(isolated_db):
+    metrics = _Metrics({4: None, 3: _metrics(gap=0)})
+    rows, _runs, _b = await _ci_refresh(metrics)
+    row = rows[("a", "rubric")]
+    assert row.status == "met" and _naive(row.measured_at) == datetime(2026, 11, 4, 6, 0, 0)
+    assert metrics.calls == [("o/r", 4), ("o/r", 3)]
+
+
+
+@pytest.mark.asyncio
+async def test_ci_metric_probes_at_most_three_runs(isolated_db):
+    """Three successful runs probed, none with the artifact: run 1 is never read."""
+    metrics = _Metrics({1: _metrics(gap=0)})
+    rows, _r, _b = await _ci_refresh(metrics)
+    row = rows[("a", "rubric")]
+    assert row.status == "unknown"
+    assert row.error == "no viberpit-metrics artifact in the last 3 successful runs"
+    assert [r for _repo, r in metrics.calls] == [4, 3, 2]
+
+
+@pytest.mark.asyncio
+async def test_ci_metric_missing_key_is_unknown_with_error(isolated_db):
+    rows, _r, _b = await _ci_refresh(_Metrics({4: _metrics(other=1)}))
+    row = rows[("a", "rubric")]
+    assert row.status == "unknown" and row.error == "metric 'gap' missing" and row.value is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["293", True, None, [1]])
+async def test_ci_metric_non_numeric_is_unknown(isolated_db, bad):
+    rows, _r, _b = await _ci_refresh(_Metrics({4: _metrics(gap=bad)}))
+    row = rows[("a", "rubric")]
+    assert row.status == "unknown" and row.error == "metric 'gap' is not a number"
+
+
+@pytest.mark.asyncio
+async def test_ci_metric_no_successful_run_is_unknown(isolated_db):
+    metrics = _Metrics({})
+    rows, _r, _b = await _ci_refresh(metrics, runs=[CI_RUNS[0]])
+    row = rows[("a", "rubric")]
+    assert row.status == "unknown" and row.error == "no successful run of metrics.yml"
+    assert metrics.calls == []
+
+
+@pytest.mark.asyncio
+async def test_ci_metric_bad_metrics_json_is_unknown(isolated_db):
+    rows, _r, _b = await _ci_refresh(_Metrics({4: ValueError("metrics.json: bad JSON")}))
+    assert rows[("a", "rubric")].error == "metrics.json: bad JSON"
+
+
+@pytest.mark.asyncio
+async def test_ci_metric_artifact_read_failure_does_not_abort_refresh(isolated_db):
+    rows, _r, _b = await _ci_refresh(_Metrics({4: RuntimeError("gh: HTTP 404")}))
+    row = rows[("a", "rubric")]
+    assert row.status == "unknown" and row.error == "metrics artifact read failed"
+    assert rows[("leaves:a", "leaves")].error is None
+
+
+@pytest.mark.asyncio
+async def test_ci_metric_runs_read_failure_is_unknown(isolated_db):
+    class _Boom(_Runs):
+        def __call__(self, *a, **k):
+            raise RuntimeError("HTTP 404: workflow not found")
+    pid = await _seed(CI_LADDER, primary="o/r")
+    await refresh_ladder(pid, graphql=_Gh(raises=AssertionError("no call expected")),
+                         list_runs=_Boom(), now=NOW, read_metrics=_Metrics({}),
+                         default_branch=_Branch())
+    row = (await _rows())[("a", "rubric")]
+    assert row.status == "unknown"
+    assert row.error == "workflow runs read failed: HTTP 404: workflow not found"
+
+
+@pytest.mark.asyncio
+async def test_ci_metric_workflow_read_once_for_two_conditions(isolated_db):
+    metrics = _Metrics({4: _metrics(gap=0)})
+    rows, list_runs, branch = await _ci_refresh(metrics)
+    assert rows[("a", "rubric")].status == "met"
+    assert rows[("numbers", "gap")].value == {"n": 0.0}
+    assert len(list_runs.calls) == 1 and len(metrics.calls) == 1 and len(branch.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_ci_metric_number_is_info(isolated_db):
+    rows, _r, _b = await _ci_refresh(_Metrics({4: _metrics(gap=293)}))
+    row = rows[("numbers", "gap")]
+    assert row.status == "info" and row.value == {"n": 293.0} and row.target is None
+    assert _naive(row.measured_at) == datetime(2026, 11, 5, 6, 0, 0)

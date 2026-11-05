@@ -42,7 +42,9 @@ MEASURE_KINDS: dict[str, MeasureKindSpec] = {
     "workflow_streak": MeasureKindSpec(
         frozenset({"workflow", "branch"}), frozenset({"events"}), 36 * _H, True
     ),
-    "ci_metric": MeasureKindSpec(frozenset({"workflow", "metric"}), frozenset(), 36 * _H, True),
+    "ci_metric": MeasureKindSpec(
+        frozenset({"workflow", "metric"}), frozenset({"branch"}), 36 * _H, True
+    ),
     "ladder_leaves": MeasureKindSpec(frozenset(), frozenset(), _H, False),
     "manual": MeasureKindSpec(frozenset(), frozenset(), None, True),
 }

@@ -11,6 +11,7 @@ import re
 import subprocess
 import time
 import zipfile
+import zlib
 from datetime import datetime, timezone
 from typing import Any
 
@@ -216,6 +217,61 @@ def junit_artifacts(repo: str, run_id: int, *, run=None,
                            "cicd.artifact_fetch_failed repo='%s' run=%s artifact='%s'",
                            repo, run_id, a.get("name"), exc_info=True)
     return out
+
+
+#: The artifact a product's CI uploads for release-milestone ``ci_metric`` conditions,
+#: and the file inside it (release milestones spec §6; the contract is documented in
+#: ``docs/product/features/release-milestones.md``).
+METRICS_ARTIFACT = "viberpit-metrics"
+METRICS_FILE = "metrics.json"
+#: ``metrics.json`` is a handful of numbers; a bigger member is refused unread.
+_METRICS_MAX_BYTES = 1 << 20
+
+
+def _parse_metrics_zip(blob: bytes) -> dict:
+    try:
+        with zipfile.ZipFile(io.BytesIO(blob)) as z:
+            try:
+                info = z.getinfo(METRICS_FILE)
+            except KeyError:
+                raise ValueError(f"{METRICS_FILE}: not in the {METRICS_ARTIFACT} artifact") from None
+            # Bounded read: the header's file_size is the uploader's claim, not a limit.
+            with z.open(info) as f:
+                raw = f.read(_METRICS_MAX_BYTES + 1)
+            if len(raw) > _METRICS_MAX_BYTES:
+                raise ValueError(f"{METRICS_FILE}: larger than {_METRICS_MAX_BYTES} bytes")
+    except (zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError, RuntimeError) as exc:
+        # RuntimeError: an encrypted member; NotImplementedError: an unknown compression.
+        raise ValueError(f"{METRICS_FILE}: bad zip: {exc}") from None
+    try:
+        doc = json.loads(raw)
+    except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError
+        raise ValueError(f"{METRICS_FILE}: bad JSON: {exc}") from None
+    if not isinstance(doc, dict):
+        raise ValueError(f"{METRICS_FILE}: expected a JSON object")
+    if doc.get("version") != 1:
+        raise ValueError(f"{METRICS_FILE}: unsupported version {doc.get('version')!r}")
+    if not isinstance(doc.get("metrics"), dict):
+        raise ValueError(f"{METRICS_FILE}: 'metrics' is not an object")
+    return doc
+
+
+def metrics_artifact(repo: str, run_id: int, *, run=None, run_bytes=None,
+                     sleep=time.sleep) -> dict | None:
+    """The parsed ``metrics.json`` of the run's ``viberpit-metrics`` artifact, or None
+    when the run has no such artifact or it has expired. Raises ``ValueError``
+    (``"metrics.json: <reason>"``) on a bad zip or document; a failed gh read
+    propagates."""
+    run = run or _run_gh_for(repo)
+    data = _json(run(["api", f"repos/{repo}/actions/runs/{run_id}/artifacts"]))
+    artifact = next((a for a in data.get("artifacts", [])
+                     if a.get("name") == METRICS_ARTIFACT and not a.get("expired")), None)
+    if artifact is None:
+        return None
+    run_bytes = run_bytes or _run_gh_bytes_for(repo)
+    blob = _fetch_artifact_zip(
+        run_bytes, ["api", f"repos/{repo}/actions/artifacts/{artifact['id']}/zip"], sleep)
+    return _parse_metrics_zip(blob)
 
 
 def repo_ci_meta(repo: str, *, run=None) -> tuple[str, set[str]]:
