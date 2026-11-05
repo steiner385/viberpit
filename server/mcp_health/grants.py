@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -26,6 +27,10 @@ _OAUTH_TRANSPORTS = ("http", "sse")
 # (its publish skipped by the stat guard) or offline for a tick still gets it purged.
 TOMBSTONE_TTL_S = 30 * 60.0
 _tombstones: dict[str, float] = {}
+# The reconcile runs under ``asyncio.to_thread`` while :func:`purge_keys` is read for the
+# runner push on the event-loop thread (#3287); a bare dict iterated from one while the other
+# inserts or expires raises "dictionary changed size during iteration".
+_tombstones_lock = threading.Lock()
 
 
 def is_oauth_candidate(server: dict) -> bool:
@@ -120,9 +125,10 @@ def _user_config_unreadable() -> bool:
 
 def _live_tombstones(now: float, *, present: dict) -> frozenset[str]:
     """Unexpired tombstoned keys, minus any key back in the store (*present*)."""
-    for key in [k for k, until in _tombstones.items() if until <= now]:
-        del _tombstones[key]
-    return frozenset(k for k in _tombstones if k not in present)
+    with _tombstones_lock:
+        for key in [k for k, until in _tombstones.items() if until <= now]:
+            del _tombstones[key]
+        return frozenset(k for k in _tombstones if k not in present)
 
 
 def purge_keys(store: dict, *, clock: Callable[[], float] = time.monotonic) -> frozenset[str]:
@@ -178,8 +184,9 @@ def reconcile_grants(*, clock: Callable[[], float] = time.monotonic) -> Reconcil
         if purge:
             log.info("mcp grants reconciled moved=%s dropped=%s",
                      sorted(f"{old}->{new}" for old, new in plan.moved.items()), sorted(plan.dropped))
-        for key in purge:
-            _tombstones[key] = now + TOMBSTONE_TTL_S
+        with _tombstones_lock:
+            for key in purge:
+                _tombstones[key] = now + TOMBSTONE_TTL_S
         return ReconcileResult(drop=_live_tombstones(now, present=plan.store),  # includes this tick's purge
                                skip=superseded_refresh_keys(plan.store, wanted))
     except Exception:

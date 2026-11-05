@@ -6,6 +6,7 @@ The handler is built the way ``test_creds_broker_transport`` builds it (a bare `
 mount logic runs against a fleet this test is not on."""
 import asyncio
 import json
+import logging
 import os
 
 import pytest
@@ -167,6 +168,7 @@ def test_sync_local_dirs_without_a_view_touches_nothing(home):
 
 
 def test_a_torn_dir_is_contained(home, monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG, logger="server.ipc.runner_mcp")
     _mounts(monkeypatch, LOCAL)
     good = _account(home, "good", {})
     torn = home / "cfg" / "torn" / CREDENTIALS_NAME
@@ -178,3 +180,14 @@ def test_a_torn_dir_is_contained(home, monkeypatch, caplog):
     assert _mcp(good) == {"k": bundle}
     assert torn.read_text() == "{not json"
     assert "MCP-ACCESS-SECRET" not in caplog.text
+
+
+@pytest.mark.parametrize("junk", [True, 7, "ab", {"k": 1}])
+def test_a_non_list_mcp_drop_is_ignored_not_fatal(home, monkeypatch, junk):
+    _mounts(monkeypatch, LOCAL)
+    good = _account(home, "good", {})
+    bundle = {"accessToken": "at", "expiresAt": 9e12}
+    res = _sync(_app(), mcp_bundles={"k": bundle}, mcp_drop=junk)
+    assert res == {"acks": {"a": 1}}
+    assert runner_view().drop_keys() == frozenset()
+    assert _mcp(good) == {"k": bundle}

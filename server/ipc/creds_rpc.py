@@ -30,7 +30,10 @@ def register_creds(app: FastAPI) -> None:
         res: dict = {"acks": acks}
         bundles = p.get("mcp_bundles")
         if isinstance(bundles, dict):
-            runner_view().sync(bundles, p.get("mcp_drop") or [])
+            # A malformed ``mcp_drop`` (a bool, a bare string) must not fail the sync after
+            # the envelope acks were taken; anything but a list is treated as no purge keys.
+            drop = p.get("mcp_drop")
+            await asyncio.to_thread(runner_view().sync, bundles, drop if isinstance(drop, list) else [])
             offers = await asyncio.to_thread(runner_mcp.sync_local_dirs)
             if offers:
                 res["mcp_offers"] = offers
