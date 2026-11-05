@@ -170,7 +170,11 @@ def test_mcp_login_is_the_only_write_back_call_site():
         line.split(":", 1)[0] for line in out.splitlines()
         if line.strip() and not line.startswith("server/tests/")
     }
-    assert sites == {"server/mcp_auth.py"}, f"unexpected write-back helper spawn(s): {sites}"
+    # Each entry MUTATES the shared config by design, so a scratch mirror would silently lose the
+    # write: mcp_auth (MCP OAuth login), plugin_cli (D-16c: `claude plugin` install/enable is the
+    # single writer of plugins/ and enabledPlugins, run against shared_base(), account="").
+    assert sites == {"server/mcp_auth.py", "server/library/plugin_cli.py"}, (
+        f"unexpected write-back helper spawn(s): {sites}")
 
 
 def test_live_sessions_still_launch_against_the_real_account_dir():
