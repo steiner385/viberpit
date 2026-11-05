@@ -22,7 +22,7 @@ from server.db import db_session
 from server.mcp_spec import Summarized, ToolArgError
 from server.pm.holds import SESSION_PREFIX
 from server.pm.milestone_tool_result import (
-    MILESTONE_ERROR_COPY,
+    milestone_refusal,
     milestone_tool_error,
     summarized,
 )
@@ -64,10 +64,8 @@ def _check_fields(args: MilestoneNoteArgs) -> None:
 def _refused_refresh(resp: JSONResponse) -> ToolArgError:
     body = json.loads(bytes(resp.body))
     if resp.status_code == 429:
-        return ToolArgError(f"429 refresh_too_soon: {MILESTONE_ERROR_COPY['refresh_too_soon']} "
-                            f"Retry after {body.get('retryAfter')}s.")
-    code = body.get("reason") or "refused"
-    return ToolArgError(f"{resp.status_code} {code}: {MILESTONE_ERROR_COPY.get(code, 'refused')}")
+        return milestone_refusal(429, "refresh_too_soon", {"retryAfter": body.get("retryAfter")})
+    return milestone_refusal(resp.status_code, body.get("reason") or "refused")
 
 
 async def milestone_note(ctx: SessionToolContext, raw: dict[str, Any]) -> Summarized:
@@ -101,7 +99,7 @@ async def milestone_note(ctx: SessionToolContext, raw: dict[str, Any]) -> Summar
                 if isinstance(done, JSONResponse):
                     raise _refused_refresh(done)
                 view = await routes.get_milestones(slug, _identity=identity, db=db)
-            return summarized(view, slug)
+            return summarized(view, slug, viewer=identity)
     except ValidationError as exc:
         raise ToolArgError(str(exc)) from exc
     except HTTPException as exc:

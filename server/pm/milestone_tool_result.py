@@ -47,18 +47,24 @@ MILESTONE_ERROR_COPY: dict[str, str] = {
 }
 
 
-def milestone_tool_error(exc: HTTPException) -> ToolArgError:
-    """``<status> <code>: <plain words>``, plus any extra detail as JSON."""
-    detail = exc.detail if isinstance(exc.detail, dict) else {"message": exc.detail}
-    code = detail.get("error")
-    extra = {k: v for k, v in detail.items() if k not in ("error", "message")}
+def milestone_refusal(status: int, code: Any, extra: dict[str, Any] | None = None,
+                      fallback: str = "refused") -> ToolArgError:
+    """THE refusal text: ``<status> <code>: <plain words>``, plus any extra detail as JSON.
+    A code with no copy falls back to *fallback*."""
     words = MILESTONE_ERROR_COPY.get(code) if isinstance(code, str) else None
-    text = f"{exc.status_code} {code}: {words or detail.get('message') or 'refused'}"
+    text = f"{status} {code}: {words or fallback}"
     return ToolArgError(f"{text} {json.dumps(extra)}" if extra else text)
 
 
-def summarized(view: dict[str, Any], product: str) -> Summarized:
+def milestone_tool_error(exc: HTTPException) -> ToolArgError:
+    detail = exc.detail if isinstance(exc.detail, dict) else {"message": exc.detail}
+    extra = {k: v for k, v in detail.items() if k not in ("error", "message")}
+    return milestone_refusal(exc.status_code, detail.get("error"), extra,
+                             str(detail.get("message") or "refused"))
+
+
+def summarized(view: dict[str, Any], product: str, *, viewer: str | None = None) -> Summarized:
     """A milestones view as the tool result: the text summary first, the view after
     (null for a product with no ladder)."""
-    return Summarized(summarize_milestones(view, product=product),
+    return Summarized(summarize_milestones(view, product=product, viewer=viewer),
                       view if view.get("ladder") else None)

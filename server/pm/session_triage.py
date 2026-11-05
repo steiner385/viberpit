@@ -18,7 +18,7 @@ from server.audit import record_audit
 from server.db import db_session
 from server.db.models import Initiative, Project, ProjectRepo, WorkItem
 from server.mcp_spec import ToolArgError
-from server.pm.holds import actor_class
+from server.pm.holds import SESSION_PREFIX, actor_class
 from server.pm.milestone_asks import open_milestone_asks
 from server.pm.milestone_tool_result import milestone_tool_error, summarized
 from server.sessions.tools.context import SessionToolContext
@@ -162,6 +162,7 @@ async def invoke(ctx: SessionToolContext, operation: str, raw: dict[str, Any]) -
         mutation = isinstance(args, (Resolve, Hold, Advance, MilestoneTick, MilestoneAdvance))
         identity = _owner(ctx) if mutation else ctx.identity
         request = delegated_request(identity)
+        viewer = f"{SESSION_PREFIX}{ctx.session_id}"  # the caller, as note authors are recorded
         async with db_session() as db:
             if mutation:
                 # Write BEFORE calling the handler: decision accept commits before
@@ -217,16 +218,16 @@ async def invoke(ctx: SessionToolContext, operation: str, raw: dict[str, Any]) -
             # Milestones: the Phase 2 routes hold every rule; the owner acts via="session".
             if isinstance(args, MilestonesRead):
                 return summarized(await pm_milestones.get_milestones(
-                    args.product, _identity=identity, db=db), args.product)
+                    args.product, _identity=identity, db=db), args.product, viewer=viewer)
             if isinstance(args, MilestoneTick):
                 return summarized(await pm_milestones.put_condition_tick(
                     args.product, args.milestone, args.condition, pm_milestones.TickBody(
                         met=args.met, value=args.value, evidence=args.evidence, url=args.url),
-                    request, identity=identity, db=db), args.product)
+                    request, identity=identity, db=db), args.product, viewer=viewer)
             if isinstance(args, MilestoneAdvance):
                 return summarized(await pm_milestones.advance_milestone(
                     args.product, pm_milestones.AdvanceBody(expectedCurrent=args.expected_current),
-                    request, identity=identity, db=db), args.product)
+                    request, identity=identity, db=db), args.product, viewer=viewer)
     except ValidationError as exc:
         raise ToolArgError(str(exc)) from exc
     except HTTPException as exc:

@@ -69,7 +69,7 @@ async def _state() -> dict[str, str | None]:
 async def test_read_returns_summary_and_view(isolated_db):
     await _seed()
     text, data = ok(await call("roadmap_milestones", {"product": "kd"}))
-    assert text.startswith("Launch readiness — current: Phase 0 · Household gate (0/4 met")
+    assert text.startswith("Launch readiness — current: household (Phase 0 · Household gate) — 0/4 met")
     assert "Upcoming: Phase 1 · Friendly families" in text
     assert data["ladder"]["currentKey"] == "household"
     assert [m["key"] for m in data["milestones"]][:2] == ["household", "friendly"]
@@ -127,7 +127,7 @@ async def test_advance_when_ready(isolated_db):
     text, data = ok(await call("roadmap_milestone_advance",
                                {"product": "kd", "expected_current": "household"}))
     assert data["ladder"]["currentKey"] == "friendly"
-    assert "current: Phase 1 · Friendly families" in text
+    assert "current: friendly (Phase 1 · Friendly families)" in text
     adv = await _audits("pm.milestone.advance")
     assert len(adv) == 1 and adv[0].identity == OWNER and adv[0].via == "session"
 
@@ -170,7 +170,7 @@ async def test_note_add_records_session_actor(isolated_db):
     text, data = ok(await call("roadmap_milestone_note", {
         "product": "kd", "action": "add", "kind": "ask", "milestone": "friendly",
         "text": "Fill phase1_households"}))
-    assert "Open asks (1): [friendly] Fill phase1_households" in text
+    assert "(by you) [friendly] Fill phase1_households" in text
     ask = data["notes"]["asks"][0]
     assert ask["createdBy"] == f"session:{SID}"
     delegate = await _audits("pm.session.delegate")
@@ -248,13 +248,34 @@ async def test_note_status_line_and_refresh(isolated_db):
 # ---------------------------------------------------------------- permissions
 
 
-def test_advance_is_never_ruled():
+@pytest.mark.parametrize("name", ["roadmap_milestone_advance", "roadmap_milestone_tick"])
+def test_advance_and_tick_are_never_ruled(name):
     from server.permission_rules.patterns import NEVER_RULED_TOOLS, matches_any, parse
     for prefix in MCP_TOOL_PREFIXES:
-        tool = prefix + "roadmap_milestone_advance"
+        tool = prefix + name
         assert tool in NEVER_RULED_TOOLS
         assert matches_any([parse(tool)], tool, {}, "/tmp") is None
-    assert MCP_PREFIX + "roadmap_milestone_tick" not in NEVER_RULED_TOOLS
+
+
+def test_tick_is_never_ruled():
+    from server.permission_rules.patterns import NEVER_RULED_TOOLS
+    assert MCP_PREFIX + "roadmap_milestone_tick" in NEVER_RULED_TOOLS
+    assert MCP_PREFIX + "roadmap_milestones" not in NEVER_RULED_TOOLS
+
+
+def test_one_refusal_formatter():
+    from fastapi.responses import JSONResponse
+    from server.pm.milestone_tool_result import milestone_refusal
+    from server.sessions.tools.milestone_note import _refused_refresh
+    assert str(milestone_refusal(409, "stale_current", {"current": "m1"})).startswith(
+        "409 stale_current: Someone else advanced")
+    assert str(milestone_refusal(409, "stale_current", {"current": "m1"})).endswith('{"current": "m1"}')
+    assert str(milestone_refusal(400, "mystery")) == "400 mystery: refused"
+    resp = JSONResponse({"retryAfter": 7}, status_code=429)
+    assert str(_refused_refresh(resp)).startswith("429 refresh_too_soon: Measurements")
+    assert "retryAfter" in str(_refused_refresh(resp))
+    resp = JSONResponse({"reason": "automatic_refresh_off"}, status_code=409)
+    assert str(_refused_refresh(resp)) == str(milestone_refusal(409, "automatic_refresh_off"))
 
 
 @pytest.mark.asyncio
@@ -340,14 +361,14 @@ def _fixture_view() -> dict:
 
 
 SAMPLE = """\
-Launch readiness — current: Phase 0 · Household gate (1/4 met, 1 unknown, ready: no)
+Launch readiness — current: household (Phase 0 · Household gate) — 1/4 met, 1 unknown, ready: no
   status: the long phase by design
   ? rubric: Evidence rubric satisfied for every live capability (unknown: no viberpit-metrics artifact on the latest run)
   ✖ lane-fixes: Nine lane-integrity fixes landed (8 of 9 closed, 11m ago)
   ✖ nightly: Nightly full suite green three runs running (0 of ≥3, 13h ago)
   ✔ consent: Card-consent charge captured; processor DPAs on file (3 of 3 closed, 11m ago)
   leaves: 17 done · 0 in flight · 1 not started
-Open asks (2): [community] Post sign-off on #20271 · [friendly] Fill phase1_households
+Open asks (2): #n1 [community] Post sign-off on #20271 · #n2 [friendly] Fill phase1_households
 Decisions (8): D1 locked, D2 locked, D3 locked, D4 locked, D5 locked, D6 locked +2 more
 Upcoming: Phase 1 · Friendly families, Phase 2 · Community cohort, Phase 3 · Public self-serve"""
 
@@ -357,6 +378,37 @@ def test_summarize_milestones_format():
     text = summarize_milestones(_fixture_view())
     assert text == SAMPLE
     assert len(text) < 1500
+
+
+def test_summarize_names_the_keys_an_agent_needs():
+    from server.pm.milestone_view import summarize_milestones
+    view = _fixture_view()
+    household = view["milestones"][0]
+    household["gate"][0] = dict(household["gate"][0], kind="manual")
+    manual_key = household["gate"][0]["key"]
+    text = summarize_milestones(view)
+    assert "current: household (Phase 0 · Household gate)" in text
+    assert f"{manual_key} [manual]:" in text
+    assert text.count("[manual]") == 1
+    assert "Open asks (2): #n1 [community] Post sign-off" in text and "#n2 [friendly]" in text
+    assert "(by you)" not in text
+
+
+def test_summarize_marks_the_viewers_own_asks():
+    from server.pm.milestone_view import summarize_milestones
+    view = _fixture_view()
+    view["notes"]["asks"][1]["createdBy"] = "session:me"
+    text = summarize_milestones(view, viewer="session:me")
+    assert "#n2 (by you) [friendly]" in text and text.count("(by you)") == 1
+    assert "(by you)" not in summarize_milestones(view, viewer="session:other")
+    assert len(text) <= 1500
+
+
+def test_summarized_passes_the_viewer_through():
+    from server.pm.milestone_tool_result import summarized
+    view = _fixture_view()
+    view["notes"]["asks"][0]["createdBy"] = "session:me"
+    assert "#n1 (by you)" in summarized(view, "kd", viewer="session:me").text
 
 
 def test_summarize_truncates_long_labels_and_lists():

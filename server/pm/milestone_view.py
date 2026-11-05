@@ -298,7 +298,8 @@ def _condition_line(c: Mapping[str, Any]) -> str:
         if status == "unknown":
             parts.append("stale" if parts else "no reading yet")
         detail = ", ".join(parts)
-    line = f"  {_GLYPH.get(status, '?')} {c.get('key')}: {_clip(c.get('label'))}"
+    manual = " [manual]" if c.get("kind") == "manual" else ""
+    line = f"  {_GLYPH.get(status, '?')} {c.get('key')}{manual}: {_clip(c.get('label'))}"
     return f"{line} ({detail})" if detail else line
 
 
@@ -311,11 +312,14 @@ def _title(m: Mapping[str, Any]) -> str:
     return " · ".join(p for p in (m.get("label"), m.get("name")) if p) or str(m.get("key"))
 
 
-def summarize_milestones(view: Mapping[str, Any], *, product: str = "") -> str:
+def summarize_milestones(view: Mapping[str, Any], *, product: str = "",
+                         viewer: str | None = None) -> str:
     """THE compact text the session tools put in front of a milestones view: the
     current rung and its gate, leaves, open asks, decisions and what is upcoming.
     Labels are clipped to ``LABEL_MAX``, long lists end "+N more", and the whole is
-    at most ``SUMMARY_MAX`` characters. A product with no ladder gets one line."""
+    at most ``SUMMARY_MAX`` characters. A product with no ladder gets one line. Keys an
+    agent passes back (milestone, condition, note id) are printed; *viewer* (the
+    caller's identity) marks the asks it created "(by you)"."""
     ladder = view.get("ladder")
     if not ladder:
         return f"{product or 'This product'}: no milestone ladder (add {MILESTONES_PATH})"
@@ -333,7 +337,7 @@ def summarize_milestones(view: Mapping[str, Any], *, product: str = "") -> str:
             head += f", {s['unknown']} unknown"
         head += f", ready: {'yes' if s.get('ready') else 'no'}"
         removed = " — removed from the definition" if ladder.get("currentRemoved") else ""
-        lines.append(f"{title} — current: {_title(current)} ({head}){removed}")
+        lines.append(f"{title} — current: {current.get('key')} ({_title(current)}) — {head}{removed}")
         if current.get("statusNote"):
             lines.append(f"  status: {_clip(current['statusNote'], 120)}")
         gate = [_condition_line(c) for c in current.get("gate") or []]
@@ -349,8 +353,9 @@ def summarize_milestones(view: Mapping[str, Any], *, product: str = "") -> str:
     notes = view.get("notes") or {}
     asks = [a for a in notes.get("asks") or [] if a.get("status") == "open"]
     if asks:
-        rows = [(f"[{a['milestoneKey']}] " if a.get("milestoneKey") else "") + _clip(a.get("text"))
-                for a in asks]
+        rows = [f"#{a.get('id')}" + (" (by you)" if viewer and a.get("createdBy") == viewer else "")
+                + (f" [{a['milestoneKey']}]" if a.get("milestoneKey") else "")
+                + f" {_clip(a.get('text'))}" for a in asks]
         lines.append(f"Open asks ({len(rows)}): {_listed(rows, _ASKS, ' · ')}")
     decisions = notes.get("decisions") or []
     if decisions:
