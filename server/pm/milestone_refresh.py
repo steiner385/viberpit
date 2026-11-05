@@ -69,10 +69,13 @@ def leaves_scope(milestone_key: str) -> str:
     return f"leaves:{milestone_key}"
 
 
-def _naive_utc(dt: datetime) -> datetime:
+def _utc(dt: datetime) -> datetime:
+    """Aware UTC. Every milestone timestamp column is ``timestamptz``: a NAIVE value
+    bound to it is read by asyncpg as process-local time (hours off on an EDT host),
+    and SQLite reads them back naive (UTC)."""
     aware = aware_utc(dt)
     assert aware is not None
-    return aware.replace(tzinfo=None)
+    return aware
 
 
 def _error(msg: str) -> Reading:
@@ -201,7 +204,7 @@ async def _read_streaks(project_id: str, ladder: LadderDef, *, primary_repo: str
                 readings[key] = _error(f"workflow runs read failed: {'; '.join(errs)}")
                 continue
             count, at, url = streak_from_runs(_newest_first(r for e in events for r in by_event[e]))
-            readings[key] = Reading({"n": count}, at, None, url)
+            readings[key] = Reading({"n": count}, aware_utc(at), None, url)
     return readings
 
 
@@ -232,13 +235,15 @@ def _target(measure: Measure) -> dict | None:
 
 
 def _final(prev: _Prev | None, reading: Reading, status: str, target: dict | None) -> _Write:
-    """Apply the error rule: a failed reading keeps the previous value (unless it
-    carries a partial one) and always the previous ``measured_at``."""
+    """Apply the error rule: a failed reading keeps the previous value and
+    ``measured_at``. A partial value (a leaves union missing a failed source) is
+    written only when there is no previous value, so a partial failure never
+    shrinks a row."""
     if reading.error is None:
         return _Write(status, reading.value, target, reading.measured_at, None, reading.source_url)
     return _Write(
         "unknown",
-        reading.value if reading.value is not None else (prev.value if prev else None),
+        prev.value if prev is not None and prev.value is not None else reading.value,
         target,
         prev.measured_at if prev else None,
         reading.error,
@@ -328,9 +333,9 @@ async def _load(project_id: str) -> tuple[str, LadderDef, str | None, dict[_Key,
         rows = (await db.execute(
             select(MilestoneMeasurement).where(MilestoneMeasurement.ladder_id == ladder.id)
         )).scalars().all()
-        # Naive UTC throughout: Postgres reads these timestamptz columns back aware.
+        # Aware UTC throughout (``_utc``): SQLite reads these columns back naive.
         prev = {(r.scope, r.key): _Prev(
-            r.value, _naive_utc(r.measured_at) if r.measured_at else None, r.source_url)
+            r.value, aware_utc(r.measured_at), r.source_url)
             for r in rows}
         return ladder.id, from_json(ladder.definition), primary, prev
 
@@ -361,7 +366,7 @@ async def refresh_ladder(project_id: str, *, graphql: GraphQL, list_runs: ListRu
     (``dry_run``: compute and count, write nothing). ``graphql(owner, query)`` is called
     with the primary repo's owner and must return per-alias errors in the payload
     (``partial_ok``); ``list_runs(repo, workflow, *, branch, event, limit)`` runs off-loop, once per event."""
-    now = _naive_utc(now)
+    now = _utc(now)
     loaded = await _load(project_id)
     if loaded is None:
         return RefreshResult(0, 0)
@@ -380,31 +385,31 @@ async def refresh_ladder(project_id: str, *, graphql: GraphQL, list_runs: ListRu
 
 
 async def newest_fetched_at(project_id: str) -> datetime | None:
-    """When the product's ladder was last refreshed (its newest ``fetched_at``)."""
+    """When the product's ladder was last refreshed (its newest ``fetched_at``, aware UTC)."""
     async with db_session() as db:
-        return (await db.execute(
+        return aware_utc((await db.execute(
             select(func.max(MilestoneMeasurement.fetched_at))
             .join(MilestoneLadder, MilestoneLadder.id == MilestoneMeasurement.ladder_id)
             .where(MilestoneLadder.project_id == project_id)
-        )).scalar_one_or_none()
+        )).scalar_one_or_none())
 
 
 async def list_ladder_fetch_times() -> list[tuple[str, datetime | None]]:
-    """``(project_id, newest fetched_at or None)`` for every ladder."""
+    """``(project_id, newest fetched_at or None)`` for every ladder (aware UTC)."""
     async with db_session() as db:
         rows = (await db.execute(
             select(MilestoneLadder.project_id, func.max(MilestoneMeasurement.fetched_at))
             .outerjoin(MilestoneMeasurement, MilestoneMeasurement.ladder_id == MilestoneLadder.id)
             .group_by(MilestoneLadder.project_id)
         )).all()
-    return [(pid, fetched) for pid, fetched in rows]
+    return [(pid, aware_utc(fetched)) for pid, fetched in rows]
 
 
 async def list_refresh_requests() -> dict[str, datetime]:
-    """``project_id -> refresh_requested_at`` for every ladder with a request stamped."""
+    """``project_id -> refresh_requested_at`` (aware UTC) for every ladder with a request."""
     async with db_session() as db:
         rows = (await db.execute(
             select(MilestoneLadder.project_id, MilestoneLadder.refresh_requested_at)
             .where(MilestoneLadder.refresh_requested_at.is_not(None))
         )).all()
-    return {pid: at for pid, at in rows}
+    return {pid: _utc(at) for pid, at in rows}

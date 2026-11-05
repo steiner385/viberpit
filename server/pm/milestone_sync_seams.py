@@ -1,13 +1,14 @@
 """The milestone-ladder DB seams for the pm-sync pass — the apply half of
 ``server/pm/milestone_index.py``'s planner (same split as
-``persona_sync_seams.py``). Timestamps come from the DB clock (``db_utc_now``)."""
+``persona_sync_seams.py``). Timestamps are aware Python UTC (``_utcnow``): every
+milestone column is ``timestamptz``, and the naive ``db_utc_now()`` bound to one is
+read by asyncpg as process-local time (hours off on an EDT host)."""
 from __future__ import annotations
 
 from sqlalchemy import select
 
 from server.db import db_session
-from server.db.clock import db_utc_now
-from server.db.models import Milestone, MilestoneLadder
+from server.db.models import Milestone, MilestoneLadder, _utcnow
 
 from .milestone_index import LadderRowsView, LadderSyncPlan, MilestoneRowView
 
@@ -31,7 +32,7 @@ async def apply_ladder_plan(project_id: str, plan: LadderSyncPlan) -> None:
     if plan.is_noop:
         return
     async with db_session() as db:
-        now = (await db.execute(select(db_utc_now()))).scalar_one()
+        now = _utcnow()
         ladder = (await db.execute(
             select(MilestoneLadder).where(MilestoneLadder.project_id == project_id)
         )).scalar_one_or_none()

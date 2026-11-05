@@ -15766,7 +15766,7 @@ class SessionOrchestrator:
     async def _milestones_refresh_run(self, project_id: str, *, dry_run: bool):
         """One ladder's refresh through the owner-aware GraphQL seam. ``partial_ok``:
         a ref the token can't read errors only its alias, never the ladder."""
-        from server.db.clock import naive_utc_now
+        from server.db.models import _utcnow
         from server.github import actions_api
         from server.pm import milestone_refresh
 
@@ -15775,7 +15775,7 @@ class SessionOrchestrator:
 
         return await milestone_refresh.refresh_ladder(
             project_id, graphql=graphql, list_runs=actions_api.list_workflow_runs,
-            now=naive_utc_now(), dry_run=dry_run)
+            now=_utcnow(), dry_run=dry_run)
 
     # ------------------------------------------------------------------
     # Archive Audit control-loop dependencies (injected into ArchiveAuditLoop)

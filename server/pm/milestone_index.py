@@ -37,7 +37,7 @@ class LadderRowsView:
 class LadderSyncPlan:
     create_ladder: bool
     # Column -> value for the ladder row. ``synced_at`` is not here: the seam
-    # stamps it from the DB clock on every applied (non-no-op) plan.
+    # stamps it (aware UTC) on every applied (non-no-op) plan.
     ladder_fields: dict[str, Any]
     parse_error: str | None
     upserts: tuple[dict[str, Any], ...]
@@ -71,7 +71,7 @@ def plan_ladder_sync(
     means the file is absent at that commit.
 
     *now* is the pass time; the plan is time-independent today (the seam
-    stamps ``synced_at``/``removed_at``/``entered_at`` from the DB clock), but
+    stamps ``synced_at``/``removed_at``/``entered_at`` in aware UTC), but
     the parameter keeps the planner's contract stable for time-aware rules."""
     del now
     if text is None:

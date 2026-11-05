@@ -969,6 +969,87 @@ async def test_autopilot_reversal_hint_lookback_is_not_shifted_by_local_offset_o
             await s.commit()
 
 
+
+_MILESTONE_LADDER_TEXT = """
+version: 1
+title: dtcheck
+start: a
+milestones:
+  - key: a
+    name: A
+"""
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_milestone_timestamps_round_trip_as_utc_under_an_edt_process_on_postgres(
+        pg_engine, pg_url, monkeypatch):
+    """Every milestone column is ``timestamptz``. A NAIVE value bound to one is read
+    by asyncpg as process-local time, so on an EDT host a naive-UTC write lands 4 h
+    late. The sync seam (``synced_at`` / ``entered_at``) and the refresh persistence
+    path (``fetched_at`` / ``measured_at``, handed a naive ``now`` the way the
+    orchestrator once did) must store the instant they mean."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import delete, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from server.db.models import (Milestone, MilestoneLadder, MilestoneMeasurement, Project,
+                                  ProjectRepo)
+    from server.pm.milestone_index import LadderRowsView, plan_ladder_sync
+    from server.pm.milestone_refresh import list_ladder_fetch_times, refresh_ladder
+    from server.pm.milestone_sync_seams import apply_ladder_plan
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as s:
+        project = Project(slug="dtcheck-milestones", name="dtcheck")
+        s.add(project)
+        await s.flush()
+        s.add(ProjectRepo(project_id=project.id, repo="dtcheck/repo", is_primary=True))
+        await s.commit()
+        pid = project.id
+    written = datetime(2026, 11, 5, 12, 0, tzinfo=timezone.utc)
+
+    async def _no_graphql(owner, query):
+        raise AssertionError("a ladder with no GitHub targets makes no GraphQL call")
+
+    try:
+        with _process_local_timezone(monkeypatch, _SKEW_TZ):
+            async with _module_db_on(pg_url):
+                before = datetime.now(timezone.utc)
+                plan = plan_ladder_sync(LadderRowsView(exists=False, milestones=()),
+                                        text=_MILESTONE_LADDER_TEXT, sha="dtcheck",
+                                        primary_repo="dtcheck/repo", now=before)
+                await apply_ladder_plan(pid, plan)
+                after = datetime.now(timezone.utc)
+                await refresh_ladder(pid, graphql=_no_graphql, list_runs=lambda *a, **k: [],
+                                     now=written.replace(tzinfo=None))
+                listed = dict(await list_ladder_fetch_times())
+        async with Session() as s:
+            ladder = (await s.execute(
+                select(MilestoneLadder).where(MilestoneLadder.project_id == pid))).scalar_one()
+            rung = (await s.execute(
+                select(Milestone).where(Milestone.ladder_id == ladder.id))).scalar_one()
+            row = (await s.execute(select(MilestoneMeasurement).where(
+                MilestoneMeasurement.ladder_id == ladder.id))).scalar_one()
+        slack = timedelta(seconds=5)
+        assert before - slack <= ladder.synced_at <= after + slack, (
+            f"synced_at {ladder.synced_at} is not the write instant {before}")
+        assert rung.state == "current"
+        assert before - slack <= rung.entered_at <= after + slack, (
+            f"entered_at {rung.entered_at} is not the write instant {before}")
+        assert (row.scope, row.key) == ("leaves:a", "leaves")
+        assert row.fetched_at == written, f"fetched_at {row.fetched_at} != {written}"
+        assert row.measured_at == written, f"measured_at {row.measured_at} != {written}"
+        assert listed[pid] == written
+    finally:
+        async with Session() as s:
+            ladder_ids = select(MilestoneLadder.id).where(MilestoneLadder.project_id == pid)
+            await s.execute(delete(MilestoneMeasurement).where(
+                MilestoneMeasurement.ladder_id.in_(ladder_ids)))
+            await s.execute(delete(Milestone).where(Milestone.ladder_id.in_(ladder_ids)))
+            await s.execute(delete(MilestoneLadder).where(MilestoneLadder.project_id == pid))
+            await s.execute(delete(ProjectRepo).where(ProjectRepo.project_id == pid))
+            await s.execute(delete(Project).where(Project.id == pid))
+            await s.commit()
+
 def _session_fk_ondelete(sync_conn, table: str) -> str | None:
     from sqlalchemy import inspect as sa_inspect
     for fk in sa_inspect(sync_conn).get_foreign_keys(table):

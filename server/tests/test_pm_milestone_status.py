@@ -88,3 +88,14 @@ def test_gate_met_empty_is_false() -> None:
 def test_gate_met_with_one_unknown_is_false() -> None:
     assert gate_met(["met", "unknown"]) is False
     assert gate_met(["met", "met"]) is True
+
+
+def test_status_at_mixes_naive_and_aware_times() -> None:
+    """SQLite reads timestamptz columns back naive (UTC), Postgres aware: either
+    side of the comparison may be either."""
+    from datetime import timezone
+    aware_now = NOW.replace(tzinfo=timezone.utc)
+    fresh = NOW - timedelta(hours=1)
+    assert status_at("met", fresh, 3 * 3600, aware_now) == "met"
+    assert status_at("met", fresh.replace(tzinfo=timezone.utc), 3 * 3600, NOW) == "met"
+    assert status_at("met", NOW - timedelta(hours=4), 3 * 3600, aware_now) == "unknown"

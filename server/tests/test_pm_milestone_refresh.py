@@ -263,6 +263,50 @@ milestones:
     assert [i["number"] for i in row.value["items"]] == [10] and row.error
 
 
+TWO_SOURCES = """
+version: 1
+title: t
+milestones:
+  - key: a
+    name: A
+    epics: ['#1']
+    refs: ['#2']
+numbers:
+  - key: leaves
+    label: leaves closed
+    measure: {kind: ladder_leaves}
+"""
+
+
+def _leaf(n: int, state: str) -> dict:
+    return {"__typename": "Issue", "number": n, "title": f"t{n}", "url": f"u{n}", "state": state,
+            "repository": {"nameWithOwner": "o/r"},
+            "closedByPullRequestsReferences": {"nodes": []}}
+
+
+@pytest.mark.asyncio
+async def test_a_partial_failure_keeps_the_previous_leaves(isolated_db):
+    """Once a leaves row has a value, one failed source keeps the WHOLE previous value
+    (and ladder_leaves its sums) rather than shrinking to the partial union."""
+    pid = await _seed(TWO_SOURCES, primary="o/r")
+    epic = {"url": "e", "subIssues": {"totalCount": 1, "pageInfo": {"hasNextPage": False},
+                                      "nodes": [_leaf(10, "CLOSED")]}}
+    ok = {"data": {"repo0": {"e0": epic, "m0": _leaf(2, "OPEN")}}}
+    await refresh_ladder(pid, graphql=_Gh(ok), list_runs=_Runs(), now=NOW)
+    assert (await _rows())[("leaves:a", "leaves")].value["total"] == 2
+
+    partial = {"data": {"repo0": {"e0": epic, "m0": None}},
+               "errors": [{"path": ["repo0", "m0"], "message": "Could not resolve to an Issue"}]}
+    await refresh_ladder(pid, graphql=_Gh(partial), list_runs=_Runs(), now=NOW + timedelta(minutes=10))
+    rows = await _rows()
+    row = rows[("leaves:a", "leaves")]
+    assert [i["number"] for i in row.value["items"]] == [10, 2]
+    assert (row.value["done"], row.value["total"]) == (1, 2)
+    assert "Could not resolve" in row.error and _naive(row.measured_at) == NOW
+    numbers = rows[("numbers", "leaves")]
+    assert numbers.value == {"done": 1, "total": 2} and numbers.error
+
+
 @pytest.mark.asyncio
 async def test_ci_metric_unknown_in_phase1(isolated_db):
     pid = await _seed()

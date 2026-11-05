@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from server.pm.milestone_def import _ALL_CLOSED_KINDS, MEASURE_KINDS, Measure
+from server.time_iso import aware_utc
 
 _OPS: dict[str, Callable[[float, float], bool]] = {
     "eq": operator.eq,
@@ -65,10 +66,12 @@ def evaluate(measure: Measure, reading: Reading) -> str:
 
 
 def status_at(stored: str, measured_at: datetime | None, max_age_s: int | None, now: datetime) -> str:
-    """Apply freshness at read time: a stale measurement reads ``unknown``."""
+    """Apply freshness at read time: a stale measurement reads ``unknown``. Either
+    time may be naive (UTC, as SQLite reads it back) or aware (as Postgres does)."""
     if max_age_s is None:
         return stored
-    if measured_at is None or now - measured_at > timedelta(seconds=max_age_s):
+    measured, at = aware_utc(measured_at), aware_utc(now)
+    if measured is None or at is None or at - measured > timedelta(seconds=max_age_s):
         return "unknown"
     return stored
 
