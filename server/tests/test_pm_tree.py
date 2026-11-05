@@ -140,7 +140,7 @@ def test_build_product_tree_nests_and_rolls_up():
     assert tree["counts"]["needsYou"] == 1
     assert tree["counts"] == {"capabilities": 4, "inFlight": 0, "blocked": 1,
                               "needsYou": 1, "awaitingTriage": 0, "needsHome": 0,
-                              "waiting": _NO_WAITING}
+                              "milestoneAsks": 0, "waiting": _NO_WAITING}
 
 
 def test_capability_node_carries_persona_slugs():
@@ -181,7 +181,7 @@ def test_edge_cases_root_fallback_and_empty_product():
     assert empty_tree["tier"] == "idle"
     assert empty_tree["counts"] == {"capabilities": 0, "inFlight": 0, "blocked": 0,
                                     "needsYou": 0, "awaitingTriage": 0, "needsHome": 0,
-                                    "waiting": _NO_WAITING}
+                                    "milestoneAsks": 0, "waiting": _NO_WAITING}
     assert empty_tree["capabilities"] == []
 
     product = ProductIn(
@@ -468,3 +468,21 @@ def test_needs_you_total_is_the_web_badge_count():
                                           awaiting_triage=3, needs_home=1,
                                           incident_statuses=()))
     assert needs_you_total(triage) == 1
+
+
+def test_needs_you_total_counts_open_asks():
+    """Each open milestone ask is one needs-you item, and a product with any lifts
+    to the needs-you tier, as ``awaitingTriage`` does (spec 2026-11-05 M11)."""
+    from server.pm.tree import needs_you_total
+    quiet = build_product_tree(ProductIn(slug="p", name="P", capabilities=(_cap("a"),),
+                                         initiatives=(), awaiting_triage=0, needs_home=0))
+    assert quiet["counts"]["milestoneAsks"] == 0 and needs_you_total(quiet) == 0
+    asks = build_product_tree(ProductIn(slug="p", name="P", capabilities=(_cap("a"),),
+                                        initiatives=(), awaiting_triage=0, needs_home=0,
+                                        milestone_asks=3))
+    assert asks["counts"]["milestoneAsks"] == 3
+    assert asks["tier"] == "needs-you"
+    assert needs_you_total(asks) == 3
+    both = build_product_tree(ProductIn(slug="p", name="P", capabilities=(), initiatives=(),
+                                        awaiting_triage=2, needs_home=0, milestone_asks=2))
+    assert needs_you_total(both) == 3     # one for triage + one per ask

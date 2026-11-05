@@ -12,6 +12,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
+from server.pm.milestone_asks import ASK_KIND, DECISION_STATUSES, is_open_ask
 from server.pm.milestone_def import Condition, LadderDef, condition_from_json, from_json
 from server.pm.milestone_github import DONE_REF_STATES
 from server.pm.milestone_refresh import LEAVES_KEY, leaves_scope
@@ -124,18 +125,46 @@ def _leaves(row: Any | None) -> dict[str, Any]:
     }
 
 
+def _note(n: Any) -> dict[str, Any]:
+    return {
+        "id": n.id, "kind": n.kind, "ref": n.ref, "text": n.text, "url": n.url,
+        "status": n.status, "milestoneKey": n.milestone_key, "createdBy": n.created_by,
+        "createdAt": iso_utc(n.created_at), "resolvedBy": n.resolved_by,
+        "resolvedAt": iso_utc(n.resolved_at),
+    }
+
+
+def _created(n: Any) -> tuple[bool, datetime | None, str]:
+    """Oldest first; the id breaks a tie so the order is total."""
+    at = aware_utc(n.created_at)
+    return at is None, at, str(n.id)
+
+
+def _notes(notes: Iterable[Any]) -> dict[str, list[dict[str, Any]]]:
+    """Ladder-wide decisions (locked, proposed, superseded) and asks (open first),
+    each group oldest first. Notes on a removed rung stay: the owner resolves them."""
+    rank = {s: i for i, s in enumerate(DECISION_STATUSES)}
+    rows = list(notes)
+    decisions = sorted((n for n in rows if n.kind == "decision"),
+                       key=lambda n: (rank.get(n.status, len(rank)), *_created(n)))
+    asks = sorted((n for n in rows if n.kind == ASK_KIND),
+                  key=lambda n: (not is_open_ask(n), *_created(n)))
+    return {"decisions": [_note(n) for n in decisions], "asks": [_note(n) for n in asks]}
+
+
 def build_milestones_view(
     ladder: Any,
     milestones: Sequence[Any],
     measurements: Iterable[Any],
     *,
+    notes: Iterable[Any],
     now: datetime,
     primary_repo: str | None,
     auto_refresh: bool,
 ) -> dict[str, Any]:
     """The view model for one ladder. *milestones* are ``Milestone`` rows (any order),
-    *measurements* the ladder's ``MilestoneMeasurement`` rows. Milestones with
-    ``removed_at`` are dropped unless current."""
+    *measurements* the ladder's ``MilestoneMeasurement`` rows, *notes* its
+    ``MilestoneNote`` rows. Milestones with ``removed_at`` are dropped unless current."""
     at = aware_utc(now)
     assert at is not None
     rows = list(measurements)
@@ -177,6 +206,7 @@ def build_milestones_view(
                for c in (definition.numbers if definition else ())]
     fetched = [t for t in (aware_utc(r.fetched_at) for r in rows) if t is not None]
     spec_path = ladder.spec_path
+    note_rows = list(notes)
     return {
         "ladder": {
             "title": ladder.title,
@@ -192,7 +222,10 @@ def build_milestones_view(
             "currentRemoved": current is not None and current.removed_at is not None,
             "updatedAt": iso_utc(max(fetched)) if fetched else None,
             "autoRefresh": auto_refresh,
+            "ladderComplete": current is None and any(m.state == "done" for m in ordered),
+            "asksOpen": sum(1 for n in note_rows if is_open_ask(n)),
         },
         "milestones": out,
         "numbers": numbers,
+        "notes": _notes(note_rows),
     }

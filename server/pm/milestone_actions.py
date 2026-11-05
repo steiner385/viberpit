@@ -33,14 +33,12 @@ from server.db.models import (
     _utcnow,
 )
 from server.pm.holds import actor_class
+from server.pm.milestone_asks import ASK_STATUSES, DECISION_STATUSES, NOTE_KINDS
 from server.pm.milestone_def import Condition, from_json
 from server.pm.milestone_status import Reading, evaluate, gate_met
 from server.pm.milestone_view import read_time_gate
 from server.time_iso import iso_utc
 
-NOTE_KINDS: tuple[str, ...] = ("decision", "ask")
-DECISION_STATUSES: tuple[str, ...] = ("locked", "proposed", "superseded")
-ASK_STATUSES: tuple[str, ...] = ("open", "done", "dropped")
 _STATUSES: dict[str, tuple[str, ...]] = {"decision": DECISION_STATUSES, "ask": ASK_STATUSES}
 _DEFAULT_STATUS: dict[str, str] = {"decision": "locked", "ask": "open"}
 _RESOLVED_ASK = frozenset({"done", "dropped"})

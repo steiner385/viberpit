@@ -320,7 +320,7 @@ def test_builder_ignores_orphan_rows_and_null_definition():
         ladder, [], [SimpleNamespace(scope="x", key="y", status="met", value=None, measured_at=now,
                                      fetched_at=now, error=None, source_url=None, manual_by=None,
                                      manual_evidence=None)],
-        now=now, primary_repo=PRIMARY, auto_refresh=False)
+        notes=[], now=now, primary_repo=PRIMARY, auto_refresh=False)
     assert view["milestones"] == [] and view["numbers"] == []
     assert view["ladder"]["specUrl"] is None and view["ladder"]["currentKey"] is None
     # updatedAt is the newest fetched_at across the ladder, orphan rows included
@@ -365,7 +365,7 @@ def test_put_condition_tick_returns_full_view(isolated_db):
                   json={"value": 4, "evidence": "billing export"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) == {"ladder", "milestones", "numbers"}
+    assert set(body) == {"ladder", "milestones", "numbers", "notes"}
     friendly = next(m for m in body["milestones"] if m["key"] == "friendly")
     setup = next(g for g in friendly["gate"] if g["key"] == "setup")
     assert setup["status"] == "met" and setup["value"] == {"met": True}
@@ -484,3 +484,83 @@ async def test_via_comes_from_request_state(isolated_db):
         tick = (await db.execute(select(AuditEvent).where(
             AuditEvent.type == "pm.milestone.tick"))).scalar_one()
     assert (tick.identity, tick.via) == (who, "session")
+
+
+# ---------------------------------------------------------------- notes in the view (Phase 2)
+
+
+async def _seed_notes() -> dict[str, str]:
+    """Decisions and asks across statuses and ages; returns text -> id."""
+    from server.db.models import MilestoneNote
+
+    now = _now()
+    spec = [  # (kind, status, text, milestone_key, age_s)
+        ("decision", "superseded", "old pricing", None, 500),
+        ("decision", "proposed", "maybe kiosk", "friendly", 400),
+        ("decision", "locked", "founder pricing", "community", 100),
+        ("decision", "locked", "older lock", None, 300),
+        ("ask", "done", "sign DPA", "household", 900),
+        ("ask", "open", "newer ask", None, 50),
+        ("ask", "open", "older ask", "removed-rung", 200),
+        ("ask", "dropped", "dropped ask", None, 10),
+    ]
+    async with db_session() as db:
+        lad = (await db.execute(select(MilestoneLadder))).scalar_one()
+        rows = [MilestoneNote(ladder_id=lad.id, kind=k, status=st, text=t, milestone_key=mk,
+                              ref="D1" if t == "founder pricing" else None,
+                              url="https://e.x/d" if t == "founder pricing" else None,
+                              created_by="owner@example.com",
+                              created_at=now - timedelta(seconds=age),
+                              resolved_by="owner@example.com" if st == "done" else None,
+                              resolved_at=now if st == "done" else None)
+                for k, st, t, mk, age in spec]
+        db.add_all(rows)
+        await db.flush()
+        return {str(r.text): r.id for r in rows}
+
+
+def test_view_includes_notes_sorted(isolated_db):
+    asyncio.run(_seed())
+    ids = asyncio.run(_seed_notes())
+    with _client(isolated_db, auto_refresh=True) as c:
+        body = c.get(URL, headers=IDENTITY_HEADERS).json()
+    notes = body["notes"]
+    assert [n["text"] for n in notes["decisions"]] == [
+        "older lock", "founder pricing", "maybe kiosk", "old pricing"]
+    assert [n["text"] for n in notes["asks"]] == [
+        "older ask", "newer ask", "sign DPA", "dropped ask"]
+    d = notes["decisions"][1]
+    assert set(d) == {"id", "kind", "ref", "text", "url", "status", "milestoneKey", "createdBy",
+                      "createdAt", "resolvedBy", "resolvedAt"}
+    assert (d["id"], d["kind"], d["ref"], d["url"], d["status"], d["milestoneKey"]) == (
+        ids["founder pricing"], "decision", "D1", "https://e.x/d", "locked", "community")
+    assert d["createdBy"] == "owner@example.com" and d["createdAt"].endswith("+00:00")
+    done = notes["asks"][2]
+    assert done["resolvedBy"] == "owner@example.com" and done["resolvedAt"].endswith("+00:00")
+    assert notes["asks"][0]["milestoneKey"] == "removed-rung"
+    assert body["ladder"]["asksOpen"] == 2
+    assert body["ladder"]["ladderComplete"] is False
+
+
+def test_ladder_complete_flag():
+    now = _now()
+    ladder = SimpleNamespace(
+        title="t", spec_path=None, source_path=None, source_sha=None, synced_at=None,
+        parse_error=None, parse_error_sha=None, definition=None)
+
+    def rung(key: str, state: str, i: int) -> SimpleNamespace:
+        return SimpleNamespace(key=key, ordinal=i, state=state, removed_at=None, label=key,
+                               name=key, audience=None, platforms=[], entered_at=None,
+                               exited_at=None, status_note=None, exit_override=None,
+                               epics=[], gate=[])
+
+    def complete(*states: str) -> bool:
+        view = build_milestones_view(
+            ladder, [rung(f"m{i}", s, i) for i, s in enumerate(states)], [], notes=[],
+            now=now, primary_repo=None, auto_refresh=False)
+        return view["ladder"]["ladderComplete"]
+
+    assert complete("done", "done") is True
+    assert complete("done", "current") is False
+    assert complete("upcoming") is False        # nothing done yet
+    assert complete() is False                  # empty ladder

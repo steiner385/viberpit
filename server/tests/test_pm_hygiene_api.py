@@ -224,6 +224,45 @@ def test_samples_are_the_map_badge_count_and_written_at_most_hourly():
         assert pm_needs_you.value_for("viberpit") == badge
 
 
+def test_product_attention_counts_include_asks():
+    """Open milestone asks reach the hygiene sampler through ``product_nodes``, so the
+    sampled number stays the map badge (spec 2026-11-05 M11)."""
+    from server.api.pm_tree import product_attention_counts
+    from server.db import db_session
+    from server.db.models import MilestoneLadder, MilestoneNote, Project
+    from server.pm.tree import needs_you_total
+
+    with _client() as c:
+        async def _seed():
+            async with db_session() as db:
+                p = Project(slug="viberpit", name="viberpit")
+                quiet = Project(slug="quiet", name="quiet")
+                db.add_all([p, quiet])
+                await db.flush()
+                lad = MilestoneLadder(project_id=p.id, title="t")
+                db.add(lad)
+                await db.flush()
+                db.add_all([
+                    MilestoneNote(ladder_id=lad.id, kind="ask", status="open", text="a"),
+                    MilestoneNote(ladder_id=lad.id, kind="ask", status="open", text="b",
+                                  milestone_key="household"),
+                    MilestoneNote(ladder_id=lad.id, kind="ask", status="done", text="c"),
+                ])
+                await db.commit()
+        _call(c, _seed)
+
+        async def _counts():
+            async with db_session() as db:
+                return await product_attention_counts(db)
+        counts = _call(c, _counts)
+        products = {p["slug"]: p for p in c.get(
+            "/api/pm/map", headers=IDENTITY_HEADERS).json()["products"]}
+    assert counts["viberpit"]["needsYou"] == 2 == needs_you_total(products["viberpit"])
+    assert products["viberpit"]["counts"]["milestoneAsks"] == 2
+    assert products["viberpit"]["tier"] == "needs-you"
+    assert counts["quiet"]["needsYou"] == 0
+
+
 def test_load_reads_queue_rows_board_stamps_and_stale_edges():
     from sqlalchemy import select
 

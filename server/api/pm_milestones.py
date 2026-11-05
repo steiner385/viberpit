@@ -27,6 +27,7 @@ from server.db.models import (
     Milestone,
     MilestoneLadder,
     MilestoneMeasurement,
+    MilestoneNote,
     ProjectRepo,
     _utcnow,
 )
@@ -48,9 +49,11 @@ async def _view(db, p, ladder: MilestoneLadder) -> dict:
         Milestone.ladder_id == ladder.id))).scalars().all()
     measurements = (await db.execute(select(MilestoneMeasurement).where(
         MilestoneMeasurement.ladder_id == ladder.id))).scalars().all()
+    notes = (await db.execute(select(MilestoneNote).where(
+        MilestoneNote.ladder_id == ladder.id))).scalars().all()
     primary = (await db.execute(select(ProjectRepo.repo).where(
         ProjectRepo.project_id == p.id, ProjectRepo.is_primary.is_(True)))).scalars().first()
-    return build_milestones_view(ladder, milestones, measurements, now=_utcnow(),
+    return build_milestones_view(ladder, milestones, measurements, notes=notes, now=_utcnow(),
                                  primary_repo=primary,
                                  auto_refresh=await automatic_refresh_enabled())
 
