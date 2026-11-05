@@ -117,6 +117,16 @@ Verify before unmounting (Principle III): on rocky, `ls ~/.claude-accounts/cfg/<
 The ledger and `accounts.json` are still read through the mount until their own RPC lands, so the
 remount recipe below stays until then.
 
+MCP OAuth grants ride the same push (#3287): every `creds_sync` carries the shared store's public view
+(`mcp_bundles`, no refresh tokens) and the reconcile's purge keys (`mcp_drop`). The runner caches them in
+`$XDG_STATE_HOME/viberpit/state/claude-creds/mcp-view.json` and a worker's `read_shared_mcp()` answers
+from that cache, so a session composed on rocky gets its MCP tokens without the mount. The runner writes
+its account dirs (and offers a terminal `claude mcp login` back to the edge as `mcp_offers`) only once
+`~/.claude-accounts` is provably local; while it is the sshfs mount, dobby's publish covers it. After
+the unmount, verify one session on rocky connects to an OAuth MCP server (Settings › MCP shows it
+Connected for a session on rocky), and that the daemon journal shows `runner mcp view published` after
+the first push.
+
 
 Rocky depends on two sshfs mounts from dobby, both read continuously by the daemon:
 
