@@ -32,6 +32,14 @@ vi.mock('@/features/sessions/browser/BrowserTab', () => ({
   ),
 }))
 
+// Dev-server presence (D-18): its own module, off `@/api/hooks`. Default none.
+type DevServersHook = typeof import('@/api/devServers').useSessionDevServers
+const NO_SERVERS = { servers: null, refetch: () => {} }
+const devServersHook = vi.fn<DevServersHook>(() => NO_SERVERS)
+vi.mock('@/api/devServers', () => ({
+  useSessionDevServers: (...args: Parameters<DevServersHook>) => devServersHook(...args),
+}))
+
 // Stub the hooks so SessionBody's query calls return safe empty data
 // without firing real fetch requests (which would conflict with the spied fetch).
 vi.mock('@/api/hooks', () => ({
@@ -90,6 +98,7 @@ function makeRuntime(): SessionRuntime {
 describe('SessionBody — Browser tab gating', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    devServersHook.mockReturnValue(NO_SERVERS)
   })
 
   it('shows Browser tab when /api/x11/metrics returns enabled metrics', async () => {
@@ -193,5 +202,20 @@ describe('SessionBody — Browser tab gating', () => {
     renderWithQuery(<SessionBody rt={makeRuntime()} />, '/sessions/s1?view=browser')
     await waitFor(() => expect(screen.queryByRole('tab', { name: /browser/i })).toBeNull())
     expect(screen.queryByTestId('browser-tab-stub')).toBeNull()
+  })
+
+  it('lists the Browser tab for a session with a dev server even when X11 is off (D-18)', async () => {
+    devServersHook.mockReturnValue({
+      servers: [{ port: 5173, address: '127.0.0.1', bind: 'loopback', pid: 1, label: 'vite', open: { kind: 'vnc' } }],
+      refetch: () => {},
+    })
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    )
+    renderWithQuery(<SessionBody rt={makeRuntime()} />, '/sessions/s1?view=browser')
+    expect(await screen.findByRole('tab', { name: /browser/i })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByTestId('browser-tab-stub')).toBeInTheDocument()
+    // Polled while the Browser view is asked for; X11 is off here.
+    expect(devServersHook).toHaveBeenLastCalledWith('s1', false, { requested: true, x11: false })
   })
 })

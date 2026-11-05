@@ -1315,3 +1315,39 @@ export interface MoveResult {
   recoveryRef: string | null
   session: Session | null
 }
+
+/** How THIS viewer opens a detected dev server (D-18), chosen by the server per
+ *  request from the viewer's tailnet node. Every `url` is built server-side from
+ *  detected data; the UI opens it as given and never builds or edits one. */
+export type DevServerOpen =
+  | { kind: 'local-link'; url: string }
+  | { kind: 'tailnet-link'; url: string; note?: string }
+  | { kind: 'vnc' }
+
+/** One dev server the session started. `label` and `title` are untrusted text
+ *  (a command line, a page's `<title>`): render them as text only. */
+export interface DevServer {
+  port: number
+  address: string
+  bind: 'loopback' | 'all'
+  pid: number
+  label: string
+  title?: string
+  note?: string
+  open: DevServerOpen
+}
+
+/** `GET /api/sessions/{id}/dev-servers`. `enabled: false` means detection is
+ *  switched off (`VIBERPIT_DEV_SERVER_DETECT_ENABLED`); absent means on. */
+export interface DevServers {
+  host: string
+  servers: DevServer[]
+  enabled?: boolean
+}
+
+/** `POST /api/sessions/{id}/dev-servers/{port}/open` success. */
+export interface DevServerOpened {
+  ok: true
+  port: number
+  url: string
+}

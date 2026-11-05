@@ -20,6 +20,9 @@ const { useEngineOffers } = vi.hoisted(() => ({
   useEngineOffers: vi.fn((): { engine: string; capabilities?: unknown }[] => []),
 }))
 
+// Dev-server presence (D-18) lists the Browser tab; none here.
+vi.mock('@/api/devServers', () => ({ useSessionDevServers: () => ({ servers: null, refetch: () => {} }) }))
+
 vi.mock('@/api/hooks', () => ({
   // Rail cards (SessionBody → SessionRail): MCP list, rules, account pin, sub-agents.
   useSessionMcp: vi.fn(() => ({ data: undefined })),

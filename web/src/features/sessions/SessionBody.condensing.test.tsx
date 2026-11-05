@@ -7,6 +7,9 @@ import type { Block } from '@/session/reducer'
 import { EMPTY_BACKGROUND_WORK_VIEW } from '@/session/selectors'
 
 // Mirror the same stubs as SessionBody.test.tsx
+// Dev-server presence (D-18) lists the Browser tab; none here.
+vi.mock('@/api/devServers', () => ({ useSessionDevServers: () => ({ servers: null, refetch: () => {} }) }))
+
 vi.mock('@/api/hooks', () => ({
   // Rail cards (SessionBody → SessionRail): MCP list, rules, account pin.
   useSessionMcp: vi.fn(() => ({ data: undefined })),

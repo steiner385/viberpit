@@ -25,6 +25,9 @@ vi.mock('@/features/sessions/diff/ChangesTab', () => ({
   ),
 }))
 
+// Dev-server presence (D-18) lists the Browser tab; none here.
+vi.mock('@/api/devServers', () => ({ useSessionDevServers: () => ({ servers: null, refetch: () => {} }) }))
+
 vi.mock('@/api/hooks', () => ({
   useSessionMcp: vi.fn(() => ({ data: undefined })),
   usePermissionRules: vi.fn(() => ({ data: [] })),
