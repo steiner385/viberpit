@@ -12,6 +12,8 @@ links:
     - server/library/plugin_policy.py
     - server/library/curated.py
     - server/library/scan.py
+    - server/library/directory_api.py
+    - server/sessions/plugin_reload.py
     - server/api/library.py
     - server/sessions/fleet_orchestrator.py
     - web/src/api/pluginHooks.ts
@@ -19,6 +21,7 @@ links:
     - web/src/features/settings/sections/plugins/MarketplacesPanel.tsx
     - web/src/features/settings/sections/plugins/BrowsePanel.tsx
     - web/src/features/settings/sections/plugins/ConsentDialog.tsx
+    - web/src/features/settings/sections/plugins/SessionOutcomes.tsx
 ---
 
 # Plugin Marketplace
@@ -42,6 +45,8 @@ Browse, install, update, enable, disable and uninstall Claude plugins from Setti
 - **One writer.** `server/library/plugin_cli.py` is the only code that changes plugin state. It runs the installed `claude plugin ...` against the shared config dir, finds its result line by a nonce, and never passes `-y`, `--accept-command` or any other consent-bypass flag. Uninstall keeps the plugin's data.
 - **Consent card.** Every install and update asks: "Plugins run their own code — hooks and MCP servers — in every session on every host, including unattended automations. Install only plugins you trust." After a success the UI says "Running sessions pick this up when they restart."
 - **Access.** Every plugin mutation route needs a human sender. They refuse `VIBERPIT_RULES_TRUST_LOCAL_HOST`, because an install reaches every host. Every mutation writes an audit row (`library_marketplace_*`, `library_plugin_*`), with the identity and the hosts.
+- **Reload running sessions (opt-in).** The consent card has a checkbox, "Also reload running sessions now" (default off), and Settings › Plugins has a "Reload running sessions" button. Either calls `POST /library/plugins/reload`, which sends the CLI's `reload_plugins` request to every live Claude session on every host and lists a per-session outcome: `applied`, `held`, `busy`, `skipped` or `failed`. By default (`holdOnCacheImpact`) a session that has started talking and whose tools would change keeps its plugins until it restarts, so its prompt cache is kept. A session mid-turn is `busy` and is skipped. The route needs a human sender and is audited (`library_plugins_reloaded`). It installs nothing, so the kill switch does not stop it. Sessions not reloaded pick the change up when they restart.
+- **Directory installs are verified live.** Browse shows the **Reviewed** badge from the cache. An install or update of a Directory plugin also fetches that listing from the Anthropic Directory API (`server/library/directory_api.py`, no credentials). It is refused `PLUGIN_UNREVIEWED` (reason `directory_mismatch`) unless the live review state is `done` and the live source matches the cached one. The only live-only keys allowed are `source.marketplace_slug` and `repository.tracked_ref`. If the API cannot be reached the install fails closed with 503 `PLUGIN_DIRECTORY_UNAVAILABLE`; retry. A cache that holds duplicate ids or names is refused.
 - **Kill switch.** `VIBERPIT_PLUGIN_INSTALL_ENABLED=false` removes browse, add, confirm, install and update (the routes answer 404 `plugin_install_disabled` and the controls hide). Enable, disable, uninstall and remove still work.
 
 ## Security
@@ -51,9 +56,10 @@ Browse, install, update, enable, disable and uninstall Claude plugins from Setti
 **Residual risks to know about.**
 
 - **Same-host tampering.** A session with shell access on a host can modify that host's own marketplace clone, its `known_marketplaces.json`, or the clone's `.git/config` origin between the policy check and the CLI run. That can make an owner-approved install or update on *that host* fetch different code than was approved. Each host checks its own state, so a change made before the check is caught; a change made after it is not. The fan-out to *other* hosts is protected, because each of them re-checks its own state.
-- **Directory review cache is forgeable.** The Directory's review state is read from a cache file (`plugin-directory-cache-v2.json`) in the shared config dir, and every session can write that dir. An agent on the edge can set `checks.review.state: "done"` on an unreviewed listing, or add a forged listing outright. Browse then shows it as **Reviewed**, the edge and host checks pass, and the CLI installs from that cache. The "Reviewed" badge is only as trustworthy as every session that can write the shared config dir. Separately, the cache is trusted for up to one TTL (about 1 hour) after a successful refresh, so a plugin that loses its review inside that window can still be installed. A failed refresh is retried after a minute.
+  - **Ruling.** No change the daemon can make closes it. The session and the daemon share one uid, so a read-only clone or `chattr` is reversible by the session, and a managed-settings file (`/etc/claude-code/managed-settings.json`, root) is outside the daemon's reach. `strictKnownMarketplaces` and `blockedMarketplaces` gate `marketplace add` only, never a later edit of the clone or its `.git/config`. The structural fix is a privilege boundary between sessions and the shared config dir (a sandbox or a second uid), which is a separate project. Accepted unless the owner rules otherwise.
+- **Directory review cache is forgeable, but install is verified live.** The Directory's review state is cached in `plugin-directory-cache-v2.json` in the shared config dir, and every session can write that dir. An agent on the edge can forge a listing there, and browse then shows it as **Reviewed** because the badge reads the cache. The edge's install and update check compares the cache with the live Directory API, so a forged review or a source pointed at another repo is refused. A host's own re-check still reads its own cache, so a forged cache on that host is the same-host tampering residual above. The live check covers only Directory installs. The cache is also trusted for up to one TTL (about 1 hour) for browse; a failed refresh is retried after a minute.
 - **Plugin-entry sources are checked without DNS.** A public-looking name in a catalog entry that resolves to an internal address is not caught. Confirming a marketplace already trusts its author to ship hooks that run anywhere, so a resolving check would not stop that author.
-- **DNS rebinding.** The marketplace source check resolves the host name once. A name that resolves to a public address at the check and to an internal one when the CLI fetches is not caught.
+- **DNS rebinding is closed for marketplace add and update, not everywhere.** The addresses the source check resolved are pinned into the clone (`http.curloptResolve` in a per-run `GIT_CONFIG_GLOBAL` that still includes `~/.gitconfig`), and update re-runs the check on the confirmed host before the CLI runs. Not pinned: git sources named by a plugin entry, the CLI's auto-update clones, and a redirect to another host (redirects stay on because GitLab needs them). `owner/repo` GitHub sources are not pinned. IPv6 answers in a pin were not probed.
 - **Deadlines.** The edge waits for every CLI run a host may make (`plugin_cli.rpc_timeout_s`): two for a Directory install or update, which refreshes the cache first, and one otherwise. A host that still misses it is `host_timeout`, and a retry is safe: an install that already landed answers `noop`.
 - **Auto-update.** Official marketplaces auto-update on startup (D3), so their plugin code can change without a click.
 
@@ -66,7 +72,6 @@ Browse, install, update, enable, disable and uninstall Claude plugins from Setti
 
 ## Not built
 
-- A live `reload_plugins` push to running sessions. An install affects new and restarted sessions only, so as not to miss the prompt cache.
-- Closing the same-host tampering, review-cache forgery and DNS rebinding residuals above.
-
-Both are tracked in #3314.
+- Closing the same-host tampering residual above. It needs a privilege boundary between sessions and the shared config dir; #3314 holds the same-host ruling.
+- Pinning plugin-entry git sources and the CLI's auto-update clones.
+- A held reply is built from the CLI's code but was never observed live (it needs a session with output tokens); see `docs/superpowers/specs/2026-11-05-d16c-residuals-verification.md`.
