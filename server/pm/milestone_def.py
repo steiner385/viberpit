@@ -340,7 +340,7 @@ def _cond_to_json(c: Condition) -> dict[str, Any]:
     }
 
 
-def _cond_from_json(d: Mapping[str, Any]) -> Condition:
+def condition_from_json(d: Mapping[str, Any]) -> Condition:
     m = d["measure"]
     return Condition(
         d["key"],
@@ -387,9 +387,9 @@ def from_json(d: Mapping[str, Any]) -> LadderDef:
                 platforms=tuple(Platform(p["name"], p["off"], p["note"]) for p in m["platforms"]),
                 epics=tuple(parse_ref(r, primary_repo="") for r in m["epics"]),
                 refs=tuple(parse_ref(r, primary_repo="") for r in m["refs"]),
-                gate=tuple(_cond_from_json(c) for c in m["gate"]),
+                gate=tuple(condition_from_json(c) for c in m["gate"]),
             )
             for m in d["milestones"]
         ),
-        numbers=tuple(_cond_from_json(c) for c in d["numbers"]),
+        numbers=tuple(condition_from_json(c) for c in d["numbers"]),
     )

@@ -34,7 +34,7 @@ NOT_FOUND = "not found or no access"
 SUB_ISSUES_PAGE = 100
 _MACRO_RE = re.compile(r"\{now-(\d+)d\}")
 _REPO_QUALIFIER_RE = re.compile(r"(?:^|\s)repo:")  # a negated -repo: names no scope
-_DONE_REF_STATES = frozenset({"CLOSED", "MERGED"})
+DONE_REF_STATES = frozenset({"CLOSED", "MERGED"})
 _STREAK_IGNORED = frozenset({"skipped", "cancelled"})
 _REF_FIELDS = "__typename ... on Issue { state url } ... on PullRequest { state url }"
 _LEAF_FIELDS = (
@@ -248,7 +248,7 @@ def _leaf(node: Mapping[str, Any]) -> dict[str, Any]:
 
 def leaves_done(leaves: Iterable[Mapping[str, Any]]) -> int:
     """How many leaves are done (closed, or a merged PR)."""
-    return sum(1 for x in leaves if x.get("state") in _DONE_REF_STATES)
+    return sum(1 for x in leaves if x.get("state") in DONE_REF_STATES)
 
 
 def parse_ladder_payload(
@@ -320,8 +320,8 @@ def parse_ladder_payload(
             readings[cond_key] = Reading(None, None, f"{', '.join(missing)}: {msg}", None)
             continue
         states = [(nodes[a].get("state"), nodes[a].get("url")) for a, _ in group]
-        done = sum(1 for s, _ in states if s in _DONE_REF_STATES)
-        open_urls = [u for s, u in states if s not in _DONE_REF_STATES]
+        done = sum(1 for s, _ in states if s in DONE_REF_STATES)
+        open_urls = [u for s, u in states if s not in DONE_REF_STATES]
         url = (open_urls or [states[0][1]])[0]
         readings[cond_key] = Reading({"done": done, "total": len(states)}, now, None, url)
     return readings, leaves, cursors
