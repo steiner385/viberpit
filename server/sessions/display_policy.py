@@ -61,6 +61,35 @@ def resolve_display_mode(
     return DISPLAY_VIRTUAL
 
 
+# D-18 dev-server preview: where "Open" sends THIS viewer, decided per request from the
+# requesting client's tailnet node — the same locality rule as the display decision.
+PREVIEW_LOCAL = "local-link"
+PREVIEW_TAILNET = "tailnet-link"
+PREVIEW_VNC = "vnc"
+
+
+def resolve_preview_route(
+    *,
+    client_node: str | None,
+    runner: str,
+    exposed: bool,
+    tailnet_reachable: bool,
+) -> str:
+    """PREVIEW_LOCAL, PREVIEW_TAILNET or PREVIEW_VNC for one dev server and one viewer.
+
+    Rules, in order: a viewer whose tailnet node IS the session's host opens it in their
+    own browser on loopback; a server bound to every address (``exposed``) on a host with
+    a known tailnet name opens over the tailnet; anything else opens in the session's
+    virtual display. ``client_node`` must come from the verified peer
+    (``identity.client_node_name``), never from anything the client sends.
+    """
+    if _is_local(client_node, runner):
+        return PREVIEW_LOCAL
+    if exposed and tailnet_reachable:
+        return PREVIEW_TAILNET
+    return PREVIEW_VNC
+
+
 def native_fallback(
     *,
     requested: str | None,

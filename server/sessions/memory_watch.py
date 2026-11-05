@@ -92,17 +92,18 @@ class SessionKey:
     cwd: str
 
 
-def scan_proc() -> list[ProcRow]:
-    """Every process's pid, parent, resident bytes and name, from ``/proc/*/stat``."""
+def scan_proc(proc_root: str = "/proc") -> list[ProcRow]:
+    """Every process's pid, parent, resident bytes and name, from ``/proc/*/stat``.
+    ``proc_root`` lets a test (or ``dev_servers``) point it at a ``/proc``-shaped tree."""
     page = os.sysconf("SC_PAGE_SIZE")
     rows: list[ProcRow] = []
     try:
-        names = [n for n in os.listdir("/proc") if n.isdigit()]
+        names = [n for n in os.listdir(proc_root) if n.isdigit()]
     except OSError:
         return rows
     for name in names:
         try:
-            with open(f"/proc/{name}/stat", encoding="utf-8", errors="replace") as fh:
+            with open(f"{proc_root}/{name}/stat", encoding="utf-8", errors="replace") as fh:
                 raw = fh.read()
             # comm (field 2) is parenthesised and may contain spaces or ')': split
             # around the LAST ')' (same rule as adopt._read_ppid).

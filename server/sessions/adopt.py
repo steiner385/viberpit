@@ -104,8 +104,8 @@ def _read_ppid(base: str) -> int:
         return 0
 
 
-def _read_proc(pid: int) -> ProcInfo | None:
-    base = f"/proc/{pid}"
+def _read_proc(pid: int, proc_root: str = "/proc") -> ProcInfo | None:
+    base = f"{proc_root}/{pid}"
     try:
         with open(f"{base}/cmdline", "rb") as fh:
             raw = fh.read()

@@ -21,13 +21,14 @@ from datetime import datetime
 from typing import Any, Literal, NoReturn, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import Path as FastApiPath
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, StrictStr
 
 from viberpit import accounts as _accounts
 from viberpit import gitrepos
 from server.sessions import diff_patch
-from server.auth.identity import human_gate_via, human_sender
+from server.auth.identity import client_node_name, human_gate_via, human_sender
 from server.auth.middleware import current_client_node, current_identity
 from server.library.names import valid_mcp_name
 from server.mcp_scope.servers import configured_server_keys
@@ -59,6 +60,8 @@ from server.sessions import read_state
 from server.sessions import worktree_files
 from server.sessions import flag_settings
 from server.sessions import memory_files
+from server.sessions import dev_servers as dev_server_routes
+from server.sessions.fleet_router import host_tailnet_name
 from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
@@ -2314,6 +2317,67 @@ async def session_memory_file(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     except DaemonError as exc:
         _raise_daemon_outdated_or_reraise(exc, "read memory files")
+
+
+@router.get("/{session_id}/dev-servers")
+async def session_dev_servers(
+    session_id: str,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """``{host, servers}`` (D-18): the dev servers the session started, detected on the
+    daemon that owns it (``server/sessions/dev_servers.py``), each with an ``open`` route
+    for THIS viewer — ``local-link`` when the viewer's tailnet node is the session's host,
+    ``tailnet-link`` for a server bound to every address on a host with a tailnet name,
+    else ``vnc`` (``POST …/dev-servers/{port}/open``). The viewer's node comes from
+    ``tailscale whois`` of the verified peer only; every URL is built here from detected
+    data. Poll every few seconds at most: the daemon caches detection for
+    ``CACHE_TTL_S``. Unknown session 404; an old daemon 409 ``daemon_outdated``."""
+    try:
+        found = await _get_orchestrator(request).dev_servers(session_id)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "detect dev servers")
+    host = str(found.get("host") or "")
+    servers = [dict(s) for s in found.get("servers") or []]
+    if not servers:
+        return {"host": host, "servers": []}
+    # A whois subprocess (and a registry read) only when there is something to route.
+    client_node = await asyncio.to_thread(client_node_name, request)
+    tailnet = (await host_tailnet_name(host)
+               if any(s.get("bind") == "all" for s in servers) else None)
+    for s in servers:
+        s["open"] = dev_server_routes.open_route(s, client_node=client_node, runner=host,
+                                                 tailnet_name=tailnet)
+    return {"host": host, "servers": servers}
+
+
+@router.post("/{session_id}/dev-servers/{port}/open")
+async def open_session_dev_server(
+    session_id: str,
+    request: Request,
+    port: int = FastApiPath(..., ge=dev_server_routes.MIN_PORT, le=65535),
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> Any:
+    """Open a detected dev server in the session's virtual display (D-18 ``vnc`` route),
+    started on demand on the session's host — also for a native session. Person-only
+    (403 ``SESSION_CONTROL_HUMAN_ONLY``); audited ``session.preview_open``. 200
+    ``{ok, port, url}``; 404 ``DEV_SERVER_NOT_DETECTED`` (the owning daemon re-detects:
+    only a port detected NOW opens); 409 ``PREVIEW_SESSION_NOT_LIVE`` /
+    ``PREVIEW_NO_DISPLAY`` / ``PREVIEW_LAUNCH_FAILED``; 404 unknown session; 409
+    ``daemon_outdated``; 422 a port outside 1024–65535."""
+    try:
+        return await session_actions.open_dev_server(
+            _get_orchestrator(request), db, session_id=session_id, port=port,
+            identity=identity, via=human_gate_via(request))
+    except ActionError as exc:
+        return _action_error_response(exc)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "open dev servers")
 
 
 class ForkRequest(BaseModel):

@@ -393,6 +393,10 @@ try:
         mcp_status_enabled: bool = Field(default=True, alias="VIBERPIT_MCP_STATUS_ENABLED")
         # Per-repo MCP server scope + live session toggles (spec 2026-10-09 repo-scope).
         mcp_scope_enabled: bool = Field(default=True, alias="VIBERPIT_MCP_SCOPE_ENABLED")
+        # D-18 dev-server detection (``server/sessions/dev_servers.py``), read on the daemon
+        # that owns the session. Off = every session lists no dev servers, so none opens.
+        dev_server_detect_enabled: bool = Field(
+            default=True, alias="VIBERPIT_DEV_SERVER_DETECT_ENABLED")
         # Plugin marketplace install/update/add (D-16c). Off = those routes 404
         # ``plugin_install_disabled`` and browse is empty; enable/disable, uninstall and
         # marketplace remove stay available.
@@ -788,6 +792,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         mcp_scope_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_MCP_SCOPE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        dev_server_detect_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_DEV_SERVER_DETECT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         plugin_install_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_PLUGIN_INSTALL_ENABLED", "true").lower() in ("1", "true", "yes", "on")

@@ -25,7 +25,7 @@ from server.sessions.orchestrator import DRIVER_SWAP_TIMEOUT_S, ModelBlockedErro
 from server.sessions.rewind import REWIND_CODES, REWIND_CONTROL_TIMEOUT_S, RewindError
 from server.sessions.flag_settings import SETTINGS_CODES, SettingsError
 from server.sessions import worktree_files
-from server.sessions import memory_files
+from server.sessions import dev_servers, memory_files
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
@@ -61,6 +61,10 @@ SPAWN_RPC_TIMEOUT = 90.0
 # ``git ls-files`` — each bounded at 30s by viberpit.worktree_diff — so a slow worktree
 # can outlast the 30s client default. They are reads: timing out only costs a retry.
 WORKTREE_RPC_TIMEOUT = 90.0
+
+# D-18 detection on the owning daemon: one /proc pass and a round of 1 s probes, polled
+# while the Browser tab is open — well under the 30s client default.
+DEV_SERVERS_RPC_TIMEOUT = 10.0
 
 # PR mutations on the owning daemon (D-15): ``merge_pr`` = a 15s live label read + a 60s
 # ``gh pr merge``; ``ready_merge`` = that read + two 60s ``gh`` calls. Over the 30s client
@@ -1083,6 +1087,34 @@ class RemoteOrchestrator:
             if (exc.err_type == "MemoryFileError"
                     and (exc.data or {}).get("code") == memory_files.MEMORY_FILE_UNKNOWN):
                 raise memory_files.MemoryFileError(memory_files.MEMORY_FILE_UNKNOWN) from exc
+            raise
+
+    async def dev_servers(self, session_id) -> dict:
+        """Proxy dev_servers (D-18) to the daemon that owns the session: its processes and
+        its loopback are that host's. An unknown session is re-raised as KeyError; an old
+        daemon's UnknownMethod stays a DaemonError, which the route maps."""
+        try:
+            return await self._client.call("dev_servers", timeout=DEV_SERVERS_RPC_TIMEOUT,
+                                           session_id=session_id)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            raise
+
+    async def open_dev_server(self, session_id, *, port: int) -> dict:
+        """Proxy open_dev_server (D-18) to the daemon that owns the session — its display
+        and its loopback. An unknown session is re-raised as KeyError and a refusal as
+        DevServerError with the envelope's code (known codes only); anything else stays
+        a DaemonError."""
+        try:
+            return await self._client.call("open_dev_server", session_id=session_id,
+                                           port=port)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            code = (exc.data or {}).get("code")
+            if exc.err_type == "DevServerError" and code in dev_servers.DEV_SERVER_CODES:
+                raise dev_servers.DevServerError(code) from exc
             raise
 
     async def fork_session(self, session_id, *, at_turn_id: str | None, mode: str,

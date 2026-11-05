@@ -107,6 +107,8 @@ from server.sessions import session_lease
 from server.sessions import push as push_mod
 from server.sessions import worktree_files
 from server.sessions import memory_files
+from server.sessions import dev_servers as _dev_servers
+from server.sessions.memory_watch import SessionKey
 from server.sessions import flag_settings
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
@@ -21641,6 +21643,12 @@ class SessionOrchestrator:
                 log.warning("pr_branch_monitor.refresh_failed", exc_info=True)
             await asyncio.sleep(60)
 
+    def session_keys(self) -> list[SessionKey]:
+        """What ``memory_watch.match_session`` needs to tell which session a process on
+        this host belongs to: one key per in-memory record. The daemon's memory sampler
+        and dev-server detection (D-18) both match through it."""
+        return [SessionKey(r.id, r.engine_session_id, r.cwd) for r in self.list_sessions()]
+
     def record(self, session_id: str) -> SessionRecord:
         """Return the in-memory SessionRecord for session_id (KeyError if missing)."""
         try:
@@ -22082,6 +22090,70 @@ class SessionOrchestrator:
         return await asyncio.to_thread(memory_files.read_memory_file, path,
                                        loaded=rec.memory_files, cwd=rec.cwd or "",
                                        config_dirs=config_dirs)
+
+    def _dev_server_detector(self) -> _dev_servers.DevServerDetector:
+        # getattr: some harnesses build the orchestrator via __new__.
+        det = getattr(self, "_dev_server_det", None)
+        if det is None:
+            det = self._dev_server_det = _dev_servers.DevServerDetector()
+        return det
+
+    async def _detect_dev_servers(self, session_id: str, *, fresh: bool) -> list[dict]:
+        """This host's detection for one session (``dev_servers`` module rules). Matched
+        against the LIVE sessions only — a closed record has no process tree, and its
+        cwd must not make a live session's cwd look shared — plus the session asked
+        about, whose escaped servers can outlive its driver."""
+        from server.config import get_settings
+        if not get_settings().dev_server_detect_enabled:
+            return []
+        keys = [k for k in self.session_keys()
+                if k.session_id in self._drivers or k.session_id == session_id]
+
+        async def bg_commands() -> list[str]:
+            return [str(t.input.get("command")) for t in await self._open_background_work(session_id)
+                    if isinstance(t.input.get("command"), str)]
+        return await self._dev_server_detector().detect(session_id, keys,
+                                                        bg_commands=bg_commands, fresh=fresh)
+
+    async def dev_servers(self, session_id: str) -> dict:
+        """``{host, servers}``: the dev servers this session started, detected on this —
+        the owning — host (D-18), and the host's fleet name, which the edge compares
+        with the viewer's tailnet node to route "Open". ``KeyError`` for an unknown
+        session. Cached for a few seconds per session, so polling stays cheap."""
+        self.record(session_id)
+        return {"host": self_host_name(),
+                "servers": await self._detect_dev_servers(session_id, fresh=False)}
+
+    async def open_dev_server(self, session_id: str, *, port: int) -> dict:
+        """Open a detected dev server in the session's virtual display (D-18 "vnc").
+
+        Re-detects (never the cache) and refuses a port that is not detected now
+        (``DEV_SERVER_NOT_DETECTED``), so the URL can only ever be
+        ``http://<detected address>:<port>/``. The display is started on demand, also for
+        a native session (preview only: ``display_mode`` is unchanged), and only while
+        the session has a live driver (``PREVIEW_SESSION_NOT_LIVE``): the driver teardown
+        is what stops a session's display, so a display started without one would leak.
+        Opens through ``X11Manager.launch_browser`` — the virtual launcher — because
+        ``open_browser`` would send a native session's window to the host's desktop."""
+        self.record(session_id)
+        servers = await self._detect_dev_servers(session_id, fresh=True)
+        server = next((s for s in servers if s["port"] == port), None)
+        if server is None:
+            raise _dev_servers.DevServerError(_dev_servers.DEV_SERVER_NOT_DETECTED)
+        if session_id not in self._drivers:
+            raise _dev_servers.DevServerError(_dev_servers.PREVIEW_SESSION_NOT_LIVE)
+        x11 = self._x11
+        if x11 is None or await x11.start_display(session_id) is None:
+            raise _dev_servers.DevServerError(_dev_servers.PREVIEW_NO_DISPLAY)
+        if session_id not in self._drivers:
+            # Torn down while the display started: its teardown already ran, so this
+            # display is ours to reap.
+            await x11.stop_display(session_id)
+            raise _dev_servers.DevServerError(_dev_servers.PREVIEW_SESSION_NOT_LIVE)
+        url = _dev_servers.server_url(server)
+        if not await x11.launch_browser(session_id, url):
+            raise _dev_servers.DevServerError(_dev_servers.PREVIEW_LAUNCH_FAILED)
+        return {"ok": True, "port": port, "url": url}
 
     async def mcp_reconnect(self, session_id: str, server: str) -> list[dict]:
         """Reconnect one MCP server in a live session. ``LookupError`` when not live,

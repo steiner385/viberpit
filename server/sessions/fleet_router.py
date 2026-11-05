@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 DEFAULT_HOST_NAME = "local"
 
 __all__ = ["FleetRouter", "UnknownHost", "NoHostAvailable", "NoEngineHostAvailable",
-           "ensure_default_host", "DEFAULT_HOST_NAME"]
+           "ensure_default_host", "DEFAULT_HOST_NAME", "host_tailnet_name"]
 
 
 class UnknownHost(Exception):
@@ -236,6 +236,33 @@ def _derive_host_name(endpoint_str: str) -> str:
     except Exception:
         pass
     return DEFAULT_HOST_NAME
+
+
+async def host_tailnet_name(name: str) -> str | None:
+    """The name a tailnet device reaches fleet host *name* by: the host part of its
+    registered daemon endpoint (``https://rocky.tail0dd570.ts.net:9443`` →
+    ``rocky.tail0dd570.ts.net``), matched case-insensitively like the display router.
+    None for a unix-socket or loopback endpoint, an unknown host, or a DB error — the
+    caller then offers no tailnet route (D-18)."""
+    from server.ipc.paths import _LOOPBACK, parse_endpoint
+    try:
+        async with db_session() as db:
+            rows = (await db.execute(sa_select(Host.name, Host.endpoint))).all()
+    except Exception:
+        log.debug("fleet: host registry read failed for %s", name, exc_info=True)
+        return None
+    want = name.strip().lower()
+    for host_name, endpoint in rows:
+        if host_name.strip().lower() != want:
+            continue
+        try:
+            ep = parse_endpoint(endpoint)
+        except ValueError:
+            return None
+        if ep.is_tcp and ep.host and ep.host not in _LOOPBACK:
+            return ep.host
+        return None
+    return None
 
 
 async def ensure_default_host(endpoint: str) -> str | None:
