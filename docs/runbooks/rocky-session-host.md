@@ -221,10 +221,14 @@ remote, in a `runners` phase that runs before the edge restart (`server/deploy/r
 
 1. `snapshot_deploy` on the host's daemon (best-effort).
 2. Bring its checkout to the target: `ssh <ssh_host> git -C <repo_path> fetch --quiet origin`,
-   `merge --ff-only <sha>`, pip (`<repo>/.venv/bin/python -m pip install -e '<repo>[server]'`)
-   only if `pyproject.toml`/`uv.lock` changed, then `sync`. dobby's own daemon uses the
+   a read-only checkout preflight (HEAD must be on `master` with no commits outside the
+   target; otherwise the runner fails at step `checkout`, naming the branch and the local
+   commits and saying whether their content is already in the target), `merge --ff-only
+   <sha>`, pip (`<repo>/.venv/bin/python -m pip install -e '<repo>[server]'`) only if
+   `pyproject.toml`/`uv.lock` changed, then `sync`. dobby's own daemon uses the
    controller's checkout, already updated.
-3. Only when the diff was daemon-changing: drain (same caps as before), then
+3. Only when daemon code changed — in the deploy's diff, or between the sha this runner's
+   daemon is *running* (`/info.sha`) and the target: drain (same caps as before), then
    `sudo -n systemctl restart viberpit-daemon.service`.
 4. Verify `/info` reports the target (`checkoutSha`, and `sha` after a restart); `restore_deploy`.
 
@@ -234,7 +238,11 @@ by the version-skew or protocol gate is still deployed to — that is what un-fe
 runner that fails is
 named in the deploy error; the edge still lands, and the failed runner is **fenced from
 dispatch** by the probe's version-skew gate (`Fleet` shows `version skew: …`) until you fix
-it — the Fleet "Update" button re-runs the same sequence at the deployed sha.
+it — the Fleet "Update" button re-runs the same sequence at the deployed sha. Re-running
+the deploy also works once the edge is current (Settings › Deploy offers **Retry runners**):
+a deploy with nothing new for the edge still finds every runner whose daemon or checkout
+is behind the deployed sha and runs it through the lifecycle above, restarting it (with
+snapshot and restore) when its own lag touched daemon code.
 
 A runner fenced by the skew gate is still a deploy **target** — reachable, just on the wrong
 commit — so the next deploy tries it again. To clear one by hand without a deploy:

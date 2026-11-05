@@ -11,8 +11,21 @@ DOBBY = R.RunnerTarget(name="dobby", endpoint="https://dobby:9443", enabled=True
                        ssh_host=None, repo_path=None)
 
 
+def _checkout_probe(argv):
+    """Answer the checkout preflight's read-only git probes (#3289) as a clean checkout
+    on RUNNER_BRANCH with no local commits; None for every other command. Like the unit
+    `show` probe, these are not recorded: the recorded argv is the WRITE sequence."""
+    if "symbolic-ref" in argv:
+        return subprocess.CompletedProcess(argv, 0, stdout="master\n", stderr="")
+    if "log" in argv and any(a.startswith("--format=") for a in argv):
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    return None
+
+
 def _recorder(calls, fail_on=None):
     def run(argv, **kw):
+        if (probe := _checkout_probe(argv)) is not None:
+            return probe
         if "show" in argv:
             return subprocess.CompletedProcess(argv, 0, stdout="LoadState=loaded\n", stderr="")
         calls.append(list(argv))
@@ -267,6 +280,8 @@ def test_failed_runner_does_not_stop_the_others_and_concurrency_is_capped():
         return {"sha": "abc1234", "checkoutSha": "abc1234"}
 
     def run(argv, **kw):
+        if (probe := _checkout_probe(argv)) is not None:
+            return probe
         # every remote step of h2 fails at merge; the others succeed
         rc = 1 if ("h2" in argv and "--ff-only" in argv) else 0
         return subprocess.CompletedProcess(argv, rc, stdout="", stderr="boom")
@@ -295,6 +310,8 @@ def test_rewind_only_moved_hosts_and_uses_reset_hard():
     timeline: list = []
 
     def run(argv, **kw):
+        if (probe := _checkout_probe(argv)) is not None:
+            return probe
         timeline.append(("run", " ".join(argv)))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
@@ -459,6 +476,8 @@ def test_close_events_precedes_the_restart():
     timeline: list = []
 
     def run(argv, **kw):
+        if (probe := _checkout_probe(argv)) is not None:
+            return probe
         timeline.append(("run", argv[-1]))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
@@ -532,6 +551,8 @@ def _merge_recorder(calls, *, merge_stderr, fail_merges=1):
     seen = {"merge": 0}
 
     def run(argv, **kw):
+        if (probe := _checkout_probe(argv)) is not None:
+            return probe
         if "show" in argv:
             return subprocess.CompletedProcess(argv, 0, stdout="LoadState=loaded\n", stderr="")
         calls.append(list(argv))
@@ -614,6 +635,8 @@ def _untracked_merge_recorder(calls, *, fail_merges=1, removed=("web/dist/index.
     seen = {"merge": 0}
 
     def run(argv, **kw):
+        if (probe := _checkout_probe(argv)) is not None:
+            return probe
         if "show" in argv:
             return subprocess.CompletedProcess(argv, 0, stdout="LoadState=loaded\n", stderr="")
         calls.append(list(argv))
@@ -784,3 +807,216 @@ def test_restore_that_never_answers_names_the_unconfirmed_sessions():
     assert st.restore["restored"] == [] and st.restore["failed"] == []
     assert "after 3 attempts" in st.restore["error"]
     assert "DaemonTimeout" in st.restore["error"]
+
+
+# ---- checkout preflight (#3289) ---------------------------------------------------
+
+def _preflight_runner(calls, *, branch="master", branch_rc=0, local_log="", merged_rc=0):
+    """A remote runner whose checkout answers the preflight probes as given."""
+    def run(argv, **kw):
+        if "show" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="LoadState=loaded\n", stderr="")
+        calls.append(list(argv))
+        if "symbolic-ref" in argv:
+            return subprocess.CompletedProcess(argv, branch_rc, stdout=branch + "\n", stderr="")
+        if "log" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout=local_log, stderr="")
+        if "bash" in argv:
+            return subprocess.CompletedProcess(argv, merged_rc, stdout="", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    return R.RunnerDeploy(ROCKY, local_name="dobby", run=run,
+                          client_factory=lambda e: FakeClient([]),
+                          fetch_info=_info("abc1234"), verify_interval_s=0)
+
+
+def _deploy(rd, **kw):
+    kw.setdefault("daemon_changed", True)
+    return asyncio.run(rd.deploy(target_sha="abc1234", deps_changed=False,
+                                 local_daemon_enabled=True, **kw))
+
+
+def test_clean_master_checkout_passes_preflight_with_read_only_probes():
+    calls: list = []
+    st = _deploy(_preflight_runner(calls))
+    assert st.state == "done"
+    repo = ROCKY.repo_path
+    assert calls[1] == SSH + ["git", "-C", repo, "symbolic-ref", "--short", "-q", "HEAD"]
+    assert calls[2] == SSH + ["git", "-C", repo, "log", "--format=%h%x09%s", "abc1234..HEAD"]
+    assert calls[3] == SSH + ["git", "-C", repo, "merge", "--ff-only", "abc1234"]
+    assert not any("bash" in c for c in calls), "no local commits: no content check"
+
+
+def test_checkout_on_a_feature_branch_fails_before_the_merge_naming_the_branch():
+    """2026-11-04: rocky sat on the PR's own branch holding its unsquashed commit, and the
+    operator saw git's `merge --no-ff` / `rebase` hints — both wrong for a runner."""
+    calls: list = []
+    st = _deploy(_preflight_runner(
+        calls, branch="fix/mcp-refresh-configured-client-id",
+        local_log="f88b5da\tfix(mcp): refresh with the configured clientId\n"))
+    assert st.state == "failed" and st.step == "checkout"
+    assert "on branch 'fix/mcp-refresh-configured-client-id', not master" in st.error
+    assert "f88b5da fix(mcp)" in st.error
+    assert "already in abc1234" in st.error and "safe to move" in st.error
+    assert "hint:" not in st.error and "--no-ff" not in st.error
+    assert not any("--ff-only" in c for c in calls), "the checkout never moved"
+    assert not st.moved and not st.restarted
+
+
+def test_local_commits_that_differ_from_the_target_say_so():
+    calls: list = []
+    st = _deploy(_preflight_runner(calls, local_log="1111111\twip\n", merged_rc=123))
+    assert st.state == "failed" and st.step == "checkout"
+    assert "1 local commit(s) not in abc1234" in st.error
+    assert "differ from abc1234" in st.error and "pushed" in st.error
+    assert "not master" not in st.error, "on master: only the commits are the problem"
+    bash = next(c for c in calls if "bash" in c)
+    script = bash[-1]
+    assert "diff --name-only -z abc1234...HEAD" in script
+    assert f"xargs -0 -r git -C {ROCKY.repo_path} diff --quiet HEAD abc1234 --" in script
+
+
+def test_detached_head_is_refused():
+    calls: list = []
+    st = _deploy(_preflight_runner(calls, branch="", branch_rc=1))
+    assert st.state == "failed" and "detached" in st.error
+    assert not any("--ff-only" in c for c in calls)
+
+
+def test_preflight_lists_at_most_a_few_commits():
+    calls: list = []
+    log = "".join(f"{i:07d}\tc{i}\n" for i in range(8))
+    st = _deploy(_preflight_runner(calls, local_log=log))
+    assert "8 local commit(s)" in st.error and "+3 more" in st.error
+    assert "0000007" not in st.error
+
+
+# ---- per-runner restart from the runner's own lag (#3290) ------------------------
+
+def _lagging_runner(rpc, calls, *, process="0dd0000", lag=("server/sessions/orchestrator.py",),
+                    seen=None):
+    """A runner whose process reports *process* until it is restarted."""
+    state = {"restarted": False}
+
+    def run(argv, **kw):
+        if (probe := _checkout_probe(argv)) is not None:
+            return probe
+        if "show" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="LoadState=loaded\n", stderr="")
+        calls.append(list(argv))
+        if "systemctl" in argv:
+            state["restarted"] = True
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    async def fetch(endpoint):
+        return {"sha": "abc1234" if state["restarted"] else process, "checkoutSha": "abc1234"}
+
+    def lag_diff(sha):
+        if seen is not None:
+            seen.append(sha)
+        return None if lag is None else list(lag)
+
+    rd = R.RunnerDeploy(ROCKY, local_name="dobby", run=run,
+                        client_factory=lambda e: FakeClient(rpc), fetch_info=fetch,
+                        verify_interval_s=0)
+    return rd, lag_diff
+
+
+def test_edge_only_deploy_restarts_a_runner_whose_process_lags_in_daemon_code():
+    """rocky failed 729b166's merge before its restart; the next deploy's EDGE diff was
+    edge-only, so it never restarted rocky. Its own lag decides now."""
+    rpc: list = []
+    calls: list = []
+    seen: list = []
+    rd, lag_diff = _lagging_runner(rpc, calls, seen=seen)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=False, deps_changed=False,
+                               local_daemon_enabled=True, lag_diff=lag_diff))
+    assert st.state == "done" and st.restarted
+    assert seen == ["0dd0000"], "the diff runs from the runner's PROCESS sha"
+    assert any("systemctl" in c for c in calls)
+    assert "begin_drain" in rpc and "restore_deploy" in rpc, "a normal drain/restore restart"
+    assert st.sha == "abc1234", "verify required the process, not just the checkout"
+
+
+def test_lagging_runner_with_only_edge_changes_is_not_restarted():
+    rpc: list = []
+    calls: list = []
+    rd, lag_diff = _lagging_runner(rpc, calls, lag=("web/src/App.tsx",))
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=False, deps_changed=False,
+                               local_daemon_enabled=True, lag_diff=lag_diff))
+    assert st.state == "done" and not st.restarted
+    assert not any("systemctl" in c for c in calls) and "begin_drain" not in rpc
+
+
+def test_current_runner_is_never_diffed_or_restarted():
+    rpc: list = []
+    calls: list = []
+    seen: list = []
+    rd, lag_diff = _lagging_runner(rpc, calls, process="abc1234", seen=seen)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=False, deps_changed=False,
+                               local_daemon_enabled=True, lag_diff=lag_diff))
+    assert st.state == "done" and not st.restarted and seen == []
+
+
+def test_uncomputable_lag_fails_safe_to_restart_and_reinstall():
+    rpc: list = []
+    calls: list = []
+    rd, lag_diff = _lagging_runner(rpc, calls, lag=None)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=False, deps_changed=False,
+                               local_daemon_enabled=True, lag_diff=lag_diff))
+    assert st.state == "done" and st.restarted
+    assert any("pip" in c for c in calls), "an unknown diff may have changed the lockfile"
+
+
+def test_a_process_sha_that_is_not_a_commit_is_left_alone_with_a_warning():
+    rpc: list = []
+    calls: list = []
+    seen: list = []
+    rd, lag_diff = _lagging_runner(rpc, calls, process="unknown", seen=seen)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=False, deps_changed=False,
+                               local_daemon_enabled=True, lag_diff=lag_diff))
+    assert st.state == "done" and not st.restarted and seen == []
+    assert any("'unknown'" in w for w in st.warnings)
+
+
+def test_rewind_restarts_a_runner_the_deploy_lag_restarted():
+    calls: list = []
+    rpc: list = []
+    res = {"rocky": R.HostProgress(state="done", moved=True, restarted=True)}
+    asyncio.run(R.rewind_runners([ROCKY], res, sha="01d0000", local_name="dobby",
+                                 daemon_changed=False,
+                                 run=_recorder(calls), client_factory=lambda e: FakeClient(rpc),
+                                 fetch_info=_info("01d0000"), verify_interval_s=0))
+    assert any("systemctl" in " ".join(c) for c in calls)
+    assert "begin_drain" in rpc
+
+
+def test_find_lagging_runners_compares_process_and_checkout():
+    hosts = {
+        "current": {"sha": "abc1234", "checkoutSha": "abc1234"},
+        "old-process": {"sha": "old0000", "checkoutSha": "abc1234"},
+        "old-checkout": {"sha": "abc1234", "checkoutSha": "old0000"},
+        "no-sha": {},
+    }
+
+    async def fetch(endpoint):
+        if endpoint == "https://down":
+            raise ConnectionError("down")
+        return hosts[endpoint.removeprefix("https://")]
+
+    targets = [R.RunnerTarget(name=n, endpoint=f"https://{n}", enabled=True, healthy=True,
+                              ssh_host=n, repo_path="/srv/cc") for n in [*hosts, "down"]]
+    targets.append(R.RunnerTarget(name="off", endpoint="https://off", enabled=True,
+                                  healthy=False, ssh_host="off", repo_path="/srv/cc",
+                                  last_error="ConnectError: refused"))
+    lag = asyncio.run(R.find_lagging_runners(targets, target_sha="abc1234567",
+                                             local_name="dobby", local_daemon_enabled=True,
+                                             fetch_info=fetch))
+    assert sorted(t.name for t in lag) == ["old-checkout", "old-process"]
+
+
+def test_find_lagging_runners_skips_the_local_runner_when_its_daemon_is_disabled():
+    async def fetch(endpoint):
+        return {"sha": "old0000"}
+    lag = asyncio.run(R.find_lagging_runners([DOBBY], target_sha="abc1234", local_name="dobby",
+                                             local_daemon_enabled=False, fetch_info=fetch))
+    assert lag == []

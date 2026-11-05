@@ -35,6 +35,12 @@ export interface DeployState {
   /** Why Deploy is unavailable, or how much a partial deploy covers. Empty when plainly deployable. */
   reason: string
   showError: boolean
+  /**
+   * The last deploy failed only on a RUNNER and nothing is pending: the edge landed (a
+   * runner failure never rolls back), so a runner is still on older code and a re-run
+   * finishes it. The controller resyncs lagging runners on a no-op deploy.
+   */
+  canRetryRunners: boolean
   error: string | null
   /** Sessions autopilot is still retrying. */
   failed: string[]
@@ -74,8 +80,12 @@ export function deriveDeployState(
   // failure rolls back to the previous version, so once the checkout is caught up or ahead of origin
   // (behind=false) the error is pure history — hide it. Session-resume failures are independent (a
   // successful daemon deploy leaves behind=false yet may have lost sessions) and always surface.
-  const showError = !running && !preflightStale && behind && !!deploy?.error
+  // The exception is a RUNNERS-phase failure: it is never rolled back (the edge lands
+  // and stays), so behind=false while a runner still runs older code — not history.
+  const runnersFailed = !running && phases.runners === 'failed' && !!deploy?.error
+  const showError = !running && !preflightStale && (behind || runnersFailed) && !!deploy?.error
   const hasFailure = showError || (!running && unresolved > 0)
+  const canRetryRunners = runnersFailed && !behind
 
   const canDeploy = behind && !running && ci === 'green'
   const reason = running ? 'deploying…'
@@ -85,7 +95,7 @@ export function deriveDeployState(
   return {
     behind, running, commits, count, ci, tipCi, partial, deployableCount,
     canDeploy, deployTarget: partial ? deployableSha : undefined, reason,
-    showError, error: deploy?.error ?? null, failed, gaveUp, hasFailure,
+    showError, canRetryRunners, error: deploy?.error ?? null, failed, gaveUp, hasFailure,
     idle: !behind && !hasFailure,
   }
 }

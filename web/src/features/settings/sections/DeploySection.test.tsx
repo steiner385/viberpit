@@ -138,6 +138,28 @@ describe('DeploySection', () => {
     expect(screen.getByRole('group', { name: 'Pending changes' })).toHaveClass('min-w-0')
   })
 
+  // A runner failure is never rolled back: the edge lands, so nothing is pending, yet a
+  // runner is still on older code. A re-run resyncs it (#3290), so offer one.
+  it('offers Retry runners after a deploy that failed only on a runner', () => {
+    const start = mockHooks({ behind: false, commits: [] }, {
+      running: false, phases: { runners: 'failed', restart: 'done' }, warnings: [],
+      error: 'runners: rocky failed at checkout: runner checkout is on branch x',
+    })
+    render(<DeploySection />)
+    expect(screen.getByText(/rocky failed at checkout/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry runners' }))
+    expect(start).toHaveBeenCalledWith(undefined)
+  })
+
+  it('offers no Retry runners for a rolled-back edge failure', () => {
+    mockHooks({ behind: false, commits: [] }, {
+      running: false, phases: { restart: 'failed' }, warnings: [],
+      error: 'restart: health gate failed',
+    })
+    render(<DeploySection />)
+    expect(screen.queryByRole('button', { name: 'Retry runners' })).not.toBeInTheDocument()
+  })
+
   it('has no accessibility violations', async () => {
     mockHooks({ behind: true, commits: COMMITS, ci: 'green' }, { running: false })
     const { container } = render(<DeploySection />)

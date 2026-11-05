@@ -109,6 +109,14 @@ describe('DeployPanel', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  it('keeps showing a runner failure once nothing is pending — it was never rolled back', () => {
+    mockHooks({ behind: false, commits: [], ci: 'green' },
+              { running: false, phases: { runners: 'failed', restart: 'done' }, warnings: [],
+                error: 'runners: rocky failed at merge: boom' })
+    render(<DeployPanel />)
+    expect(screen.getByText(/rocky failed at merge/i)).toBeInTheDocument()
+  })
+
   it('keeps showing a past deploy error while commits still await deploy', () => {
     mockHooks(ONE_PENDING,
               { running: false, phases: { restart: 'failed' }, warnings: [], error: 'restart: health gate failed' })

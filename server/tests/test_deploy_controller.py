@@ -70,10 +70,12 @@ def make_steps(*, ci="green", healthy=True, changed=None):
     return mod, calls
 
 
-def make_runners(*, targets=None, outcome="done", moved=True, restore=None):
-    """Fake runners module: records the fan-out call and returns the same state per host."""
-    calls = SimpleNamespace(deploy_kwargs=None, rewound=None, loaded=0,
-                            rewind_daemon_changed=None)
+def make_runners(*, targets=None, outcome="done", moved=True, restore=None, lagging=(),
+                 restarted=False):
+    """Fake runners module: records the fan-out call and returns the same state per host.
+    *lagging* names the hosts ``find_lagging_runners`` reports behind the target."""
+    calls = SimpleNamespace(deploy_kwargs=None, deploy_targets=None, rewound=None, loaded=0,
+                            rewind_daemon_changed=None, lag_checked=None)
     mod = SimpleNamespace()
     hosts = targets if targets is not None else [
         RunnerTarget(name="rocky", endpoint="https://rocky:9443", enabled=True, healthy=True,
@@ -83,15 +85,21 @@ def make_runners(*, targets=None, outcome="done", moved=True, restore=None):
         calls.loaded += 1
         return hosts
 
+    async def find_lagging(targets, *, target_sha, **kw):
+        calls.lag_checked = target_sha
+        return [t for t in targets if t.name in lagging]
+
     async def deploy(targets, *, on_progress=None, **kw):
         calls.deploy_kwargs = kw
+        calls.deploy_targets = [t.name for t in targets]
         out = {}
         for t in targets:
             st = outcome(t.name) if callable(outcome) else outcome
             p = HostProgress(state=st, step=None if st == "done" else "merge",
                              error=None if st == "done" else "merge failed (rc=1): boom",
                              sha=kw["target_sha"] if st == "done" else None, moved=moved,
-                             restore=(restore(t.name) if callable(restore) else restore))
+                             restore=(restore(t.name) if callable(restore) else restore),
+                             restarted=restarted)
             if on_progress:
                 on_progress(t.name, p)
             out[t.name] = p
@@ -104,6 +112,7 @@ def make_runners(*, targets=None, outcome="done", moved=True, restore=None):
     mod.load_runner_targets = load
     mod.deploy_runners = deploy
     mod.rewind_runners = rewind
+    mod.find_lagging_runners = find_lagging
     mod.FAILED_STATES = frozenset({"failed", "unconfigured"})
     return mod, calls
 
@@ -1221,3 +1230,105 @@ async def test_an_alert_that_raises_never_fails_the_deploy():
         raise RuntimeError("push down")
     st = await make_controller(g, s, runners=(r, rc), notify_fn=boom).deploy_once()
     assert st.error is None and st.phases["resume"] == PhaseState.DONE.value
+
+
+# ---- a runner left behind by an earlier deploy (#3290) -----------------------------
+# The deploy's classification is the EDGE's diff. After a deploy whose runner failed
+# before its restart, the edge is current, so a re-run used to return at once and the
+# lagging daemon could only be finished by a hand-run systemctl restart.
+
+@pytest.mark.asyncio
+async def test_rerun_with_a_current_edge_resyncs_only_the_lagging_runners():
+    g = FakeGit("same", "same", [])
+    s, sc = make_steps()
+    targets = [RunnerTarget(name=n, endpoint=f"https://{n}", enabled=True, healthy=True,
+                            ssh_host=n, repo_path="/srv/cc") for n in ("rocky", "sunny")]
+    r, rc = make_runners(targets=targets, lagging=("rocky",), restarted=True,
+                         restore={"restored": ["s1"], "failed": []})
+    seen: list = []
+    c = make_controller(g, s, runners=(r, rc),
+                        changed_files_fn=lambda repo, a, b: seen.append((a, b)) or [])
+    st = await c.deploy_once()
+    assert st.error is None
+    assert rc.lag_checked == "same"
+    assert rc.deploy_targets == ["rocky"]
+    kw = rc.deploy_kwargs
+    assert kw["target_sha"] == "same" and kw["daemon_changed"] is False
+    kw["lag_diff"]("0dd0000")
+    assert seen == [("0dd0000", "same")], "the runner's lag is diffed from its process sha"
+    assert st.hosts["rocky"]["state"] == "done" and "sunny" not in st.hosts
+    assert st.restore["restored"] == ["s1"]
+    assert all(v == PhaseState.DONE.value for v in st.phases.values())
+    assert set(st.phases) == {p.value for p in Phase}
+    assert sc.restarted == [], "the edge is current: it is not restarted"
+    assert st.daemon_restarted_at, "a resync restart starts the cooldown like any other"
+
+
+@pytest.mark.asyncio
+async def test_rerun_with_a_current_edge_and_current_runners_touches_nothing():
+    g = FakeGit("same", "same", [])
+    s, _ = make_steps()
+    r, rc = make_runners()
+    c = make_controller(g, s, runners=(r, rc))
+    st = await c.deploy_once()
+    assert st.error is None and rc.deploy_kwargs is None
+    assert rc.lag_checked == "same"
+    assert st.phases["runners"] == PhaseState.DONE.value
+    assert st.daemon_restarted_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_resync_that_fails_reports_the_runner_and_never_rolls_back():
+    g = FakeGit("same", "same", [])
+    s, sc = make_steps()
+    r, rc = make_runners(outcome="failed", lagging=("rocky",))
+    c = make_controller(g, s, runners=(r, rc))
+    st = await c.deploy_once()
+    assert st.phases["runners"] == PhaseState.FAILED.value
+    assert st.error and st.error.startswith("runners: rocky failed at merge")
+    assert sc.rolled_back is False
+
+
+@pytest.mark.asyncio
+async def test_a_resync_is_not_held_by_the_daemon_restart_cooldown(monkeypatch):
+    """The cooldown keeps the SAME sessions from being interrupted twice; a lagging daemon
+    is one the last deploy did not restart."""
+    monkeypatch.setenv(_COOLDOWN_ENV, "600")
+    clock = _Clock()
+    g = FakeGit("same", "same", [])
+    s, _ = make_steps()
+    r, rc = make_runners(lagging=("rocky",), restarted=True)
+    c = make_controller(g, s, runners=(r, rc), clock=clock)
+    c.status.daemon_restarted_at = clock.now.isoformat()
+    st = await c.deploy_once()
+    assert st.error is None and rc.deploy_targets == ["rocky"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_lag_check_is_a_warning_not_a_failure():
+    g = FakeGit("same", "same", [])
+    s, _ = make_steps()
+    r, rc = make_runners()
+
+    async def boom(*a, **k):
+        raise RuntimeError("db down")
+    r.load_runner_targets = boom
+    c = make_controller(g, s, runners=(r, rc))
+    st = await c.deploy_once()
+    assert st.error is None and any("lag check failed" in w for w in st.warnings)
+    assert st.phases["runners"] == PhaseState.DONE.value
+
+
+@pytest.mark.asyncio
+async def test_a_full_deploy_hands_the_runners_a_lag_diff_against_the_target():
+    g = FakeGit("old0000000", "new1111111", _EDGE_DIFF)
+    s, _ = make_steps(changed=_EDGE_DIFF)
+    r, rc = make_runners(restarted=True)
+    seen: list = []
+    c = make_controller(g, s, runners=(r, rc),
+                        changed_files_fn=lambda repo, a, b: seen.append((a, b)) or list(_EDGE_DIFF))
+    st = await c.deploy_once()
+    assert st.error is None and rc.deploy_kwargs["daemon_changed"] is False
+    rc.deploy_kwargs["lag_diff"]("0dd0000")
+    assert seen[-1] == ("0dd0000", "new1111111")
+    assert st.daemon_restarted_at, "a runner restarted for its own lag counts as a restart"
