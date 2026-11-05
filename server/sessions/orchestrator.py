@@ -24761,7 +24761,8 @@ class SessionOrchestrator:
         if d is None:
             return {"name": "plan", "render": "notice",
                     "data": {"text": "This session isn't live — open it and try again."}}
-        in_plan = getattr(d, "mode", None) == "plan"
+        # Codex defers a mid-turn switch; judge by where the session is heading.
+        in_plan = (getattr(d, "requested_mode", None) or getattr(d, "mode", None)) == "plan"
         on = (not in_plan) if arg == "" else arg == "on"
         if on == in_plan:
             # Nothing to change. `off` outside plan must NOT send `default`: the drivers
