@@ -900,6 +900,7 @@ def real_x11(orch, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from server.sessions import x11manager
     from server.sessions.x11manager import DisplayAllocator, X11Manager
     browsers: list[_Browser] = []
+    argvs: list[tuple[str, ...]] = []
 
     def kill_tree(pid, **_kw):
         for b in browsers:
@@ -915,6 +916,7 @@ def real_x11(orch, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             proc.exit()
         if argv[0] == "chromium":
             browsers.append(proc)
+            argvs.append(argv)
             await asyncio.sleep(0)  # a real spawn yields: lets concurrent Opens interleave
         return proc
     mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24", max_browsers=6,
@@ -922,7 +924,7 @@ def real_x11(orch, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                      vnc_ready_check=lambda p: True, run_dir=str(tmp_path),
                      vnc_idle_timeout_s=0.05)
     orch.o._x11 = mgr
-    return SimpleNamespace(o=orch.o, mgr=mgr, browsers=browsers)
+    return SimpleNamespace(o=orch.o, mgr=mgr, browsers=browsers, argvs=argvs)
 
 
 def _live(browsers: list[_Browser]) -> list[_Browser]:
@@ -944,6 +946,16 @@ async def test_ten_opens_keep_one_live_preview_chromium(real_x11) -> None:
     real_x11.browsers[-1].exit()
     await asyncio.sleep(0.2)
     assert real_x11.mgr.display_for(SID_A) is not None
+
+
+@pytest.mark.asyncio
+async def test_open_goes_through_the_hardened_launcher(real_x11) -> None:
+    """After the security PR (#3324): the preview launch is X11Manager.launch_browser,
+    so the URL is is_browser_url-checked and passed after ``--`` (never a switch)."""
+    real_x11.o._records[SID_A].display_mode = DISPLAY_VIRTUAL
+    await real_x11.mgr.start_display(SID_A)
+    assert (await real_x11.o.open_dev_server(SID_A, port=5173))["ok"] is True
+    assert real_x11.argvs[-1][-2:] == ("--", "http://127.0.0.1:5173/")
 
 
 @pytest.mark.asyncio
@@ -1384,6 +1396,23 @@ def test_post_open_maps_refusals_at_info(error, status, code, caplog) -> None:
     assert not [e for e in events if e[0] == "session.preview_open"]
     assert not [rec for rec in caplog.records
                 if rec.levelno >= logging.WARNING and "preview" in rec.getMessage()]
+
+
+def test_post_open_cross_origin_is_refused_by_the_origin_guard() -> None:
+    """The body-less mutating POST is covered by the Origin allowlist (#3324): a
+    cross-origin page cannot make the session's host open a browser."""
+    from server.auth import origin as og
+    client, fake = _route_client()
+    with patch.dict(os.environ, _ENV), client:
+        evil = client.post(f"/api/sessions/{SID}/dev-servers/5173/open",
+                           headers={**_H, "Origin": "https://evil.example"})
+        cross = client.post(f"/api/sessions/{SID}/dev-servers/5173/open",
+                            headers={**_H, "Sec-Fetch-Site": "cross-site"})
+        native = client.post(f"/api/sessions/{SID}/dev-servers/5173/open", headers=_H)
+    assert evil.status_code == 403 and evil.json()["error"]["code"] == og.REFUSAL_CODE
+    assert cross.status_code == 403
+    assert native.status_code == 200  # no Origin (native client) reaches the route
+    assert fake.dev_calls == [("open_dev_server", SID, 5173)]  # only the native one
 
 
 def test_post_open_rejects_a_non_port_path() -> None:
