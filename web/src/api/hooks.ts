@@ -19,7 +19,7 @@ import type {
   McpStatusRow, McpServerState, Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
   DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, CheckInsights,
   DaemonHealth, DeviceCodeState, McpAuthState, AgentEngine, AgentCapabilities, EngineOffer,
-  LibraryPluginDetail, LibraryPluginsResponse, LibrarySkill, LibraryCommand,
+  LibrarySkill, LibraryCommand, PluginBrowseQuery,
   LibraryMcpServer, McpServerConfig, LibraryContent, MemoryFileContent, UserMemory, UserMemorySaved,
   SessionPreset, PromptTemplate, PermissionProfile, AssessResponse, RuleWire,
   PrDetail, PrMutationResult, PrArmResult,
@@ -119,6 +119,8 @@ export const QK = {
   openaiReauthStatus: (name: string) => ['openai-reauth-status', name] as const,
   libraryPlugins: ['library', 'plugins'] as const,
   libraryPlugin: (id: string) => ['library', 'plugin', id] as const,
+  libraryPluginBrowse: (q: PluginBrowseQuery) =>
+    ['library', 'browse', q.q, q.marketplace, q.offset, q.limit] as const,
   librarySkills: ['library', 'skills'] as const,
   libraryCommands: ['library', 'commands'] as const,
   libraryMcp: ['library', 'mcp'] as const,
@@ -1883,38 +1885,8 @@ export function useConsolidate() {
 
 // --- Library (plugins / skills / commands / MCP) ---
 
-export function useLibraryPlugins() {
-  return useQuery<LibraryPluginsResponse>({
-    queryKey: QK.libraryPlugins,
-    queryFn: () => api.get<LibraryPluginsResponse>('/library/plugins'),
-    staleTime: 30_000,
-  })
-}
-
-export function useLibraryPluginDetail(id: string, enabled: boolean) {
-  return useQuery<LibraryPluginDetail>({
-    queryKey: QK.libraryPlugin(id),
-    queryFn: () => api.get<LibraryPluginDetail>(`/library/plugins/${encodeURIComponent(id)}`),
-    enabled,
-    staleTime: 60_000,
-  })
-}
-
-export function useTogglePlugin() {
-  const qc = useQueryClient()
-  return useMutation<{ id: string; enabled: boolean }, ApiRequestError, { id: string; enabled: boolean }>({
-    mutationFn: ({ id, enabled }) =>
-      api.patch(`/library/plugins/${encodeURIComponent(id)}`, { enabled }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: QK.libraryPlugins })
-      void qc.invalidateQueries({ queryKey: ['library', 'plugin'] })
-      // plugin enablement changes which skills/commands/servers are visible
-      void qc.invalidateQueries({ queryKey: QK.librarySkills })
-      void qc.invalidateQueries({ queryKey: QK.libraryCommands })
-      void qc.invalidateQueries({ queryKey: QK.libraryMcp })
-    },
-  })
-}
+// Plugins and marketplaces (D-16c) live in `./pluginHooks`, loaded with the lazy
+// Settings › Plugins chunk.
 
 export function useLibrarySkills() {
   return useQuery<{ skills: LibrarySkill[] }>({
