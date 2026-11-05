@@ -97,7 +97,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
   // The Browser tab (D-18) is also listed for a session with a detected dev server,
   // even where the edge has no X11, so a viewer at the desk can still open its links.
   // Polled only while the Browser tab is shown; the tab renders the same list.
-  const devServers = useSessionDevServers(rt.sessionId, busy, { requested: requestedView === 'browser', x11: browserEnabled })
+  const devServers = useSessionDevServers(rt.sessionId, busy, requestedView === 'browser', browserEnabled)
   const hasBrowser = browserEnabled || (devServers.servers?.length ?? 0) > 0
   // Transcript paths under the cwd open the Files tab and attach to the dock
   // composer (D-7, `transcript/PathRef`); without a cwd they stay click-to-copy.

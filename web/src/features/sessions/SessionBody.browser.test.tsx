@@ -216,6 +216,6 @@ describe('SessionBody — Browser tab gating', () => {
     expect(await screen.findByRole('tab', { name: /browser/i })).toHaveAttribute('aria-selected', 'true')
     expect(await screen.findByTestId('browser-tab-stub')).toBeInTheDocument()
     // Polled while the Browser view is asked for; X11 is off here.
-    expect(devServersHook).toHaveBeenLastCalledWith('s1', false, { requested: true, x11: false })
+    expect(devServersHook).toHaveBeenLastCalledWith('s1', false, true, false)
   })
 })

@@ -5,7 +5,8 @@ export const DEV_SERVERS_COPY = {
   empty: 'No dev servers detected — when the session starts one (e.g. npm run dev), it shows up here.',
   reachable: 'Also reachable from your network',
   noPreview: 'No preview open',
-  failed: "Couldn't open this dev server.",
+  failed: "Couldn't open the preview.",
+  badLink: "Couldn't open this dev server.",
   unreachable: "Couldn't reach the server to open the preview.",
   errors: {
     PREVIEW_NO_DISPLAY: "No preview open — this session's host has no display free for it.",

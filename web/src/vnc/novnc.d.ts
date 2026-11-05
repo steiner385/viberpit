@@ -4,7 +4,7 @@ declare module '@novnc/novnc' {
     scaleViewport: boolean
     addEventListener(
       type: string,
-      listener: (e: Event & { detail?: { clean?: boolean; code?: number } }) => void,
+      listener: (e: Event & { detail?: { clean?: boolean } }) => void,
     ): void
     focus(): void
     blur(): void
@@ -12,7 +12,7 @@ declare module '@novnc/novnc' {
     disconnect(): void
   }
   const RFB: {
-    new (target: Element, url: string, options?: Record<string, unknown>): RFBInstance
+    new (target: Element, urlOrChannel: string | WebSocket, options?: Record<string, unknown>): RFBInstance
   }
   export default RFB
 }

@@ -32,7 +32,7 @@ afterEach(() => {
 describe('useSessionDevServers', () => {
   it('answers the detected servers', async () => {
     const fetchFn = stubFetch([{ body: ONE }])
-    const { result } = renderHook(() => useSessionDevServers('S', false, HIDDEN), { wrapper })
+    const { result } = renderHook(() => useSessionDevServers('S', false, HIDDEN.requested, HIDDEN.x11), { wrapper })
     await waitFor(() => expect(result.current.servers).toHaveLength(1))
     expect(fetchFn).toHaveBeenCalledWith('/api/sessions/S/dev-servers', expect.anything())
   })
@@ -43,7 +43,7 @@ describe('useSessionDevServers', () => {
     ['the shape is not a list', { body: [] }],
   ])('is null (no section) when %s', async (_why, reply) => {
     const fetchFn = stubFetch([reply])
-    const { result } = renderHook(() => useSessionDevServers('S', false, HIDDEN), { wrapper })
+    const { result } = renderHook(() => useSessionDevServers('S', false, HIDDEN.requested, HIDDEN.x11), { wrapper })
     await waitFor(() => expect(fetchFn).toHaveBeenCalled())
     await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
     expect(result.current.servers).toBeNull()
@@ -51,7 +51,7 @@ describe('useSessionDevServers', () => {
 
   it('re-asks when a turn ends', async () => {
     const fetchFn = stubFetch([{ body: NONE }, { body: ONE }])
-    const { result, rerender } = renderHook(({ busy }) => useSessionDevServers('S', busy, HIDDEN), {
+    const { result, rerender } = renderHook(({ busy }) => useSessionDevServers('S', busy, HIDDEN.requested, HIDDEN.x11), {
       wrapper, initialProps: { busy: true },
     })
     await waitFor(() => expect(result.current.servers).toEqual([]))
@@ -60,13 +60,13 @@ describe('useSessionDevServers', () => {
     expect(fetchFn).toHaveBeenCalledTimes(2)
   })
 
-  it('switching sessions is not a turn ending', async () => {
+  it('switching sessions fetches the new one once', async () => {
     const fetchFn = stubFetch([{ body: NONE }])
-    const { rerender } = renderHook(({ id, busy }) => useSessionDevServers(id, busy, HIDDEN), {
+    const { rerender } = renderHook(({ id, busy }) => useSessionDevServers(id, busy, HIDDEN.requested, HIDDEN.x11), {
       wrapper, initialProps: { id: 'A', busy: true },
     })
     await waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1))
-    rerender({ id: 'B', busy: false })
+    rerender({ id: 'B', busy: true })
     await waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(2))
     expect(fetchFn.mock.calls.map(([u]) => u)).toEqual(['/api/sessions/A/dev-servers', '/api/sessions/B/dev-servers'])
   })
@@ -79,9 +79,39 @@ describe('useSessionDevServers', () => {
   ])('polls only while the Browser tab is shown: %s', async (_why, view, body, calls) => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const fetchFn = stubFetch([{ body }])
-    renderHook(() => useSessionDevServers('S', false, view), { wrapper })
+    // Mid-turn, so the turn-end retries stay out of the count.
+    renderHook(() => useSessionDevServers('S', true, view.requested, view.x11), { wrapper })
     await waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1))
     for (let i = 0; i < 2; i++) await act(async () => { await vi.advanceTimersByTimeAsync(DEV_SERVERS_POLL_MS) })
     expect(fetchFn).toHaveBeenCalledTimes(calls)
+  })
+
+  it('after a turn ends, re-asks at once and again at +5 s and +15 s — then stops', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const fetchFn = stubFetch([{ body: NONE }])
+    const { rerender } = renderHook(({ busy }) => useSessionDevServers('S', busy, HIDDEN.requested, HIDDEN.x11), {
+      wrapper, initialProps: { busy: true },
+    })
+    await waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1))
+    rerender({ busy: false })
+    await waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(2))
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    expect(fetchFn).toHaveBeenCalledTimes(3)
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+    expect(fetchFn).toHaveBeenCalledTimes(4)
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+    expect(fetchFn).toHaveBeenCalledTimes(4)
+  })
+
+  it('a new turn cancels the pending retries', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const fetchFn = stubFetch([{ body: NONE }])
+    const { rerender } = renderHook(({ busy }) => useSessionDevServers('S', busy, HIDDEN.requested, HIDDEN.x11), {
+      wrapper, initialProps: { busy: false },
+    })
+    await waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1))
+    rerender({ busy: true })
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+    expect(fetchFn).toHaveBeenCalledTimes(1)
   })
 })

@@ -13,7 +13,7 @@ import type { DevServer, DevServers } from './types'
 export const DEV_SERVERS_POLL_MS = 5_000
 
 /** What the Browser tab renders: the detected servers, or `null` for no section at
- *  all (not answered yet, detection switched off, or a host that cannot say). */
+ *  all (not answered yet, detection switched off, or a host that never could say). */
 export interface SessionDevServers {
   servers: DevServer[] | null
   refetch: () => void
@@ -27,24 +27,30 @@ export interface SessionDevServers {
  * costs the edge a `tailscale whois`, so nothing polls behind the user's back.
  */
 export function useSessionDevServers(
-  sessionId: string, busy: boolean, { requested, x11 }: { requested: boolean; x11: boolean },
+  sessionId: string, busy: boolean, requested: boolean, x11: boolean,
 ): SessionDevServers {
-  const { data, isError, refetch } = useQuery({
+  const { data, refetch } = useQuery({
     queryKey: ['dev-servers', sessionId],
     queryFn: () => api.get<DevServers>(`/sessions/${encodeURIComponent(sessionId)}/dev-servers`),
-    enabled: !!sessionId,
     retry: false,
     refetchOnWindowFocus: false,
     refetchInterval: (q) =>
       requested && (x11 || (q.state.data?.servers?.length ?? 0) > 0) ? DEV_SERVERS_POLL_MS : false,
   })
-  // Re-ask whenever the session goes idle (a turn ended). On mount and on a session
-  // switch this joins the query's own in-flight fetch rather than adding one.
+  // Re-ask whenever the session goes idle (a turn ended), and twice more shortly
+  // after — `npm run dev &` is often still starting when the turn ends. Bounded, not
+  // a poll. On mount and on a session switch the first joins the query's own
+  // in-flight fetch rather than adding one.
   useEffect(() => {
-    if (!busy) void refetch({ cancelRefetch: false })
+    if (busy) return
+    const again = () => void refetch({ cancelRefetch: false })
+    again()
+    const timers = [5e3, 15e3].map((ms) => setTimeout(again, ms))
+    return () => timers.forEach(clearTimeout)
   }, [busy, refetch])
   return {
-    servers: !isError && data?.enabled !== false && Array.isArray(data?.servers) ? data.servers : null,
+    // A failed re-poll keeps the last answer; a host that never answered has none.
+    servers: data?.enabled !== false && Array.isArray(data?.servers) ? data.servers : null,
     refetch,
   }
 }

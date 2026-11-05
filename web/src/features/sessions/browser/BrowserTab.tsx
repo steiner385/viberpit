@@ -157,6 +157,12 @@ export function BrowserTab({
     return () => c.disconnect()
   }, [sessionId, initialState, streaming, previewOnly, connectNonce])
 
+  // Opening the tab re-asks for the dev servers at once rather than showing the list
+  // from the session's last turn end until the first poll tick. React Query's
+  // `refetch` is stable, so this runs once per mount (= once per tab open).
+  const refetchDevServers = devServers?.refetch
+  useEffect(() => { refetchDevServers?.() }, [refetchDevServers])
+
   // A dev server opened on the session's display: show it.
   function previewOpened() {
     setPreviewNotice(null)

@@ -93,7 +93,7 @@ describe('DevServers', () => {
     renderList([server({ open: { kind: 'local-link', url: 'javascript:alert(1)' } })])
     fireEvent.click(await screen.findByRole('button', { name: /open :5173/i }))
     expect(windowOpen).not.toHaveBeenCalled()
-    expect(await screen.findByRole('alert')).toHaveTextContent(DEV_SERVERS_COPY.failed)
+    expect(await screen.findByRole('alert')).toHaveTextContent(DEV_SERVERS_COPY.badLink)
   })
 
   it('a vnc Open posts to the port and hands over to the viewer', async () => {
@@ -113,7 +113,6 @@ describe('DevServers', () => {
     ['DEV_SERVER_NOT_DETECTED', DEV_SERVERS_COPY.errors.DEV_SERVER_NOT_DETECTED],
     ['SESSION_CONTROL_HUMAN_ONLY', DEV_SERVERS_COPY.errors.SESSION_CONTROL_HUMAN_ONLY],
     ['daemon_outdated', DEV_SERVERS_COPY.errors.daemon_outdated],
-    ['SOMETHING_NEW', DEV_SERVERS_COPY.failed],
   ])('a vnc Open refused with %s says so in plain words', async (code, copy) => {
     stubFetch({ status: 409, body: { detail: { code, message: 'x' } } })
     const { onPreviewOpened } = renderList([server()])
@@ -142,5 +141,38 @@ describe('DevServers', () => {
     const { refetch } = renderList([server()])
     fireEvent.click(screen.getByRole('button', { name: /open :5173/i }))
     await waitFor(() => expect(refetch).toHaveBeenCalledTimes(1))
+  })
+
+  it("an unknown code shows the server's own message", async () => {
+    stubFetch({ status: 409, body: { detail: { code: 'SOMETHING_NEW', message: 'The preview pool is draining.' } } })
+    renderList([server()])
+    fireEvent.click(screen.getByRole('button', { name: /open :5173/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('The preview pool is draining.')
+  })
+
+  it('an error with neither a known code nor a message is the generic copy, not "couldn\'t reach"', async () => {
+    stubFetch({ status: 500, body: { detail: 'boom' } })
+    renderList([server()])
+    fireEvent.click(screen.getByRole('button', { name: /open :5173/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(DEV_SERVERS_COPY.failed)
+  })
+
+  it('only a request that never got an answer says the server could not be reached', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    renderList([server()])
+    fireEvent.click(screen.getByRole('button', { name: /open :5173/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(DEV_SERVERS_COPY.unreachable)
+  })
+
+  it('one Open at a time: the other rows wait while one is in flight, so no error is lost', async () => {
+    let answer: (r: Response) => void = () => {}
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((r) => { answer = r })))
+    renderList([server(), server({ port: 5174, label: 'storybook' })])
+    fireEvent.click(screen.getByRole('button', { name: /open :5173/i }))
+    const other = screen.getByRole('button', { name: /open :5174/i })
+    await waitFor(() => expect(other).toBeDisabled())
+    answer(new Response(JSON.stringify({ detail: { code: 'PREVIEW_LAUNCH_FAILED', message: 'x' } }), { status: 409 }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(DEV_SERVERS_COPY.errors.PREVIEW_LAUNCH_FAILED)
+    expect(other).toBeEnabled()
   })
 })

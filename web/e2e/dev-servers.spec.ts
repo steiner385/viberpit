@@ -29,10 +29,59 @@ interface Opts {
   x11: boolean
   servers?: unknown[]
   openReply?: { status: number; json: unknown }
+  /** Close the preview stream with this code once it opens (default: hold it open). */
+  vncClose?: number
 }
 
-async function openSession(page: Page, width: number, { x11, servers = SERVERS, openReply }: Opts) {
+async function openSession(page: Page, width: number, { x11, servers = SERVERS, openReply, vncClose }: Opts) {
   await page.setViewportSize({ width, height: 900 })
+  // The preview stream (`/ws/vnc`) is a stand-in socket the REAL noVNC accepts:
+  // it opens, sends nothing, and — with `vncClose` — is closed by the "server" as
+  // the daemon closes a preview display that is gone (4404). Not `routeWebSocket`:
+  // noVNC refuses Playwright's routed socket ("Raw channel missing property").
+  // Every other socket goes to the original constructor.
+  await page.addInitScript((closeCode) => {
+    // Playwright's own socket routing (for `/ws`) installs its constructor after
+    // this script; keep ours outermost and route everything else to whichever
+    // constructor was installed last.
+    let Native = window.WebSocket
+    class StandIn extends EventTarget {
+      binaryType = 'blob'; protocol = ''; readyState = 0; url: string
+      onopen: ((e: Event) => void) | null = null
+      onmessage: ((e: Event) => void) | null = null
+      onerror: ((e: Event) => void) | null = null
+      onclose: ((e: CloseEvent) => void) | null = null
+      send = () => {}
+      close = () => { this.finish(1000) }
+      constructor(url: string) {
+        super()
+        this.url = url
+        setTimeout(() => {
+          this.readyState = 1
+          const e = new Event('open')
+          this.dispatchEvent(e)
+          this.onopen?.(e)
+          if (closeCode) setTimeout(() => this.finish(closeCode), 200)
+        }, 50)
+      }
+      finish(code: number) {
+        if (this.readyState === 3) return
+        this.readyState = 3
+        const e = new CloseEvent('close', { code, reason: 'no display', wasClean: true })
+        this.dispatchEvent(e)
+        this.onclose?.(e)
+      }
+    }
+    const Patched = function (url: string | URL, protocols?: string | string[]) {
+      return String(url).includes('/ws/vnc') ? new StandIn(String(url)) : new Native(url, protocols)
+    } as unknown as typeof WebSocket
+    Object.assign(Patched, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3, prototype: Native.prototype })
+    Object.defineProperty(window, 'WebSocket', {
+      configurable: true,
+      get: () => Patched,
+      set: (v: typeof WebSocket) => { Native = v },
+    })
+  }, vncClose ?? 0)
   // `window.open` is recorded, never followed.
   await page.addInitScript(() => {
     const w = window as unknown as { __opened: unknown[][] }
@@ -62,8 +111,6 @@ async function openSession(page: Page, width: number, { x11, servers = SERVERS, 
     const frame = JSON.parse(msg.toString()) as { type: string }
     if (frame.type === 'attach') ws.send(wire(replayFrame(sid, [], { totalTurns: 0 })))
   }))
-  // The preview stream: held open, never answered (no RFB server here).
-  await page.routeWebSocket('**/ws/vnc**', () => {})
   await page.goto('/')
   await page.getByRole('button', { name: /open session dev servers/i }).click()
   return posts
@@ -129,3 +176,18 @@ test('a refused vnc Open says why in plain words and stays on the list', async (
   await expect(section(page).getByRole('alert')).toHaveText(/^No preview open/)
   await expect(page.getByLabel('Live browser view')).toHaveCount(0)
 })
+
+test('a native preview whose display is gone (4404) reads "No preview open" — real noVNC, not a reconnect loop', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(e.message))
+  await openSession(page, 1440, { x11: true, vncClose: 4404 })
+  await page.getByRole('tab', { name: 'Browser' }).click()
+  await section(page).getByRole('button', { name: "Open :8080 in the session's browser" }).click()
+  await expect(section(page).getByRole('status')).toHaveText('No preview open')
+  await expect(page.getByLabel('Live browser view')).toHaveCount(0)
+  await expect(page.getByText('Reconnecting…')).toHaveCount(0)
+  await expect(page.getByText(/opens windows on dobby's desktop/i)).toBeVisible()
+  // noVNC took the socket and failed cleanly — no exception (e.g. a refused channel).
+  expect(errors).toEqual([])
+})
+

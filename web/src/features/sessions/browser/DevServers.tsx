@@ -13,7 +13,8 @@ import { ExternalLink, Monitor } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/ui/Button'
 import { SectionHeading } from '@/ui/SectionHeading'
-import { apiErrorCode } from '@/api/client'
+import { apiErrorCode, apiErrorDetail } from '@/api/client'
+import { isSafeHttpUrl } from '@/lib/safeUrl'
 import { useOpenDevServer } from '@/api/devServerHooks'
 import type { DevServer } from '@/api/types'
 import { DEV_SERVERS_COPY } from './devServersCopy'
@@ -21,9 +22,6 @@ import { DEV_SERVERS_COPY } from './devServersCopy'
 /** Untrusted text is capped before it reaches the DOM, `title` attribute included. */
 const TEXT_MAX = 160
 const cap = (s: string) => (s.length > TEXT_MAX ? `${s.slice(0, TEXT_MAX)}…` : s)
-
-/** A link is opened only when it is plainly http(s) — never a `javascript:` URL. */
-const isWebUrl = (url: string) => /^https?:\/\//i.test(url)
 
 interface Props {
   sessionId: string
@@ -49,18 +47,19 @@ export function DevServers({ sessionId, servers, refetch, notice, onPreviewOpene
     if (s.open.kind === 'vnc') {
       openPreview.mutate(s.port, {
         onSuccess: onPreviewOpened,
-        onError: (err) => {
-          const code = apiErrorCode(err)
-          setError({
-            port: s.port,
-            copy: code ? (DEV_SERVERS_COPY.errors[code] ?? DEV_SERVERS_COPY.failed) : DEV_SERVERS_COPY.unreachable,
-          })
+        onError: (err: unknown) => {
+          // `fetch` rejects with a TypeError only when the request never got an answer.
+          const copy = err instanceof TypeError
+            ? DEV_SERVERS_COPY.unreachable
+            : DEV_SERVERS_COPY.errors[apiErrorCode(err) ?? ''] ?? apiErrorDetail(err).message ?? DEV_SERVERS_COPY.failed
+          setError({ port: s.port, copy })
         },
       })
       return
     }
-    if (!isWebUrl(s.open.url)) {
-      setError({ port: s.port, copy: DEV_SERVERS_COPY.failed })
+    // A link is opened only when it is plainly http(s) — never a `javascript:` URL.
+    if (!isSafeHttpUrl(s.open.url)) {
+      setError({ port: s.port, copy: DEV_SERVERS_COPY.badLink })
       return
     }
     window.open(s.open.url, '_blank', 'noopener,noreferrer')
@@ -99,6 +98,9 @@ export function DevServers({ sessionId, servers, refetch, notice, onPreviewOpene
                   aria-label={`Open :${s.port}${link ? ' in a new tab' : " in the session's browser"}`}
                   iconLeft={link ? <ExternalLink size={14} aria-hidden="true" /> : <Monitor size={14} aria-hidden="true" />}
                   loading={pending}
+                  // One Open at a time: the section has one error line per row and
+                  // the server replaces the previous preview anyway.
+                  disabled={openPreview.isPending && !pending}
                   onClick={() => open(s)}
                 >
                   Open

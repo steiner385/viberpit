@@ -1,24 +1,52 @@
 // web/src/vnc/vncClient.test.ts
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-type Handler = (e?: { detail?: { clean?: boolean; code?: number } }) => void
+type Handler = (e?: { detail?: { clean?: boolean } }) => void
+
+/** A WebSocket as far as VncClient and noVNC touch it. `serverClose` behaves like
+ *  a browser: listeners registered before `onclose` was set run first. */
+class FakeSocket extends EventTarget {
+  static last: FakeSocket
+  onclose: ((e: CloseEvent) => void) | null = null
+  readonly url: string
+  constructor(url: string) {
+    super()
+    this.url = url
+    FakeSocket.last = this
+  }
+  serverClose(code: number) {
+    const e = new CloseEvent('close', { code, wasClean: true })
+    this.dispatchEvent(e)
+    this.onclose?.(e)
+  }
+}
 
 let lastRfb: {
   scaleViewport: boolean
+  channel: unknown
   addEventListener: (ev: string, cb: Handler) => void
   disconnect: () => void
   handlers: Record<string, Handler>
 }
+// Shaped like noVNC 1.7's RFB: it takes over the channel's `onclose` and reports a
+// close as `disconnect` with ONLY `{clean}` — never the code (core/rfb.js).
 vi.mock('@novnc/novnc', () => ({
   default: class {
     scaleViewport = false
     handlers: Record<string, Handler> = {}
     addEventListener = vi.fn((ev: string, cb: Handler) => { this.handlers[ev] = cb })
     disconnect = vi.fn()
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    constructor() { lastRfb = this }
+    channel: unknown
+    constructor(_target: Element, channel: FakeSocket) {
+      this.channel = channel
+      channel.onclose = () => this.handlers.disconnect?.({ detail: { clean: true } })
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
+      lastRfb = this
+    }
   },
 }))
+
+vi.stubGlobal('WebSocket', FakeSocket)
 
 import { VncClient, classifyClose } from './vncClient'
 
@@ -83,7 +111,7 @@ describe('VncClient reconnect', () => {
     const c = new VncClient('ws://x/ws/vnc?session=s')
     await c.connect(document.createElement('div'))
     const firstRfb = lastRfb
-    firstRfb.handlers.disconnect({ detail: { clean: true, code: 1011 } })
+    FakeSocket.last.serverClose(1011)
 
     await vi.runAllTimersAsync()
 
@@ -96,7 +124,7 @@ describe('VncClient reconnect', () => {
     c.on('reconnecting', (s) => states.push(s))
     c.on('connect', (s) => states.push(s))
     await c.connect(document.createElement('div'))
-    lastRfb.handlers.disconnect({ detail: { clean: true, code: 1011 } })
+    FakeSocket.last.serverClose(1011)
     expect(states).toEqual(['reconnecting'])
 
     await vi.runAllTimersAsync()
@@ -108,7 +136,7 @@ describe('VncClient reconnect', () => {
     const c = new VncClient('ws://x/ws/vnc?session=s')
     await c.connect(document.createElement('div'))
     const firstRfb = lastRfb
-    firstRfb.handlers.disconnect({ detail: { clean: true, code: 4404 } })
+    FakeSocket.last.serverClose(4404)
 
     await vi.runAllTimersAsync()
 
@@ -119,11 +147,61 @@ describe('VncClient reconnect', () => {
     const c = new VncClient('ws://x/ws/vnc?session=s')
     await c.connect(document.createElement('div'))
     const firstRfb = lastRfb
-    firstRfb.handlers.disconnect({ detail: { clean: true, code: 1011 } })
+    FakeSocket.last.serverClose(1011)
     c.disconnect()
 
     await vi.runAllTimersAsync()
 
     expect(lastRfb).toBe(firstRfb) // no reconnect fired after teardown
+  })
+})
+
+describe('VncClient close codes (noVNC reports only {clean})', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  async function connected() {
+    const c = new VncClient('ws://x/ws/vnc?session=s')
+    const states: string[] = []
+    c.on('disconnect', (s) => states.push(s))
+    c.on('reconnecting', (s) => states.push(s))
+    await c.connect(document.createElement('div'))
+    return { c, states }
+  }
+
+  it('hands noVNC its own socket for the session url', async () => {
+    await connected()
+    expect(lastRfb.channel).toBe(FakeSocket.last)
+    expect(FakeSocket.last.url).toBe('ws://x/ws/vnc?session=s')
+  })
+
+  it('a 4404 close is nodisplay — no reconnect', async () => {
+    const { states } = await connected()
+    const first = lastRfb
+    FakeSocket.last.serverClose(4404)
+    await vi.runAllTimersAsync()
+    expect(states).toEqual(['nodisplay'])
+    expect(lastRfb).toBe(first)
+  })
+
+  it('a 4401 close is disabled', async () => {
+    const { states } = await connected()
+    FakeSocket.last.serverClose(4401)
+    expect(states).toEqual(['disabled'])
+  })
+
+  it.each([1000, 1006, 1011])('any other close (%i) still reconnects', async (code) => {
+    const { states } = await connected()
+    const first = lastRfb
+    FakeSocket.last.serverClose(code)
+    expect(states).toEqual(['reconnecting'])
+    await vi.runAllTimersAsync()
+    expect(lastRfb).not.toBe(first)
+  })
+
+  it('a disconnect with no socket close (noVNC gave up) reconnects', async () => {
+    const { states } = await connected()
+    lastRfb.handlers.disconnect({ detail: { clean: false } })
+    expect(states).toEqual(['reconnecting'])
   })
 })

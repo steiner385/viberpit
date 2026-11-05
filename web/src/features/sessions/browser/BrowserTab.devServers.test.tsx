@@ -106,4 +106,12 @@ describe('BrowserTab dev servers (D-18)', () => {
     // The blank-display hint is for "the agent hasn't opened a browser" — one is open now.
     expect(screen.queryByText(/hasn.t opened a browser yet/i)).toBeNull()
   })
+
+  it('opening the tab re-asks for the list at once — once, not on every view change', () => {
+    const refetch = vi.fn()
+    render(<BrowserTab sessionId="S" statusState="idle" displayMode="native" devServers={{ servers: [], refetch }} />)
+    expect(refetch).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'land an open' }))
+    expect(refetch).toHaveBeenCalledTimes(1)
+  })
 })
