@@ -3,7 +3,7 @@
 // strip says which milestone we are in, what is left in its gate, what is in
 // flight and how fresh the numbers are; the ladder and the Numbers panel sit
 // below it. Its own route rather than an 8th product tab (docs/PAGE-TABS.md §4).
-import { useId } from 'react'
+import { useEffect, useId, useRef } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMilestones, useProject, useRefreshMilestones } from '@/api/hooks'
 import type { RefreshMilestonesResult } from '@/api/milestones'
@@ -55,6 +55,22 @@ export function MilestonesPage() {
   const current = view ? currentMilestone(view) : null
   const outcome = refreshOutcome(refresh.data)
 
+  // The outcome line is transient: it clears when newer numbers land, and a 429's
+  // "Try again in N s" clears once N seconds have passed.
+  const { reset } = refresh
+  const updatedAt = ladder?.updatedAt ?? null
+  const seenUpdatedAt = useRef(updatedAt)
+  useEffect(() => {
+    if (updatedAt === seenUpdatedAt.current) return
+    seenUpdatedAt.current = updatedAt
+    if (refresh.data) reset()
+  }, [updatedAt, refresh.data, reset])
+  const retryAfter = refresh.data && 'retryAfter' in refresh.data ? refresh.data.retryAfter : null
+  useEffect(() => {
+    if (retryAfter === null) return
+    const t = window.setTimeout(reset, retryAfter * 1000)
+    return () => window.clearTimeout(t)
+  }, [retryAfter, refresh.data, reset])
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-page-variant="standard">
@@ -90,7 +106,11 @@ export function MilestonesPage() {
           {view && ladder && (
             <>
               {ladder.parseError && (
-                <Banner tone="danger" title="The milestone definition file has an error. Showing the last good version.">
+                <Banner
+                  tone="danger"
+                  title={`The milestone definition file has an error. ${
+                    view.milestones.length > 0 ? 'Showing the last good version.' : 'No version of it has parsed yet.'}`}
+                >
                   {ladder.parseError}
                   {ladder.parseErrorSha && (
                     <>

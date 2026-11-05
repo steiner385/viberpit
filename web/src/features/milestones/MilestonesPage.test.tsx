@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { MilestonesPage } from './MilestonesPage'
-import { ladderView } from './__fixtures__/ladder'
+import { ago, ladderView } from './__fixtures__/ladder'
 
 const q = vi.hoisted(() => ({
   milestones: { data: undefined as unknown, isLoading: false, isError: false, refetch: () => {} },
   project: { data: undefined as unknown },
-  refresh: { mutate: vi.fn(), isPending: false, data: undefined as unknown },
+  refresh: { mutate: vi.fn(), reset: vi.fn(), isPending: false, data: undefined as unknown },
 }))
 vi.mock('@/api/hooks', () => ({
   useMilestones: () => q.milestones,
@@ -15,17 +15,17 @@ vi.mock('@/api/hooks', () => ({
   useRefreshMilestones: () => q.refresh,
 }))
 
-const mount = () =>
-  render(
-    <MemoryRouter initialEntries={['/roadmap/kindash/milestones']}>
-      <Routes><Route path="/roadmap/:productSlug/milestones" element={<MilestonesPage />} /></Routes>
-    </MemoryRouter>,
-  )
+const tree = () => (
+  <MemoryRouter initialEntries={['/roadmap/kindash/milestones']}>
+    <Routes><Route path="/roadmap/:productSlug/milestones" element={<MilestonesPage />} /></Routes>
+  </MemoryRouter>
+)
+const mount = () => render(tree())
 
 beforeEach(() => {
   q.milestones = { data: ladderView(), isLoading: false, isError: false, refetch: () => {} }
   q.project = { data: { name: 'KinDash', repos: [{ id: 'r', repo: 'cairnea/KinDash', isPrimary: true }] } }
-  q.refresh = { mutate: vi.fn(), isPending: false, data: undefined }
+  q.refresh = { mutate: vi.fn(), reset: vi.fn(), isPending: false, data: undefined }
 })
 
 describe('MilestonesPage', () => {
@@ -98,4 +98,42 @@ describe('MilestonesPage', () => {
     expect(layout.className).not.toMatch(/(^|\s)xl:grid-cols-/)
   })
 
+  it('a parse error with a last good version says it is showing it', () => {
+    q.milestones.data = ladderView({ parseError: 'bad', parseErrorSha: 'deadbeef' })
+    mount()
+    expect(screen.getByRole('alert')).toHaveTextContent('Showing the last good version.')
+  })
+
+  it('a parse error before any version parsed says so instead', () => {
+    q.milestones.data = { ...ladderView({ parseError: 'bad', parseErrorSha: 'deadbeef' }), milestones: [] }
+    mount()
+    const alert = screen.getByRole('alert')
+    expect(alert).not.toHaveTextContent('last good version')
+    expect(alert).toHaveTextContent('No version of it has parsed yet.')
+  })
+
+  it('clears the refresh outcome when newer numbers arrive', () => {
+    q.refresh.data = { refreshed: true }
+    const { rerender } = mount()
+    expect(screen.getByText('Refresh requested')).toBeInTheDocument()
+    rerender(tree())
+    expect(q.refresh.reset).not.toHaveBeenCalled()
+    q.milestones = { ...q.milestones, data: ladderView({ updatedAt: ago(1) }) }
+    rerender(tree())
+    expect(q.refresh.reset).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears a 429 outcome once retryAfter has passed', () => {
+    vi.useFakeTimers()
+    try {
+      q.refresh.data = { refreshed: false, retryAfter: 42 }
+      mount()
+      act(() => { vi.advanceTimersByTime(41_000) })
+      expect(q.refresh.reset).not.toHaveBeenCalled()
+      act(() => { vi.advanceTimersByTime(1_000) })
+      expect(q.refresh.reset).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
