@@ -100,14 +100,17 @@ def search_url(query: str) -> str:
     return f"https://github.com/search?q={quote_plus(query)}&type=issues"
 
 
-def _sub_issues_epic(cond: Condition, ms: MilestoneDef | None) -> Ref | None:
+def sub_issues_epic(cond: Condition, ms: MilestoneDef | None) -> Ref | None:
+    """The epic a ``sub_issues`` condition reads: its ``epic``, else the milestone's first."""
     epic = cond.measure.params.get("epic")
     if isinstance(epic, Ref):
         return epic
     return ms.epics[0] if ms is not None and ms.epics else None
 
 
-def _conditions(ladder: LadderDef) -> Iterable[tuple[str, MilestoneDef | None, Condition]]:
+def ladder_conditions(ladder: LadderDef) -> Iterable[tuple[str, MilestoneDef | None, Condition]]:
+    """Every condition as ``(scope, milestone or None, condition)``; scope is the
+    milestone key, or ``numbers``."""
     for ms in ladder.milestones:
         for cond in ms.gate:
             yield ms.key, ms, cond
@@ -169,7 +172,7 @@ def build_ladder_query(
     for milestone in ladder.milestones:
         for ref in milestone.refs:
             add_ref(ref, "mref")
-    for scope, ms, cond in _conditions(ladder):
+    for scope, ms, cond in ladder_conditions(ladder):
         kind = cond.measure.kind
         if kind == "issue_count":
             alias = f"s{len(searches)}"
@@ -180,7 +183,7 @@ def build_ladder_query(
             for ref in cond.measure.params["refs"]:
                 ref_reads[add_ref(ref, "ref")].append((scope, cond.key))
         elif kind == "sub_issues":
-            epic = _sub_issues_epic(cond, ms)
+            epic = sub_issues_epic(cond, ms)
             if epic is not None:
                 add_epic(epic)
 

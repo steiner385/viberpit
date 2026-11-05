@@ -135,6 +135,7 @@ from .session_feedback import SessionFeedbackFiler  # noqa: E402
 from .deploy_monitor import DeployMonitor  # noqa: E402
 from .capacity_governor import CapacityGovernor  # noqa: E402
 from .needs_you_hygiene import NeedsYouHygiene  # noqa: E402
+from .milestones_refresh import MilestonesRefresh  # noqa: E402
 from .decision_escalation import DecisionEscalation  # noqa: E402
 
 # Current effects, not future policy. Keep metadata beside each registration.
@@ -353,5 +354,20 @@ registry.register(NeedsYouHygiene(), oversight=AutomationOversight(
      Relationship('shares_work_with', 'backlog-runner',
                   'Ends the same stale system holds the runner\'s tick ends, through one rule.'),
      Relationship('uses', 'pm-sync', 'Reads the mirrored board, holds and dependency edges.')),
+))
+registry.register(MilestonesRefresh(), oversight=AutomationOversight(
+    Responsibility.ORGANIZATION,
+    'Release-milestone gate measurements for every product with a milestone ladder '
+    '(design 2026-11-05 §8).',
+    {
+        'off': 'Disable refresh; measurements keep their last values and age into unknown.',
+        'dry_run': 'Fetch every due ladder\'s GitHub readings and log what it would record; '
+                   'write nothing.',
+        'on': 'Every 10 minutes, or at once on a refresh request, fetch each ladder\'s '
+              'searches, issue and PR states, epic sub-issues and workflow streaks, and write '
+              'the measurements with their times. Manual conditions are never touched.',
+    },
+    (Relationship('uses', 'pm-sync', 'Reads the ladder definitions pm-sync syncs from each '
+                  'product\'s primary repo.'),),
 ))
 registry.validate_oversight(require_all=True)

@@ -62,3 +62,16 @@ def test_list_workflow_runs_raises_on_gh_failure():
 
     with pytest.raises(gitrepos.GhError):
         list_workflow_runs("o/r", "nope.yml", branch="main", run=fake_run)
+
+
+def test_list_workflow_runs_without_branch_reads_every_branch():
+    calls = []
+
+    def fake_run(args):
+        calls.append(args)
+        return _ok({"workflow_runs": []})
+
+    assert list_workflow_runs("o/r", "nightly.yml", branch=None, run=fake_run, limit=5) == []
+    assert calls == [[
+        "api", "repos/o/r/actions/workflows/nightly.yml/runs?per_page=5&exclude_pull_requests=true",
+    ]]

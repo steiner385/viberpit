@@ -1007,7 +1007,7 @@ _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_archive_limit_task", "_recurring_task", "_mirror_task",
     "_error_triage_task", "_session_feedback_task",
     "_deploy_monitor_task", "_capacity_governor_task", "_decision_escalation_task",
-    "_needs_you_hygiene_task",
+    "_needs_you_hygiene_task", "_milestones_refresh_task",
 })
 
 
@@ -1953,6 +1953,18 @@ class SessionOrchestrator:
             record_parked_run=self._needs_you_hygiene_record_parked_run,
             digest=self._needs_you_hygiene_digest_seams())
         self._needs_you_hygiene_task: asyncio.Task | None = None
+        # Milestones Refresh: release-milestone measurements every 10 min or on a
+        # stamped request (spec 2026-11-05 §8). Primary-only, like pm-sync.
+        from server.automations.milestones_refresh import MilestonesRefreshLoop
+        from server.pm.milestone_refresh import list_ladder_fetch_times, list_refresh_requests
+        self._milestones_refresh_ctx = AutomationContext("milestones-refresh")
+        self._milestones_refresh_loop = MilestonesRefreshLoop(
+            self._milestones_refresh_ctx,
+            read_config=self._milestones_refresh_read_config,
+            list_ladder_projects=list_ladder_fetch_times,
+            list_requested=list_refresh_requests,
+            refresh=self._milestones_refresh_run)
+        self._milestones_refresh_task: asyncio.Task | None = None
         # Archive Audit control loop: periodic re-audit of recently-archived sessions.
         from server.automations.archive_audit import ArchiveAuditLoop, _real_gh, _real_gh_num
         from server.automations.archive_audit import (
@@ -3250,6 +3262,13 @@ class SessionOrchestrator:
                 self._needs_you_hygiene_tick_loop(interval=_HYGIENE_TICK_S),
                 name="needs-you-hygiene-loop"
             )
+            # Milestones Refresh: a 15 s wake so a refresh request lands within a
+            # tick; each ladder is read only when due (10 min, or a newer request).
+            from server.automations.milestones_refresh import TICK_S as _MILESTONES_TICK_S
+            self._milestones_refresh_task = asyncio.create_task(
+                self._milestones_refresh_tick_loop(interval=_MILESTONES_TICK_S),
+                name="milestones-refresh-loop"
+            )
             # Archive Audit: re-audit recently-archived sessions every 6 hours.
             self._archaudit_task = asyncio.create_task(
                 self._archaudit_tick_loop(interval=21600.0), name="archive-audit-loop"
@@ -3906,7 +3925,7 @@ class SessionOrchestrator:
                      "_cicd_task", "_cicd_systemic_task", "_error_triage_task",
                      "_session_feedback_task",
                      "_deploy_monitor_task", "_decision_escalation_task",
-                     "_needs_you_hygiene_task",
+                     "_needs_you_hygiene_task", "_milestones_refresh_task",
                      "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
                      "_lease_task", "_session_lease_task", "_hb_task", "_drain_timer"):
@@ -15722,6 +15741,46 @@ class SessionOrchestrator:
             return await record_samples(db, counts, ids, now=datetime.now(timezone.utc))
 
     # ------------------------------------------------------------------
+    # Milestones Refresh control loop (spec 2026-11-05 §8)
+    # ------------------------------------------------------------------
+    async def _milestones_refresh_tick_loop(self, interval: float) -> None:
+        while True:
+            await self._milestones_refresh_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _milestones_refresh_tick_once(self) -> None:
+        if not await self._schedule_allows_tick("milestones-refresh"):
+            return
+        await self._milestones_refresh_loop.tick()
+        try:
+            mode, _ = await self._milestones_refresh_read_config()
+            if mode != "off":
+                await self._bump_automation_active("milestones-refresh")
+        except Exception:
+            log.debug("milestones_refresh.heartbeat_failed", exc_info=True)
+
+    async def _milestones_refresh_read_config(self) -> tuple[str, dict]:
+        from server.automations import config_store
+        from server.automations.milestones_refresh import MilestonesRefresh
+        active = tuple(m for m in MilestonesRefresh.modes if m != "off")
+        return await config_store.read_automation_config(
+            MilestonesRefresh, modes=active, default_mode="on", log_key="milestones_refresh")
+
+    async def _milestones_refresh_run(self, project_id: str, *, dry_run: bool):
+        """One ladder's refresh through the owner-aware GraphQL seam. ``partial_ok``:
+        a ref the token can't read errors only its alias, never the ladder."""
+        from server.db.clock import naive_utc_now
+        from server.github import actions_api
+        from server.pm import milestone_refresh
+
+        async def graphql(owner: str, query: str) -> dict:
+            return await self._pm_gh_graphql(owner, query, partial_ok=True)
+
+        return await milestone_refresh.refresh_ladder(
+            project_id, graphql=graphql, list_runs=actions_api.list_workflow_runs,
+            now=naive_utc_now(), dry_run=dry_run)
+
+    # ------------------------------------------------------------------
     # Archive Audit control-loop dependencies (injected into ArchiveAuditLoop)
     # ------------------------------------------------------------------
 
@@ -21356,6 +21415,7 @@ class SessionOrchestrator:
             "deploy-monitor": getattr(self, "_deploy_monitor_ctx", None),
             "decision-escalation": getattr(self, "_decision_escalation_ctx", None),
             "needs-you-hygiene": getattr(self, "_needs_you_hygiene_ctx", None),
+            "milestones-refresh": getattr(self, "_milestones_refresh_ctx", None),
             "sdlc-intake": getattr(self, "_sdlc_intake_ctx", None),
             "sdlc-synthesizer": getattr(self, "_sdlc_synth_ctx", None),
             "control-band-monitor": getattr(self, "_control_band_ctx", None),

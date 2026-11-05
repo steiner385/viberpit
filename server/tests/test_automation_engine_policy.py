@@ -79,6 +79,8 @@ def test_every_registered_origin_declares_its_audited_policy():
         "capacity-governor": EnginePolicy.CLAUDE_ONLY,
         # needs-you-hygiene writes through the issue seams and spawns nothing.
         "needs-you-hygiene": EnginePolicy.CLAUDE_ONLY,
+        # milestones-refresh only reads GitHub and writes measurements; spawns nothing.
+        "milestones-refresh": EnginePolicy.CLAUDE_ONLY,
     }
 
 
