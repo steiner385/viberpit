@@ -15,6 +15,7 @@ from server.pm.milestone_github import (
     Target,
     build_ladder_query,
     epic_reading_key,
+    ref_reading_key,
     expand_query_macros,
     parse_ladder_payload,
     streak_from_runs,
@@ -105,7 +106,7 @@ milestones:
     assert 'repository(owner: "other", name: "repo")' in doc
     refs = {a: t for a, t in targets.items() if t.kind == "ref"}
     assert {t.ref for t in refs.values()} == {Ref("o/r", 10), Ref("other/repo", 11), Ref("o/r", 12)}
-    assert all((t.scope, t.key) == ("a", "refs") for t in refs.values())
+    assert all(t.reads == (("a", "refs"),) for t in refs.values())
     assert sorted(refs) == ["r0", "r1", "r2"]
     # Epic #1 is referenced by both milestones and a sub_issues condition: fetched once.
     epics = {a: t for a, t in targets.items() if t.kind == "epic"}
@@ -132,6 +133,22 @@ numbers:
     )
     doc, _ = build_ladder_query(ladder, primary_repo="o/r", now=NOW)
     assert r'"repo:o/r in:title \"a\\b\""' in doc
+
+
+def test_negated_repo_qualifier_keeps_primary_scope():
+    ladder = parse_ladder(
+        """
+version: 1
+title: t
+numbers:
+  - key: mine
+    label: M
+    measure: {kind: issue_count, query: 'is:open -repo:o/x'}
+""",
+        primary_repo="o/r",
+    )
+    doc, _ = build_ladder_query(ladder, primary_repo="o/r", now=NOW)
+    assert '"repo:o/r is:open -repo:o/x"' in doc
 
 
 def test_numbers_search_scope_and_repo_param():
@@ -284,3 +301,66 @@ def test_parse_does_not_mutate_payload():
     before = copy.deepcopy(payload)
     _parse(payload)
     assert payload == before
+
+
+# ---------------------------------------------------------------- milestone refs as leaves
+
+MREF = """
+version: 1
+title: t
+milestones:
+  - key: a
+    name: A
+    refs: ['#5', '#6']
+    gate:
+      - key: closed
+        label: C
+        measure: {kind: refs_closed, refs: ['#6', '#7']}
+  - key: b
+    name: B
+    refs: ['#5']
+"""
+
+
+def test_milestone_refs_are_fetched_once_as_leaves_and_serve_refs_closed():
+    ladder = parse_ladder(MREF, primary_repo="o/r")
+    doc, targets = build_ladder_query(ladder, primary_repo="o/r", now=NOW)
+    # #5 named by two milestones, #6 by a milestone and a refs_closed: each fetched once.
+    assert doc.count("issueOrPullRequest(number: 5)") == 1
+    assert doc.count("issueOrPullRequest(number: 6)") == 1
+    assert targets["m0"] == Target("mref", *ref_reading_key(Ref("o/r", 5)), Ref("o/r", 5))
+    assert targets["m1"].ref == Ref("o/r", 6) and targets["m1"].reads == (("a", "closed"),)
+    assert targets["r0"].kind == "ref" and targets["r0"].ref == Ref("o/r", 7)
+    assert targets["r0"].reads == (("a", "closed"),)
+    # The milestone refs carry the leaf fields; the plain refs_closed ref does not.
+    m_line = next(x for x in doc.splitlines() if x.strip().startswith("m1:"))
+    r_line = next(x for x in doc.splitlines() if x.strip().startswith("r0:"))
+    assert "closedByPullRequestsReferences" in m_line and "title" in m_line
+    assert "title" not in r_line
+
+    payload = {"data": {"repo0": {
+        "m0": {"__typename": "Issue", "number": 5, "title": "Five", "url": "https://github.com/o/r/issues/5",
+               "state": "OPEN", "repository": {"nameWithOwner": "o/r"},
+               "closedByPullRequestsReferences": {"nodes": [
+                   {"number": 50, "url": "https://github.com/o/r/pull/50", "state": "OPEN"}]}},
+        "m1": {"__typename": "PullRequest", "number": 6, "title": "Six", "url": "https://github.com/o/r/pull/6",
+               "state": "MERGED", "repository": {"nameWithOwner": "o/r"}},
+        "r0": {"__typename": "Issue", "state": "OPEN", "url": "https://github.com/o/r/issues/7"},
+    }}}
+    readings, leaves, _ = parse_ladder_payload(payload, targets, now=NOW)
+    assert leaves["o/r#5"] == [{"repo": "o/r", "number": 5, "title": "Five", "url": "https://github.com/o/r/issues/5",
+                                "state": "OPEN", "prs": [{"number": 50, "url": "https://github.com/o/r/pull/50"}]}]
+    # A PR leaf: MERGED is done, and it has no closing PRs.
+    assert leaves["o/r#6"] == [{"repo": "o/r", "number": 6, "title": "Six", "url": "https://github.com/o/r/pull/6",
+                                "state": "MERGED", "prs": []}]
+    assert readings[ref_reading_key(Ref("o/r", 6))].value == {"done": 1, "total": 1}
+    assert readings[ref_reading_key(Ref("o/r", 5))].value == {"done": 0, "total": 1}
+    closed = readings[("a", "closed")]
+    assert closed.value == {"done": 1, "total": 2}
+    assert closed.source_url == "https://github.com/o/r/issues/7"
+
+    payload["data"]["repo0"]["m1"] = None
+    readings, leaves, _ = parse_ladder_payload(payload, targets, now=NOW)
+    assert "o/r#6" not in leaves
+    assert readings[ref_reading_key(Ref("o/r", 6))].error == "not found or no access"
+    assert readings[("a", "closed")].error == "o/r#6: not found or no access"

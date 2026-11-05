@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote_plus
@@ -33,7 +33,7 @@ from server.time_iso import parse_iso_utc
 NOT_FOUND = "not found or no access"
 SUB_ISSUES_PAGE = 100
 _MACRO_RE = re.compile(r"\{now-(\d+)d\}")
-_REPO_QUALIFIER_RE = re.compile(r"(?:^|\s)-?repo:")
+_REPO_QUALIFIER_RE = re.compile(r"(?:^|\s)repo:")  # a negated -repo: names no scope
 _DONE_REF_STATES = frozenset({"CLOSED", "MERGED"})
 _STREAK_IGNORED = frozenset({"skipped", "cancelled"})
 _REF_FIELDS = "__typename ... on Issue { state url } ... on PullRequest { state url }"
@@ -41,26 +41,41 @@ _LEAF_FIELDS = (
     "number title url state repository { nameWithOwner } "
     "closedByPullRequestsReferences(first: 5, includeClosedPrs: false) { nodes { number url state } }"
 )
+# A milestone ref is a leaf and may be a PR (state OPEN/CLOSED/MERGED, no closing PRs).
+_MREF_FIELDS = (
+    f"__typename ... on Issue {{ {_LEAF_FIELDS} }} "
+    "... on PullRequest { number title url state repository { nameWithOwner } }"
+)
 
 
 @dataclass(frozen=True)
 class Target:
     """What one query alias measures.
 
-    ``search`` / ``ref``: ``(scope, key)`` is the condition (scope = milestone key or
-    ``numbers``). ``epic``: ``(scope, key)`` is :func:`epic_reading_key` of ``ref``.
-    ``query`` is a search target's expanded query, for its ``source_url``."""
+    ``search``: ``(scope, key)`` is the condition (scope = milestone key or ``numbers``)
+    and ``query`` its expanded query, for its ``source_url``.
+    ``epic``: ``(scope, key)`` is :func:`epic_reading_key` of ``ref``.
+    ``ref`` / ``mref``: one fetch per distinct ref; ``(scope, key)`` is
+    :func:`ref_reading_key`, and ``reads`` lists the ``refs_closed`` conditions
+    (``(scope, key)``) aggregated over it. ``mref`` is a milestone's ``refs`` entry,
+    fetched with the leaf fields and returned as a one-item leaves list."""
 
-    kind: str  # search | ref | epic
+    kind: str  # search | ref | mref | epic
     scope: str
     key: str
     ref: Ref | None = None
     query: str | None = None
+    reads: tuple[tuple[str, str], ...] = ()
 
 
 def epic_reading_key(ref: Ref) -> tuple[str, str]:
     """The readings key of an epic's ``{done, total}``: what a ``sub_issues`` condition reads."""
     return ("epic", f"epic:{ref.key}")
+
+
+def ref_reading_key(ref: Ref) -> tuple[str, str]:
+    """The readings key of a milestone ref's own ``{done, total: 1}`` (``mref`` targets)."""
+    return ("ref", f"ref:{ref.key}")
 
 
 def expand_query_macros(q: str, now: datetime) -> str:
@@ -131,10 +146,29 @@ def build_ladder_query(
         )
         by_repo.setdefault(ref.repo, []).append((alias, ref.number, f"issue(number: {ref.number}) {{ {fields} }}"))
 
-    n_refs = 0
+    ref_alias: dict[Ref, str] = {}
+    ref_reads: dict[str, list[tuple[str, str]]] = {}
+
+    def add_ref(ref: Ref, kind: str) -> str:
+        if ref in ref_alias:
+            return ref_alias[ref]
+        alias = f"{kind[0]}{sum(1 for t in targets.values() if t.kind == kind)}"
+        ref_alias[ref] = alias
+        ref_reads[alias] = []
+        targets[alias] = Target(kind, *ref_reading_key(ref), ref)
+        fields = _MREF_FIELDS if kind == "mref" else _REF_FIELDS
+        by_repo.setdefault(ref.repo, []).append(
+            (alias, ref.number, f"issueOrPullRequest(number: {ref.number}) {{ {fields} }}")
+        )
+        return alias
+
     for milestone in ladder.milestones:
         for ref in milestone.epics:
             add_epic(ref)
+    # Milestone refs first, so a ref a refs_closed condition also names is fetched once, as a leaf.
+    for milestone in ladder.milestones:
+        for ref in milestone.refs:
+            add_ref(ref, "mref")
     for scope, ms, cond in _conditions(ladder):
         kind = cond.measure.kind
         if kind == "issue_count":
@@ -144,17 +178,14 @@ def build_ladder_query(
             targets[alias] = Target("search", scope, cond.key, query=q)
         elif kind == "refs_closed":
             for ref in cond.measure.params["refs"]:
-                alias = f"r{n_refs}"
-                n_refs += 1
-                targets[alias] = Target("ref", scope, cond.key, ref)
-                by_repo.setdefault(ref.repo, []).append(
-                    (alias, ref.number, f"issueOrPullRequest(number: {ref.number}) {{ {_REF_FIELDS} }}")
-                )
+                ref_reads[add_ref(ref, "ref")].append((scope, cond.key))
         elif kind == "sub_issues":
             epic = _sub_issues_epic(cond, ms)
             if epic is not None:
                 add_epic(epic)
 
+    for alias, reads in ref_reads.items():
+        targets[alias] = replace(targets[alias], reads=tuple(dict.fromkeys(reads)))
     if cursors:
         targets = {a: t for a, t in targets.items() if a in cursors and t.kind == "epic"}
         searches = []
@@ -213,14 +244,15 @@ def _leaf(node: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def leaves_done(leaves: Iterable[Mapping[str, Any]]) -> int:
-    """How many leaves are done (closed)."""
-    return sum(1 for x in leaves if x.get("state") == "CLOSED")
+    """How many leaves are done (closed, or a merged PR)."""
+    return sum(1 for x in leaves if x.get("state") in _DONE_REF_STATES)
 
 
 def parse_ladder_payload(
     payload: dict, targets: dict[str, Target], *, now: datetime
 ) -> tuple[dict[tuple[str, str], Reading], dict[str, list[dict]], dict[str, str]]:
-    """Readings by ``(scope, key)``, leaf items by epic ref key, next-page cursors by epic alias.
+    """Readings by ``(scope, key)``, leaf items by epic or milestone-ref key, next-page
+    cursors by epic alias.
 
     ``payload`` is the full GraphQL response (``{"data": …, "errors": …}``). A missing or
     null alias is an error reading (the GitHub error when one names it)."""
@@ -237,8 +269,19 @@ def parse_ladder_payload(
 
     for alias, t in targets.items():
         node = nodes.get(alias)
-        if t.kind == "ref":
-            ref_groups.setdefault((t.scope, t.key), []).append((alias, t))
+        if t.kind in ("ref", "mref"):
+            for cond_key in t.reads:
+                ref_groups.setdefault(cond_key, []).append((alias, t))
+            if t.kind == "mref":
+                assert t.ref is not None
+                if not isinstance(node, Mapping) or not node.get("state"):
+                    readings[(t.scope, t.key)] = Reading(None, None, err(alias), None)
+                    continue
+                item = _leaf(node)
+                leaves[t.ref.key] = [item]
+                readings[(t.scope, t.key)] = Reading(
+                    {"done": leaves_done([item]), "total": 1}, now, None, item["url"]
+                )
             continue
         if t.kind == "search":
             if not isinstance(node, Mapping) or not isinstance(node.get("issueCount"), int):
