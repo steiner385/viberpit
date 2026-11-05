@@ -651,7 +651,10 @@ def test_every_remote_method_is_classified():
                 "automation_statuses", "automation_overview",
                 # Per-host credential-envelope push (#2629): only push_credentials
                 # calls it, addressing each runner by name through the router.
-                "creds_sync"}
+                "creds_sync",
+                # D-16c plugin ops: plugin_op_everywhere is defined on FleetOrchestrator
+                # and names EVERY host's outcome; it calls plugin_op per host by name.
+                "plugin_op", "plugin_op_everywhere"}
     # Global/primary-routed: everything not per-session, fan-out, merge-all, or
     # explicit. Listed so adding a NEW method forces a conscious classification here.
     GLOBAL = {
@@ -902,7 +905,7 @@ def test_api_orchestrator_reads_are_all_classified():
     }
     EXPLICIT = {"create_session", "list_sessions", "codex_account_status",
                 "codex_invalidate_credentials", "automation_statuses",
-                "automation_overview"}  # fleet-wide on FleetOrchestrator
+                "automation_overview", "plugin_op_everywhere"}  # fleet-wide on FleetOrchestrator
     classified = (_PER_SESSION | _FANOUT_BY_IDS | set(_MERGE_ALL_HOSTS)
                   | PRIMARY_LOCAL | EXPLICIT)
 

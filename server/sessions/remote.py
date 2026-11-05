@@ -1552,6 +1552,20 @@ class RemoteOrchestrator:
         """Drop this daemon's cached Codex credentials for an account."""
         return await self._client.call("codex_invalidate_credentials", account=account)
 
+    async def plugin_op(self, op: str, args: dict) -> dict:
+        """One Claude plugin/marketplace op on this daemon's host (D-16c). The deadline is
+        the CLI's own plus transport, enforced by httpx (never cancelled from outside). An
+        old daemon answers UnknownMethod, which ``plugin_cli.host_outcome`` reports as
+        ``daemon_outdated``."""
+        from server.library.plugin_cli import RPC_TIMEOUT_S
+        return await self._client.call("plugin_op", op=op, args=args, timeout=RPC_TIMEOUT_S)
+
+    async def plugin_op_everywhere(self, op: str, args: dict) -> list[dict]:
+        """Remote mode without a fleet: the one daemon is this host's."""
+        from server.hostname import self_host_name
+        from server.library.plugin_cli import host_outcome
+        return [await host_outcome(self_host_name(), self.plugin_op(op, args))]
+
     async def refine_prompt_codex(
         self, account: str, prompt: str, *, timeout_s: float | None = None,
     ) -> str | None:

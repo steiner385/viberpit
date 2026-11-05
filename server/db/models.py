@@ -569,6 +569,10 @@ class AppSettings(Base):
     # The output style a coding session spawns with when it has none of its own (D-16a).
     # NULL = the CLI's own ``default``. Nullable for backfill.
     default_output_style: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # The owner's confirmed plugin marketplaces (D-16c, D1): a JSON object {name:
+    # normalized source} (server/library/curated.py). NULL = none confirmed. Nullable
+    # for backfill.
+    curated_marketplaces: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class SessionQueue(Base):

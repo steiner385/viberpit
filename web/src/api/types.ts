@@ -906,6 +906,10 @@ export interface LibraryPlugin {
   category?: string | null
   components: LibraryComponentCounts
   tokenCost?: { alwaysOn: number; onInvoke: number } | null
+  /** D3: the CLI updates this plugin's marketplace on startup. */
+  autoUpdate?: boolean
+  /** The marketplace's `source` object from `known_marketplaces.json` (untrusted), or null. */
+  source?: unknown
 }
 
 export interface LibraryPluginDetail extends LibraryPlugin {
@@ -916,15 +920,80 @@ export interface LibraryPluginDetail extends LibraryPlugin {
   hasHooks: boolean
 }
 
+/** D-16c: `confirmed` = installable at `confirmedSource`; anything else must be (re-)confirmed. */
+export type MarketplaceCuration = 'confirmed' | 'unconfirmed' | 'source_changed'
+
 export interface LibraryMarketplace {
   name: string
-  source?: string | null
+  /** The raw `source` object from `known_marketplaces.json` (untrusted). */
+  source?: unknown
   lastUpdated?: string | null
+  autoUpdate?: boolean
+  /** What a Confirm must echo back; null = cannot be confirmed (local, http, pinned, unknown). */
+  normalizedSource?: string | null
+  confirmedSource?: string | null
+  curation?: MarketplaceCuration
 }
 
 export interface LibraryPluginsResponse {
   plugins: LibraryPlugin[]
   marketplaces: LibraryMarketplace[]
+  /** The `VIBERPIT_PLUGIN_INSTALL_ENABLED` kill switch: false hides install, update, add and confirm. */
+  installEnabled?: boolean
+}
+
+/** One host's answer to a fanned-out plugin operation (D2). `noop` = already in the goal state. */
+export interface PluginHostOutcome {
+  host: string
+  outcome: 'ok' | 'noop' | 'failed'
+  failureCode?: string
+  message?: string
+  version?: string
+  marketplace?: string
+  reason?: string
+}
+
+/** Every plugin/marketplace mutation answers this, 200 even on a partial failure. */
+export interface PluginOpResult {
+  op: string
+  ok: boolean
+  hosts: PluginHostOutcome[]
+}
+
+export interface PluginComponentsSummary {
+  hooks: number
+  mcpServers: number
+  lspServers?: number
+  agents: number
+  skills: number
+}
+
+export interface PluginBrowseEntry {
+  pluginId: string
+  name: string
+  description: string | null
+  marketplace: string
+  version: string | null
+  /** True only for reviewed Anthropic Directory listings (the server never sends unreviewed ones). */
+  reviewed: boolean
+  /** null = unknown: the consent card says so. */
+  components: PluginComponentsSummary | null
+  installed: boolean
+}
+
+export interface PluginBrowseResponse {
+  plugins: PluginBrowseEntry[]
+  total: number
+  offset: number
+  limit: number
+  installEnabled: boolean
+}
+
+export interface PluginBrowseQuery {
+  q: string
+  marketplace: string
+  offset: number
+  limit: number
 }
 
 export interface LibrarySkill {

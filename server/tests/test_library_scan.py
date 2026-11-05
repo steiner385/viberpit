@@ -65,7 +65,8 @@ def test_list_plugins_merges_registry_and_enabled(shared: Path):
     assert p["enabled"] is True
     assert p["version"] == "1.0.0"
     assert out["marketplaces"] == [
-        {"name": "test-market", "source": "github:test/market", "lastUpdated": "2026-06-01"}
+        {"name": "test-market", "source": "github:test/market", "lastUpdated": "2026-06-01",
+         "autoUpdate": False}
     ]
 
 

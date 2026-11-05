@@ -393,6 +393,9 @@ def register_orchestrator_rpc(app, orch) -> None:
         # over its own mTLS connection, never through the edge).
         "codex_models", "codex_account_status", "codex_invalidate_credentials",
         "codex_validate_model", "refine_prompt_codex",
+        # D-16c: one Claude plugin/marketplace op on this host — an outcome dict of JSON
+        # scalars ({outcome, failureCode?, message?, version?, marketplace?}).
+        "plugin_op",
         "session_queue_move", "session_queue_cancel", "start_queued_now", "session_queue_positions", "maybe_start_queued",
         "git_credential_alerts", "dismiss_git_credential_alert",
         "list_adoptable_candidates", "migrate_archive_home", "cloned_repos",

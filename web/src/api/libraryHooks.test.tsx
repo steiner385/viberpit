@@ -18,7 +18,7 @@ vi.mock('./client', () => ({
   },
 }))
 
-import { useLibraryPlugins, useTogglePlugin } from './hooks'
+import { useAddMarketplace, useLibraryPlugins, usePluginBrowse, useTogglePlugin } from './pluginHooks'
 import { api } from './client'
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -37,5 +37,19 @@ describe('library hooks', () => {
     result.current.mutate({ id: 'a@m', enabled: false })
     await waitFor(() =>
       expect(api.patch).toHaveBeenCalledWith('/library/plugins/a%40m', { enabled: false }))
+  })
+
+  it('browse sends search, filter and page to the server', async () => {
+    renderHook(() => usePluginBrowse({ q: 'lint me', marketplace: 'acme', offset: 20, limit: 20 }), { wrapper })
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith(
+      '/library/plugins/browse?offset=20&limit=20&q=lint+me&marketplace=acme'))
+  })
+
+  it('marketplace add posts the reviewed source with confirm: true', async () => {
+    vi.mocked(api.post).mockResolvedValue({ op: 'marketplace_add', ok: true, hosts: [], marketplaces: [] })
+    const { result } = renderHook(() => useAddMarketplace(), { wrapper })
+    result.current.mutate('acme/tools')
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith('/library/marketplaces', { source: 'acme/tools', confirm: true }))
   })
 })

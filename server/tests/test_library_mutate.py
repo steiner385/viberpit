@@ -18,28 +18,6 @@ def shared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return base
 
 
-def test_set_plugin_enabled_roundtrip(shared: Path):
-    (shared / "settings.json").write_text(json.dumps({
-        "enabledPlugins": {"a@m": True},
-        "permissions": {"allow": ["Bash"]},   # must survive untouched
-    }))
-    assert mutate.set_plugin_enabled("a@m", False) is True
-    data = json.loads((shared / "settings.json").read_text())
-    assert data["enabledPlugins"]["a@m"] is False
-    assert data["permissions"] == {"allow": ["Bash"]}
-    assert mutate.set_plugin_enabled("unknown@m", True) is False
-
-
-def test_set_plugin_enabled_known_via_registry(shared: Path):
-    (shared / "plugins").mkdir()
-    (shared / "plugins" / "installed_plugins.json").write_text(json.dumps(
-        {"version": 2, "plugins": {"b@m": [{"installPath": "/x", "version": "1"}]}}
-    ))
-    assert mutate.set_plugin_enabled("b@m", True) is True
-    data = json.loads((shared / "settings.json").read_text())
-    assert data["enabledPlugins"]["b@m"] is True
-
-
 def test_skill_crud(shared: Path):
     mutate.write_skill("new-skill", "---\nname: new-skill\n---\nbody\n")
     created = scan.read_skill("new-skill")
@@ -94,14 +72,6 @@ def test_validate_mcp_config():
     assert mutate.validate_mcp_config({"command": ""}) is not None
     assert mutate.validate_mcp_config({"command": "b", "args": "notalist"}) is not None
     assert mutate.validate_mcp_config({"type": "sse", "url": "https://x", "headers": {"A": "b"}}) is None
-
-
-def test_set_plugin_enabled_corrupt_settings_raises(shared: Path):
-    settings_path = shared / "settings.json"
-    settings_path.write_text("not json")
-    with pytest.raises(mutate.ConfigUnreadableError):
-        mutate.set_plugin_enabled("a@m", True)
-    assert settings_path.read_text() == "not json"
 
 
 def test_put_mcp_server_corrupt_shared_raises(shared: Path):

@@ -24,7 +24,6 @@ import { PresetsSection } from './sections/PresetsSection'
 import { TemplatesSection } from './sections/TemplatesSection'
 import { PermissionProfilesSection } from './sections/PermissionProfilesSection'
 import { PermissionRulesSection } from './sections/PermissionRulesSection'
-import { PluginsSection } from './sections/PluginsSection'
 import { SkillsSection } from './sections/SkillsSection'
 import { CommandsSection } from './sections/CommandsSection'
 import { McpSection } from './sections/McpSection'
@@ -34,6 +33,8 @@ import { McpSection } from './sections/McpSection'
 const MemorySection = lazy(() => import('./sections/MemorySection'))
 // Lazy (D-16a), like Memory: the default picker and the style viewer are their own chunk.
 const OutputStylesSection = lazy(() => import('./sections/OutputStylesSection'))
+// Lazy (D-16c): marketplaces, browse and the consent card are their own chunk.
+const PluginsSection = lazy(() => import('./sections/PluginsSection'))
 
 export type SettingsBadgeKey = 'accountsAttention' | 'deployPending'
 

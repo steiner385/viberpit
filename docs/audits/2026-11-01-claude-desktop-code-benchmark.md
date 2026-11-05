@@ -62,15 +62,15 @@ Full inventories, with an evidence tag on every item:
 | 1 Shell & IA | 11.5 / 16 | 72% |
 | 2 Transcript | 21 / 21 | 100% |
 | 3 Composer | 27.5 / 29 | 95% |
-| 4 Commands & config | 14 / 15 | 93% |
+| 4 Commands & config | 15 / 15 | 100% |
 | 5 Settings | 5.5 / 8 | 69% |
 | 6 User feedback | 18 / 19 | 95% |
 | 7 Lifecycle & branching | 22.5 / 25 | 90% |
 | 8 Code review & dev | 8.5 / 12 | 71% |
 | 9 Shortcuts & a11y | 8 / 8 | 100% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **144.5 / 161** | **90%** |
-| **Target completion** (excl. rejected rows) | **142 / 151** | **94%** |
+| **Overall (weighted)** | **145.5 / 161** | **90%** |
+| **Target completion** (excl. rejected rows) | **143 / 151** | **95%** |
 
 ### 1 Shell & IA
 
@@ -127,7 +127,7 @@ Full inventories, with an evidence tag on every item:
 |---|:-:|:-:|---|
 | Engine slash-command passthrough | 3 | ✅ |  |
 | App-handled /fork /rewind /btw /plan /effort /fast | 2 | ✅ | /help /context /clear /model /account /mcp /fork /rewind /btw (opens the side chat and sends; D-12) /effort /fast (D-14) /plan /output-style (D-16a, human senders only); /add-dir out of scope (not in D15) |
-| Plugins + marketplace browse/install | 2 | ◐ | enable/disable + detail; no marketplace |
+| Plugins + marketplace browse/install | 2 | ✅ | curated marketplaces + reviewed Directory; consent card; every host (D-16c) |
 | Skills management | 1 | ✅ |  |
 | MCP servers + per-tool toggles | 2 | ✅ | servers, OAuth, scope; per-tool switches: Settings default + live per-session override (D-16b) |
 | CLAUDE.md / memory-file editor | 2 | ✅ | as decided (D8): the Context card lists every memory file the CLI loaded, with tokens, each viewable; Settings › Memory edits the user CLAUDE.md shared by every account (etag conflict, Keep my draft); repo files read-only. Claude only (Codex reports none); type labels are the CLI's (rules/imports show as User/Project); rocky sees a save after up to 10 min (#3246) (D-13) |
@@ -217,19 +217,18 @@ Full inventories, with an evidence tag on every item:
 | 3 | Pin / star sessions | 1 Shell & IA | 1 |
 | 4 | ⌘K palette over sessions + branches | 1 Shell & IA | 1 |
 | 5 | Effort picker in session | 3 Composer | 1 |
-| 6 | Plugins + marketplace browse/install | 4 Commands & config | 1 |
-| 7 | Sandbox settings | 5 Settings | 1 |
-| 8 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
-| 9 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
-| 10 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
-| 11 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
-| 12 | Pop session into own window | 1 Shell & IA | 0.5 |
-| 13 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
-| 14 | Worktree location / policy | 5 Settings | 0.5 |
-| 15 | Notification levels per event type | 5 Settings | 0.5 |
-| 16 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
-| 17 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
-| 18 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
+| 6 | Sandbox settings | 5 Settings | 1 |
+| 7 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
+| 8 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
+| 9 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
+| 10 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
+| 11 | Pop session into own window | 1 Shell & IA | 0.5 |
+| 12 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
+| 13 | Worktree location / policy | 5 Settings | 0.5 |
+| 14 | Notification levels per event type | 5 Settings | 0.5 |
+| 15 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 16 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 17 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 

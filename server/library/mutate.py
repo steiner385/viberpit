@@ -15,7 +15,7 @@ from viberpit import paths
 from viberpit.creds import write_json_secure
 
 from .names import resolve_under
-from .scan import installed_registry, read_json_safe
+from .scan import read_json_safe
 from .snapshots import snapshot_before_mutation
 
 
@@ -46,18 +46,6 @@ def _write_text_atomic(path: Path, content: str) -> None:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp)
         raise
-
-
-def set_plugin_enabled(plugin_id: str, enabled: bool) -> bool:
-    snapshot_before_mutation()  # #604: cheap pre-mutation safety net (best-effort)
-    settings_path = paths.shared_base() / "settings.json"
-    data = _load_or_empty(settings_path)
-    known = data.get("enabledPlugins") or {}
-    if plugin_id not in known and plugin_id not in installed_registry():
-        return False
-    data.setdefault("enabledPlugins", {})[plugin_id] = enabled
-    write_json_secure(settings_path, data)
-    return True
 
 
 def _skill_dir(name: str) -> Path:
