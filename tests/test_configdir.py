@@ -128,6 +128,32 @@ class TestComposeOnEnvelopeRunner(unittest.TestCase):
                 ce.reset_runner_store()
 
 
+class TestComposeOnWorkerPurgesPushedKeys(unittest.TestCase):
+    """#3287: a worker composes from the pushed MCP view and purges the keys pushed with it."""
+
+    def test_pushed_drop_keys_leave_the_dir(self):
+        with temp_env():
+            from viberpit import configdir, paths
+            from viberpit.creds import write_json_secure
+            from viberpit.mcp_view_store import reset_runner_view, runner_view
+            write_json_secure(paths.slot_path("alpha"), {"accessToken": "A", "expiresAt": 9})
+            write_json_secure(paths.account_cfg_dir("alpha") / ".credentials.json",
+                              {"claudeAiOauth": {"accessToken": "A"},
+                               "mcpOAuth": {"moved": {"accessToken": "stale"},
+                                            "kept": {"accessToken": "k", "refreshToken": "r"}}})
+            reset_runner_view()
+            try:
+                with mock.patch.dict(os.environ, {"VIBERPIT_DAEMON_ROLE": "worker",
+                                                  "VIBERPIT_CLAUDE_CREDS_DIR": str(paths.root() / "ec")}):
+                    runner_view().sync({"live": {"accessToken": "L", "expiresAt": 9e12}}, ["moved", "kept"])
+                    cfg = configdir.compose("alpha")
+                    mcp = json.loads((cfg / ".credentials.json").read_text())["mcpOAuth"]
+                    self.assertEqual(mcp, {"live": {"accessToken": "L", "expiresAt": 9e12},
+                                           "kept": {"accessToken": "k", "refreshToken": "r"}})
+            finally:
+                reset_runner_view()
+
+
 # --- compose publishes the shared MCP store's public view (spec 2026-10-13) ----------------
 
 def _compose_with(dir_mcp, store_mcp):

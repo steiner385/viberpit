@@ -160,6 +160,17 @@ def update_mcp_clients(update: Callable[[dict], dict], path: Path | None = None)
         return updated
 
 
+def pushed_drop_keys() -> frozenset[str]:
+    """The purge keys the authority pushed with the MCP view (#3287): on a worker, the grant
+    reconcile's live tombstones as of the last ``creds_sync``; empty on the edge, which gets
+    them from the reconcile directly. The one place the pushed drop set is read."""
+    if fleet_role.is_worker():
+        from .mcp_view_store import runner_view  # the view store imports public_view from here
+
+        return runner_view().drop_keys()
+    return frozenset()
+
+
 def read_shared_mcp() -> dict:
     """The shared MCP store: on a worker that has received a push, the authority's view as
     pushed (#3287); the file (``store/mcp.shared.json``, or ``{}`` when absent) otherwise."""
@@ -238,6 +249,15 @@ def public_view(bundle: dict) -> dict:
 
 def _holds_refresh_token(blob: object) -> bool:
     return isinstance(blob, dict) and bool(blob.get("refreshToken"))
+
+
+def unmerged_offers(offers: dict, store: dict) -> frozenset[str]:
+    """Keys of *offers* that *store* has not caught up with: the ones the store policy
+    (:func:`merge_mcp_bundles`, not explicit) would still take. A runner keeps such a dir
+    copy — refresh token included — until a pushed view holds it, so a terminal login is
+    never stripped from the only place it exists before the edge has merged it (#3287)."""
+    merged = merge_mcp_bundles(store, offers)
+    return frozenset(k for k, v in offers.items() if merged.get(k) is v)
 
 
 def offerable_mcp(dir_mcp: dict, store: dict, *, drop: frozenset[str] = frozenset()) -> dict:
@@ -346,11 +366,15 @@ def write_credentials(path: Path, data: dict) -> None:
 
 
 def sync_cfg_mcp_oauth(cfg_dir: Path, *, server: str | None = None,
-                       drop: frozenset[str] = frozenset()) -> bool:
+                       drop: frozenset[str] = frozenset(), store: dict | None = None) -> bool:
     """The one dir <-> store MCP OAuth sync for ONE cfg dir's .credentials.json, in place.
 
     1. Capture: the dir's refresh-token-bearing bundles merge into the shared store.
     2. Publish: the store's public view lands in the dir per :func:`publish_mcp`.
+
+    *store* overrides :func:`read_shared_mcp` for the publish (the runner passes the pushed
+    view minus the keys its dir copy is still ahead of, :func:`unmerged_offers`). The keys
+    the authority pushed as purged (:func:`pushed_drop_keys`) are always in *drop*.
 
     Refresh-less keys in *drop* are neither captured nor kept: they leave the dir. A bundle
     holding a refresh token is captured and kept whatever *drop* says.
@@ -368,8 +392,10 @@ def sync_cfg_mcp_oauth(cfg_dir: Path, *, server: str | None = None,
     current = read_json(path)
     existing = current.get("mcpOAuth")
     existing = existing if isinstance(existing, dict) else {}
+    drop = drop | pushed_drop_keys()
     capture_cfg_mcp(existing, drop=drop)
-    merged = publish_mcp(existing, read_shared_mcp(), server=server, drop=drop)
+    merged = publish_mcp(existing, read_shared_mcp() if store is None else store,
+                         server=server, drop=drop)
     if merged == existing:
         return False
     after = path.stat()

@@ -9,8 +9,8 @@ import time
 from pathlib import Path
 
 from . import paths
-from .creds import (capture_cfg_mcp, compose_credentials, publish_mcp, read_credentials, read_json,
-                    read_shared_mcp, write_json_secure)
+from .creds import (capture_cfg_mcp, compose_credentials, publish_mcp, pushed_drop_keys, read_credentials,
+                    read_json, read_shared_mcp, write_json_secure)
 
 log = logging.getLogger(__name__)
 
@@ -346,8 +346,9 @@ def compose(name: str) -> Path:
         # cleared bundle is not resurrected.
         cred_path = cfg_dir / CREDENTIALS_NAME
         dir_mcp = _dir_mcp_oauth(cred_path)
+        # A worker publishes the pushed view and purges the keys pushed with it (#3287).
         capture_cfg_mcp(dir_mcp)
-        mcp = publish_mcp(dir_mcp, read_shared_mcp())
+        mcp = publish_mcp(dir_mcp, read_shared_mcp(), drop=pushed_drop_keys())
         write_json_secure(cred_path, compose_credentials(claude_oauth, mcp))
 
     # Write .claude.json (real file, never a symlink)

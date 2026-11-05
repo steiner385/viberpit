@@ -120,16 +120,41 @@ def test_local_login_is_offered_then_stripped(home, monkeypatch):
     res = _sync(app, mcp_bundles={}, mcp_drop=[])
     assert res["mcp_offers"] == {"k": login}
     assert _mcp(path) == {"k": login}
-    # the edge kept an OLDER bundle for that key: still offered (read before the publish),
-    # but the publish replaces the refresh-bearing dir copy with the public view
-    edge = {"accessToken": "edge", "expiresAt": 1}
-    res = _sync(app, mcp_bundles={"k": edge}, mcp_drop=[])
+    # the view still holds an OLDER bundle for that key (the edge has not merged the offer,
+    # or the merge failed): offered again and the dir copy is left alone — publishing the
+    # view over it would strip the only refresh token there is
+    older = {"accessToken": "edge", "expiresAt": 1}
+    res = _sync(app, mcp_bundles={"k": older}, mcp_drop=[])
     assert res["mcp_offers"] == {"k": login}
-    assert _mcp(path) == {"k": edge}
+    assert _mcp(path) == {"k": login}
+    # the view has caught up (the edge merged the offer): offered once more (read before
+    # the publish; the edge's merge is idempotent) and then stripped
+    merged = {"accessToken": "d", "expiresAt": 9e12}
+    res = _sync(app, mcp_bundles={"k": merged}, mcp_drop=[])
+    assert res["mcp_offers"] == {"k": login}
+    assert _mcp(path) == {"k": merged}
     assert "MCP-REFRESH-SECRET" not in path.read_text()
     # nothing left to offer once the dir holds the public view
-    res = _sync(app, mcp_bundles={"k": edge}, mcp_drop=[])
+    res = _sync(app, mcp_bundles={"k": merged}, mcp_drop=[])
     assert "mcp_offers" not in res
+
+
+def test_relogin_over_a_dead_grant_is_kept_until_the_view_holds_it(home, monkeypatch):
+    """Spec §6 on a runner: the store bundle is in the CLI's cleared shape (dead grant) and
+    the user re-ran `claude mcp login` on the runner for the same key."""
+    _mounts(monkeypatch, LOCAL)
+    login = {"accessToken": "fresh", "refreshToken": "MCP-REFRESH-SECRET", "expiresAt": 9e12}
+    path = _account(home, "acct", {"k": login})
+    cleared = {"accessToken": "", "expiresAt": 0}
+    res = _sync(_app(), mcp_bundles={"k": cleared}, mcp_drop=[])
+    assert res["mcp_offers"] == {"k": login}
+    assert _mcp(path) == {"k": login}  # not replaced by the cleared view
+    merged = {"accessToken": "fresh", "expiresAt": 9e12}
+    res = _sync(_app(), mcp_bundles={"k": merged}, mcp_drop=[])
+    assert res["mcp_offers"] == {"k": login}  # read before this push's publish stripped it
+    assert _mcp(path) == {"k": merged}
+    assert "MCP-REFRESH-SECRET" not in path.read_text()
+    assert "mcp_offers" not in _sync(_app(), mcp_bundles={"k": merged}, mcp_drop=[])
 
 
 def test_shared_mount_tree_is_never_written(home, monkeypatch):

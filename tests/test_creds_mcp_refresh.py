@@ -277,3 +277,28 @@ def test_one_short_name_helper():
     assert short_name("plugin:railway:railway") == "railway" and short_name("notion") == "notion"
     assert store.short_name is short_name
     assert not hasattr(mcp_auth, "_bare")
+
+
+def test_unmerged_offers_are_the_keys_the_store_would_still_take():
+    from viberpit.creds import unmerged_offers
+    store = {"behind": {"accessToken": "s", "expiresAt": 1},
+             "ahead": {"accessToken": "s", "expiresAt": 9},
+             "cleared": {"accessToken": "", "expiresAt": 0}}
+    offers = {"behind": {"accessToken": "d", "refreshToken": "r", "expiresAt": 5},
+              "ahead": {"accessToken": "d", "refreshToken": "r", "expiresAt": 5},
+              "cleared": {"accessToken": "d", "refreshToken": "r", "expiresAt": 5},
+              "new": {"accessToken": "d"}}
+    assert unmerged_offers(offers, store) == frozenset({"behind", "cleared", "new"})
+    assert unmerged_offers({}, store) == frozenset()
+
+
+def test_pushed_drop_keys_only_on_a_worker_with_a_view(_runner_state, monkeypatch):
+    from viberpit.creds import pushed_drop_keys
+    from viberpit.mcp_view_store import runner_view
+    assert pushed_drop_keys() == frozenset()  # primary
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
+    assert pushed_drop_keys() == frozenset()  # never synced
+    runner_view().sync({}, ["gone"])
+    assert pushed_drop_keys() == frozenset({"gone"})
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE")
+    assert pushed_drop_keys() == frozenset()  # the edge never reads the view
