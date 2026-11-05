@@ -228,40 +228,45 @@ METRICS_FILE = "metrics.json"
 _METRICS_MAX_BYTES = 1 << 20
 
 
+class MetricsContractError(ValueError):
+    """The artifact broke the ``metrics.json`` contract (``"metrics.json: <reason>"``).
+    Only the zip / document parse raises it; a failed or garbled GitHub read does not."""
+
+
 def _parse_metrics_zip(blob: bytes) -> dict:
     try:
         with zipfile.ZipFile(io.BytesIO(blob)) as z:
             try:
                 info = z.getinfo(METRICS_FILE)
             except KeyError:
-                raise ValueError(f"{METRICS_FILE}: not in the {METRICS_ARTIFACT} artifact") from None
+                raise MetricsContractError(f"{METRICS_FILE}: not in the {METRICS_ARTIFACT} artifact") from None
             # Bounded read: the header's file_size is the uploader's claim, not a limit.
             with z.open(info) as f:
                 raw = f.read(_METRICS_MAX_BYTES + 1)
             if len(raw) > _METRICS_MAX_BYTES:
-                raise ValueError(f"{METRICS_FILE}: larger than {_METRICS_MAX_BYTES} bytes")
+                raise MetricsContractError(f"{METRICS_FILE}: larger than {_METRICS_MAX_BYTES} bytes")
     except (zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError, RuntimeError) as exc:
         # RuntimeError: an encrypted member; NotImplementedError: an unknown compression.
-        raise ValueError(f"{METRICS_FILE}: bad zip: {exc}") from None
+        raise MetricsContractError(f"{METRICS_FILE}: bad zip: {exc}") from None
     try:
         doc = json.loads(raw)
     except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError
-        raise ValueError(f"{METRICS_FILE}: bad JSON: {exc}") from None
+        raise MetricsContractError(f"{METRICS_FILE}: bad JSON: {exc}") from None
     if not isinstance(doc, dict):
-        raise ValueError(f"{METRICS_FILE}: expected a JSON object")
+        raise MetricsContractError(f"{METRICS_FILE}: expected a JSON object")
     if doc.get("version") != 1:
-        raise ValueError(f"{METRICS_FILE}: unsupported version {doc.get('version')!r}")
+        raise MetricsContractError(f"{METRICS_FILE}: unsupported version {doc.get('version')!r}")
     if not isinstance(doc.get("metrics"), dict):
-        raise ValueError(f"{METRICS_FILE}: 'metrics' is not an object")
+        raise MetricsContractError(f"{METRICS_FILE}: 'metrics' is not an object")
     return doc
 
 
 def metrics_artifact(repo: str, run_id: int, *, run=None, run_bytes=None,
                      sleep=time.sleep) -> dict | None:
     """The parsed ``metrics.json`` of the run's ``viberpit-metrics`` artifact, or None
-    when the run has no such artifact or it has expired. Raises ``ValueError``
-    (``"metrics.json: <reason>"``) on a bad zip or document; a failed gh read
-    propagates."""
+    when the run has no such artifact or it has expired. Raises
+    :class:`MetricsContractError` (a ``ValueError``, ``"metrics.json: <reason>"``) on a
+    bad zip or document; any other failure (gh, a garbled listing) propagates as is."""
     run = run or _run_gh_for(repo)
     data = _json(run(["api", f"repos/{repo}/actions/runs/{run_id}/artifacts"]))
     artifact = next((a for a in data.get("artifacts", [])

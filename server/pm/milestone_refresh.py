@@ -25,6 +25,7 @@ from sqlalchemy import func, select
 
 from server.db import db_session
 from server.db.models import MilestoneLadder, MilestoneMeasurement, ProjectRepo
+from server.github.actions_api import MetricsContractError
 from server.github.host_failures import log_gh_failure
 from server.pm.map_changes import resolve_default_branch
 from server.pm.milestone_def import LadderDef, Measure, from_json
@@ -227,7 +228,7 @@ async def _read_metrics_run(project_id: str, repo: str, workflow: str, runs: lis
     for run in ok[:CI_METRIC_PROBE_RUNS]:
         try:
             doc = await asyncio.to_thread(read_metrics, repo, int(run["id"]))
-        except ValueError as exc:
+        except MetricsContractError as exc:
             return str(exc)
         except Exception as exc:
             log_gh_failure(log, str(exc), "milestone_refresh.metrics_artifact_failed project=%s",
@@ -243,9 +244,16 @@ def _metric_reading(metric: str, run: dict, doc: dict) -> Reading:
     if metric not in metrics:
         return _error(f"metric '{metric}' missing")
     v = metrics[metric]
-    if isinstance(v, bool) or not isinstance(v, int | float) or not math.isfinite(v):
-        return _error(f"metric '{metric}' is not a number")
-    return Reading({"n": float(v)}, parse_iso_utc(run.get("updated_at")), None, run.get("html_url"))
+    not_a_number = _error(f"metric '{metric}' is not a number")
+    if isinstance(v, bool) or not isinstance(v, int | float):
+        return not_a_number
+    try:
+        n = float(v)  # OverflowError: an int too big for a float (a 400-digit literal)
+    except (OverflowError, TypeError, ValueError):
+        return not_a_number
+    if not math.isfinite(n):
+        return not_a_number
+    return Reading({"n": n}, parse_iso_utc(run.get("updated_at")), None, run.get("html_url"))
 
 
 async def _read_ci_metrics(project_id: str, ladder: LadderDef, *, primary_repo: str,

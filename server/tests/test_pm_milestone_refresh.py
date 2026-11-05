@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from server.db import db_session
 from server.db.models import MilestoneLadder, MilestoneMeasurement, Project, ProjectRepo
+from server.github.actions_api import MetricsContractError
 from server.pm.milestone_def import parse_ladder, to_json
 from server.pm.milestone_refresh import (
     RefreshResult,
@@ -568,8 +569,25 @@ async def test_ci_metric_no_successful_run_is_unknown(isolated_db):
 
 @pytest.mark.asyncio
 async def test_ci_metric_bad_metrics_json_is_unknown(isolated_db):
-    rows, _r, _b = await _ci_refresh(_Metrics({4: ValueError("metrics.json: bad JSON")}))
+    rows, _r, _b = await _ci_refresh(_Metrics({4: MetricsContractError("metrics.json: bad JSON")}))
     assert rows[("a", "rubric")].error == "metrics.json: bad JSON"
+
+
+@pytest.mark.asyncio
+async def test_ci_metric_garbled_listing_is_a_read_failure_not_a_contract_error(isolated_db):
+    """A truncated artifact-list body raises JSONDecodeError (a plain ValueError): a
+    failed read, not the product breaking the metrics.json contract."""
+    rows, _r, _b = await _ci_refresh(_Metrics({4: json.JSONDecodeError("Expecting value", "<html", 0)}))
+    assert rows[("a", "rubric")].error == "metrics artifact read failed"
+
+
+@pytest.mark.asyncio
+async def test_ci_metric_huge_int_is_not_a_number_and_refresh_completes(isolated_db):
+    rows, _r, _b = await _ci_refresh(_Metrics({4: _metrics(gap=10 ** 400)}))
+    row = rows[("a", "rubric")]
+    assert row.status == "unknown" and row.error == "metric 'gap' is not a number"
+    assert rows[("numbers", "gap")].error == "metric 'gap' is not a number"
+    assert rows[("leaves:a", "leaves")].error is None
 
 
 @pytest.mark.asyncio

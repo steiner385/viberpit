@@ -9,7 +9,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from server.github.actions_api import METRICS_ARTIFACT, METRICS_FILE, metrics_artifact
+from server.github.actions_api import (
+    METRICS_ARTIFACT,
+    METRICS_FILE,
+    MetricsContractError,
+    metrics_artifact,
+)
 
 
 def _ok(payload) -> SimpleNamespace:
@@ -76,8 +81,17 @@ def test_expired_artifact_returns_none():
 ])
 def test_bad_json_raises_value_error(blob):
     fake = _Fake([{"id": 9, "name": METRICS_ARTIFACT, "expired": False}], blob)
-    with pytest.raises(ValueError, match=r"^metrics\.json: "):
+    with pytest.raises(MetricsContractError, match=r"^metrics\.json: "):
         _read(fake)
+
+
+def test_garbled_listing_is_not_a_contract_error():
+    """Only the zip / metrics.json parse is the contract; a bad listing body is a read failure."""
+    fake = _Fake([])
+    fake.run = lambda args, token=None: SimpleNamespace(returncode=0, stdout="<html>", stderr="")
+    with pytest.raises(ValueError) as info:
+        _read(fake)
+    assert not isinstance(info.value, MetricsContractError)
 
 
 @pytest.mark.parametrize("doc", [
@@ -87,5 +101,5 @@ def test_bad_json_raises_value_error(blob):
 ])
 def test_wrong_version_raises(doc):
     fake = _Fake([{"id": 9, "name": METRICS_ARTIFACT, "expired": False}], _zip(json.dumps(doc)))
-    with pytest.raises(ValueError, match=r"^metrics\.json: "):
+    with pytest.raises(MetricsContractError, match=r"^metrics\.json: "):
         _read(fake)
