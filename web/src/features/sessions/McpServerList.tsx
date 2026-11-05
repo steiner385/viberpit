@@ -10,12 +10,11 @@ import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { useReconnectSessionMcp, useSessionMcp } from '@/api/hooks'
 import { useSetSessionMcpTool, useToggleSessionMcp } from '@/api/mcpScopeHooks'
-import { apiErrorCode } from '@/api/client'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import type { McpServerState } from '@/api/types'
 import { McpStatusPill } from '@/features/settings/sections/McpStatusPill'
 import { McpAuthFlow } from '@/features/settings/sections/McpAuthFlow'
-import { shortName } from '@/features/settings/sections/mcpStatus'
+import { isMcpScopeDisabled, mcpMutationErrorMessage, shortName } from '@/features/settings/sections/mcpStatus'
 import { McpToolSwitchList } from '@/features/settings/sections/McpToolSwitchList'
 
 interface Props {
@@ -40,7 +39,7 @@ export function McpServerList({ sessionId, account, servers, toolSwitches = fals
   const [toolsOpen, setToolsOpen] = useState<string | null>(null)
 
   // Kill switch: the first toggle's 404 mcp_scope_disabled hides the switches.
-  const switchesHidden = toggle.isError && apiErrorCode(toggle.error) === 'mcp_scope_disabled'
+  const switchesHidden = toggle.isError && isMcpScopeDisabled(toggle.error)
   const errMessage = reconnect.isError ? extractMutationErrorMessage(reconnect.error, 'Reconnect failed') : null
   const toggleError = toggle.isError && !switchesHidden ? extractMutationErrorMessage(toggle.error, 'Toggle failed') : null
 
@@ -184,7 +183,7 @@ function SessionToolSwitches({ sessionId, server, warned }: { sessionId: string;
       {body}
       {setTool.isError && (
         <p role="alert" className="text-danger break-words">
-          {extractMutationErrorMessage(setTool.error, 'Could not change the tool.')}
+          {mcpMutationErrorMessage(setTool.error, 'Could not change the tool.')}
         </p>
       )}
     </div>

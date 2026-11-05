@@ -37,15 +37,14 @@ async def disabled_for_session(*, repo: str | None, session_id: str | None) -> l
 
 async def tool_rules_for_session(session_id: str) -> McpToolRules | None:
     """The per-tool rules a session's CLI start applies (D-16b): the Settings defaults and
-    the session's persisted overrides. None — apply nothing — when the
-    ``mcp_scope_enabled`` or ``VIBERPIT_FLAG_SETTINGS_ENABLED`` kill switch is off or the
-    rules could not be read (DEBUG: a failed read never blocks a start)."""
+    the session's persisted overrides. None — the feature does not apply — when the
+    ``mcp_scope_enabled`` or ``VIBERPIT_FLAG_SETTINGS_ENABLED`` kill switch is off.
+
+    A failed read RAISES: unreadable is not "no rules". The driver retries it once and
+    then fails closed (``ClaudeAgentDriver._apply_mcp_tool_denies``: not enforced, a
+    notice, a WARNING), so a DB blip never silently turns every disabled tool on."""
     from server.sessions.engine import flag_settings_enabled
     if not get_settings().mcp_scope_enabled or not flag_settings_enabled():
         return None
-    try:
-        return McpToolRules(defaults=await store.tool_defaults(),
-                            overrides=await store.session_tool_overrides(session_id))
-    except Exception:
-        log.debug("mcp tool rules unavailable session=%s", session_id, exc_info=True)
-        return None
+    return McpToolRules(defaults=await store.tool_defaults(),
+                        overrides=await store.session_tool_overrides(session_id))

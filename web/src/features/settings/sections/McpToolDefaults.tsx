@@ -5,9 +5,8 @@
  * feature is off (404 `mcp_scope_disabled`) or still loading.
  */
 import { useMcpScope, useSetMcpToolDefault } from '@/api/mcpScopeHooks'
-import { extractMutationErrorMessage } from '@/api/queryClient'
 import { McpToolSwitchList } from './McpToolSwitchList'
-import { relativeAge, shortName } from './mcpStatus'
+import { mcpMutationErrorMessage, relativeAge, shortName } from './mcpStatus'
 
 const EMPTY_HINT = 'Test the server to load its tools.'
 
@@ -59,7 +58,7 @@ export function McpToolDefaults({ serverKey, id }: { serverKey: string; id: stri
       />
       {setTool.isError && (
         <p role="alert" className="text-xs text-danger break-words">
-          {extractMutationErrorMessage(setTool.error, 'Could not change the tool.')}
+          {mcpMutationErrorMessage(setTool.error, 'Could not change the tool.')}
         </p>
       )}
     </div>

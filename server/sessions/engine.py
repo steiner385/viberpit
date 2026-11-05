@@ -369,7 +369,8 @@ class AgentDriverConfig:
     #: re-applies them after start in case a racing compose() erased the file (R5). Codex ignores.
     desired_disabled_mcp: list[str] | None = None
     #: ``async (session_id) -> McpToolRules | None`` (D-16b): the persisted per-tool MCP
-    #: rules. Claude reads them at every CLI start and sends the composed deny rules
+    #: rules (None: the feature does not apply; raises: unreadable — the driver fails
+    #: closed). Claude reads them at every CLI start and sends the composed deny rules
     #: through the flag layer before the first prompt. Codex has no deny channel: ignored.
     load_mcp_tool_rules: Callable[[str], Awaitable[Any]] | None = None
     clock: Callable[[], float] | None = None

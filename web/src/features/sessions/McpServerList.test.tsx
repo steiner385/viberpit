@@ -159,6 +159,18 @@ describe('McpServerList', () => {
       expect(screen.getByRole('switch', { name: 'a enabled' })).toHaveAttribute('aria-checked', 'true')
     })
 
+    it('the kill switch refusal reads as text, not the raw code', async () => {
+      setTool.mockReturnValue({
+        mutate: vi.fn(), isPending: false, isError: true, variables: undefined,
+        error: new ApiRequestError(404, { error: 'mcp_scope_disabled' }),
+      })
+      snapshot([st('s', 'connected', { tools: [tool('a')] })])
+      render(tools([st('s', 'connected')]))
+      await userEvent.click(screen.getByRole('button', { name: 'Tools for s' }))
+      expect(screen.getByRole('alert')).toHaveTextContent('MCP switches are turned off on this server.')
+      expect(screen.getByRole('alert')).not.toHaveTextContent('mcp_scope_disabled')
+    })
+
     it('the human-only refusal is shown as returned', async () => {
       setTool.mockReturnValue({
         mutate: vi.fn(), isPending: false, isError: true, variables: undefined,

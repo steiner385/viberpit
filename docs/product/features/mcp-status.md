@@ -181,7 +181,7 @@ Each connected server lists its tools with a switch, in two places. Claude sessi
 
 **Safety** — both directions of a toggle need a human sender (403 `SESSION_CONTROL_HUMAN_ONLY` otherwise). The override write, the live apply and any rollback happen under one per-session lock, so the stored override, the CLI and the panel agree even after a refusal, timeout or cancel. If the start-time apply fails twice, or a live write's state is unknown, the panel shows "Tool settings not applied — restart the session" (`toolsEnforced: false`) and every tool is treated as on.
 
-**Limits** — at most 200 tools per server and 300-character descriptions are kept. There is no per-repo level. The `/mcp` command panel has no switches yet.
+**Limits** — at most 200 tools per server and 300-character descriptions are kept. There is no per-repo level for tools. The `/mcp` command panel has no switches yet.
 
 ## Limits and switches
 

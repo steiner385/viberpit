@@ -472,6 +472,9 @@ class ClaudeAgentDriver:
         self._mcp_tool_rules: McpToolRules | None = None
         self._mcp_tool_desired: McpToolRules | None = None
         self._mcp_tools_enforced = True
+        # True after the start-time rules read failed twice: the desired rules are an empty
+        # stand-in, so a live toggle re-reads them before composing (fail closed).
+        self._mcp_tool_rules_unread = False
         self._mcp_tool_lock = asyncio.Lock()
         self._mcp_unsupported = False                 # latched after the first control-request failure
         self._mcp_poll_task: asyncio.Task | None = None
@@ -2651,14 +2654,16 @@ class ClaudeAgentDriver:
     @property
     def mcp_tool_rules(self):
         """The per-tool rules the CLI has ACCEPTED (``McpToolRules``) — what this session
-        really runs under — or None when there are none (kill switch off, rules
-        unreadable, no loader). Never a desired state the CLI refused."""
+        really runs under — or None when there are none (kill switch off, no loader). An
+        unreadable read is the empty ``McpToolRules()`` (every tool on, not enforced).
+        Never a desired state the CLI refused."""
         return self._mcp_tool_rules
 
     @property
     def mcp_tools_enforced(self) -> bool:
-        """False when the per-tool rules could not be applied at CLI start (after one
-        retry): the CLI runs with every tool on until a live toggle or a restart lands."""
+        """False when the per-tool rules could not be read or applied at CLI start (after
+        one retry each): the CLI runs with every tool on until a live toggle (which
+        re-reads unreadable rules) or a restart lands."""
         return self._mcp_tools_enforced
 
     async def _send_permissions(self, permissions: dict) -> None:
@@ -2671,44 +2676,64 @@ class ClaudeAgentDriver:
         """Compose *rules*, send the whole object and — only once the CLI accepted it —
         record them as applied and desired. THE compose-send-assign step; the caller
         holds ``_mcp_tool_lock``, so no two composes interleave. Raises ``SettingsError``
-        and leaves the applied state untouched on a refusal."""
+        and leaves the applied state untouched on a refusal. Enforced again only when
+        *rules* came from a successful read (not the unreadable stand-in)."""
         await self._send_permissions(compose_permissions(rules))
         self._mcp_tool_rules = self._mcp_tool_desired = rules
-        self._mcp_tools_enforced = True
+        self._mcp_tools_enforced = not self._mcp_tool_rules_unread
+
+    async def _read_mcp_tool_rules(self):
+        """``(ok, rules)`` from the loader, retried once. ``rules`` None = the feature does
+        not apply (kill switch). ``ok`` False = unreadable twice. Never swallows the
+        caller's cancellation (``except Exception``)."""
+        for attempt in range(2):
+            try:
+                return True, await self._load_mcp_tool_rules(self.session_id)
+            except Exception:
+                log.debug("mcp tool rules read failed session=%s attempt=%d",
+                          self.session_id, attempt + 1, exc_info=True)
+        return False, None
+
+    def _report_mcp_tools_not_applied(self, reason: str) -> None:
+        log.warning("mcp tool denies not applied session=%s error=%s", self.session_id, reason)
+        self._emit(ev.ErrorEvent(
+            MCP_TOOLS_NOT_APPLIED,
+            "Tool settings not applied — every MCP tool is on. Restart the session."))
 
     async def _apply_mcp_tool_denies(self) -> None:
         """Once per CLI start, right after ``initialize`` and before the first prompt: load
         the persisted per-tool rules and send the composed denies (an empty deny set sends
-        nothing: a fresh CLI has none). A failed send is retried once; a second failure
-        leaves the session ``mcp_tools_enforced=False`` with every tool on, logs a WARNING
-        and posts an error notice. A start never fails on it."""
+        nothing: a fresh CLI has none). A failed read or send is retried once; a second
+        failure leaves the session ``mcp_tools_enforced=False`` with every tool on, logs a
+        WARNING and posts an error notice. An unreadable read keeps an EMPTY (non-None)
+        desired state so a later live toggle re-reads and re-establishes the rules. A
+        start never fails on it."""
         if self._load_mcp_tool_rules is None:
             return
         async with self._mcp_tool_lock:
             self._mcp_tools_enforced = True
-            try:
-                rules = await self._load_mcp_tool_rules(self.session_id)
-            except Exception:
-                log.debug("mcp tool rules not loaded session=%s", self.session_id,
-                          exc_info=True)
-                rules = None
-            self._mcp_tool_rules = self._mcp_tool_desired = rules
-            if rules is None or not compose_permissions(rules)["deny"]:
-                return
-            self._mcp_tool_rules = McpToolRules()       # applied so far: nothing
-            failure: Exception | None = None
-            for _attempt in range(2):
-                try:
-                    await self._apply_tool_rules_locked(rules)
+            self._mcp_tool_rules_unread = False
+            ok, rules = await self._read_mcp_tool_rules()
+            if not ok:
+                self._mcp_tool_rules_unread = True
+                self._mcp_tool_rules = self._mcp_tool_desired = McpToolRules()
+                self._mcp_tools_enforced = False
+                reason = "rules unreadable"
+            else:
+                self._mcp_tool_rules = self._mcp_tool_desired = rules
+                if rules is None or not compose_permissions(rules)["deny"]:
                     return
-                except Exception as exc:
-                    failure = exc
-            self._mcp_tools_enforced = False
-        log.warning("mcp tool denies not applied session=%s error=%s", self.session_id,
-                    getattr(failure, "error_data", None) or type(failure).__name__)
-        self._emit(ev.ErrorEvent(
-            MCP_TOOLS_NOT_APPLIED,
-            "Tool settings not applied — every MCP tool is on. Restart the session."))
+                self._mcp_tool_rules = McpToolRules()       # applied so far: nothing
+                failure: Exception | None = None
+                for _attempt in range(2):
+                    try:
+                        await self._apply_tool_rules_locked(rules)
+                        return
+                    except Exception as exc:
+                        failure = exc
+                self._mcp_tools_enforced = False
+                reason = str(getattr(failure, "error_data", None) or type(failure).__name__)
+        self._report_mcp_tools_not_applied(reason)
 
     async def set_mcp_tool_override(self, server: str, tool: str, enabled: bool, *,
                                     persist: Callable[[bool | None], Awaitable[bool | None]]
@@ -2725,6 +2750,14 @@ class ClaudeAgentDriver:
         a cancellation leaves the CLI unknown and is handled there. The caller's
         cancellation is always re-raised."""
         async with self._mcp_tool_lock:
+            if self._mcp_tool_rules_unread:
+                # The start-time read failed: re-read so this compose carries the real
+                # defaults and overrides; still unreadable -> compose from the empty
+                # stand-in and stay not enforced.
+                ok, rules = await self._read_mcp_tool_rules()
+                if ok and rules is not None:
+                    self._mcp_tool_rules_unread = False
+                    self._mcp_tool_desired = rules
             desired = self._mcp_tool_desired
             if desired is None:
                 raise self._settings_refused(SettingsError(

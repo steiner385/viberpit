@@ -727,6 +727,87 @@ async def test_a_failed_start_apply_is_served_as_not_enforced(env) -> None:
     assert _tools_of(servers)["tool_b"] == (False, "default")
 
 
+# Final review, item 1: an unreadable rules read fails CLOSED — not enforced, a notice and
+# a WARNING — never "no rules"; a live toggle once the DB is back re-establishes them.
+@pytest.mark.asyncio
+async def test_an_unreadable_rules_read_is_not_enforced_and_a_live_toggle_repairs(
+        env, caplog) -> None:
+    from server.sessions import events as ev
+    caplog.set_level(logging.INFO)
+    await scope_store.set_tool_default("probe", "tool_b", False)
+    reads = {"n": 0}
+    real = scope_store.tool_defaults
+
+    async def flaky():
+        reads["n"] += 1
+        raise RuntimeError("postgres blip")
+    emitted: list = []
+    real_emit = ClaudeAgentDriver._emit
+
+    def record(self, e):
+        emitted.append(e)
+        return real_emit(self, e)
+    with patch.object(scope_store, "tool_defaults", flaky), \
+            patch.object(ClaudeAgentDriver, "_emit", record):
+        rec = await env.create()
+    assert reads["n"] == 2                                     # one retry
+    assert env.control.patches == []
+    servers = await env.orch.mcp_status_for(rec.id)
+    assert servers[0]["toolsEnforced"] is False
+    assert _tools_of(servers)["tool_b"] == (True, "default")   # what the CLI really runs
+    warnings = _no_warnings(caplog)
+    assert any("mcp tool denies not applied" in m for _, m in warnings)
+    [notice] = [e for e in emitted if isinstance(e, ev.ErrorEvent)
+                and e.code == fs.MCP_TOOLS_NOT_APPLIED]
+    assert "Restart" in notice.message
+    # The DB is back: a live toggle re-reads the rules and composes them whole.
+    assert scope_store.tool_defaults is real
+    servers = await env.orch.set_mcp_tool(rec.id, "probe", "tool_a", False, identity="u")
+    assert env.control.patches[-1] == {
+        "permissions": {"deny": ["mcp__probe__tool_a", "mcp__probe__tool_b"]}}
+    assert servers[0]["toolsEnforced"] is True
+    assert _tools_of(servers)["tool_b"] == (False, "default")
+
+
+@pytest.mark.asyncio
+async def test_a_toggle_while_the_rules_stay_unreadable_stays_not_enforced() -> None:
+    def broken():
+        raise RuntimeError("db down")
+    d, control, _ = _driver(broken)
+    await d.start()
+    try:
+        assert d.mcp_tools_enforced is False and d.mcp_tool_rules == McpToolRules()
+        await d.set_mcp_tool_override("probe", "tool_a", False)
+        assert control.patches[-1] == {"permissions": {"deny": ["mcp__probe__tool_a"]}}
+        assert d.mcp_tools_enforced is False                   # defaults still unknown
+    finally:
+        await d.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_rules_read_propagates() -> None:
+    import asyncio
+
+    def cancelled():
+        raise asyncio.CancelledError
+    d, _, _ = _driver(cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await d._apply_mcp_tool_denies()
+    assert not d._mcp_tool_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_the_kill_switch_none_path_is_unchanged(caplog) -> None:
+    caplog.set_level(logging.INFO)
+    d, control, _ = _driver(None)
+    await d.start()
+    try:
+        assert control.patches == [] and d.mcp_tool_rules is None
+        assert d.mcp_tools_enforced is True and _no_warnings(caplog) == []
+    finally:
+        await d.aclose()
+
+
 # Fix round 2, item 5: write -> apply -> compensate is ONE critical section under the
 # driver's per-tool lock.
 

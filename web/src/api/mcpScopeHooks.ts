@@ -49,6 +49,8 @@ export function useToggleSessionMcp(sessionId: string) {
     mutationFn: ({ server, enabled }) =>
       api.post(`/sessions/${encodeURIComponent(sessionId)}/mcp/${encodeURIComponent(server)}/toggle`, { enabled }),
     onSuccess: (data) => qc.setQueryData(['session-mcp', sessionId], data),
+    // A refused or timed-out toggle may have changed `toolsEnforced`: re-read the panel.
+    onError: () => qc.invalidateQueries({ queryKey: ['session-mcp', sessionId] }),
   })
 }
 
@@ -86,5 +88,7 @@ export function useSetSessionMcpTool(sessionId: string) {
       api.post(`/sessions/${encodeURIComponent(sessionId)}${toolPath(server, tool)}`, { enabled }),
     meta: { suppressErrorToast: true },
     onSuccess: (data) => qc.setQueryData(['session-mcp', sessionId], data),
+    // A refused or timed-out toggle may have changed `toolsEnforced`: re-read the panel.
+    onError: () => qc.invalidateQueries({ queryKey: ['session-mcp', sessionId] }),
   })
 }
