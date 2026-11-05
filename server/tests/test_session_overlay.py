@@ -157,7 +157,8 @@ async def test_codex_engine_registers_the_codex_surface(isolated_db, monkeypatch
     surface = orch._overlays["s1"]
     assert isinstance(surface, CodexSessionTools)
     assert {s.name for s in surface.dynamic_tools} == {"session_context",
-                                                       "report_feedback", "roadmap_needs_you", "roadmap_item"}
+                                                       "report_feedback", "roadmap_needs_you", "roadmap_item",
+                                                       "roadmap_milestones"}
     # And the same fence as the Claude branch: the flag off registers nothing.
     monkeypatch.setenv("VIBERPIT_SESSION_TOOLS_ENABLED", "false")
     await orch._setup_session_overlay("s1", identity="u@x", engine="codex")
