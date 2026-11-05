@@ -99,7 +99,7 @@ D=[
  ("Inline tool diffs",2,"Y","shared DiffRenderer, highlighted; MultiEdit edits[] not rendered"),
  ("Files pane (view / edit)",1,"P","read-only viewer; edit rejected (D1), content search not yet"),
  ("PR viewer: checks, threads, merge, auto-merge",2,"Y","PR tab (checks, review threads, merge / auto-merge; merge queue read-only)"),
- ("Preview browser with dev-server detection",2,"P","VNC Browser tab, no dev-server detect"),
+ ("Preview browser with dev-server detection",2,"Y","detection + per-viewer open (local link / tailnet IP / VNC on demand); no proxy, no element select (D-18)"),
  ("Integrated terminal",2,"N",""),
 ]),
 ("9 Shortcuts & a11y",[
