@@ -165,6 +165,14 @@ exception (see Standing rules).
   saves the current mode in `_pre_plan_mode` on entering `plan`, and on exit (`default` sentinel)
   restores that prior mode — so a full-auto session returns to full-auto, not to prompt-everything
   (#875, #167, #155).
+- **Who may change the mode.** Any caller may switch a session into a tightening mode
+  (`session_actions.TIGHTENING_MODES`: `plan`, `interactive`), so the assistant can still rein a
+  session in. Every other mode — including the `default` plan-exit sentinel, which restores the
+  prior mode — goes through `require_human` (403 `SESSION_CONTROL_HUMAN_ONLY`) on
+  `POST /api/sessions/{id}/permission-mode` and the WS `setPermissionMode` frame, so no
+  assistant/`ccas2:` token, system caller or unattested local process can widen it. The same gate
+  covers a reasoning `effort` on `POST /api/sessions/{id}/model`; the model itself stays
+  policy-gated (#3291).
 - **Default-mode resolution.** `resolve_permission_mode()` is the one resolver used by every spawn
   path with precedence: explicit request → per-account ledger default → global `AppSettings`
   default → `interactive`. Adopted sessions run through it too, so a takeover honors the operator's

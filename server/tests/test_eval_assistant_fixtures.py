@@ -45,6 +45,8 @@ def client(fixture=None):
 # 1148295595be45b54eeac818753212e8ee80cf21675ca0dc64de5f9bd6a8b36d
 # Before the D-12 side-chat cases, when the projection gained `session_id` (156 cases):
 # c68e80f9669045dd4431cc890ede28d8f94381d52f3b67ad7092fcc645bfdc09
+# Before set-permission-mode moved from full-auto to plan (widening is human-only, #3291):
+# b389c22b454eae7f9e3a2301a5e6b749b72ee62092ab875d8fe6b5f8f929d68f
 def test_semantic_projection_unchanged():
     rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
     # `session_id` is semantic: it changes the context header and arms the side-chat scope.
@@ -54,7 +56,7 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "b389c22b454eae7f9e3a2301a5e6b749b72ee62092ab875d8fe6b5f8f929d68f"
+    assert digest == "2baaf637a4bc277c34e18f07bb2a62078b67634873a7471c98a01ba55c12a108"
     assert len(rows) == 161
     assert sum(bool(r.get("session_id")) for r in rows) == 4
     assert sum(bool(r.get("operator")) for r in rows) == 7

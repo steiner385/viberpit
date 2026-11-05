@@ -256,6 +256,54 @@ async def test_set_permission_mode_calls_orchestrator_and_records_audit(orch):
     assert result == {"ok": True}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["auto", "allowlist", "full-auto", "acceptEdits",
+                                  "bypassPermissions"])
+@pytest.mark.parametrize("via", ["assistant", "mcp-external", "cli", "internal", "session",
+                                 "local"])
+async def test_set_permission_mode_widening_is_human_only(orch, mode, via):
+    """#3291: a token-borne caller or a local process may not widen a session's mode."""
+    with _patched_audit() as audit:
+        with pytest.raises(sa.ActionError) as exc_info:
+            await sa.set_permission_mode(
+                orch, db=object(), session_id="s1", mode=mode, identity="u@example.com",
+                via=via)
+    assert exc_info.value.code == sa.SESSION_CONTROL_HUMAN_ONLY_CODE
+    assert exc_info.value.http == 403
+    orch.set_permission_mode.assert_not_awaited()
+    audit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_permission_mode_widening_refused_for_system_identity(orch):
+    with _patched_audit(), pytest.raises(sa.ActionError) as exc_info:
+        await sa.set_permission_mode(orch, db=object(), session_id="s1", mode="full-auto",
+                                     identity=sa.SYSTEM_IDENTITY)
+    assert exc_info.value.code == sa.SESSION_CONTROL_HUMAN_ONLY_CODE
+    orch.set_permission_mode.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", sorted(sa.TIGHTENING_MODES))
+async def test_set_permission_mode_tightening_stays_open_to_the_assistant(orch, mode):
+    """The assistant can still pull a runaway session back to plan / asking (#3291)."""
+    with _patched_audit() as audit:
+        result = await sa.set_permission_mode(
+            orch, db=object(), session_id="s1", mode=mode, identity="u@example.com",
+            via="assistant")
+    orch.set_permission_mode.assert_awaited_once_with("s1", mode)
+    assert audit.call_args.kwargs["via"] == "assistant"
+    assert result == {"ok": True}
+
+
+def test_every_mode_but_the_tightening_ones_needs_a_human():
+    """A new mode added to the vocabulary is gated by default, never silently open."""
+    from server.sessions.types import VALID_SESSION_MODES
+    assert sa.TIGHTENING_MODES == {"plan", "interactive"}
+    assert all(sa.mode_needs_human(m) for m in VALID_SESSION_MODES - sa.TIGHTENING_MODES)
+    assert sa.mode_needs_human("some-future-mode")
+
+
 # ---------------------------------------------------------------------------
 # set_model
 # ---------------------------------------------------------------------------
@@ -285,6 +333,31 @@ async def test_set_model_blocked_raises_action_error(orch):
     assert exc_info.value.code == "MODEL_BLOCKED"
     assert exc_info.value.http == 409
     audit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via", ["assistant", "mcp-external", "local"])
+async def test_set_model_effort_change_is_human_only(orch, via):
+    """#3291: the effort rides the same route as the model but, like typed `/effort`,
+    only a person may change it."""
+    with _patched_audit() as audit:
+        with pytest.raises(sa.ActionError) as exc_info:
+            await sa.set_model(orch, db=object(), session_id="s1", model="opus",
+                               effort="high", identity="u@example.com", via=via)
+    assert exc_info.value.code == sa.SESSION_CONTROL_HUMAN_ONLY_CODE
+    assert exc_info.value.http == 403
+    orch.set_model_for_session.assert_not_awaited()
+    audit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_model_without_effort_stays_open_to_the_assistant(orch):
+    """The model itself is policy-gated (an upgrade parks for approval), so the
+    assistant keeps it (#3291)."""
+    with _patched_audit():
+        await sa.set_model(orch, db=object(), session_id="s1", model="sonnet",
+                           identity="u@example.com", via="assistant")
+    orch.set_model_for_session.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

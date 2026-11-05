@@ -296,6 +296,24 @@ def test_permission_mode_route():
             {"sessionId": "11111111-1111-4111-8111-111111111111", "mode": "acceptEdits"}, None) in events
 
 
+def test_permission_mode_route_refuses_a_local_process_widening(monkeypatch):
+    """#3291: a process on the edge host asserting the identity header is not the UI, so
+    it may tighten a session's mode but never widen it."""
+    from server.auth import identity
+    monkeypatch.setattr(identity, "attested_front_end_hop", lambda _conn: False)
+    client, fake = _make_client()
+    sid = "11111111-1111-4111-8111-111111111111"
+    with patch.dict(os.environ, _ENV), client:
+        r = client.post(f"/api/sessions/{sid}/permission-mode", json={"mode": "full-auto"},
+                        headers=_H)
+        assert r.status_code == 403
+        assert r.json()["detail"]["code"] == "SESSION_CONTROL_HUMAN_ONLY"
+        r = client.post(f"/api/sessions/{sid}/permission-mode", json={"mode": "plan"},
+                        headers=_H)
+        assert r.status_code == 200
+    assert fake.set_permission_mode_calls == [(sid, "plan")]
+
+
 # ---------------------------------------------------------------------------
 # POST /{id}/model
 # ---------------------------------------------------------------------------

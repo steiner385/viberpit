@@ -978,24 +978,33 @@ def test_effort_is_an_app_control_command_gated_on_flag_settings() -> None:
 
 @pytest.mark.asyncio
 async def test_slash_effort_applies_live_through_the_set_model_action(env) -> None:
-    out = await env.orch.run_command(env.rec.id, "effort", "high")
+    out = await env.orch.run_command(env.rec.id, "effort", "high", identity="u")
     assert out is not None and out["render"] == "notice" and "high" in out["data"]["text"]
     assert env.control.patches == [{"effortLevel": "high"}]
     assert (await _row(env.rec.id)).reasoning_effort == "high"
-    out = await env.orch.run_command(env.rec.id, "effort", "default")
+    out = await env.orch.run_command(env.rec.id, "effort", "default", identity="u")
     assert env.control.patches[-1] == {"effortLevel": None}
     assert env.rec.reasoning_effort is None
-    bad = await env.orch.run_command(env.rec.id, "effort", "turbo")
+    bad = await env.orch.run_command(env.rec.id, "effort", "turbo", identity="u")
     assert bad is not None and bad["render"] == "notice" and "turbo" in bad["data"]["text"]
-    usage = await env.orch.run_command(env.rec.id, "effort", "")
+    usage = await env.orch.run_command(env.rec.id, "effort", "", identity="u")
     assert usage is not None and "Usage: /effort" in usage["data"]["text"]
     assert len(env.control.patches) == 2
 
 
 @pytest.mark.asyncio
+async def test_slash_effort_from_the_system_identity_is_refused(env) -> None:
+    """#3291: changing the effort is human-only; an automated caller gets a notice, and
+    nothing reaches the CLI."""
+    out = await env.orch.run_command(env.rec.id, "effort", "high")
+    assert out is not None and "Effort unchanged" in out["data"]["text"]
+    assert env.control.patches == []
+
+
+@pytest.mark.asyncio
 async def test_slash_effort_on_a_detached_session_saves_for_the_next_spawn(env) -> None:
     env.orch._drivers.pop(env.rec.id)
-    out = await env.orch.run_command(env.rec.id, "effort", "low")
+    out = await env.orch.run_command(env.rec.id, "effort", "low", identity="u")
     assert out is not None and "saved" in out["data"]["text"]
     assert (await _row(env.rec.id)).reasoning_effort == "low"
 
@@ -1003,11 +1012,11 @@ async def test_slash_effort_on_a_detached_session_saves_for_the_next_spawn(env) 
 @pytest.mark.asyncio
 async def test_slash_effort_on_a_detached_session_checks_the_last_known_levels(env) -> None:
     env.orch._drivers.pop(env.rec.id)
-    bad = await env.orch.run_command(env.rec.id, "effort", "turbo")
+    bad = await env.orch.run_command(env.rec.id, "effort", "turbo", identity="u")
     assert bad is not None and "Effort unchanged" in bad["data"]["text"]
     assert (await _row(env.rec.id)).reasoning_effort is None
     env.rec.model_options = None                   # nothing known: accepted, as before
-    ok = await env.orch.run_command(env.rec.id, "effort", "turbo")
+    ok = await env.orch.run_command(env.rec.id, "effort", "turbo", identity="u")
     assert ok is not None and "saved" in ok["data"]["text"]
     assert (await _row(env.rec.id)).reasoning_effort == "turbo"
 
@@ -1241,7 +1250,7 @@ async def test_new_model_options_tell_attached_clients_to_refresh_the_catalog(en
 @pytest.mark.asyncio
 async def test_effort_gated_off_by_the_kill_switch_is_a_notice_not_the_clis(env, monkeypatch) -> None:
     monkeypatch.setenv("VIBERPIT_FLAG_SETTINGS_ENABLED", "false")
-    out = await env.orch.run_command(env.rec.id, "effort", "high")
+    out = await env.orch.run_command(env.rec.id, "effort", "high", identity="u")
     assert out is not None and out["render"] == "notice"
     assert "isn't available" in out["data"]["text"]
     assert env.control.patches == []
@@ -1265,7 +1274,7 @@ async def test_slash_effort_on_a_gated_default_model_persists_without_parking(en
     async def _require(*a, **k):
         return "require_approval"
     with patch("server.sessions.model_policy.resolve_model_policy", _require):
-        out = await env.orch.run_command(env.rec.id, "effort", "high")
+        out = await env.orch.run_command(env.rec.id, "effort", "high", identity="u")
     assert out is not None and out["data"]["text"] == "Effort → high"
     assert env.rec.pending_model is None
     assert (await _row(env.rec.id)).reasoning_effort == "high"
@@ -1273,7 +1282,7 @@ async def test_slash_effort_on_a_gated_default_model_persists_without_parking(en
     async def _block(*a, **k):
         return "block"
     with patch("server.sessions.model_policy.resolve_model_policy", _block):
-        refused = await env.orch.run_command(env.rec.id, "effort", "low")
+        refused = await env.orch.run_command(env.rec.id, "effort", "low", identity="u")
     assert refused is not None and "Effort unchanged" in refused["data"]["text"]
     assert (await _row(env.rec.id)).reasoning_effort == "high"
 
@@ -1298,7 +1307,7 @@ async def test_effort_on_a_gated_inherited_default_never_sends_a_model_switch(en
     async def _require(*a, **k):
         return "require_approval"
     with patch("server.sessions.model_policy.resolve_model_policy", _require):
-        out = await env.orch.run_command(env.rec.id, "effort", "high")
+        out = await env.orch.run_command(env.rec.id, "effort", "high", identity="u")
     assert out is not None and out["data"]["text"] == "Effort → high"
     assert calls == []
     assert env.control.patches[before:] == [{"effortLevel": "high"}]

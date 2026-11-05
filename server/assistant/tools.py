@@ -1857,8 +1857,10 @@ def build_tools(api: AssistantApi, *, operator: bool = False,
         return await api.post(f"/api/sessions/{args['id']}/model", {"model": args["model"]})
 
     @spec_tool("set_permission_mode",
-               "Change how a session asks for permission: interactive, auto, allowlist, "
-               "full-auto, acceptEdits or bypassPermissions.", {"id": str, "mode": str})
+               "Tighten how a session asks for permission: plan (read-only planning) or "
+               "interactive (asks before acting). Any wider mode (auto, allowlist, "
+               "full-auto, acceptEdits, bypassPermissions) is refused: only a person in "
+               "the UI can widen it.", {"id": str, "mode": str})
     @guarded
     async def set_permission_mode(args: dict[str, Any]) -> Any:
         return await api.post(f"/api/sessions/{args['id']}/permission-mode",
