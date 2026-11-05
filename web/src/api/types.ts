@@ -226,6 +226,10 @@ export interface AgentCapabilities {
    *  — the engine declares it AND `VIBERPIT_FLAG_SETTINGS_ENABLED` is on. It is what
    *  lets fast mode and a live effort change reach a running Claude session. */
   flagSettings: boolean
+  /** Move to another fleet host (D-17): `server/sessions/engine.py:move_supported` — the
+   *  engine declares it AND `VIBERPIT_SESSION_MOVE_ENABLED` is on. False for Codex, whose
+   *  history stays on its host. */
+  crossHostTransfer: boolean
 }
 
 /**
@@ -344,6 +348,14 @@ export interface Session {
   /** Fleet host that ran this session. Null for sessions created before the fleet
    *  existed, and for deployments whose endpoint is not in the host registry. */
   host?: string | null
+  /** The host a "Move to host…" saga is carrying this session to (D-17), set only while
+   *  it runs — and, after a `failed` move, until the edge's reconcile settles it. Drives
+   *  the "Moving to <host>…" chip; per-session actions answer 409 `SESSION_MOVING`. */
+  movingTo?: string | null
+  /** Source host of the last completed move, or null. */
+  movedFrom?: string | null
+  /** ISO UTC time of the last completed move, or null. */
+  movedAt?: string | null
   /** Where the session's GUI renders: 'native' = the runner host's real desktop,
    *  'virtual' = a pooled Xvfb display viewed over VNC. Null for pre-feature rows
    *  (read as virtual). */
@@ -1255,4 +1267,51 @@ export interface RuleWire {
 export interface GrantResult {
   rule: RuleWire
   resolvedPermIds: string[]
+}
+
+// ── Move to host (D-17) ───────────────────────────────────────────────────────
+// `GET /api/sessions/{id}/move/preflight` and `POST /api/sessions/{id}/move`
+// (`server/api/sessions.py`; codes in `server/sessions/session_move.py`).
+
+/** One verdict: `reason` is a `MOVE_*` code (null when ok); `message` is the server's
+ *  own sentence. Extras ride along (`movingTo`, `children`, `dirtyPaths` …). */
+export interface MoveVerdict {
+  ok: boolean
+  reason: string | null
+  message: string
+  [extra: string]: unknown
+}
+
+/** A background task that stops on the source and is re-armed on the target. */
+export interface MoveBackgroundTask {
+  kind: string
+  name: string
+  description?: string
+  replayable?: boolean
+}
+
+export interface MovePreflight {
+  sessionId: string
+  source: string
+  /** One entry per fleet host other than the source. */
+  hosts: ({ name: string } & MoveVerdict)[]
+  /** Null when the source daemon did not answer. `paths` is capped (50). */
+  dirty: { count: number; paths: string[] } | null
+  /** Asked only when dirty; null = unknown, which is treated as public. */
+  repoPrivate: boolean | null
+  backgroundTasks: MoveBackgroundTask[]
+  factsError: string | null
+  target?: string
+  verdict: MoveVerdict
+}
+
+/** `POST …/move` success (200). A failure is a `{detail: {code, message, outcome?}}`. */
+export interface MoveResult {
+  sessionId: string
+  from: string
+  to: string
+  outcome: 'moved'
+  finalized: boolean
+  recoveryRef: string | null
+  session: Session | null
 }

@@ -11,6 +11,7 @@ import { QueryClient, MutationCache, type Mutation } from '@tanstack/react-query
 import { toast } from 'sonner'
 import { ApiRequestError, apiErrorCode } from '@/api/client'
 import { clientLogger } from '@/obs/logger'
+import { sessionMovingMessage } from '@/api/sessionMove'
 
 export const MUTATION_ERROR_FALLBACK = 'Something went wrong. Please try again.'
 
@@ -23,6 +24,9 @@ export function extractMutationErrorMessage(
   fallback: string = MUTATION_ERROR_FALLBACK,
 ): string {
   if (error instanceof ApiRequestError) {
+    // Any action on a session mid-move (D-17): the chip's sentence, not the raw 409.
+    const moving = sessionMovingMessage(error)
+    if (moving) return moving
     const detail = error.body?.detail
     if (detail && typeof detail === 'object' && 'message' in detail) {
       const msg = (detail as Record<string, unknown>).message

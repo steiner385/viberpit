@@ -56,7 +56,7 @@
  * was hiding. Outside the shell there is no list, and beside a session the list
  * does not show (Background scope, filtered out) no neighbours — no chevrons.
  */
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { TERMINAL_STATUSES, type SessionStatus } from '@/api/types'
 import { useRenameSession, useSessions, useEngineCapabilities, useSessionDiff } from '@/api/hooks'
@@ -68,8 +68,14 @@ import { useSessionListNav } from '@/shell/sessionListNav'
 import { engineBadge, tierLabel } from '@/session/modelName'
 import { useToastAnchor } from '@/shell/toastInsets'
 import { usePageTitle } from '@/shell/usePageTitle'
+import { useEnabledFleetHosts } from '@/api/fleet'
+import { CODEX_STAYS_COPY } from '@/api/sessionMove'
 import { RenameDialog } from './RenameDialog'
 import { DiffChip } from './diff/DiffChip'
+import { MovingChip } from './move/MovingChip'
+
+// Lazy: the move dialog, its hooks and its reason map load only when it opens.
+const MoveSessionDialog = lazy(() => import('./move/MoveSessionDialog'))
 
 export interface SessionHeaderProps {
   sessionId: string
@@ -88,6 +94,9 @@ export interface SessionHeaderProps {
   onReload?: () => void
   /** "Next best account" menu item — the host rotates the account and re-attaches. */
   onRotate?: () => void
+  /** A "Move to host…" finished with the session usable (moved, or restored on its
+   *  source) — the host re-attaches its socket. The header owns the dialog itself. */
+  onMoved?: () => void
 }
 
 /** One identity readout: muted, capped and truncating so it can never grow. */
@@ -110,7 +119,7 @@ const NAV_BUTTON = cn(
 )
 
 export function SessionHeader({
-  sessionId, title, goal, goalSource, status, onBack, onClosed, onReload, onRotate,
+  sessionId, title, goal, goalSource, status, onBack, onClosed, onReload, onRotate, onMoved,
 }: SessionHeaderProps) {
   const listNav = useSessionListNav()
   const prevId = listNav?.neighbor(sessionId, 'prev') ?? null
@@ -141,6 +150,18 @@ export function SessionHeader({
   const caps = useEngineCapabilities(record?.engine)
   const canRotate = canUseEngine(caps, 'accountRotation')
     || canUseEngine(caps, 'accountSwitchNewThread')
+
+  // "Move to host…" (D-17): only where there is somewhere to go — more than one
+  // enabled fleet host — and only for an engine that can carry its history across
+  // (`crossHostTransfer`, which is also off under the server's kill switch). Codex
+  // cannot, and the menu says why rather than going quiet (D2). Everything else
+  // (mid-turn, dirty tree, children …) is the preflight's to explain in the dialog.
+  const [moveOpen, setMoveOpen] = useState(false)
+  const enabledHosts = useEnabledFleetHosts()
+  const fleetHasTargets = enabledHosts.length > 1
+  const canMove = record !== undefined && canUseEngine(caps, 'crossHostTransfer')
+  const moveHostDisabledReason = fleetHasTargets && !canMove && record?.engine === 'codex'
+    ? CODEX_STAYS_COPY : undefined
 
   // Both chevrons render as a pair: the list step returns prevId/nextId both-null
   // (no list, the session is not in it, or it is the only row) or both-set (it wraps).
@@ -241,6 +262,9 @@ export function SessionHeader({
         </span>
       )}
 
+      {/* On a phone the title keeps the room; the chip shows its start and a tooltip. */}
+      {record?.movingTo && <MovingChip host={record.movingTo} className="flex-shrink narrow:max-w-[6rem]" />}
+
       <StatusPill status={pillStatus} hideLabelNarrow />
 
       {diff && <DiffChip additions={diff.additions} deletions={diff.deletions} truncated={diff.truncated} />}
@@ -264,7 +288,20 @@ export function SessionHeader({
         onRename={() => setRenameOpen(true)}
         onReload={onReload}
         onRotate={canRotate ? onRotate : undefined}
+        onMoveHost={fleetHasTargets && canMove && !record?.movingTo ? () => setMoveOpen(true) : undefined}
+        moveHostDisabledReason={moveHostDisabledReason}
       />
+
+      {moveOpen && (
+        <Suspense fallback={null}>
+          <MoveSessionDialog
+            sessionId={sessionId}
+            source={record?.host ?? null}
+            onClose={() => setMoveOpen(false)}
+            onSettled={onMoved}
+          />
+        </Suspense>
+      )}
 
       {/* The one rename flow. Both triggers above open THIS dialog; unlike
           archive/delete it stays in place (no onClosed), so the header just

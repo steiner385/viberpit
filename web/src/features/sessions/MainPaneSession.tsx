@@ -127,6 +127,10 @@ export function MainPaneSession({ sessionId, onClosed, onDetach }: MainPaneSessi
         onClosed={() => leave(onClosed)}
         onReload={reload}
         onRotate={rotate}
+        // "Move to host…" (D-17): the header owns the dialog; once the session is
+        // usable again (moved, or restored on its source) the socket re-attaches so
+        // the transcript comes from the host that now owns it.
+        onMoved={() => rt.reattach()}
       />
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-surface">
         <SessionBody rt={rt} />

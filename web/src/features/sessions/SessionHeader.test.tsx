@@ -21,6 +21,7 @@ import { axe, toHaveNoViolations } from 'jest-axe'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QK } from '@/api/hooks'
+import { FLEET_HOSTS_KEY, type FleetHost } from '@/api/fleet'
 import type { SessionDiff } from './diff/types'
 import type { AgentCapabilities, EngineOffer, Session, SessionStatus } from '@/api/types'
 import { session as makeSession } from '@/test/factories'
@@ -49,6 +50,8 @@ interface RenderOpts {
    * no list to walk.
    */
   listOrder?: string[] | null
+  /** Seed the fleet list (`useEnabledFleetHosts`) by host name; omit for none. */
+  hosts?: string[]
 }
 
 /** The router location, so a test can see the chip switch `?view=`. */
@@ -56,7 +59,7 @@ function Where() {
   return <div data-testid="where">{useLocation().search}</div>
 }
 
-function renderHeader({ props = {}, sessions = [session()], engines, diff, listOrder }: RenderOpts = {}) {
+function renderHeader({ props = {}, sessions = [session()], engines, diff, listOrder, hosts }: RenderOpts = {}) {
   const onBack = vi.fn()
   const onOpenSession = vi.fn()
   const onClosed = vi.fn()
@@ -65,6 +68,7 @@ function renderHeader({ props = {}, sessions = [session()], engines, diff, listO
   qc.setQueryData(QK.sessions, sessions)
   if (engines) qc.setQueryData(QK.config, { repoRoot: '/repo', engines })
   if (diff) qc.setQueryData(QK.sessionDiff('sess-1', { summary: true, ignoreWhitespace: false }), diff)
+  if (hosts) qc.setQueryData(FLEET_HOSTS_KEY, { hosts: hosts.map(fleetHost) })
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={['/sessions/sess-1']}>
@@ -89,6 +93,14 @@ function renderHeader({ props = {}, sessions = [session()], engines, diff, listO
     { wrapper },
   )
   return { ...utils, onBack, onOpenSession, onClosed }
+}
+
+function fleetHost(name: string): FleetHost {
+  return {
+    name, endpoint: `https://${name}:8790`, enabled: true, weight: 1, maxSessions: null, healthy: true,
+    activeSessions: 0, loadAvg: null, memAvailableMb: null, sha: null, checkoutSha: null, protocol: null,
+    lastProbeAt: null, lastError: null, sshHost: null, repoPath: null, upgrade: null,
+  }
 }
 
 const three = () => [session({ id: 'a', name: 'A' }), session({ id: 'sess-1' }), session({ id: 'c', name: 'C' })]
@@ -436,7 +448,7 @@ const caps = (over: Partial<AgentCapabilities> = {}): AgentCapabilities => ({
   models: false, reasoningEffort: false, steer: false, interrupt: false,
   approvals: false, questions: false, fork: false, adopt: false,
   selfModelSwitch: false, subagents: false, attachments: false,
-  accountRotation: false, accountSwitchNewThread: false, rewind: false, flagSettings: false, ...over,
+  accountRotation: false, accountSwitchNewThread: false, rewind: false, flagSettings: false, crossHostTransfer: false, ...over,
 })
 
 const offer = (engine: 'claude_code' | 'codex', capabilities: AgentCapabilities): EngineOffer => ({
@@ -514,5 +526,62 @@ describe('SessionHeader — diff chip', () => {
     expect(chip).toHaveTextContent('+12 −1')
     await userEvent.click(chip)
     expect(screen.getByTestId('where')).toHaveTextContent('?view=changes')
+  })
+})
+
+// ── Move to host… (D-17) ─────────────────────────────────────────────────────
+
+describe('SessionHeader — Move to host (D-17)', () => {
+  async function openActions() {
+    await userEvent.click(screen.getByRole('button', { name: 'More session actions' }))
+  }
+  const claude = [offer('claude_code', caps({ crossHostTransfer: true }))]
+
+  it('offers it for a movable engine in a fleet with somewhere to go', async () => {
+    renderHeader({ hosts: ['dobby', 'rocky'], engines: claude, sessions: [session({ id: 'sess-1', host: 'dobby' })] })
+    await openActions()
+    expect(screen.getByRole('menuitem', { name: 'Move to host…' })).toBeEnabled()
+  })
+
+  it('hides it when the fleet has only one enabled host', async () => {
+    renderHeader({ hosts: ['dobby'], engines: claude })
+    await openActions()
+    expect(screen.queryByRole('menuitem', { name: /move to host/i })).toBeNull()
+  })
+
+  it('Codex: not movable, and the menu says why', async () => {
+    renderHeader({
+      hosts: ['dobby', 'rocky'],
+      sessions: [session({ id: 'sess-1', engine: 'codex' })],
+      engines: [offer('codex', caps({ crossHostTransfer: false }))],
+    })
+    await openActions()
+    const item = screen.getByRole('menuitem', { name: /move to host/i })
+    expect(item).toHaveAttribute('aria-disabled', 'true')
+    expect(item).toHaveTextContent('Codex history stays on its host')
+  })
+
+  it('hides it for a Claude session when the server turned moves off (crossHostTransfer false)', async () => {
+    renderHeader({ hosts: ['dobby', 'rocky'], engines: [offer('claude_code', caps({ crossHostTransfer: false }))] })
+    await openActions()
+    expect(screen.queryByRole('menuitem', { name: /move to host/i })).toBeNull()
+  })
+
+  it('opens the move dialog from the menu', async () => {
+    renderHeader({ hosts: ['dobby', 'rocky'], engines: claude, sessions: [session({ id: 'sess-1', host: 'dobby' })] })
+    await openActions()
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Move to host…' }))
+    expect(await screen.findByRole('dialog', { name: 'Move to host' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Target host' })).toBeInTheDocument()
+  })
+
+  it('shows "Moving to <host>…" while movingTo is set, and offers no second move', async () => {
+    renderHeader({
+      hosts: ['dobby', 'rocky'], engines: claude,
+      sessions: [session({ id: 'sess-1', host: 'dobby', movingTo: 'rocky' })],
+    })
+    expect(screen.getByTestId('moving-chip')).toHaveTextContent('Moving to rocky…')
+    await openActions()
+    expect(screen.queryByRole('menuitem', { name: /move to host/i })).toBeNull()
   })
 })
