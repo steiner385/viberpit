@@ -450,35 +450,42 @@ def is_reviewed(listing: Mapping[str, Any] | None) -> bool:
     return review_state(listing) == "done"
 
 
-def _repository(listing: Mapping[str, Any]) -> object:
-    source = listing.get("source")
-    return source.get("repository") if isinstance(source, Mapping) else None
+#: Keys the live Directory API may carry that the CLI's cache drops. Probed 2026-11-05 over
+#: all 3,605 cached listings: 3,512 equal live after dropping ``source.marketplace_slug``;
+#: the other 93 differ only by ``source.repository.tracked_ref``. No cached key was ever
+#: missing live. Anything else live-only is unexplained, so it is a mismatch.
+_LIVE_ONLY_KEYS = frozenset({("source", "marketplace_slug"), ("repository", "tracked_ref")})
+
+
+def _same_node(scope: str, cached: Mapping[str, Any], live: Mapping[str, Any]) -> bool:
+    """Deny by default: every cached key exists live and is equal (``repository`` recursively,
+    ``url`` by normalized identity); a live-only key must be in :data:`_LIVE_ONLY_KEYS`."""
+    if any((scope, k) not in _LIVE_ONLY_KEYS for k in live.keys() - cached.keys()):
+        return False
+    for key, value in cached.items():
+        if key not in live:
+            return False
+        other = live[key]
+        if key == "repository" and scope == "source":
+            if not isinstance(value, Mapping) or not isinstance(other, Mapping) \
+                    or not _same_node("repository", value, other):
+                return False
+        elif key == "url" and scope == "repository":
+            norm = _normalize_url(value) if isinstance(value, str) else None
+            if norm is None or norm != (_normalize_url(other) if isinstance(other, str) else None):
+                return False
+        elif value != other:
+            return False
+    return True
 
 
 def _same_source(cached: Mapping[str, Any], live: Mapping[str, Any]) -> bool:
-    """Every install-relevant field of ``source`` agrees: ``type``, and the WHOLE
-    ``repository`` object (``url`` by normalized identity, every other key — ``path``,
-    ``reviewed_commit`` … — exactly, with the same key set). Other ``source`` keys the live
-    API adds (``marketplace_slug``) are not install inputs and are ignored."""
+    """The whole install-relevant ``source`` agrees (``type``, ``repository.url``/``path``/
+    ``reviewed_commit`` …); see :func:`_same_node`. Both lacking a source passes."""
     cs, ls = cached.get("source"), live.get("source")
-    if (cs.get("type") if isinstance(cs, Mapping) else None) \
-            != (ls.get("type") if isinstance(ls, Mapping) else None):
-        return False
-    crepo, lrepo = _repository(cached), _repository(live)
-    if crepo is None and lrepo is None:
+    if cs is None and ls is None:
         return True
-    if not isinstance(crepo, Mapping) or not isinstance(lrepo, Mapping) \
-            or set(crepo) != set(lrepo):
-        return False
-    for key, value in crepo.items():
-        if key == "url":
-            curl, lurl = value, lrepo[key]
-            norm = _normalize_url(curl) if isinstance(curl, str) else None
-            if norm is None or norm != (_normalize_url(lurl) if isinstance(lurl, str) else None):
-                return False
-        elif value != lrepo[key]:
-            return False
-    return True
+    return isinstance(cs, Mapping) and isinstance(ls, Mapping) and _same_node("source", cs, ls)
 
 
 def check_directory_listing(cached: Mapping[str, Any], live: object) -> None:
@@ -537,6 +544,11 @@ def check_install(plugin_id: str, curated: Mapping[str, str], catalog: InstallCa
                                 "installed from here.")
         if is_command_source(listing):
             raise _command_refusal(plugin_id)
+        why = entry_source_refusal(listing)
+        if why:
+            raise PolicyRefusal(ENTRY_SOURCE_REFUSED,
+                                f"{plugin_id} would be fetched from {why}. ViberPit installs "
+                                "plugins only from public https sources.")
         return
     check_curated(marketplace, curated, catalog.sources)
     entry = (catalog.marketplaces.get(marketplace) or {}).get(name)

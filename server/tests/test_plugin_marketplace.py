@@ -1562,7 +1562,7 @@ def test_directory_listing_passes_the_real_live_shape_with_marketplace_slug() ->
 
 
 @pytest.mark.parametrize("repo", [{"path": "plugins/other"}, {"reviewed_commit": "deadbeef"},
-                                  {"extra": "x"}])
+                                  {"mirror_url": "https://x.example/y"}])
 def test_directory_listing_refuses_any_changed_repository_field(repo: dict) -> None:
     with pytest.raises(PolicyRefusal) as exc:
         plugin_policy.check_directory_listing(_EXPO_CACHED, _expo_live(**repo))
@@ -1601,3 +1601,40 @@ def test_install_from_a_duplicate_cache_is_refused_and_never_fanned_out(env) -> 
     assert r.status_code in (404, 409)
     assert r.json()["detail"]["code"] in ("PLUGIN_NOT_FOUND", "PLUGIN_UNREVIEWED")
     assert fleet.calls == []
+
+
+def test_directory_listing_tolerates_the_live_only_tracked_ref() -> None:
+    cached = {"id": "p", "checks": {"review": {"state": "done"}}, "source": {
+        "type": "directory", "repository": {
+            "url": "https://github.com/tableau/tableau-plugin", "path": "plugins/tableau",
+            "reviewed_commit": "099c6abdafb177466ee5256ac0beccdde64099da"}}}
+    live = {"id": "p", "checks": {"review": {"state": "done"}}, "source": {
+        "marketplace_slug": DIR, "type": "directory", "repository": {
+            "path": "plugins/tableau", "tracked_ref": "dist-claude-slim",
+            "reviewed_commit": "099c6abdafb177466ee5256ac0beccdde64099da",
+            "url": "https://github.com/tableau/tableau-plugin"}}}
+    plugin_policy.check_directory_listing(cached, live)
+    plugin_policy.check_install(f"p@{DIR}", {}, InstallCatalog(directory={"p": cached}))
+
+
+def test_directory_listing_refuses_a_cached_only_key() -> None:
+    live = _expo_live()
+    del live["source"]["repository"]["path"]
+    with pytest.raises(PolicyRefusal) as exc:
+        plugin_policy.check_directory_listing(_EXPO_CACHED, live)
+    assert exc.value.reason == plugin_policy.REASON_DIRECTORY_MISMATCH
+
+
+@pytest.mark.parametrize("url", ["http://10.0.0.5/x", "https://box.tail1234.ts.net/x"])
+def test_a_reviewed_directory_listing_naming_an_internal_source_is_refused(url: str) -> None:
+    listing = _listing("done", source={"type": "directory", "repository": {"url": url}})
+    with pytest.raises(PolicyRefusal) as exc:
+        plugin_policy.check_install(f"x@{DIR}", {}, InstallCatalog(directory={"x": listing}))
+    assert exc.value.code == "PLUGIN_ENTRY_SOURCE_REFUSED"
+
+
+def test_a_normal_reviewed_listing_with_commit_and_ref_passes_check_install() -> None:
+    listing = {**_EXPO_CACHED, "source": {"type": "directory", "repository": {
+        "url": "https://github.com/expo/skills", "path": "plugins/expo",
+        "reviewed_commit": "170589a7", "tracked_ref": "release"}}}
+    plugin_policy.check_install(f"x@{DIR}", {}, InstallCatalog(directory={"x": listing}))
