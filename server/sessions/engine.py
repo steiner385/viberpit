@@ -114,6 +114,14 @@ class AgentCapabilities:
     #: and applies the session's stored ones at spawn. Whether fast mode is available
     #: is still per MODEL (``SessionRecord.fast_mode_models``), not per engine.
     flag_settings: bool = False
+    #: Move to host (D-17): the session can be closed on one fleet host and resumed on
+    #: another with the same conversation. Needs two things of the engine — its history
+    #: on the tree every host shares, and resume by conversation id from any cwd. Claude
+    #: has both (verified on CLI 2.1.293/2.1.318, docs/superpowers/specs/
+    #: 2026-11-05-d17-move-session-verification.md); Codex has neither (its history is
+    #: inside a host-local CODEX_HOME, and ``thread/resume`` takes no path). Gated by the
+    #: ``VIBERPIT_SESSION_MOVE_ENABLED`` kill switch (``move_supported``).
+    cross_host_transfer: bool = False
 
 
 def fork_enabled() -> bool:
@@ -158,6 +166,31 @@ def flag_settings_supported(caps: AgentCapabilities | None) -> bool:
     return caps is not None and caps.flag_settings and flag_settings_enabled()
 
 
+def session_move_enabled() -> bool:
+    """The ``VIBERPIT_SESSION_MOVE_ENABLED`` kill switch (D-17, default on)."""
+    from server.config import get_settings
+    return bool(get_settings().session_move_enabled)
+
+
+def move_supported(caps: AgentCapabilities | None) -> bool:
+    """Can a session on an engine with *caps* be moved to another host right now? THE
+    move gate, shaped like ``fork_supported``: the engine declares
+    ``cross_host_transfer`` and the kill switch is on. ``None`` never moves."""
+    return caps is not None and caps.cross_host_transfer and session_move_enabled()
+
+
+def declared_capabilities(engine: AgentEngine | str) -> AgentCapabilities:
+    """The capability set the driver class for *engine* declares — without a registry
+    or a live driver, for the edge (``/api/config``, the move predicate). Read off the
+    driver classes themselves, never restated. Imported lazily: both modules import
+    this one."""
+    if parse_agent_engine(engine) is AgentEngine.CLAUDE_CODE:
+        from server.sessions.claude_driver import ClaudeAgentDriver
+        return ClaudeAgentDriver.capabilities
+    from server.codex.capabilities import CODEX_CAPABILITIES
+    return CODEX_CAPABILITIES
+
+
 def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:
     """The browser shape of one capability set.
 
@@ -174,6 +207,7 @@ def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:
     wire["fork"] = fork_supported(caps)
     wire["rewind"] = rewind_supported(caps)
     wire["flagSettings"] = flag_settings_supported(caps)
+    wire["crossHostTransfer"] = move_supported(caps)
     return wire
 
 

@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState, useRef, useCallback, useSyncExternalStore } from 'react'
-import { api, ApiRequestError } from './client'
+import { api, ApiRequestError, apiErrorCode } from './client'
+import { SESSION_MOVING } from './sessionMove'
 import {
   fetchAutomations, fetchAutomationEvents, fetchSpawnedSessions, patchAutomation,
   fetchAutomationActionable, postAutomationTrigger,
@@ -741,6 +742,8 @@ export function useRotateSession() {
     mutationFn: ({ id }) => api.post<Session>(`/sessions/${id}/rotate`, {}),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
     onError: (e) => {
+      // Mid-move (D-17) the global toast already says "Moving to <host>…".
+      if (apiErrorCode(e) === SESSION_MOVING) return
       const code = (e.body.detail as { code?: string } | null)?.code
       toast.error(code === 'skipped:all_accounts_busy' ? 'No account has headroom right now' : `Couldn't rotate session`)
     },

@@ -213,3 +213,36 @@ describe('SessionActions — Next best account', () => {
     await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
   })
 })
+
+describe('SessionActions — Move to host (D-17)', () => {
+  it('renders the item only when onMoveHost is given, and calls it', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useCloseSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.useCloseSession>)
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+    const onMoveHost = vi.fn()
+
+    const { rerender } = render(<SessionActions sessionId="s1" sessionName="My Session" onDone={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    expect(screen.queryByRole('menuitem', { name: /move to host/i })).not.toBeInTheDocument()
+
+    rerender(<SessionActions sessionId="s1" sessionName="My Session" onDone={vi.fn()} onMoveHost={onMoveHost} />)
+    await user.click(screen.getByRole('menuitem', { name: 'Move to host…' }))
+    expect(onMoveHost).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+  })
+
+  it('a disabled reason renders an inert item that explains itself', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useCloseSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.useCloseSession>)
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+    render(<SessionActions sessionId="s1" sessionName="My Session" onDone={vi.fn()}
+      moveHostDisabledReason="Codex history stays on its host" />)
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    const item = screen.getByRole('menuitem', { name: /move to host/i })
+    expect(item).toHaveAttribute('aria-disabled', 'true')
+    expect(item).toHaveTextContent('Codex history stays on its host')
+    await user.click(item)
+    // Clicking it does nothing — the menu stays open on the explanation.
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+  })
+})

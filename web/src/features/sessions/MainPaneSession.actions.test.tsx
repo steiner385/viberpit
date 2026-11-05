@@ -47,6 +47,10 @@ vi.mock('@/features/sessions/SessionBody', () => ({
 }))
 vi.mock('@/features/sessions/composer/CommandResultOverlay', () => ({ CommandResultOverlay: () => null }))
 
+// SessionHeader gates "Move to host…" (D-17) on the enabled fleet hosts; this file
+// renders without a QueryClient, so the fleet read is stubbed empty (no move item).
+vi.mock('@/api/fleet', () => ({ useEnabledFleetHosts: () => [] }))
+
 vi.mock('@/api/hooks', () => ({
   // "Reload session" (MainPaneSession → SessionHeader → SessionActions).
   useReloadSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

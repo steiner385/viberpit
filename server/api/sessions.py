@@ -277,6 +277,11 @@ def _record_to_dict(
         # Fleet host that ran this session. None for pre-fleet sessions and for
         # deployments whose endpoint is not in an operator-managed registry.
         "host": getattr(record, "host", None),
+        # Move to host (D-17): the target while a move is in flight (null otherwise),
+        # and the last completed move. Same two-serializer rule as `host`.
+        "movingTo": getattr(record, "moving_to", None),
+        "movedFrom": getattr(record, "moved_from", None),
+        "movedAt": iso_utc(getattr(record, "moved_at", None)),
         # "native" | "virtual" | null — drives the desktop badge and whether the
         # Browser tab offers a VNC canvas at all.
         "displayMode": getattr(record, "display_mode", None),
@@ -2793,6 +2798,61 @@ async def reload_session(
     await record_audit(db, "session.reload", identity, {"sessionId": session_id})
     updated = await orch.get_session(session_id) or record
     return _record_to_dict(updated, repo=await _resolve_repo(updated))
+
+
+class MoveSessionRequest(BaseModel):
+    host: str
+    #: Consent to push uncommitted changes to a hidden ref on GitHub (private repos only).
+    carryDirty: bool = False
+    #: Confirmation that the listed background tasks stop (they are re-armed on the target).
+    stopBackgroundTasks: bool = False
+
+
+@router.get("/{session_id}/move/preflight")
+async def move_session_preflight(
+    session_id: str,
+    request: Request,
+    host: str | None = None,
+    identity: str = Depends(current_identity),
+) -> Any:
+    """What the "Move to host…" dialog shows before posting (D-17): the verdict for
+    ``host`` (or for the session when omitted), per-host verdicts, the dirty file list
+    (capped at 50), the repo's visibility and the background tasks that would stop.
+    Read-only, and human-only like the move (403 ``SESSION_CONTROL_HUMAN_ONLY``): it
+    reveals dirty file names. 404 unknown session; 409 ``MOVE_NO_FLEET`` without a fleet."""
+    try:
+        return await session_actions.move_preflight(
+            _get_orchestrator(request), session_id=session_id, target=host,
+            identity=identity, via=human_gate_via(request))
+    except ActionError as exc:
+        return _action_error_response(exc)
+
+
+@router.post("/{session_id}/move")
+async def move_session_to_host(
+    session_id: str,
+    body: MoveSessionRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+) -> Any:
+    """"Move to host…" (D-17): close the idle session here, carry its worktree to
+    ``host`` and resume the same conversation there. Synchronous like ``/reload``.
+    Human-only (403 ``SESSION_CONTROL_HUMAN_ONLY``). 200 ``{sessionId, from, to,
+    outcome: "moved", finalized, recoveryRef, session}``. Every refusal or failure is
+    ``{detail: {code, message, …}}`` — 404 / 400 / 409 / 503 per code, with ``outcome``
+    ("restored" | "failed" | "moved") once the saga got past the claim. Codes:
+    ``server/sessions/session_move.py``."""
+    orch = _get_orchestrator(request)
+    try:
+        result = await session_actions.move_session(
+            orch, session_id=session_id, target=body.host, identity=identity,
+            via=human_gate_via(request), carry_dirty=body.carryDirty,
+            stop_background=body.stopBackgroundTasks)
+    except ActionError as exc:
+        return _action_error_response(exc)
+    updated = await orch.get_session(session_id)
+    return {**result, "session": (_record_to_dict(updated, repo=await _resolve_repo(updated))
+                                  if updated is not None else None)}
 
 
 @router.post("/{session_id}/rotate")

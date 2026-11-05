@@ -9,7 +9,7 @@ import type { AgentCapabilities, ModelOption } from '@/api/types'
 const CODEX_CAPS: AgentCapabilities = {
   models: true, reasoningEffort: true, steer: true, interrupt: true, approvals: true, questions: true,
   fork: false, adopt: false, selfModelSwitch: false, subagents: false, attachments: true,
-  accountRotation: false, accountSwitchNewThread: true, rewind: false, flagSettings: false,
+  accountRotation: false, accountSwitchNewThread: true, rewind: false, flagSettings: false, crossHostTransfer: false,
 }
 
 const CODEX_MODELS: ModelOption[] = [

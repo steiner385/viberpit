@@ -28,6 +28,7 @@ import { useNow } from '@/hooks/useNow'
 import type { Session, Account } from '@/api/types'
 import { displayFallbackTitle } from '../displayFallback'
 import { SessionStatusDot } from '../SessionStatusDot'
+import { MovingChip } from '../move/MovingChip'
 
 // Meta-row marker: a 12px icon with the full text demoted to tooltip + sr-only.
 // Wide-card only (`hidden @md:inline-flex`), same declutter gate the old chips
@@ -633,6 +634,12 @@ export function SessionCard({ session, account, selected = false, open = false, 
             >
               {session.host}
             </span>
+          </>
+        )}
+        {session.movingTo && (
+          <>
+            <Sep />
+            <MovingChip host={session.movingTo} className="flex-shrink" />
           </>
         )}
         {session.displayMode === 'native' && (

@@ -91,7 +91,7 @@ D=[
  ("Spin off parallel / child sessions",1,"Y",""),
  ("Archive / unarchive / auto-archive",2,"Y",""),
  ("Rename + AI titles",1,"Y",""),
- ("Move session to cloud / other host",1,"N",""),
+ ("Move session to cloud / other host",1,"P","other fleet host, idle Claude sessions (D-17); no cloud, no Codex"),
  ("Scheduled tasks / routines",1,"P","Delivery automations"),
 ]),
 ("8 Code review & dev",[

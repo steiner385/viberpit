@@ -1155,3 +1155,35 @@ def list_remote_branches(name_with_owner: str) -> dict:
         default = default_r.stdout.strip() or None
 
     return {"default": default, "branches": branches}
+
+
+def repo_is_private(name_with_owner: str | None) -> bool | None:
+    """Is the GitHub repo ``owner/name`` private? True / False from GitHub, None when
+    it cannot be told (bad name, gh missing, API error, unparsable answer).
+
+    Callers that gate on it must FAIL CLOSED — treat None as public. The D-17 session
+    move pushes uncommitted work as a WIP commit to a hidden ref, and on a public repo
+    that commit stays world-readable by SHA after the ref is deleted (verified
+    2026-11-05), so only an explicit ``private: true`` permits it. Same token path as
+    :func:`list_remote_branches`: the owner's App installation, else the pinned gh
+    identity. Never raises.
+    """
+    owner, _, name = (name_with_owner or "").partition("/")
+    if not owner or not name or "/" in name:
+        return None
+    try:
+        r = _run_gh(["api", f"repos/{owner}/{name}", "-q", ".private"],
+                    token=_app_token(owner), timeout=30)
+    except Exception:  # noqa: BLE001 — GhError, TimeoutExpired, OSError: all "unknown"
+        log.info("repos.visibility_unknown repo=%s", name_with_owner, exc_info=True)
+        return None
+    if r.returncode != 0:
+        log.info("repos.visibility_unknown repo=%s err=%s", name_with_owner,
+                 (r.stderr or "").strip()[:200])
+        return None
+    answer = r.stdout.strip().lower()
+    if answer == "true":
+        return True
+    if answer == "false":
+        return False
+    return None

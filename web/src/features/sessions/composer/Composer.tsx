@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { useQuickReplies } from '@/api/quickReplies'
 import { useSessions } from '@/api/hooks'
+import { movingLabel } from '@/api/sessionMove'
 import { useImageAttachments } from './useImageAttachments'
 import { useSessionDraft, type DraftAttachment } from './useSessionDraft'
 import { AttachmentChips } from './AttachmentChips'
@@ -99,7 +100,11 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   // than threaded as a prop: SessionRuntime carries no engine field, and this
   // query is already warm everywhere the Composer mounts.
   const { data: sessions = [] } = useSessions()
-  const engine = sessions.find((s) => s.id === sessionId)?.engine
+  const sessionRecord = sessions.find((s) => s.id === sessionId)
+  const engine = sessionRecord?.engine
+  // Between hosts (D-17): every send would answer 409 SESSION_MOVING, so the button
+  // says so and nothing is sent — the draft stays in the box for after the move.
+  const movingTo = sessionRecord?.movingTo ?? null
   const att = useImageAttachments(
     draft.initial.attachments.map((a, i) => ({
       key: `draft-${i}`, id: a.id, mime: a.mime, name: a.name,
@@ -305,6 +310,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   }, [att, draft])
 
   const submit = useCallback(() => {
+    if (movingTo) return
     const trimmed = text.trim()
     const refs = att.refs()
     if (!trimmed && refs.length === 0) return
@@ -314,7 +320,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     if (suggestedDraft.current === text) onPrompt(trimmed, refs, undefined, 'suggested')
     else onPrompt(trimmed, refs)
     clearDraft(true)
-  }, [text, onPrompt, att, runCommandFromText, clearDraft])
+  }, [text, onPrompt, att, runCommandFromText, clearDraft, movingTo])
 
   // "Send now": interrupt the live turn and post the draft as the next turn. The
   // draft is only cleared once the frame actually left the browser — a closed
@@ -322,7 +328,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   // A known slash command runs as a command, exactly as `submit` runs it — it must
   // never interrupt the turn and reach the engine as literal text.
   const submitNow = useCallback(() => {
-    if (!onInterruptAndPrompt) return
+    if (!onInterruptAndPrompt || movingTo) return
     const trimmed = text.trim()
     const refs = att.refs()
     if (!trimmed && refs.length === 0) return
@@ -333,7 +339,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
       ? onInterruptAndPrompt(trimmed, refs, 'suggested') : onInterruptAndPrompt(trimmed, refs)
     if (!sent) return
     clearDraft(true)
-  }, [text, onInterruptAndPrompt, att, runCommandFromText, clearDraft])
+  }, [text, onInterruptAndPrompt, att, runCommandFromText, clearDraft, movingTo])
   const canSendNow = isWorking && !chatArmed && onInterruptAndPrompt !== undefined
 
   const prefill = useCallback((value: string) => {
@@ -764,17 +770,21 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
             </button>
           </>
         ) : (
+          // Between hosts (D-17) the session is idle, so this is the only button a
+          // move can meet: it reads "Moving…" and is disabled until the move settles.
           <button
             type="button"
-            aria-label="Send message"
+            aria-label={movingTo ? undefined : 'Send message'}
+            title={movingTo ? movingLabel(movingTo) : undefined}
+            disabled={!!movingTo}
             onClick={submit}
             className={cn(
               'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-target',
-              'bg-accent text-accent-ink hover:bg-accent/90',
+              'bg-accent text-accent-ink hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
             )}
           >
-            Send
+            {movingTo ? 'Moving…' : 'Send'}
           </button>
         )}
       </div>

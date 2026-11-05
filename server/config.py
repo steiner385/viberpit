@@ -429,6 +429,10 @@ try:
         # CLI control requests (rewind_files dry runs, rewind_conversation), per
         # constitution I.
         rewind_enabled: bool = Field(default=True, alias="VIBERPIT_REWIND_ENABLED")
+        # Move to host (D-17) kill switch: off = no engine advertises
+        # ``crossHostTransfer`` and POST /api/sessions/{id}/move answers 409
+        # MOVE_DISABLED. Nothing in flight is interrupted.
+        session_move_enabled: bool = Field(default=True, alias="VIBERPIT_SESSION_MOVE_ENABLED")
         # Live flag settings (D-14) kill switch: off = no engine advertises
         # ``flag_settings``, so fast mode is unavailable, spawns carry no session flags,
         # and a live Claude effort is refused as before D-14. Gates the internal CLI
@@ -801,6 +805,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         rewind_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_REWIND_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        session_move_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_SESSION_MOVE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         flag_settings_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_FLAG_SETTINGS_ENABLED", "true").lower() in ("1", "true", "yes", "on")

@@ -19,21 +19,25 @@ from dataclasses import dataclass, field
 
 from .gitrepos import git_env_for_remote
 from .worktrees import (
-    WorktreeInfo, _origin_url, _run, _short, _try_fetch_origin, authored_branches,
-    clear_stale_registration, current_branch, lock_worktree, remove_worktree,
-    worktrees_base,
+    RECOVERY_FORCED, WorktreeInfo, _origin_url, _run, _short, _try_fetch_origin,
+    authored_branches, clear_stale_registration, current_branch, lock_worktree,
+    remove_worktree, snapshot_recovery_ref, worktrees_base,
 )
 
 log = logging.getLogger(__name__)
 
-__all__ = ["TransferError", "WorktreeState", "Bundle", "TRANSFER_REF_NS", "head_ref",
-           "branch_ref", "inspect", "export", "import_", "finalize", "delete_transfer_refs"]
+__all__ = ["TransferError", "WorktreeState", "Bundle", "Finalized", "TRANSFER_REF_NS",
+           "DIRTY_PATHS_CAP", "head_ref", "branch_ref", "inspect", "export", "import_",
+           "unpack_wip", "finalize", "delete_transfer_refs"]
 
 #: Hidden ref namespace on origin. Not under refs/heads, so it never appears as a
 #: branch, never triggers CI or PR automation, and is deleted after import.
 TRANSFER_REF_NS = "refs/viberpit/transfer"
 WIP_SUBJECT = "viberpit: transfer WIP for session {session_id}; not for merge"
 _WIP_IDENTITY = ["-c", "user.name=ViberPit", "-c", "user.email=viberpit@localhost"]
+#: At most this many dirty paths are listed (``WorktreeState.dirty_paths``) — what the
+#: move dialog shows before asking for consent. ``dirty_files`` keeps the full count.
+DIRTY_PATHS_CAP = 50
 
 
 class TransferError(Exception):
@@ -52,6 +56,13 @@ class WorktreeState:
     branch: str | None          # None when detached
     head_sha: str
     unpushed: tuple[str, ...]   # authored branches whose tip is not on origin at the same sha
+    #: The first ``DIRTY_PATHS_CAP`` dirty paths, as ``git status --porcelain`` names them.
+    dirty_paths: tuple[str, ...] = ()
+    #: Commits an export would push that no ``origin`` remote-tracking ref reaches (from
+    #: HEAD and the ``unpushed`` branches) — what a transfer ref newly exposes. Pushed
+    #: refs are deleted after import, but the commits stay fetchable by SHA, so on a
+    #: public repo the caller refuses a move with any (D-17 final review).
+    unpushed_commits: int = 0
 
 
 def head_ref(session_id: str) -> str:
@@ -94,8 +105,27 @@ def inspect(cwd: str) -> WorktreeState:
             continue
         if _rev(cwd, f"refs/remotes/origin/{b}") != local:
             unpushed.append(b)
+    paths = tuple(_porcelain_path(ln) for ln in lines[:DIRTY_PATHS_CAP])
     return WorktreeState(dirty=bool(lines), dirty_files=len(lines), branch=branch,
-                         head_sha=head, unpushed=tuple(unpushed))
+                         head_sha=head, unpushed=tuple(unpushed), dirty_paths=paths,
+                         unpushed_commits=_count_unpushed(cwd, head, unpushed))
+
+
+def _count_unpushed(cwd: str, head: str, branches: list[str]) -> int:
+    """Commits reachable from *head* or *branches* but from no ``origin`` ref. A failed
+    count is reported as 1 (fail closed: the caller treats it as unpushed work)."""
+    tips = [head, *(f"refs/heads/{b}" for b in branches)]
+    r = _run(["git", "-C", cwd, "rev-list", "--count", *tips, "--not", "--remotes=origin"])
+    try:
+        return int(r.stdout.strip()) if r.returncode == 0 else 1
+    except ValueError:
+        return 1
+
+
+def _porcelain_path(line: str) -> str:
+    """The path of one ``git status --porcelain`` line (the new name of a rename)."""
+    path = line[3:] if len(line) > 3 else line.strip()
+    return path.split(" -> ", 1)[-1]
 
 
 @dataclass(frozen=True)
@@ -122,13 +152,24 @@ class Bundle:
                    branches=dict(d.get("branches") or {}))
 
 
-def export(cwd: str, session_id: str, *, carry_dirty: bool) -> Bundle:
+def export(cwd: str, session_id: str, *, carry_dirty: bool,
+           vetted: WorktreeState | None = None) -> Bundle:
     """Push *cwd*'s HEAD and unpushed authored branches to the transfer namespace.
 
     A dirty tree is refused unless ``carry_dirty`` (the user ticked the consent
-    box; the rebalancer never passes True). With consent the edits become one WIP
-    commit on top of HEAD, pushed as the transfer head; on a push failure that
+    box; the rebalancer never passes True) AND the caller hands back the *vetted*
+    state its policy approved — the consent, and the repo-visibility check behind it
+    (D-17 revised D1: never on a public repo), were about THAT tree. A tree that is
+    not exactly the vetted one any more (dirtied after a clean vet, or new files
+    since) is refused with ``dirty_worktree`` and nothing is committed or pushed, so
+    no caller can WIP-commit bytes nobody vetted. With consent the edits become one
+    WIP commit on top of HEAD, pushed as the transfer head; on a push failure that
     commit is undone (``reset --mixed``) so the worktree is exactly as found.
+
+    Committed-but-unpushed work gets the same rule when *vetted* is given: the caller's
+    visibility policy approved exactly the vetted state's ``unpushed_commits`` (none on a
+    public repo), so a tree with unpushed commits it did not see — a new commit, a moved
+    HEAD — is refused with ``unpushed_commits`` and nothing is pushed.
     """
     top = _repo_top(cwd)
     url = _origin_url(top)
@@ -138,6 +179,19 @@ def export(cwd: str, session_id: str, *, carry_dirty: bool) -> Bundle:
     state = inspect(cwd)
     if state.dirty and not carry_dirty:
         raise TransferError("dirty_worktree", f"{state.dirty_files} uncommitted change(s)")
+    if state.dirty and (vetted is None or not vetted.dirty
+                        or vetted.dirty_files != state.dirty_files
+                        or vetted.dirty_paths != state.dirty_paths
+                        or vetted.head_sha != state.head_sha):
+        raise TransferError("dirty_worktree",
+                            "the worktree changed since it was vetted; nothing was pushed")
+    if vetted is not None and state.unpushed_commits and (
+            not vetted.unpushed_commits or vetted.head_sha != state.head_sha
+            or state.unpushed_commits > vetted.unpushed_commits
+            or not set(state.unpushed) <= set(vetted.unpushed)):
+        raise TransferError("unpushed_commits",
+                            f"{state.unpushed_commits} unpushed commit(s) were not vetted; "
+                            "nothing was pushed")
     base_sha = state.head_sha
     head_sha = base_sha
     wip = False
@@ -191,7 +245,9 @@ def import_(bundle: Bundle, repo_path: str, repo_root: str) -> WorktreeInfo:
     session worktree at its canonical path under *repo_root*.
 
     Idempotent for the restore-to-source case: a worktree already at the path whose
-    HEAD is the bundle's head or base is reused untouched. A branch already checked
+    HEAD is the bundle's head or base is reused — and a WIP commit export left at its
+    HEAD is unpacked again (``unpack_wip``), so the agent's branch never keeps the
+    transport commit and the edits are back as unstaged changes. A branch already checked
     out elsewhere on this clone is refused rather than renamed — ``create_worktree``'s
     child-branch fallback would silently change the branch the agent remembers.
     """
@@ -209,6 +265,7 @@ def import_(bundle: Bundle, repo_path: str, repo_root: str) -> WorktreeInfo:
 
     if dest.is_dir():
         if _rev(str(dest), "HEAD") in (bundle.head_sha, bundle.base_sha):
+            unpack_wip(str(dest), bundle.session_id, bundle)
             log.info("transfer.import reuse path=%s", dest)
             return WorktreeInfo(str(dest), bundle.branch, is_child=False, repo=top)
         raise TransferError("dest_occupied", f"{dest} exists with a different HEAD")
@@ -249,22 +306,84 @@ def import_(bundle: Bundle, repo_path: str, repo_root: str) -> WorktreeInfo:
     return WorktreeInfo(str(dest), bundle.branch, is_child=False, repo=top)
 
 
-def finalize(bundle: Bundle, worktree_path: str) -> bool:
-    """Source-side cleanup after a successful import elsewhere.
+def _wip_parent(cwd: str, session_id: str, bundle: Bundle | None) -> str | None:
+    """The commit a WIP transport commit at *cwd*'s HEAD sits on, or None when HEAD is
+    not this session's WIP commit. With a bundle the answer is exact (HEAD is the
+    bundle's WIP head); without one (crash reconcile) the WIP is recognised by the
+    subject ``export`` gave it — scoped to *session_id*, so another session's WIP is
+    never touched."""
+    head = _rev(cwd, "HEAD")
+    if head is None:
+        return None
+    if bundle is not None:
+        return bundle.base_sha if bundle.wip_commit and head == bundle.head_sha else None
+    subject = _run(["git", "-C", cwd, "log", "-1", "--format=%s", "HEAD"])
+    if subject.returncode != 0 or subject.stdout.strip() != WIP_SUBJECT.format(
+            session_id=session_id):
+        return None
+    return _rev(cwd, "HEAD^")
+
+
+def unpack_wip(cwd: str, session_id: str, bundle: Bundle | None = None) -> bool:
+    """Undo the WIP transport commit at *cwd*'s HEAD (``reset --mixed`` onto its
+    parent): the edits come back as unstaged changes and the branch tip is where the
+    agent left it. The restore-to-source path, and the reuse branch of ``import_``.
+    Returns True iff a WIP commit was unpacked; idempotent."""
+    if not os.path.isdir(cwd):
+        return False
+    parent = _wip_parent(cwd, session_id, bundle)
+    if parent is None:
+        return False
+    r = _run(["git", "-C", cwd, "reset", "-q", "--mixed", parent])
+    if r.returncode != 0:
+        raise TransferError("wip_unpack_failed", r.stderr.strip())
+    log.info("transfer.wip_unpacked session=%s path=%s", session_id, cwd)
+    return True
+
+
+@dataclass(frozen=True)
+class Finalized:
+    """What ``finalize`` did. Truthy iff the worktree directory was removed."""
+
+    removed: bool
+    recovery_ref: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.removed
+
+
+def finalize(bundle: Bundle | None, worktree_path: str, *,
+             session_id: str | None = None) -> Finalized:
+    """Drop this host's copy of a session worktree that now lives on another host:
+    the source after a successful move, or a target whose import was abandoned.
 
     The WIP commit was a transport artifact: put the branch tip back at the base
-    (``reset --soft`` keeps the edits staged so nothing is lost if the removal below
-    is refused), then remove the worktree with force — its contents now live on
-    the target. Returns True iff the directory was removed. Safe to call twice.
+    (``reset --soft`` keeps the edits staged), then take a recovery snapshot of the
+    full tree (``refs/viberpit/recovery/<sid>/…``, local) BEFORE the forced removal,
+    so a bad move stays recoverable here. *bundle* may be None (crash reconcile); the
+    WIP is then found by its subject and *session_id* is required. Safe to call twice.
     """
+    sid = bundle.session_id if bundle is not None else session_id
+    if not sid:
+        raise ValueError("finalize needs a bundle or a session_id")
     if not os.path.isdir(worktree_path):
-        return False
-    if bundle.wip_commit and _rev(worktree_path, "HEAD") == bundle.head_sha:
-        _run(["git", "-C", worktree_path, "reset", "-q", "--soft", bundle.base_sha])
-    removed = remove_worktree(worktree_path, force=True, session_id=bundle.session_id)
-    log.info("transfer.finalize session=%s removed=%s path=%s",
-             bundle.session_id, removed, worktree_path)
-    return removed
+        return Finalized(False)
+    parent = _wip_parent(worktree_path, sid, bundle)
+    if parent is not None:
+        _run(["git", "-C", worktree_path, "reset", "-q", "--soft", parent])
+    ref = snapshot_recovery_ref(worktree_path, sid, reason=RECOVERY_FORCED)
+    if ref is None:
+        # None means "clean, nothing to keep" OR "the snapshot failed": tell them apart.
+        status = _run(["git", "-C", worktree_path, "status", "--porcelain"])
+        if status.returncode != 0 or status.stdout.strip():
+            log.warning("transfer.finalize_refused session=%s path=%s — the tree has "
+                        "uncommitted changes and no recovery snapshot could be taken; "
+                        "leaving it in place", sid, worktree_path)
+            return Finalized(False)
+    removed = remove_worktree(worktree_path, force=True, session_id=sid)
+    log.info("transfer.finalize session=%s removed=%s path=%s recovery_ref=%s",
+             sid, removed, worktree_path, ref)
+    return Finalized(removed, ref)
 
 
 def delete_transfer_refs(repo_path: str, session_id: str) -> None:

@@ -274,12 +274,12 @@ describe('SessionBody — capability-gated surfaces', () => {
   const CLAUDE_CAPS: AgentCapabilities = {
     models: true, reasoningEffort: false, steer: false, interrupt: true, approvals: true,
     questions: true, fork: false, adopt: true, selfModelSwitch: true, subagents: true,
-    attachments: true, accountRotation: true, accountSwitchNewThread: false, rewind: false, flagSettings: false,
+    attachments: true, accountRotation: true, accountSwitchNewThread: false, rewind: false, flagSettings: false, crossHostTransfer: false,
   }
   const CODEX_CAPS: AgentCapabilities = {
     models: true, reasoningEffort: true, steer: true, interrupt: true, approvals: true,
     questions: false, fork: false, adopt: false, selfModelSwitch: false, subagents: false,
-    attachments: true, accountRotation: false, accountSwitchNewThread: true, rewind: false, flagSettings: false,
+    attachments: true, accountRotation: false, accountSwitchNewThread: true, rewind: false, flagSettings: false, crossHostTransfer: false,
   }
 
   const offer = (engine: EngineOffer['engine'], capabilities: AgentCapabilities): EngineOffer => ({

@@ -88,6 +88,14 @@ FORK_RPC_TIMEOUT = 4 * 600.0 + 12 * 30.0 + SPAWN_RPC_TIMEOUT + 120.0
 REWIND_RPC_TIMEOUT = (SPAWN_RPC_TIMEOUT + 3 * REWIND_CONTROL_TIMEOUT_S
                       + DRIVER_SWAP_TIMEOUT_S + 120.0)
 
+# Move to host (D-17): export = close the driver + one ``git push`` of the transfer refs
+# (git's own network timeout, ~60 s worst case seen) + a GitHub visibility read; import =
+# one fetch + ``worktree add`` + a transcript read-to-EOF with retries + a full resume
+# (SPAWN_RPC_TIMEOUT); finalize = a recovery snapshot + ``worktree remove``. One budget
+# above the worst of them, so the edge never gives up on a step the daemon finishes —
+# each step also runs to completion daemon-side, and the lease fences a late finisher.
+TRANSFER_RPC_TIMEOUT = SPAWN_RPC_TIMEOUT + 180.0
+
 # Materialization apply (#992): its own budget because it is not spawn-shaped at all.
 # The call runs N SEQUENTIAL gh mutations inline in the daemon — one repository read,
 # one createIssue per issue (an epic plus every task in the plan), then the batched
@@ -1105,6 +1113,40 @@ class RemoteOrchestrator:
             if exc.err_type == "ForkWorktreeError" and code in worktrees.FORK_WORKTREE_CODES:
                 raise worktrees.ForkWorktreeError(exc.message, code) from exc
             raise
+
+    async def _transfer_call(self, method: str, **params):
+        """One D-17 move step on this daemon. A MoveError envelope comes back as
+        ``session_move.MoveError`` with its code and extras; an unknown session as
+        KeyError; anything else stays a DaemonError."""
+        from server.sessions.session_move import MoveError
+        try:
+            return await self._client.call(method, timeout=TRANSFER_RPC_TIMEOUT, **params)
+        except DaemonError as exc:
+            if exc.err_type == "MoveError":
+                raise MoveError.from_error_data(exc.message, exc.data) from exc
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            raise
+
+    async def transfer_preflight(self, session_id: str) -> dict:
+        return await self._transfer_call("transfer_preflight", session_id=session_id)
+
+    async def transfer_export(self, session_id: str, *, target: str, carry_dirty: bool = False,
+                              stop_background: bool = False) -> dict:
+        return await self._transfer_call(
+            "transfer_export", session_id=session_id, target=target,
+            carry_dirty=carry_dirty, stop_background=stop_background)
+
+    async def transfer_import(self, session_id: str, manifest: dict | None = None, *,
+                              source: str | None = None, local: bool = False) -> dict:
+        return await self._transfer_call(
+            "transfer_import", session_id=session_id, manifest=manifest, source=source,
+            local=local)
+
+    async def transfer_finalize(self, session_id: str, manifest: dict | None = None, *,
+                                owner: str) -> dict:
+        return await self._transfer_call(
+            "transfer_finalize", session_id=session_id, manifest=manifest, owner=owner)
 
     async def rewind_session(self, session_id, *, to_turn_id: str, mode: str,
                              request_id: str, dry_run: bool = False,

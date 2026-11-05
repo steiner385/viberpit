@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 from dataclasses import dataclass, field, replace as dataclass_replace
 from collections.abc import Awaitable, Coroutine, Iterable, Sequence
-from typing import TYPE_CHECKING, Any, Callable, Mapping, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Callable, Mapping, NoReturn, TypeVar, cast
 
 if TYPE_CHECKING:
     from server.automations.backlog_grouping import RefreshSummary
@@ -560,6 +560,55 @@ class SessionLeaseHeld(RuntimeError):
         super().__init__(
             f"session {session_id} is leased to another host — refusing to start a "
             f"second CLI for it (see #1379)")
+
+
+async def effective_repo_root(fallback: str) -> str:
+    """DB AppSettings.repo_root → *fallback*. THE resolver for "where do managed
+    worktrees live": the daemons (``SessionOrchestrator._effective_repo_root``) and the
+    edge's move predicate (``session_move``) both read it, so they judge one path.
+
+    Reads the runtime-settable repo root from the settings singleton so that changes
+    made via the settings UI take effect without a server restart.
+    """
+    from sqlalchemy import select as sa_select
+
+    from server.db.models import AppSettings
+    try:
+        async with db_session() as db:
+            val = (await db.execute(
+                sa_select(AppSettings.repo_root)
+                .where(AppSettings.id == "singleton")
+            )).scalar_one_or_none()
+    except Exception:
+        log.debug("settings: repo_root read failed", exc_info=True)
+        return fallback
+    return val or fallback
+
+
+_CloseFn = TypeVar("_CloseFn", bound=Callable[..., Awaitable[None]])
+
+
+def _in_closing_window(fn: _CloseFn) -> _CloseFn:
+    """Hold the session id in ``self._closing`` for the whole call (D-17). close and
+    archive pop the record BEFORE persisting the terminal status; ensure_driver's
+    row fallback (``_load_unrehydrated_row``) must not rebuild it in that window.
+    A decorator, not a wrapper method, so the teardown body stays in the public
+    method (``test_all_three_driver_teardowns_route_through_one_helper`` reads it)."""
+    @functools.wraps(fn)
+    async def wrapper(self, session_id: str, *args, **kwargs) -> None:
+        closing: set[str] = self.__dict__.setdefault("_closing", set())
+        closing.add(session_id)
+        try:
+            await fn(self, session_id, *args, **kwargs)
+        finally:
+            closing.discard(session_id)
+    return cast(_CloseFn, wrapper)
+
+
+def _bg_task_wire(task) -> dict:
+    """One background task as the move dialog lists it (D-17): what will stop."""
+    return {"kind": task.kind, "name": task.name, "description": task.description,
+            "replayable": task.replayable}
 
 
 def _stamp_is_this_host(host: str | None) -> bool:
@@ -3494,7 +3543,8 @@ class SessionOrchestrator:
         if rec is not None and not adopt:
             getter = getattr(self, "_enabled_host_names", None)
             enabled = await getter() if getter is not None else None
-            if not self._owns_record(rec, enabled):
+            if (not self._owns_record(rec, enabled)
+                    and not await self._healed_stamp(session_id, rec, enabled)):
                 stamp = getattr(rec, "host", None)
                 if session_lease_enforced():
                     if self._lease_denial_is_news(session_id, str(stamp), "foreign_stamp"):
@@ -6795,6 +6845,7 @@ class SessionOrchestrator:
             except Exception:
                 log.exception("session.scratch_cleanup_failed id=%s", session_id)
 
+    @_in_closing_window
     async def close_session(self, session_id: str) -> None:
         """Stop the driver, clean up the session worktree, mark the row ended."""
         driver = await self._teardown_driver_state(session_id)
@@ -19784,6 +19835,9 @@ class SessionOrchestrator:
             host=getattr(row, "host", None),
             display_mode=getattr(row, "display_mode", None),
             display_fallback_reason=getattr(row, "display_fallback_reason", None),
+            moving_to=getattr(row, "moving_to", None),
+            moved_from=getattr(row, "moved_from", None),
+            moved_at=getattr(row, "moved_at", None),
             kind=getattr(row, "kind", None),
             owner_identity=getattr(row, "owner_identity", None),
             paused_reason=getattr(row, "paused_reason", None),
@@ -22562,6 +22616,518 @@ class SessionOrchestrator:
                   identity=identity, replayed=replayed)
         return "reloaded"
 
+    # ── Move to host (D-17): the daemon halves of server/sessions/session_move.py ─────
+    # The edge drives the saga and routes each step to a host explicitly: export and
+    # finalize on the source, import on the target, import(local=True) on whichever host
+    # takes the session back. Every step is idempotent, runs to completion even if the
+    # edge's RPC goes away (run_to_completion), and raises session_move.MoveError.
+
+    async def _read_session_row(self, session_id: str):
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            return (await db.execute(
+                sa_select(DbSession).where(DbSession.id == session_id))).scalar_one_or_none()
+
+    def _row_stamped_here(self, host: str | None) -> bool:
+        """Is a row stamped *host* this daemon's, strictly (never orphan adoption)? A
+        worker's rows carry its name; the primary's carry its name, NULL or "local"."""
+        if daemon_role() == "worker":
+            return host == self_host_name()
+        return _stamp_is_this_host(host)
+
+    def _install_row(self, row) -> SessionRecord:
+        """THE per-row import: (re)build this session's in-memory record from its DB row
+        with the rehydrate status rule — through ``_record_from_row``, the one mapper.
+        Used by a move's import, ensure_driver's not-yet-rehydrated fallback, and the
+        dead-host adoption still to come (#949). Replaces a primary's mirror record."""
+        status = "idle" if row.status in _RESTART_TRANSIENT_STATUSES else row.status
+        rec = self._record_from_row(row, status=status)
+        self._records[row.id] = rec
+        return rec
+
+    def _retarget_record(self, session_id: str, owner: str) -> None:
+        """This daemon no longer owns *session_id* (§C.3 gap 1). A worker forgets it; the
+        primary keeps its dashboard mirror but stamps it for *owner* IN MEMORY, because
+        ``_owns_record`` reads the in-memory stamp — left as this host, the primary's
+        acting loops (stuck sweep, rotation, a mis-routed ensure_driver) would resume the
+        conversation in the leftover tree here: the 2026-09-07 incident shape."""
+        if daemon_role() == "worker":
+            self._records.pop(session_id, None)
+        else:
+            rec = self._records.get(session_id)
+            if rec is not None:
+                rec.host = owner
+        self._worktrees.pop(session_id, None)
+        self._pending_prompt_preambles.pop(session_id, None)
+        self._resume_recovery.pop(session_id, None)
+
+    @contextlib.asynccontextmanager
+    async def _transfer_slot(self, session_id: str):
+        """Hold the session's ``_swapping`` slot for a transfer step: send_prompt refuses
+        (a prompt cannot land between the idle check and the close), ensure_driver and
+        _reassign wait. A swap already in flight is waited out, bounded."""
+        from server.sessions import session_move as sm
+        prior = self._swapping.get(session_id)
+        if prior is not None:
+            done, _ = await asyncio.wait({prior}, timeout=DRIVER_SWAP_TIMEOUT_S)
+            if not done:
+                raise sm.MoveError(sm.MOVE_MID_TURN, "A driver swap is still in flight.")
+        slot: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._swapping[session_id] = slot
+        try:
+            yield
+        finally:
+            if self._swapping.get(session_id) is slot:
+                del self._swapping[session_id]
+            if not slot.done():
+                slot.set_result(None)
+
+    async def _close_for_transfer(self, session_id: str) -> None:
+        """Tear the driver down (releases the lease) and close it, bounded."""
+        from server.sessions import session_move as sm
+        popped = await self._teardown_driver_state(session_id)
+        if popped is not None and not await bounded_wait(
+                popped.aclose(), timeout=DRIVER_RELEASE_WAIT_S,
+                phase=f"move.close:{session_id}"):
+            # The CLI may still be flushing the shared transcript: going on would let the
+            # other host resume from a file still being written.
+            raise sm.MoveError(sm.MOVE_EXPORT_FAILED,
+                               "The session's CLI did not close in time.")
+
+    async def transfer_preflight(self, session_id: str) -> dict:
+        """Read-only: what a move of *session_id* off this host would carry — the dirty
+        paths (capped), the unpushed commits, the repo's GitHub visibility (asked only
+        when either would be pushed), the live
+        background tasks that would stop — and whether its worktree is here at all
+        (the crash reconcile's question)."""
+        from viberpit import worktree_transfer as wtx
+        from server.sessions import session_move as sm
+        rec = self._records.get(session_id)
+        cwd = getattr(rec, "cwd", None)
+        if rec is None:
+            row = await self._read_session_row(session_id)
+            cwd = row.cwd if row is not None else None
+        driver = self._drivers.get(session_id)
+        present = bool(cwd) and os.path.isdir(str(cwd))
+        out: dict = {"sessionId": session_id, "host": self_host_name(), "known": rec is not None,
+                     "present": present, "driverLive": driver is not None,
+                     "turnActive": bool(getattr(driver, "turn_active", False)),
+                     "pendingCard": self._has_live_card(session_id),
+                     "dirtyCount": 0, "dirtyPaths": [], "unpushedCommits": 0, "repo": None,
+                     "repoPrivate": None, "backgroundTasks": []}
+        if present:
+            try:
+                state = await asyncio.to_thread(wtx.inspect, str(cwd))
+            except wtx.TransferError:
+                state = None
+            if state is not None and (state.dirty or state.unpushed_commits):
+                repo = await asyncio.to_thread(gitrepos.repo_at_path, str(cwd))
+                out.update(dirtyCount=state.dirty_files, dirtyPaths=list(state.dirty_paths),
+                           unpushedCommits=state.unpushed_commits, repo=repo,
+                           repoPrivate=await asyncio.to_thread(gitrepos.repo_is_private, repo))
+        if rec is not None and driver is not None:
+            tasks = await self._open_background_work(session_id)
+            out["backgroundTasks"] = [_bg_task_wire(t) for t in tasks[:sm.BACKGROUND_LIST_CAP]]
+        return out
+
+    async def transfer_export(self, session_id: str, *, target: str, carry_dirty: bool = False,
+                              stop_background: bool = False) -> dict:
+        """Source half: close the idle session here and push its worktree to the transfer
+        refs. Returns the manifest the target imports. Refusals (``MoveError`` with a
+        predicate code) happen BEFORE anything is touched; a failure after the driver
+        closed raises ``MOVE_EXPORT_FAILED`` with the record still here, untouched
+        otherwise — the edge then restores it (``transfer_import(local=True)``)."""
+        return await run_to_completion(
+            self._transfer_export(session_id, target=target, carry_dirty=carry_dirty,
+                                  stop_background=stop_background),
+            name=f"move-export-{session_id}")
+
+    async def _transfer_export(self, session_id: str, *, target: str, carry_dirty: bool,
+                               stop_background: bool) -> dict:
+        from viberpit import worktree_transfer as wtx
+        from server.sessions import session_move as sm
+        from server.sessions.engine import session_move_enabled
+        from server.sessions.status import MID_TURN_STATUSES
+        me = self_host_name()
+        if not session_move_enabled():
+            raise sm.MoveError(sm.MOVE_DISABLED, "Moving sessions is turned off.")
+        if target == me:
+            raise sm.MoveError(sm.MOVE_SAME_HOST, f"The session already runs on {me}.")
+        rec = self._records.get(session_id)
+        if rec is None:
+            raise sm.MoveError(sm.MOVE_NOT_FOUND, f"No session with id {session_id} here.")
+        if not self._engine_supports(rec.engine, "cross_host_transfer"):
+            raise sm.MoveError(sm.MOVE_ENGINE_UNSUPPORTED, "This engine cannot move.")
+        async with self._transfer_slot(session_id):
+            # Re-checked INSIDE the slot: nothing can start a turn from here on.
+            rec = self._records.get(session_id) or rec
+            driver = self._drivers.get(session_id)
+            queued = getattr(driver, "queued", None)
+            if (rec.status in MID_TURN_STATUSES or getattr(driver, "turn_active", False)
+                    or getattr(driver, "drain_alive", False) or session_id in self._spawning
+                    or (callable(queued) and list(queued()))):
+                raise sm.MoveError(sm.MOVE_MID_TURN,
+                                   "Wait for the turn to finish or Interrupt first.")
+            if self._has_live_card(session_id):
+                raise sm.MoveError(sm.MOVE_AWAITING_ANSWER, "Answer the open card first.")
+            if rec.status in INACTIVE_SESSION_STATUSES:
+                raise sm.MoveError(sm.MOVE_INACTIVE, "The session is not active.")
+            if rec.status in ("queued", "pending_approval"):
+                raise sm.MoveError(sm.MOVE_NOT_STARTED, "The session has not started.")
+            root = await self._effective_repo_root()
+            if not sm.is_under_current_base(rec.cwd, root):
+                raise sm.MoveError(sm.MOVE_NOT_MANAGED, "Not a managed worktree.")
+            if not os.path.isdir(rec.cwd):
+                raise sm.MoveError(sm.MOVE_WORKTREE_MISSING, f"{rec.cwd} is missing here.")
+            try:
+                state = await asyncio.to_thread(wtx.inspect, rec.cwd)
+            except wtx.TransferError as exc:
+                raise sm.MoveError(sm.MOVE_NOT_MANAGED, str(exc)) from exc
+            private: bool | None = None
+            if state.dirty or state.unpushed_commits:
+                repo = await asyncio.to_thread(gitrepos.repo_at_path, rec.cwd)
+                private = await asyncio.to_thread(gitrepos.repo_is_private, repo)
+            if state.dirty:
+                dirty = {"dirtyCount": state.dirty_files, "dirtyPaths": list(state.dirty_paths)}
+                # Fail closed (revised D1): only GitHub's explicit "private" lets
+                # uncommitted bytes travel — a WIP commit on a public repo stays
+                # world-readable by SHA after its ref is deleted.
+                if private is not True:
+                    raise sm.MoveError(sm.MOVE_DIRTY_PUBLIC_REPO,
+                                       "Public repository: commit or discard the changes.",
+                                       extra=dirty)
+                if not carry_dirty:
+                    raise sm.MoveError(sm.MOVE_DIRTY_NEEDS_CONSENT,
+                                       "Uncommitted changes need consent to travel.",
+                                       extra=dirty)
+            if state.unpushed_commits and private is not True:
+                # Same exposure as a WIP commit: a transfer ref's commits stay fetchable
+                # by SHA after it is deleted. The vetted state passed to export below
+                # then refuses any unpushed commit that appears after this check.
+                raise sm.MoveError(sm.MOVE_UNPUSHED_PUBLIC_REPO, sm.UNPUSHED_PUBLIC_REPO_COPY,
+                                   extra={"unpushedCommits": state.unpushed_commits})
+            tasks = await self._open_background_work(session_id) if driver is not None else []
+            if tasks and not stop_background:
+                raise sm.MoveError(sm.MOVE_BACKGROUND_NEEDS_CONFIRM,
+                                   "Background tasks would stop.",
+                                   extra={"backgroundTasks": [
+                                       _bg_task_wire(t)
+                                       for t in tasks[:sm.BACKGROUND_LIST_CAP]]})
+            origin_url = await asyncio.to_thread(worktrees._origin_url, rec.cwd)
+
+            # ── the driver closes from here on ──
+            log.info("session.move_export id=%s %s→%s dirty=%s bg_tasks=%d", session_id, me,
+                     target, state.dirty, len(tasks))
+            if tasks:
+                # The target's ensure_driver re-arms these through the existing rearm
+                # path (_maybe_rearm_on_attach); so does a restore here.
+                from sqlalchemy import update as sa_update
+                async with db_session() as db:
+                    await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                                     .values(pending_rearm=[t.to_dict() for t in tasks]))
+            await self._close_for_transfer(session_id)
+            marker = await asyncio.to_thread(
+                lambda: sm.transcript_marker(self.transcript_path(session_id)))
+            try:
+                # Only the VETTED verdict may carry bytes (revised D1): a tree that got
+                # dirty — or gained unpushed commits — after the visibility/consent
+                # checks above is refused by export (dirty_worktree / unpushed_commits
+                # → MOVE_EXPORT_FAILED → restore), never pushed.
+                bundle = await asyncio.to_thread(
+                    functools.partial(wtx.export, rec.cwd, session_id,
+                                      carry_dirty=carry_dirty and state.dirty, vetted=state))
+            except wtx.TransferError as exc:
+                raise sm.MoveError(sm.MOVE_EXPORT_FAILED, f"{exc.code}: {exc.detail}",
+                                   extra={"gitCode": exc.code}) from exc
+            preambles = list(self._pending_prompt_preambles.get(session_id, []))
+            try:
+                # Only this host holds the undo backup ("only it can undo", D-9).
+                await self._expire_rewinds(session_id, reason="move")
+                self.__dict__.get("_rewind_undoable", {}).pop(session_id, None)
+            except Exception:
+                log.warning("session.move rewind expiry failed id=%s", session_id,
+                            exc_info=True)
+            self._rearmed.discard(session_id)
+            self._retarget_record(session_id, target)
+        return {"sessionId": session_id, "source": me, "target": target, "cwd": rec.cwd,
+                "repo": rec.repo, "originUrl": origin_url, "bundle": bundle.to_dict(),
+                "transcript": marker, "preambles": preambles,
+                "backgroundTasks": [_bg_task_wire(t) for t in tasks]}
+
+    async def _clone_for_move(self, root: str, repo: str | None, origin_url: str | None) -> str:
+        from server.sessions import session_move as sm
+        clone = None
+        if repo:
+            try:
+                clone = gitrepos.clone_path(root, repo)
+            except ValueError:
+                clone = None
+        if clone is not None and (clone / ".git").exists():
+            return str(clone)
+        if repo and origin_url:
+            return await asyncio.to_thread(gitrepos.ensure_clone, root, repo, origin_url)
+        raise sm.MoveError(sm.MOVE_IMPORT_FAILED, f"no local clone of {repo!r} on this host")
+
+    async def _verify_moved_transcript(self, session_id: str, marker: dict | None) -> None:
+        """Never resume a stale transcript. The source recorded its size and last entry
+        uuid after its driver closed; read it to EOF here (which refreshes an sshfs
+        attribute cache — rocky's caches 600 s) and require both, retrying briefly."""
+        from server.sessions import session_move as sm
+        if not marker:
+            return
+        for attempt in range(sm.TRANSCRIPT_ATTEMPTS):
+            if await asyncio.to_thread(
+                    lambda: sm.transcript_satisfies(self.transcript_path(session_id), marker)):
+                return
+            if attempt + 1 < sm.TRANSCRIPT_ATTEMPTS:
+                await asyncio.sleep(sm.TRANSCRIPT_RETRY_S)
+        # INFO: the MoveError carries this to the edge, whose outcome line is the
+        # incident's one WARNING (a `restored` move is an expected recovery).
+        log.info("session.move transcript stale id=%s want=%s", session_id, marker)
+        raise sm.MoveError(sm.MOVE_TRANSCRIPT_STALE,
+                           "The conversation history here is behind the source's.")
+
+    async def transfer_import(self, session_id: str, manifest: dict | None = None, *,
+                              source: str | None = None, local: bool = False) -> dict:
+        """Target half (and, with ``local=True``, the restore/reconcile reuse path).
+
+        The row must already be stamped for this host (the edge restamps first). Order
+        (§C.3): worktree first — ``_ensure_session_cwd`` refuses a missing tree — then the
+        record via the per-row import with ``host = me`` (layer 4 has no adopt bypass),
+        the transcript check, ``_claim_session(adopt=True)``, ``ensure_driver`` (resume by
+        engine session id; it re-arms background tasks), the carried preambles plus the
+        moved notice, and finally the transfer refs are deleted. A failure on a target
+        undoes everything it did here (driver, lease, record, the tree it created)."""
+        return await run_to_completion(
+            self._transfer_import(session_id, manifest, source=source, local=local),
+            name=f"move-import-{session_id}")
+
+    async def _transfer_import(self, session_id: str, manifest: dict | None, *,
+                               source: str | None, local: bool) -> dict:
+        from viberpit import worktree_transfer as wtx
+        from server.sessions import session_move as sm
+        me = self_host_name()
+        raw_bundle = (manifest or {}).get("bundle")
+        bundle = wtx.Bundle.from_dict(raw_bundle) if raw_bundle else None
+        if not local and bundle is None:
+            raise sm.MoveError(sm.MOVE_IMPORT_FAILED, "no transfer bundle")
+        row = await self._read_session_row(session_id)
+        if row is None:
+            raise sm.MoveError(sm.MOVE_NOT_FOUND, f"No session with id {session_id}.")
+        if not self._row_stamped_here(row.host):
+            raise sm.MoveError(sm.MOVE_NOT_STAMPED,
+                               f"The row is stamped {row.host!r}, not {me!r}.")
+        cwd = row.cwd
+        created = False
+
+        async def _abandon() -> None:
+            if local:
+                await self._close_for_transfer(session_id)
+                # A restore keeps the session here, detached — unless its claim lost to
+                # a live holder elsewhere: then the record it just installed must not
+                # stay stamped here (a twin-capable copy).
+                state = await _lease_state(session_id)
+                if (state is not None and state.holder != me
+                        and state.age_s < SESSION_LEASE_TTL_S):
+                    self._retarget_record(session_id, state.holder)
+                return
+            # Withdraw the import-complete evidence BEFORE touching any tree: a marker
+            # that outlives this tree would let the edge finalize the source too.
+            try:
+                await sm.clear_import_marker(session_id, me)
+            except Exception:
+                log.info("session.move could not clear the import marker id=%s — "
+                         "keeping this host's tree", session_id, exc_info=True)
+                await self._close_for_transfer(session_id)
+                self._retarget_record(session_id, source or "")
+                return
+            await self._close_for_transfer(session_id)
+            self._retarget_record(session_id, source or "")
+            if created and bundle is not None:
+                await asyncio.to_thread(wtx.finalize, bundle, cwd)
+
+        try:
+            async with self._transfer_slot(session_id):
+                if local:
+                    if not cwd or not os.path.isdir(cwd):
+                        raise sm.MoveError(sm.MOVE_WORKTREE_MISSING, f"{cwd} is not here.")
+                    await asyncio.to_thread(wtx.unpack_wip, cwd, session_id, bundle)
+                else:
+                    assert bundle is not None
+                    root = await self._effective_repo_root()
+                    clone = await self._clone_for_move(root, row.repo,
+                                                       (manifest or {}).get("originUrl"))
+                    existed = os.path.isdir(cwd)
+                    try:
+                        info = await asyncio.to_thread(wtx.import_, bundle, clone, root)
+                    except wtx.TransferError as exc:
+                        raise sm.MoveError(sm.MOVE_IMPORT_FAILED, f"{exc.code}: {exc.detail}",
+                                           extra={"gitCode": exc.code}) from exc
+                    created = not existed
+                    if os.path.abspath(info.path) != os.path.abspath(cwd):
+                        raise sm.MoveError(sm.MOVE_PATH_MISMATCH,
+                                           f"imported at {info.path}, row says {cwd}")
+                self._install_row(row)
+                self._rearmed.discard(session_id)
+                # Never resume a stale transcript — also on a local adoption (the
+                # reconcile verifying a target that resumed outside the saga), whenever
+                # the manifest's marker is known.
+                await self._verify_moved_transcript(
+                    session_id, (manifest or {}).get("transcript"))
+                if not await self._claim_session(session_id, why="transfer import",
+                                                 adopt=True):
+                    raise sm.MoveError(sm.MOVE_LEASE_HELD,
+                                       "Another host still holds this session's lease.")
+            # Outside the slot: ensure_driver waits for any in-flight swap.
+            driver = await self.ensure_driver(session_id)
+            if driver is None:
+                raise sm.MoveError(sm.MOVE_RESUME_FAILED, "The conversation did not resume.")
+        except BaseException:
+            try:
+                await _abandon()
+            except Exception:
+                # INFO: the edge's outcome line (or the reconcile's) is the WARNING.
+                log.info("session.move could not undo a failed import id=%s",
+                         session_id, exc_info=True)
+            raise
+        # Import-complete evidence for the crash reconcile — the TRUE last step, outside
+        # the try: once it may have committed, nothing can abandon this tree any more.
+        # A CAS on moving_to == me, so it is a no-op on a source's restore. If it raises,
+        # this host keeps a live driver on a verified tree with or without the marker;
+        # the edge then waits for the marker or leaves it to the reconcile.
+        await sm.mark_import_complete(session_id, me)
+        for text in (manifest or {}).get("preambles") or []:
+            self._queue_prompt_preamble(session_id, text)
+        if not local and source:
+            self._queue_prompt_preamble(
+                session_id, f"This session moved from {source} to {me}; the worktree and "
+                "uncommitted changes came with it.")
+        if cwd and os.path.isdir(cwd):
+            try:
+                await asyncio.to_thread(wtx.delete_transfer_refs, cwd, session_id)
+            except Exception:
+                log.warning("session.move transfer-ref cleanup failed id=%s", session_id,
+                            exc_info=True)
+        log.info("session.move_import id=%s on=%s from=%s local=%s", session_id, me, source,
+                 local)
+        return {"sessionId": session_id, "host": me, "driver": True}
+
+    async def transfer_finalize(self, session_id: str, manifest: dict | None = None, *,
+                                owner: str) -> dict:
+        """Drop this host's copy of a session that now lives on *owner*: the source after
+        the target's driver started (D4), or an abandoned copy found by the reconcile.
+        Refused unless the row is stamped for another host — never removes the tree of a
+        session this host owns. Takes a recovery snapshot ref before removing."""
+        return await run_to_completion(
+            self._transfer_finalize(session_id, manifest, owner=owner),
+            name=f"move-finalize-{session_id}")
+
+    async def _transfer_finalize(self, session_id: str, manifest: dict | None, *,
+                                 owner: str) -> dict:
+        from viberpit import worktree_transfer as wtx
+        from server.sessions import session_move as sm
+        row = await self._read_session_row(session_id)
+        if owner == self_host_name() or (row is not None and self._row_stamped_here(row.host)):
+            raise sm.MoveError(sm.MOVE_FINALIZE_REFUSED,
+                               "This host owns the session; its worktree stays.")
+        raw_bundle = (manifest or {}).get("bundle")
+        bundle = wtx.Bundle.from_dict(raw_bundle) if raw_bundle else None
+        async with self._transfer_slot(session_id):
+            driver = self._drivers.get(session_id)
+            if driver is not None and getattr(driver, "turn_active", False):
+                raise sm.MoveError(sm.MOVE_FINALIZE_REFUSED, "A turn is running here.")
+            rec = self._records.get(session_id)
+            cwd = (getattr(rec, "cwd", None) or (row.cwd if row is not None else None)
+                   or (manifest or {}).get("cwd"))
+            await self._close_for_transfer(session_id)
+            self._retarget_record(session_id, owner)
+            if cwd and os.path.isdir(cwd):
+                try:
+                    await asyncio.to_thread(wtx.delete_transfer_refs, cwd, session_id)
+                except Exception:
+                    log.info("session.move ref cleanup failed id=%s", session_id,
+                             exc_info=True)
+            done = (await asyncio.to_thread(
+                        functools.partial(wtx.finalize, bundle, cwd, session_id=session_id))
+                    if cwd else wtx.Finalized(False))
+        log.info("session.move_finalize id=%s owner=%s removed=%s recovery_ref=%s",
+                 session_id, owner, done.removed, done.recovery_ref)
+        return {"sessionId": session_id, "removed": done.removed,
+                "recoveryRef": done.recovery_ref}
+
+    def _has_live_card(self, session_id: str) -> bool:
+        """A permission / question / plan card a person could answer right now — the
+        live driver's, or one re-offered from the transcript after a restart. Not the
+        resting status: a restart seeds ``waiting_question`` with no card behind it."""
+        driver = self._drivers.get(session_id)
+        if driver is not None and getattr(driver, "awaiting_user_input", False):
+            return True
+        try:
+            return self.orphaned_interaction(session_id) is not None
+        except Exception:
+            log.debug("orphaned_interaction failed for %s", session_id, exc_info=True)
+            return False
+
+    async def _unpack_stray_wip(self, session_id: str, cwd: str) -> None:
+        """Defence in depth (D-17): never resume on this session's own transfer WIP
+        commit — a move that ended ``failed`` can leave one at HEAD, and the agent's
+        next push would publish it. Unpacked back into unstaged edits; never raises."""
+        from viberpit import worktree_transfer as wtx
+        if not cwd or not os.path.isdir(cwd):
+            return
+        try:
+            if await asyncio.to_thread(wtx.unpack_wip, cwd, session_id):
+                log.warning("session.resume id=%s found its transfer WIP commit at HEAD — "
+                            "unpacked it into unstaged edits", session_id)
+        except Exception:
+            log.warning("session.resume id=%s stray WIP unpack failed", session_id,
+                        exc_info=True)
+
+    async def _load_unrehydrated_row(self, session_id: str) -> SessionRecord | None:
+        """ensure_driver for an id this daemon holds no record of (§B.3): a worker only
+        rehydrates at boot, so a row restamped to it since — a moved or restored session
+        — used to answer None forever. Load it through the per-row import when the row
+        is this host's by the stamp rule, active, and not mid-move."""
+        try:
+            row = await self._read_session_row(session_id)
+        except Exception:
+            log.debug("ensure_driver: row read failed for %s", session_id, exc_info=True)
+            return None
+        if (row is None or row.status in INACTIVE_SESSION_STATUSES
+                or getattr(row, "moving_to", None)
+                or session_id in getattr(self, "_closing", ())):
+            # _closing: close/archive pop the record BEFORE persisting the terminal
+            # status — this is that window, not a row to bring back.
+            return None
+        getter = getattr(self, "_enabled_host_names", None)
+        enabled = await getter() if getter is not None else None
+        if not self._owns_record_by_stamp(row.host, enabled):
+            return None
+        existing = self._records.get(session_id)
+        if existing is not None:
+            return existing
+        log.info("ensure_driver: loading session %s from its row (stamped %r, not "
+                 "rehydrated here)", session_id, row.host)
+        return self._install_row(row)
+
+    async def _healed_stamp(self, session_id: str, rec: SessionRecord,
+                            enabled: frozenset[str] | None) -> bool:
+        """Layer 1 is about to refuse on the IN-MEMORY stamp. The row is the authority
+        and can have moved back since (a move restored, a reconcile): adopt the row's
+        stamp iff it is this host's and no move is in flight. A row stamped elsewhere, or
+        mid-move, keeps the refusal — so a leftover source tree is never resumed."""
+        try:
+            row = await self._read_session_row(session_id)
+        except Exception:
+            return False
+        if (row is None or getattr(row, "moving_to", None) or row.host == rec.host
+                or not self._owns_record_by_stamp(row.host, enabled)):
+            return False
+        log.info("session-lease: session %s is stamped %r in its row (in memory %r) — "
+                 "adopting the row's stamp", session_id, row.host, rec.host)
+        rec.host = row.host
+        return True
+
     async def rotate_to_best(self, session_id: str,
                              identity: str = SYSTEM_IDENTITY) -> str:
         """User-initiated "move to the next best account" — the per-session menu
@@ -22803,8 +23369,11 @@ class SessionOrchestrator:
             # The swap left the session driverless (e.g. _reassign failed and
             # paused it) — fall through to the normal detached-record handling.
 
-        # Look up the in-memory record (populated by rehydrate())
+        # Look up the in-memory record (populated by rehydrate(), or — for a row
+        # stamped here since boot, e.g. a moved session — loaded from its row now).
         rec = self._records.get(session_id)
+        if rec is None:
+            rec = await self._load_unrehydrated_row(session_id)
         if rec is None:
             return None
 
@@ -22896,6 +23465,7 @@ class SessionOrchestrator:
                 self._resume_recovery.setdefault(session_id, 0)
                 await self._release_session_lease(session_id)
                 return None
+            await self._unpack_stray_wip(session_id, rec.cwd)
             disabled_mcp = (None if resume_engine is AgentEngine.CODEX else
                             await disabled_for_session(
                                 repo=getattr(rec, "repo", None), session_id=rec.id))
@@ -27273,6 +27843,7 @@ class SessionOrchestrator:
     # Archive / unarchive / permanent-delete
     # ------------------------------------------------------------------
 
+    @_in_closing_window
     async def archive_session(self, session_id: str, *, archived_by: str = "user",
                               context: dict | None = None) -> None:
         """Archive a session: stop the driver and flip status='archived'. Nothing moves.
@@ -27385,24 +27956,9 @@ class SessionOrchestrator:
                         exc_info=True)
 
     async def _effective_repo_root(self) -> str:
-        """DB AppSettings.repo_root → env/default fallback.
-
-        Reads the runtime-settable repo root from the settings singleton so that
-        changes made via the settings UI take effect without a server restart.
-        """
-        from sqlalchemy import select as sa_select
-
-        from server.db.models import AppSettings
-        try:
-            async with db_session() as db:
-                val = (await db.execute(
-                    sa_select(AppSettings.repo_root)
-                    .where(AppSettings.id == "singleton")
-                )).scalar_one_or_none()
-        except Exception:
-            log.debug("settings: repo_root read failed", exc_info=True)
-            return self._repo_root if hasattr(self, "_repo_root") else os.path.expanduser("~/GitHub")
-        return val or (self._repo_root if hasattr(self, "_repo_root") else os.path.expanduser("~/GitHub"))
+        """DB AppSettings.repo_root → env/default fallback (``effective_repo_root``)."""
+        return await effective_repo_root(
+            self._repo_root if hasattr(self, "_repo_root") else os.path.expanduser("~/GitHub"))
 
     async def _effective_archive_home(self) -> "Path":
         """DB AppSettings.archive_home → VIBERPIT_ARCHIVE_HOME env → default fallback.
