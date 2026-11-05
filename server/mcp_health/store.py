@@ -70,15 +70,23 @@ async def login_key_for(short: str) -> str:
 
 
 async def last_seen_tools() -> dict[str, tuple[list[McpTool], str]]:
-    """Server key -> (its most recently seen tool list, when, ISO+Z) across every
-    account and host (D-16b: the Settings tool list, which has no live session)."""
+    """Server key -> (its seen tools, newest sighting ISO+Z), merged across every
+    account and host (D-16b: the Settings tool list, which has no live session).
+
+    The lists are unioned by tool name, the newest sighting of a tool winning, so a tool
+    an account's scopes hide (or a partial list) never vanishes from Settings while its
+    stored default still denies it on every start."""
     async with db_session() as db:
         q = (select(McpServerHealth.server, McpServerHealth.tools, McpServerHealth.tools_seen_at)
              .where(McpServerHealth.tools_seen_at.is_not(None))
              .order_by(McpServerHealth.tools_seen_at))
-        out: dict[str, tuple[list[McpTool], str]] = {}
+        merged: dict[str, dict[str, McpTool]] = {}
+        seen_at_by_server: dict[str, str] = {}
         for server, tools, seen_at in (await db.execute(q)).all():
-            if isinstance(tools, list):     # later rows (newer) overwrite older ones
-                out[server] = ([t for t in map(tool_from_wire, tools) if t is not None],
-                               seen_at.isoformat() + "Z")
-    return out
+            if isinstance(tools, list):     # rows ascend by time: a newer sighting overwrites
+                by_name = merged.setdefault(server, {})
+                for t in map(tool_from_wire, tools):
+                    if t is not None:
+                        by_name[t.name] = t
+                seen_at_by_server[server] = seen_at.isoformat() + "Z"
+    return {k: (list(v.values()), seen_at_by_server[k]) for k, v in merged.items()}
