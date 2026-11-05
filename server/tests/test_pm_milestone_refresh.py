@@ -20,9 +20,8 @@ from server.db.models import MilestoneLadder, MilestoneMeasurement, Project, Pro
 from server.pm.milestone_def import parse_ladder, to_json
 from server.pm.milestone_refresh import (
     CI_METRIC_PHASE1_ERROR,
-    REFRESH_MIN_INTERVAL_S,
     RefreshResult,
-    refresh_if_due,
+    newest_fetched_at,
     refresh_ladder,
 )
 
@@ -71,13 +70,13 @@ M0 = {"__typename": "Issue", "number": 20240, "title": "a ref", "state": "OPEN",
       "closedByPullRequestsReferences": {"nodes": []}}
 
 RUNS = [  # newest first
-    {"status": "completed", "conclusion": "success", "event": "schedule",
+    {"id": 4, "status": "completed", "conclusion": "success", "event": "schedule",
      "updated_at": "2026-11-05T06:00:00Z", "html_url": "https://run/4"},
-    {"status": "completed", "conclusion": "success", "event": "push",
+    {"id": 3, "status": "completed", "conclusion": "success", "event": "push",
      "updated_at": "2026-11-04T18:00:00Z", "html_url": "https://run/3"},
-    {"status": "completed", "conclusion": "success", "event": "workflow_dispatch",
+    {"id": 2, "status": "completed", "conclusion": "success", "event": "workflow_dispatch",
      "updated_at": "2026-11-04T06:00:00Z", "html_url": "https://run/2"},
-    {"status": "completed", "conclusion": "failure", "event": "schedule",
+    {"id": 1, "status": "completed", "conclusion": "failure", "event": "schedule",
      "updated_at": "2026-11-03T06:00:00Z", "html_url": "https://run/1"},
 ]
 
@@ -119,13 +118,16 @@ class _Gh:
 
 
 class _Runs:
+    """Behaves like the Actions API: ``event=`` filters server-side, then one page."""
+
     def __init__(self, runs=None):
         self.runs = RUNS if runs is None else runs
         self.calls: list[tuple] = []
 
-    def __call__(self, repo, workflow, *, branch, limit=30):
-        self.calls.append((repo, workflow, branch))
-        return copy.deepcopy(self.runs)
+    def __call__(self, repo, workflow, *, branch, event=None, limit=30):
+        self.calls.append((repo, workflow, branch, event))
+        runs = [r for r in self.runs if event is None or r["event"] == event]
+        return copy.deepcopy(runs[:limit])
 
 
 def _naive(dt):
@@ -140,7 +142,8 @@ async def test_refresh_writes_conditions_and_leaves(isolated_db):
     rows = await _rows()
 
     assert [owner for owner, _ in gh.calls] == ["cairnea"]
-    assert runs.calls == [(PRIMARY, "nightly.yml", "main")]
+    assert runs.calls == [(PRIMARY, "nightly.yml", "main", "schedule"),
+                          (PRIMARY, "nightly.yml", "main", "workflow_dispatch")]
 
     lane = rows[("household", "lane-fixes")]
     assert lane.value == {"done": 2, "total": 2} and lane.status == "met"
@@ -293,17 +296,29 @@ async def test_dry_run_writes_nothing(isolated_db):
 
 
 @pytest.mark.asyncio
-async def test_refresh_if_due_rate_limits(isolated_db):
+async def test_newest_fetched_at_is_the_last_refresh(isolated_db):
     pid = await _seed()
-    kw = dict(graphql=_Gh(_payload()), list_runs=_Runs())
-    assert await refresh_if_due(pid, force=True, now=NOW, **kw) is not None
-    soon = NOW + timedelta(seconds=REFRESH_MIN_INTERVAL_S - 1)
-    assert await refresh_if_due(pid, force=True, now=soon, **kw) is None
-    after = NOW + timedelta(seconds=REFRESH_MIN_INTERVAL_S + 1)
-    assert await refresh_if_due(pid, force=False, now=after, **kw) is None  # still fresh
-    assert await refresh_if_due(pid, force=True, now=after, **kw) is not None
-    stale = after + timedelta(seconds=601)
-    assert await refresh_if_due(pid, force=False, now=stale, **kw) is not None
+    assert await newest_fetched_at(pid) is None
+    await refresh_ladder(pid, graphql=_Gh(_payload()), list_runs=_Runs(), now=NOW)
+    assert _naive(await newest_fetched_at(pid)) == NOW
+
+
+@pytest.mark.asyncio
+async def test_a_page_of_push_runs_cannot_truncate_the_streak(isolated_db):
+    """A full API page of newer ``push`` runs would hide every scheduled run if the
+    events were filtered after the fetch; the per-event ``event=`` read keeps them."""
+    pushes = [{"id": 1000 + i, "status": "completed", "conclusion": "failure", "event": "push",
+               "updated_at": f"2026-11-05T{10 + i // 60:02d}:{i % 60:02d}:00Z",
+               "html_url": f"https://run/p{i}"} for i in range(120)]
+    scheduled = [{"id": i, "status": "completed", "conclusion": "success", "event": "schedule",
+                  "updated_at": f"2026-11-0{5 - i}T06:00:00Z", "html_url": f"https://run/s{i}"}
+                 for i in range(4)]
+    runs = sorted(pushes + scheduled, key=lambda r: r["updated_at"], reverse=True)
+    pid = await _seed()
+    await refresh_ladder(pid, graphql=_Gh(_payload()), list_runs=_Runs(runs), now=NOW)
+    nightly = (await _rows())[("household", "nightly")]
+    assert nightly.value == {"n": 4} and nightly.status == "met"
+    assert nightly.source_url == "https://run/s0"
 
 
 def _epic_page(numbers, *, cursor=None, total):

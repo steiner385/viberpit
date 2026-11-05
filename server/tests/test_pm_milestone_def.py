@@ -66,6 +66,7 @@ def test_parse_ref():
     ("version: 1\ntitle: t\nnumbers: [{key: n, label: N, measure: {kind: ladder_leaves, op: eq, target: 1}}]\nmilestones: []", "ladder_leaves"),
     ("version: 1\ntitle: t\nmilestones: [{key: a, name: A, gate: [{key: g, label: G, measure: {kind: ladder_leaves}}]}]", "ladder_leaves"),
     ("version: 1\ntitle: t\nstart: zzz\nmilestones: [{key: a, name: A}]", "start"),
+    ("version: 1\ntitle: t\nmilestones: [{key: a, name: A, gate: [{key: g, label: G, measure: {kind: workflow_streak, workflow: n.yml, target: 3}}]}]", "workflow_streak' requires 'branch'"),
     ("version: 1\ntitle: t\nmilestones: [{key: a, name: A, epics: ['nope']}]", "ref"),
     ("version: 1\ntitle: t\nmilestones: [{key: a, name: A, gate: [{key: g, label: G, measure: {kind: manual}}, {key: g, label: H, measure: {kind: manual}}]}]", "duplicate"),
     ("version: 1\ntitle: t\nnumbers: [{key: n, label: N, measure: {kind: manual}}, {key: n, label: M, measure: {kind: manual}}]\nmilestones: []", "duplicate"),

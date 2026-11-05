@@ -58,6 +58,22 @@ class MilestonesRefresh:
         ...  # the loop reads its mode each tick
 
 
+async def read_config() -> tuple[str, dict]:
+    """The automation row's ``(effective mode, config)``: ``off`` unless the row is
+    enabled; an enabled row with no explicit mode runs ``on``."""
+    from server.automations import config_store
+    active = tuple(m for m in MilestonesRefresh.modes if m != "off")
+    return await config_store.read_automation_config(
+        MilestonesRefresh, modes=active, default_mode="on", log_key="milestones_refresh")
+
+
+async def automatic_refresh_enabled() -> bool:
+    """Whether ladders refresh on their own (the automation is not ``off``). The view
+    reads this to say "automatic refresh is off"."""
+    mode, _config = await read_config()
+    return mode != "off"
+
+
 class MilestonesRefreshLoop:
     def __init__(self, ctx: Any, *,
                  read_config: Callable[[], Awaitable[tuple[str, dict]]],

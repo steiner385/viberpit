@@ -129,18 +129,19 @@ def list_completed_runs(repo: str, since_ts: float | None, *,
 _WORKFLOW_RUN_FIELDS = ("id", "status", "conclusion", "event", "updated_at", "html_url")
 
 
-def list_workflow_runs(repo: str, workflow: str, *, branch: str | None, run=None,
-                       limit: int = 30) -> list[dict]:
-    """At most ``limit`` runs of one workflow (file name or id) on ``branch`` (``None``:
-    every branch), newest first (the API's order), trimmed to ``_WORKFLOW_RUN_FIELDS``.
-    One page, no pagination. A fork's run on a same-named branch is not this repo's
-    code and is dropped, as in ``list_completed_runs``."""
+def list_workflow_runs(repo: str, workflow: str, *, branch: str, event: str | None = None,
+                       run=None, limit: int = 30) -> list[dict]:
+    """At most ``limit`` runs of one workflow (file name or id) on ``branch`` — only
+    ``event`` runs when given (the API filters, so other events can't crowd the page) —
+    newest first (the API's order), trimmed to ``_WORKFLOW_RUN_FIELDS``. One page, no
+    pagination. A fork's run on a same-named branch is not this repo's code and is
+    dropped, as in ``list_completed_runs``."""
     run = run or _run_gh_for(repo)
     from urllib.parse import quote
     per_page = max(1, min(limit, 100))
-    branch_q = f"branch={quote(branch, safe='')}&" if branch is not None else ""
+    event_q = f"&event={quote(event, safe='')}" if event is not None else ""
     data = _json(run(["api", f"repos/{repo}/actions/workflows/{quote(workflow, safe='')}/runs"
-                             f"?{branch_q}per_page={per_page}"
+                             f"?branch={quote(branch, safe='')}{event_q}&per_page={per_page}"
                              "&exclude_pull_requests=true"]))
     out = []
     for r in data.get("workflow_runs", []):

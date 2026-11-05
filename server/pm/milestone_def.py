@@ -39,7 +39,7 @@ MEASURE_KINDS: dict[str, MeasureKindSpec] = {
     "issue_count": MeasureKindSpec(frozenset({"query"}), frozenset({"repo"}), _H, True),
     "refs_closed": MeasureKindSpec(frozenset({"refs"}), frozenset(), _H, True),
     "workflow_streak": MeasureKindSpec(
-        frozenset({"workflow"}), frozenset({"branch", "events"}), 36 * _H, True
+        frozenset({"workflow", "branch"}), frozenset({"events"}), 36 * _H, True
     ),
     "ci_metric": MeasureKindSpec(frozenset({"workflow", "metric"}), frozenset(), 36 * _H, True),
     "ladder_leaves": MeasureKindSpec(frozenset(), frozenset(), _H, False),

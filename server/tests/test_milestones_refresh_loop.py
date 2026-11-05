@@ -156,3 +156,24 @@ def test_orchestrator_refresh_seam_uses_partial_ok_graphql(monkeypatch):
     asyncio.run(SessionOrchestrator._milestones_refresh_run(orch, "p1", dry_run=True))
     assert seen == {"project_id": "p1", "dry_run": True,
                     "payload": {"owner": "o", "query": "query { x }", "partial_ok": True}}
+
+
+def test_automatic_refresh_enabled_reads_the_automation_row(isolated_db):
+    from server.automations.milestones_refresh import automatic_refresh_enabled
+    from server.db import db_session
+    from server.db.models import Automation
+
+    async def run():
+        assert await automatic_refresh_enabled() is False  # no row: off
+        async with db_session() as db:
+            db.add(Automation(id="milestones-refresh", enabled=False))
+        assert await automatic_refresh_enabled() is False
+        async with db_session() as db:
+            row = await db.get(Automation, "milestones-refresh")
+            row.enabled = True
+        assert await automatic_refresh_enabled() is True  # enabled, no mode: on
+        async with db_session() as db:
+            row = await db.get(Automation, "milestones-refresh")
+            row.mode = "dry_run"
+        assert await automatic_refresh_enabled() is True
+    asyncio.run(run())

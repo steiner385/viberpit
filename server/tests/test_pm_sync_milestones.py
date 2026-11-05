@@ -216,7 +216,7 @@ def _orch(clone: str):
     async def root():
         return "/tmp/root"
 
-    orch._effective_repo_root = root
+    orch._effective_repo_root = root  # type: ignore[method-assign]
     return orch, patch.object(mod.gitrepos, "ensure_clone", return_value=clone)
 
 

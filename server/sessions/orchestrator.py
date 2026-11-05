@@ -15760,11 +15760,8 @@ class SessionOrchestrator:
             log.debug("milestones_refresh.heartbeat_failed", exc_info=True)
 
     async def _milestones_refresh_read_config(self) -> tuple[str, dict]:
-        from server.automations import config_store
-        from server.automations.milestones_refresh import MilestonesRefresh
-        active = tuple(m for m in MilestonesRefresh.modes if m != "off")
-        return await config_store.read_automation_config(
-            MilestonesRefresh, modes=active, default_mode="on", log_key="milestones_refresh")
+        from server.automations.milestones_refresh import read_config
+        return await read_config()
 
     async def _milestones_refresh_run(self, project_id: str, *, dry_run: bool):
         """One ladder's refresh through the owner-aware GraphQL seam. ``partial_ok``:

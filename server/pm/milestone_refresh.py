@@ -2,7 +2,7 @@
 and write timestamped ``milestone_measurements`` rows.
 
 One refresh = one batched GraphQL query (plus epic continuation pages) and one run
-list per distinct ``(repo, workflow, branch)``. Each condition's reading is evaluated
+list per distinct ``(repo, workflow, branch, event)``. Each condition's reading is evaluated
 at write time (``milestone_status.evaluate``); read-time freshness is the view's job.
 
 Error rule (Review Focus 3): a reading that failed keeps the row's previous ``value``
@@ -15,7 +15,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import func, select
@@ -36,17 +36,18 @@ from server.pm.milestone_github import (
     sub_issues_epic,
 )
 from server.pm.milestone_status import Reading, evaluate
-from server.time_iso import aware_utc
+from server.time_iso import aware_utc, parse_iso_utc
 
 log = logging.getLogger(__name__)
 
-#: An on-demand refresh is refused within this many seconds of the ladder's last fetch.
+#: An on-demand refresh is refused within this many seconds of the ladder's last fetch
+#: (enforced by the refresh route against ``newest_fetched_at``).
 REFRESH_MIN_INTERVAL_S = 60
 #: The loop refreshes a ladder whose newest fetch is this old (spec §8: every 10 min).
 STALE_AFTER_S = 600
 #: Sub-issue pages read per epic per refresh (100 each).
 MAX_EPIC_PAGES = 10
-#: Runs read per workflow; events are filtered here, so read the API's full page.
+#: Runs read per workflow and event (the API's largest page).
 RUNS_LIMIT = 100
 CI_METRIC_PHASE1_ERROR = "ci_metric is measured from Phase 2"
 DEFAULT_STREAK_EVENTS: tuple[str, ...] = ("schedule", "workflow_dispatch")
@@ -159,31 +160,47 @@ async def _read_graphql(
     return readings, leaves
 
 
-def _streak_conditions(ladder: LadderDef, primary_repo: str) -> dict[tuple[str, str, str | None], list[tuple[_Key, tuple[str, ...]]]]:
-    out: dict[tuple[str, str, str | None], list[tuple[_Key, tuple[str, ...]]]] = {}
+def _streak_conditions(ladder: LadderDef, primary_repo: str) -> dict[tuple[str, str, str], list[tuple[_Key, tuple[str, ...]]]]:
+    out: dict[tuple[str, str, str], list[tuple[_Key, tuple[str, ...]]]] = {}
     for scope, _ms, cond in ladder_conditions(ladder):
         if cond.measure.kind != "workflow_streak":
             continue
         p = cond.measure.params
         events = tuple(p.get("events") or DEFAULT_STREAK_EVENTS)
-        out.setdefault((primary_repo, str(p["workflow"]), p.get("branch")), []).append(((scope, cond.key), events))
+        out.setdefault((primary_repo, str(p["workflow"]), str(p["branch"])), []).append(((scope, cond.key), events))
     return out
+
+
+def _newest_first(runs: Iterable[dict]) -> list[dict]:
+    """Runs merged from several per-event pages: one copy each, newest first."""
+    by_id = {r.get("id", id(r)): r for r in runs}
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    return sorted(by_id.values(), key=lambda r: parse_iso_utc(r.get("updated_at")) or epoch, reverse=True)
 
 
 async def _read_streaks(project_id: str, ladder: LadderDef, *, primary_repo: str,
                         list_runs: ListRuns) -> dict[_Key, Reading]:
+    """One run list per ``(repo, workflow, branch, event)``, filtered by the API's
+    ``event=`` so a page of other events can't crowd out the streak."""
     readings: dict[_Key, Reading] = {}
     for (repo, workflow, branch), conds in _streak_conditions(ladder, primary_repo).items():
-        try:
-            runs = await asyncio.to_thread(list_runs, repo, workflow, branch=branch, limit=RUNS_LIMIT)
-        except Exception as exc:
-            # A missing workflow is a definition problem the view shows; not an incident.
-            log.info("milestone_refresh.runs_failed project=%s workflow=%s: %s", project_id, workflow, exc)
-            for key, _events in conds:
-                readings[key] = _error(f"workflow runs read failed: {exc}")
-            continue
+        by_event: dict[str, list[dict]] = {}
+        failed: dict[str, str] = {}
+        for event in dict.fromkeys(e for _key, events in conds for e in events):
+            try:
+                by_event[event] = await asyncio.to_thread(
+                    list_runs, repo, workflow, branch=branch, event=event, limit=RUNS_LIMIT)
+            except Exception as exc:
+                # A missing workflow is a definition problem the view shows; not an incident.
+                log.info("milestone_refresh.runs_failed project=%s workflow=%s event=%s: %s",
+                         project_id, workflow, event, exc)
+                failed[event] = str(exc)
         for key, events in conds:
-            count, at, url = streak_from_runs([r for r in runs if r.get("event") in events])
+            errs = [f"{e}: {failed[e]}" for e in events if e in failed]
+            if errs:
+                readings[key] = _error(f"workflow runs read failed: {'; '.join(errs)}")
+                continue
+            count, at, url = streak_from_runs(_newest_first(r for e in events for r in by_event[e]))
             readings[key] = Reading({"n": count}, at, None, url)
     return readings
 
@@ -343,7 +360,7 @@ async def refresh_ladder(project_id: str, *, graphql: GraphQL, list_runs: ListRu
     """Read every GitHub-backed condition of the product's ladder and upsert its rows
     (``dry_run``: compute and count, write nothing). ``graphql(owner, query)`` is called
     with the primary repo's owner and must return per-alias errors in the payload
-    (``partial_ok``); ``list_runs(repo, workflow, *, branch, limit)`` runs off-loop."""
+    (``partial_ok``); ``list_runs(repo, workflow, *, branch, event, limit)`` runs off-loop, once per event."""
     now = _naive_utc(now)
     loaded = await _load(project_id)
     if loaded is None:
@@ -370,18 +387,6 @@ async def newest_fetched_at(project_id: str) -> datetime | None:
             .join(MilestoneLadder, MilestoneLadder.id == MilestoneMeasurement.ladder_id)
             .where(MilestoneLadder.project_id == project_id)
         )).scalar_one_or_none()
-
-
-async def refresh_if_due(project_id: str, *, force: bool, graphql: GraphQL, list_runs: ListRuns,
-                         now: datetime, dry_run: bool = False) -> RefreshResult | None:
-    """Refresh unless the ladder was fetched within ``REFRESH_MIN_INTERVAL_S`` (``force``,
-    an on-demand refresh) or ``STALE_AFTER_S`` (otherwise). ``None``: not due."""
-    newest = await newest_fetched_at(project_id)
-    window = timedelta(seconds=REFRESH_MIN_INTERVAL_S if force else STALE_AFTER_S)
-    if newest is not None and _naive_utc(now) - _naive_utc(newest) < window:
-        return None
-    return await refresh_ladder(project_id, graphql=graphql, list_runs=list_runs, now=now,
-                                dry_run=dry_run)
 
 
 async def list_ladder_fetch_times() -> list[tuple[str, datetime | None]]:

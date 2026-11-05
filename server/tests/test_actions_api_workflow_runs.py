@@ -64,14 +64,17 @@ def test_list_workflow_runs_raises_on_gh_failure():
         list_workflow_runs("o/r", "nope.yml", branch="main", run=fake_run)
 
 
-def test_list_workflow_runs_without_branch_reads_every_branch():
+
+def test_list_workflow_runs_filters_by_event():
     calls = []
 
     def fake_run(args):
         calls.append(args)
         return _ok({"workflow_runs": []})
 
-    assert list_workflow_runs("o/r", "nightly.yml", branch=None, run=fake_run, limit=5) == []
+    assert list_workflow_runs("o/r", "nightly.yml", branch="main", event="workflow_dispatch",
+                              run=fake_run, limit=5) == []
     assert calls == [[
-        "api", "repos/o/r/actions/workflows/nightly.yml/runs?per_page=5&exclude_pull_requests=true",
+        "api", "repos/o/r/actions/workflows/nightly.yml/runs?branch=main&event=workflow_dispatch"
+        "&per_page=5&exclude_pull_requests=true",
     ]]
