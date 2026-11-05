@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+from typing import cast
 from unittest import mock
 
 from fastapi.testclient import TestClient
 
 from server.hostname import self_host_name
 from server.sessions import plugin_reload
+from server.sessions.engine import AgentDriver
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.types import AgentEngine, SessionRecord
 
@@ -32,7 +34,7 @@ def _orch(drivers: dict[str, object]) -> SessionOrchestrator:
     orch = SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0,
                                usage_fn=lambda n: None)
     for name, drv in drivers.items():
-        orch._drivers[name] = drv
+        orch._drivers[name] = cast(AgentDriver, drv)
         orch._records[name] = SessionRecord(
             id=name, name=name, account="a", engine=AgentEngine.CLAUDE_CODE,
             engine_session_id="c", cols=80, rows=24, cwd="/tmp")
@@ -43,7 +45,7 @@ def test_reload_live_reports_every_live_session_on_this_host() -> None:
     applied = _Driver({"outcome": "applied", "plugins": ["p@m"], "errorCount": 0})
     busy = _Driver(exc=plugin_reload.ReloadError(plugin_reload.RELOAD_BUSY, "mid-turn"))
     orch = _orch({"a-applied": applied, "b-busy": busy, "c-codex": _NoReload()})
-    orch._drivers["orphan"] = _Driver({"outcome": "applied"})  # no record: skipped silently
+    orch._drivers["orphan"] = cast(AgentDriver, _Driver({"outcome": "applied"}))  # no record: skipped silently
 
     rows = asyncio.run(orch.reload_plugins_live(hold_on_cache_impact=False))
 

@@ -520,7 +520,8 @@ describe('PluginsSection — kill switch and engines', () => {
       expect(within(worker).getByText('held')).toBeTruthy()
       const alpha = within(results).getByText('alpha-session').closest('li') as HTMLElement
       expect(within(alpha).getByText('applied')).toBeTruthy()
-      expect(within(dialog).getByText(RESTART)).toBeTruthy()
+      // The session list says who reloaded: the restart note would contradict it.
+      expect(within(dialog).queryByText(RESTART)).toBeNull()
     })
 
     it('the reload checkbox is off by default and nothing is reloaded when it stays off', async () => {
@@ -534,6 +535,7 @@ describe('PluginsSection — kill switch and engines', () => {
       await within(dialog).findByRole('group', { name: 'Host results' })
       expect(vi.mocked(api.post).mock.calls.map(([path]) => path)).toEqual(['/library/plugins/hooky%40m/install'])
       expect(within(dialog).queryByRole('group', { name: 'Session results' })).toBeNull()
+      expect(within(dialog).getByText(RESTART)).toBeTruthy()
     })
 
     it('the section button reloads running sessions and lists outcomes; zero sessions says so', async () => {

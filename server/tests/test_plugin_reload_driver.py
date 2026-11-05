@@ -1,7 +1,9 @@
 """``ClaudeAgentDriver.reload_plugins``: the raw ``reload_plugins`` control request."""
 from __future__ import annotations
 
+import asyncio
 import logging
+from typing import Any
 
 import pytest
 
@@ -96,3 +98,65 @@ def test_outcome_is_total_over_garbage() -> None:
     assert pr.outcome({"plugins": "x", "held": "yes", "cache_impact": 3}) == {
         "outcome": "applied", "plugins": [], "errorCount": 0}
     assert pr.outcome({"plugins": [{"name": 1}, {"name": "a"}, 5]})["plugins"] == ["a"]
+
+
+async def _settle(d, client, n_sent: int) -> None:
+    """Wait (bounded) until the client saw ``n_sent`` prompts and the turn settled."""
+    for _ in range(200):
+        if len(client.sent) >= n_sent and not d._turn_live():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"sent={client.sent!r} live={d._turn_live()}")
+
+
+def test_prompt_sent_while_the_reload_is_in_flight_is_queued_then_started() -> None:
+    """The reload runs inside the driver's idle claim: a prompt arriving during the
+    control request must not start a turn under it; it starts once the reload returns."""
+    control = FakeControl({"plugins": [], "error_count": 0})
+    gate = control.gate = asyncio.Event()
+
+    async def go() -> tuple[list, list, list, dict]:
+        d = _driver(control)
+        await d.start()
+        client: Any = d._client
+        try:
+            reload = asyncio.create_task(d.reload_plugins())
+            for _ in range(200):
+                if control.in_flight:
+                    break
+                await asyncio.sleep(0.01)
+            assert control.in_flight == 1 and d._rewind_held
+            await d.send_prompt("typed during the reload")
+            sent_during = list(client.sent)
+            queued = [q[0] for q in d._queue]
+            gate.set()
+            out = await reload
+            await _settle(d, client, 1)
+            return sent_during, queued, list(client.sent), out
+        finally:
+            await d.aclose()
+
+    sent_during, queued, sent_after, out = asyncio.run(go())
+    assert sent_during == [] and queued == ["typed during the reload"]
+    assert len(sent_after) == 1 and "typed during the reload" in sent_after[0]
+    assert out["outcome"] == "applied"
+
+
+def test_reload_during_an_active_hold_is_busy(caplog: pytest.LogCaptureFixture) -> None:
+    control = FakeControl()
+
+    async def go() -> str:
+        d = _driver(control)
+        await d.start()
+        try:
+            async with d.rewind_hold():
+                with pytest.raises(pr.ReloadError) as ei:
+                    await d.reload_plugins()
+            return ei.value.code
+        finally:
+            await d.aclose()
+
+    with caplog.at_level(logging.INFO):
+        assert asyncio.run(go()) == pr.RELOAD_BUSY
+    assert control.sent == []
+    assert _no_warnings(caplog) == []

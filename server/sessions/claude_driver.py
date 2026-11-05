@@ -2447,24 +2447,34 @@ class ClaudeAgentDriver:
 
         Sent raw on the SDK's control channel (the ``apply_flag_settings`` seam): the SDK
         has no method for it. Refused while a turn is live, since a reload can change the
-        tool list under it."""
+        tool list under it — and the send runs inside ``rewind_hold``, the driver's one
+        idle claim, so a prompt arriving during the (up to ``RELOAD_CONTROL_TIMEOUT_S``)
+        control request is queued and started after the reload, never under it. A held
+        driver (a rewind or another reload) or a live turn is ``RELOAD_BUSY``."""
         if self._client is None or self._stream_ended:
             raise self._reload_refused(ReloadError(RELOAD_UNAVAILABLE, "session not live"))
         send = getattr(getattr(self._client, "_query", None), "_send_control_request", None)
         if send is None:
             raise self._reload_refused(ReloadError(
                 RELOAD_UNAVAILABLE, "SDK client has no control channel"))
-        if self.rewind_busy():
-            raise self._reload_refused(ReloadError(RELOAD_BUSY, "session is mid-turn"))
         try:
-            resp = await send(reload_request(hold_on_cache_impact),
-                              timeout=RELOAD_CONTROL_TIMEOUT_S)
-        except Exception as exc:
-            if _is_control_error_reply(exc):
-                raise self._reload_refused(ReloadError(RELOAD_REFUSED, str(exc))) from exc
-            code = RELOAD_UNAVAILABLE if isinstance(exc, CLIConnectionError) else RELOAD_FAILED
-            raise self._reload_refused(ReloadError(
-                code, f"no reply to reload_plugins: {exc}")) from exc
+            async with self.rewind_hold():
+                try:
+                    resp = await send(reload_request(hold_on_cache_impact),
+                                      timeout=RELOAD_CONTROL_TIMEOUT_S)
+                except Exception as exc:
+                    if _is_control_error_reply(exc):
+                        raise self._reload_refused(
+                            ReloadError(RELOAD_REFUSED, str(exc))) from exc
+                    code = (RELOAD_UNAVAILABLE if isinstance(exc, CLIConnectionError)
+                            else RELOAD_FAILED)
+                    raise self._reload_refused(ReloadError(
+                        code, f"no reply to reload_plugins: {exc}")) from exc
+        except RewindError as err:  # the hold refused: mid-turn, held, or not live
+            if err.code == REWIND_BUSY:
+                raise self._reload_refused(ReloadError(
+                    RELOAD_BUSY, "session is mid-turn or held by another operation")) from err
+            raise self._reload_refused(ReloadError(RELOAD_UNAVAILABLE, str(err))) from err
         result = reload_outcome(resp)
         log.info("driver.reload_plugins session=%s outcome=%s plugins=%d", self.session_id,
                  result["outcome"], len(result["plugins"]))

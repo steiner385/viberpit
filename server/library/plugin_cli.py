@@ -292,15 +292,28 @@ def host_policy(op: str, args: dict[str, Any]) -> dict[str, Any] | None:
     ``install``/``update`` of ``<p>@<mkt>`` and ``marketplace_update`` carry
     ``expected_source`` — the normalized source the owner confirmed — and refuse unless this
     host's configured source normalizes equal (``source_changed``); a missing one refuses
-    as unconfirmed. Directory installs re-check the review state from this host's cache."""
+    as unconfirmed. Directory installs re-check the review state from this host's cache and
+    refuse unless that cached listing matches ``expected_listing`` — the edge's live-verified
+    ``id``/``source``/review state — absent which they refuse (fail closed)."""
     from server.library import scan
     try:
         if op in ("install", "update"):
             pid = str(args.get("plugin_id"))
             marketplace = pid.partition("@")[2]
             if marketplace == plugin_policy.DIRECTORY_MARKETPLACE:
+                expected = args.get("expected_listing")
+                if not isinstance(expected, dict):
+                    raise plugin_policy.PolicyRefusal(
+                        plugin_policy.PLUGIN_UNREVIEWED,
+                        "The edge sent no verified Directory listing, so this host cannot "
+                        "confirm the listing is reviewed and unchanged.",
+                        reason=plugin_policy.REASON_DIRECTORY_MISMATCH)
                 refresh_available()
-                plugin_policy.check_install(pid, {}, scan.install_catalog({}))
+                catalog = scan.install_catalog({})
+                plugin_policy.check_install(pid, {}, catalog)
+                # This host's cache is forgeable too: it must match what the edge verified.
+                plugin_policy.check_directory_listing(
+                    (catalog.directory or {}).get(pid.partition("@")[0]) or {}, expected)
             else:
                 curated = _expected(marketplace, args)
                 plugin_policy.check_install(pid, curated, scan.install_catalog(curated))
@@ -418,7 +431,7 @@ def host_failure(host: str, exc: Exception) -> dict[str, Any]:
     if isinstance(exc, DaemonError):
         if exc.err_type == "UnknownMethod":
             return {"host": host, **_outcome("failed", "daemon_outdated",
-                                             "This host's daemon predates plugin management; "
+                                             "This host's daemon predates this operation; "
                                              "update it, then retry.")}
         log.warning("plugin_cli.host_error host=%s type=%s", host, exc.err_type)
         return {"host": host, **_outcome("failed", "daemon_error", exc.message)}

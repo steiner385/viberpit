@@ -1139,21 +1139,15 @@ class FleetOrchestrator:
         ``failed`` row (no ``sessionId``) rather than an exception. The result is the
         concatenation of every reachable host's per-session rows.
         """
-        from server.library.plugin_cli import host_failure, unreachable
+        from server.library.plugin_cli import unreachable
+        from server.sessions.plugin_reload import host_rows
         reachable = set(await self._fanout_names())
 
         async def _one(name: str) -> list[dict]:
             if name not in reachable:
                 return [unreachable(name)]
-            try:
-                rows = await self._router.get(name).reload_plugins_live(
-                    hold_on_cache_impact=hold_on_cache_impact)
-            except Exception as exc:  # noqa: BLE001 — one host must not block the rest
-                return [host_failure(name, exc)]
-            if not isinstance(rows, list):
-                return [{"host": name, "outcome": "failed", "failureCode": "unparseable_result",
-                         "message": "Malformed host reply."}]
-            return rows
+            return await host_rows(name, self._router.get(name).reload_plugins_live(
+                hold_on_cache_impact=hold_on_cache_impact))
 
         return [row for rows in await asyncio.gather(*(_one(n) for n in self._router.names()))
                 for row in rows]

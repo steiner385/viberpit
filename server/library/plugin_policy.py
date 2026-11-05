@@ -353,7 +353,7 @@ def _checked_source(source: object, *, resolve: bool) -> tuple[str, list[str]]:
 
 
 def resolved_pin(source: str) -> str | None:
-    """The libcurl ``CURLOPT_RESOLVE`` entry (``host:443:addr1,addr2``) that pins a clone of
+    """The libcurl ``CURLOPT_RESOLVE`` entry (``host:443:addr1,[v6addr]``) that pins a clone of
     *source* to the addresses the SSRF check saw, or ``None`` for ``owner/repo`` (GitHub's
     own host, not a caller-chosen name). One DNS lookup serves the check and the pin.
     Raises the same :class:`PolicyRefusal` as :func:`check_marketplace_source`. Blocking."""
@@ -361,7 +361,8 @@ def resolved_pin(source: str) -> str | None:
     if not checked.startswith("https://"):
         return None
     host = (urlsplit(checked).hostname or "").lower().rstrip(".")
-    return f"{host}:443:{','.join(sorted(set(addrs)))}"
+    # curl's --resolve form brackets an IPv6 address: ``host:443:[2001:db8::1],1.2.3.4``.
+    return f"{host}:443:{','.join(f'[{a}]' if ':' in a else a for a in sorted(set(addrs)))}"
 
 
 def pin_for_normalized(normalized: str | None) -> str | None:
@@ -501,6 +502,14 @@ def check_directory_listing(cached: Mapping[str, Any], live: object) -> None:
         raise mismatch
     if not _same_source(cached, live):
         raise mismatch
+
+
+def verified_listing(live: Mapping[str, Any]) -> dict[str, Any]:
+    """The part of a live listing :func:`check_directory_listing` judges (``id``, review
+    state, ``source``): what the edge sends each host as ``expected_listing`` once the live
+    Directory has confirmed the edge's cache."""
+    return {"id": live.get("id"), "source": live.get("source"),
+            "checks": {"review": {"state": review_state(live)}}}
 
 
 def check_curated(marketplace: str, curated: Mapping[str, str],

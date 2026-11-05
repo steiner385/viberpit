@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 DIRECTORY_URL = "https://api.anthropic.com/api/directory/plugins"
 DIRECTORY_TIMEOUT_S = 15.0
-_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,120}")
+_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}")  # leading alnum: never "." / ".."
 
 
 async def fetch_listing(listing_id: str, *,

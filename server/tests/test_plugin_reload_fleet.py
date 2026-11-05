@@ -71,3 +71,26 @@ def test_reload_everywhere_isolates_an_unexpected_error() -> None:
     rows = asyncio.run(fleet.reload_plugins_everywhere())
     assert {(r["host"], r["outcome"], r.get("failureCode")) for r in rows} == {
         ("dobby", "held", None), ("odd", "failed", "error_internal")}
+
+
+def test_reload_everywhere_maps_each_non_dict_row_to_one_failed_row() -> None:
+    good = {"sessionId": "s", "name": "n", "host": "dobby", "outcome": "applied"}
+    fleet = _fleet({"dobby": _HostOrch([good, "junk", 3])}, ["dobby"])
+    rows = asyncio.run(fleet.reload_plugins_everywhere())
+    bad = {"host": "dobby", "outcome": "failed", "failureCode": "unparseable_result",
+           "message": "Malformed host reply."}
+    assert rows == [good, bad, bad]
+
+
+def test_every_host_proxy_answers_the_reload_fan_out() -> None:
+    """The fleet dials ``reload_plugins_live`` on each host proxy and the route calls
+    ``reload_plugins_everywhere`` on whatever ``app.state.sessions`` is: every real class
+    must carry both, or the reload silently never reaches that deployment shape."""
+    from server.sessions.facade import InProcessOrchestratorAdapter
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.sessions.remote import RemoteOrchestrator
+    for cls in (RemoteOrchestrator, InProcessOrchestratorAdapter):
+        assert hasattr(cls, "reload_plugins_live"), cls
+        assert hasattr(cls, "reload_plugins_everywhere"), cls
+    assert hasattr(FleetOrchestrator, "reload_plugins_everywhere")
+    assert hasattr(SessionOrchestrator, "reload_plugins_live")

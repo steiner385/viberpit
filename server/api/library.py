@@ -215,7 +215,8 @@ async def _check_install(db, plugin_id: str) -> dict:
     """``plugin_policy.check_install`` on the edge, over the confirmed records and this
     host's catalogs (the Directory cache refreshed first when its TTL has passed). Returns
     the RPC args: every host re-checks against its own state, so a curated marketplace's
-    confirmed source rides along as ``expected_source``."""
+    confirmed source rides along as ``expected_source`` and a Directory listing's
+    live-verified ``id``/``source``/review state as ``expected_listing``."""
     records = await curated.confirmed(db)
     marketplace = plugin_id.partition("@")[2]
     if marketplace == plugin_policy.DIRECTORY_MARKETPLACE:
@@ -225,6 +226,9 @@ async def _check_install(db, plugin_id: str) -> dict:
         plugin_policy.check_install(plugin_id, records, catalog)
     except plugin_policy.PolicyRefusal as exc:
         raise _policy_http(exc, plugin_id) from None
+    args: dict[str, Any] = {"plugin_id": plugin_id}
+    if marketplace in records:
+        args["expected_source"] = records[marketplace]
     if marketplace == plugin_policy.DIRECTORY_MARKETPLACE:
         # The cache passed, but it is forgeable: the live Directory must agree (fail closed).
         listing = (catalog.directory or {})[plugin_id.partition("@")[0]]
@@ -240,9 +244,9 @@ async def _check_install(db, plugin_id: str) -> dict:
             plugin_policy.check_directory_listing(listing, live)
         except plugin_policy.PolicyRefusal as exc:
             raise _policy_http(exc, plugin_id) from None
-    args = {"plugin_id": plugin_id}
-    if marketplace in records:
-        args["expected_source"] = records[marketplace]
+        # The verified truth rides along, as ``expected_source`` does for a curated
+        # marketplace: each host matches its OWN (forgeable) cache against it.
+        args["expected_listing"] = plugin_policy.verified_listing(live)
     return args
 
 

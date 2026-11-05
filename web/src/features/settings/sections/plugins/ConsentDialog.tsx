@@ -88,7 +88,8 @@ export function ConsentDialog({ target, onClose }: { target: ConsentTarget; onCl
               size="lg"
               loading={busy}
               onClick={() => op.run(target.pluginId, `${verb} ${target.name}`, {
-                note: RESTART_COPY,
+                // Ticked: the session list below says who reloaded, so no restart note.
+                note: reloadSessions ? undefined : RESTART_COPY,
                 onSuccess: (result) => {
                   if (!reloadSessions || !(result.ok || result.hosts.some((h) => h.outcome === 'ok'))) return
                   reload.mutate({ holdOnCacheImpact: true }, { onSuccess: setReloaded })

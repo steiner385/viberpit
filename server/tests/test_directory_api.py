@@ -51,6 +51,6 @@ def test_transport_errors_and_timeouts_are_none() -> None:
 
 
 def test_a_bad_id_is_none_without_a_request() -> None:
-    for bad in ("", "a/b", "a b", "x\n", "../x", "a" * 121, "x?y=1"):
+    for bad in ("", "a/b", "a b", "x\n", "../x", "a" * 121, "x?y=1", ".", "..", ".x", "-x", "_x"):
         assert _fetch(bad, lambda r: httpx.Response(200, json={"id": "x"})) is None
         assert _fetch.calls == []  # type: ignore[attr-defined]

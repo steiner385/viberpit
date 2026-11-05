@@ -1608,6 +1608,22 @@ class RemoteOrchestrator:
         from server.library.plugin_cli import host_outcome
         return [await host_outcome(self_host_name(), self.plugin_op(op, args))]
 
+    async def reload_plugins_live(self, hold_on_cache_impact: bool = True) -> list[dict]:
+        """Live-reload plugins in this daemon's sessions (D-16c residuals, #3314). The
+        deadline is ``plugin_reload.RELOAD_RPC_TIMEOUT_S`` (the per-session control timeout
+        plus transport); an old daemon answers UnknownMethod (``daemon_outdated``)."""
+        from server.sessions.plugin_reload import RELOAD_RPC_TIMEOUT_S
+        return await self._client.call("reload_plugins_live",
+                                       hold_on_cache_impact=hold_on_cache_impact,
+                                       timeout=RELOAD_RPC_TIMEOUT_S)
+
+    async def reload_plugins_everywhere(self, hold_on_cache_impact: bool = True) -> list[dict]:
+        """Remote mode without a fleet: the one daemon is this host's."""
+        from server.hostname import self_host_name
+        from server.sessions.plugin_reload import host_rows
+        return await host_rows(self_host_name(),
+                               self.reload_plugins_live(hold_on_cache_impact=hold_on_cache_impact))
+
     async def refine_prompt_codex(
         self, account: str, prompt: str, *, timeout_s: float | None = None,
     ) -> str | None:

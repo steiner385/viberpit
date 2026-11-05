@@ -386,6 +386,12 @@ def test_resolved_pin_for_https_sources_and_none_for_github(_dns) -> None:
     assert plugin_policy.resolved_pin("acme/m") is None
 
 
+def test_resolved_pin_brackets_ipv6_in_a_mixed_answer(_dns) -> None:
+    _dns["git.example.com"] = ["2606:4700::1111", "140.82.112.4"]
+    assert (plugin_policy.resolved_pin("https://git.example.com/m")
+            == "git.example.com:443:140.82.112.4,[2606:4700::1111]")
+
+
 def test_resolved_pin_refuses_what_the_check_refuses(_dns) -> None:
     _dns["evil.example.com"] = ["10.0.0.5"]
     with pytest.raises(PolicyRefusal) as ei:
@@ -395,7 +401,12 @@ def test_resolved_pin_refuses_what_the_check_refuses(_dns) -> None:
 
 def test_resolved_pin_resolves_once(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
-    monkeypatch.setattr(plugin_policy, "_resolve", lambda h: calls.append(h) or [PUBLIC_IP])
+
+    def _resolve(h: str) -> list[str]:
+        calls.append(h)
+        return [PUBLIC_IP]
+
+    monkeypatch.setattr(plugin_policy, "_resolve", _resolve)
     plugin_policy.resolved_pin("https://git.example.com/m")
     assert calls == ["git.example.com"]
 
@@ -555,9 +566,56 @@ def test_host_rechecks_directory_review_state(shared: Path, monkeypatch: pytest.
     monkeypatch.setattr(plugin_cli, "refresh_available", fake_refresh)
     monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
     monkeypatch.setattr(plugin_cli, "_run", _ok_runner())
-    assert plugin_cli.run_op("install", {"plugin_id": f"bad@{DIR}"})["failureCode"] == "PLUGIN_UNREVIEWED"
-    assert plugin_cli.run_op("install", {"plugin_id": f"good@{DIR}"})["outcome"] == "ok"
+    verified = plugin_policy.verified_listing({**_listing("done"), "id": "id_good"})
+    assert plugin_cli.run_op("install", {"plugin_id": f"bad@{DIR}", "expected_listing": verified}
+                             )["failureCode"] == "PLUGIN_UNREVIEWED"
+    assert plugin_cli.run_op("install", {"plugin_id": f"good@{DIR}",
+                                         "expected_listing": verified})["outcome"] == "ok"
     assert refreshed == [True, True]
+
+
+def _directory_host(shared: Path, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    _write_directory(shared, {"good": _listing("done")})
+    calls: list[list[str]] = []
+    monkeypatch.setattr(plugin_cli, "refresh_available", lambda **_k: False)
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", _ok_runner(calls))
+    return calls
+
+
+@pytest.mark.parametrize("op", ["install", "update"])
+def test_host_refuses_a_directory_cache_that_differs_from_the_verified_listing(
+        shared: Path, monkeypatch: pytest.MonkeyPatch, op: str) -> None:
+    """A worker whose cache was forged before the edge's check: the edge-verified listing
+    is the truth, so a cached source that differs from it never reaches the CLI."""
+    calls = _directory_host(shared, monkeypatch)
+    live = {**_listing("done"), "id": "id_good",
+            "source": {"type": "directory", "repository": {"url": "https://github.com/real/b"}}}
+    out = plugin_cli.host_policy(op, {"plugin_id": f"good@{DIR}",
+                                      "expected_listing": plugin_policy.verified_listing(live)})
+    assert out is not None and out["outcome"] == "failed"
+    assert (out["failureCode"], out["reason"]) == ("PLUGIN_UNREVIEWED", "directory_mismatch")
+    assert calls == []
+
+
+@pytest.mark.parametrize("op", ["install", "update"])
+def test_host_passes_a_directory_cache_equal_to_the_verified_listing(
+        shared: Path, monkeypatch: pytest.MonkeyPatch, op: str) -> None:
+    _directory_host(shared, monkeypatch)
+    live = {**_listing("done"), "id": "id_good"}
+    assert plugin_cli.host_policy(op, {"plugin_id": f"good@{DIR}",
+                                       "expected_listing": plugin_policy.verified_listing(live)}) is None
+
+
+@pytest.mark.parametrize("op", ["install", "update"])
+def test_host_refuses_a_directory_install_without_a_verified_listing(
+        shared: Path, monkeypatch: pytest.MonkeyPatch, op: str) -> None:
+    calls = _directory_host(shared, monkeypatch)
+    out = plugin_cli.run_op(op, {"plugin_id": f"good@{DIR}"})
+    assert (out["outcome"], out["failureCode"], out["reason"]) == (
+        "failed", "PLUGIN_UNREVIEWED", "directory_mismatch")
+    assert "no verified" in out["message"]
+    assert calls == []
 
 
 @pytest.mark.parametrize("exc,code", [
@@ -861,8 +919,11 @@ def test_install_happy_path_fans_out_with_the_expected_source_and_audits(env) ->
     r = client.post(f"/api/library/plugins/reviewed@{DIR}/install", json={"confirm": True}, headers=_H)
     assert r.status_code == 200
     # Every host re-checks against its own state with the confirmed source.
+    live = {**_listing("done"), "name": "Reviewed", "release": {"version": "2.0"}, "id": "id_reviewed"}
     assert fleet.calls == [("install", {"plugin_id": "good@mine", "expected_source": "github:o/mine"}),
-                           ("install", {"plugin_id": f"reviewed@{DIR}"})]
+                           ("install", {"plugin_id": f"reviewed@{DIR}", "expected_listing": {
+                               "id": "id_reviewed", "source": live["source"],
+                               "checks": {"review": {"state": "done"}}}})]
     events = [e for e in client.portal.call(_audit) if e[0] == "library_plugin_installed"]
     assert events[0][1] == "owner@example.com"
     assert events[0][2] == {"pluginId": "good@mine", "hosts": fleet.reply}
@@ -1079,6 +1140,81 @@ def test_reload_is_not_behind_the_install_kill_switch(env, monkeypatch) -> None:
     monkeypatch.setenv("VIBERPIT_PLUGIN_INSTALL_ENABLED", "false")
     r = client.post("/api/library/plugins/reload", json={}, headers=_H)
     assert r.status_code == 200 and fleet.calls == [("reload", True)]
+
+
+class _ReloadDriver:
+    def __init__(self) -> None:
+        self.calls: list[bool] = []
+
+    async def reload_plugins(self, *, hold_on_cache_impact: bool = True) -> dict:
+        self.calls.append(hold_on_cache_impact)
+        return {"outcome": "applied", "plugins": ["p@m"], "errorCount": 0}
+
+
+def test_reload_route_through_the_real_in_process_facade(
+        shared: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No hand-written ``app.state.sessions`` double: the route reaches a live session
+    through the facade ``create_app`` really installs (the drift that shipped with #3314)."""
+    from server.app import create_app
+    from server.sessions.engine import AgentDriver
+    from server.sessions.facade import InProcessOrchestratorAdapter
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.sessions.types import AgentEngine, SessionRecord
+    from server.tests.fakes.fake_factory import fake_sdk_factory
+
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
+    (tmp_path / "home" / "store").mkdir(parents=True)
+    driver = _ReloadDriver()
+    with patch.dict(os.environ, _ENV):
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0,
+                                   usage_fn=lambda name: None)
+        app = create_app(orchestrator=orch)
+        assert isinstance(app.state.sessions, InProcessOrchestratorAdapter)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            orch._drivers["s1"] = cast(AgentDriver, driver)
+            orch._records["s1"] = SessionRecord(
+                id="s1", name="alpha", account="a", engine=AgentEngine.CLAUDE_CODE,
+                engine_session_id="c", cols=80, rows=24, cwd="/tmp")
+            r = client.post("/api/library/plugins/reload", json={"holdOnCacheImpact": False},
+                            headers=_H)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"op": "reload_plugins", "ok": True, "sessions": [
+        {"sessionId": "s1", "name": "alpha", "host": "dobby", "outcome": "applied",
+         "plugins": ["p@m"], "errorCount": 0}]}
+    assert driver.calls == [False]
+
+
+def test_remote_orchestrator_reload_rpc_carries_its_own_deadline(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from server.sessions.plugin_reload import RELOAD_CONTROL_TIMEOUT_S
+    from server.sessions.remote import RemoteOrchestrator
+
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
+    seen: list[tuple[str, dict, float]] = []
+
+    class _Client:
+        async def call(self, method: str, *, timeout: float, **params: Any) -> Any:
+            seen.append((method, params, timeout))
+            return [{"sessionId": "s1", "name": "alpha", "host": "dobby", "outcome": "held"}, "junk"]
+
+    remote = RemoteOrchestrator.__new__(RemoteOrchestrator)
+    remote._client = cast(Any, _Client())
+    rows = asyncio.run(remote.reload_plugins_everywhere(hold_on_cache_impact=False))
+    assert seen == [("reload_plugins_live", {"hold_on_cache_impact": False}, seen[0][2])]
+    assert seen[0][2] >= 80 and seen[0][2] > RELOAD_CONTROL_TIMEOUT_S
+    assert rows == [{"sessionId": "s1", "name": "alpha", "host": "dobby", "outcome": "held"},
+                    {"host": "dobby", "outcome": "failed", "failureCode": "unparseable_result",
+                     "message": "Malformed host reply."}]
+
+    class _Old:
+        async def call(self, method: str, **params: Any) -> Any:
+            raise DaemonError("UnknownMethod", method)
+
+    remote._client = cast(Any, _Old())
+    rows = asyncio.run(remote.reload_plugins_everywhere())
+    assert [(r["host"], r["failureCode"]) for r in rows] == [("dobby", "daemon_outdated")]
+    assert "predates this operation" in rows[0]["message"]
 
 
 def test_browse_lists_curated_and_reviewed_only(env) -> None:
