@@ -65,12 +65,12 @@ Full inventories, with an evidence tag on every item:
 | 4 Commands & config | 15 / 15 | 100% |
 | 5 Settings | 5.5 / 8 | 69% |
 | 6 User feedback | 18 / 19 | 95% |
-| 7 Lifecycle & branching | 22.5 / 25 | 90% |
+| 7 Lifecycle & branching | 23 / 25 | 92% |
 | 8 Code review & dev | 8.5 / 12 | 71% |
 | 9 Shortcuts & a11y | 8 / 8 | 100% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **145.5 / 161** | **90%** |
-| **Target completion** (excl. rejected rows) | **143 / 151** | **95%** |
+| **Overall (weighted)** | **146 / 161** | **91%** |
+| **Target completion** (excl. rejected rows) | **143.5 / 151** | **95%** |
 
 ### 1 Shell & IA
 
@@ -175,7 +175,7 @@ Full inventories, with an evidence tag on every item:
 | Spin off parallel / child sessions | 1 | ✅ |  |
 | Archive / unarchive / auto-archive | 2 | ✅ |  |
 | Rename + AI titles | 1 | ✅ |  |
-| Move session to cloud / other host | 1 | ❌ |  |
+| Move session to cloud / other host | 1 | ◐ | other fleet host, idle Claude sessions (D-17); no cloud, no Codex |
 | Scheduled tasks / routines | 1 | ◐ | Delivery automations · *rejected for target* |
 
 ### 8 Code review & dev
@@ -220,13 +220,13 @@ Full inventories, with an evidence tag on every item:
 | 6 | Sandbox settings | 5 Settings | 1 |
 | 7 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
 | 8 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
-| 9 | Move session to cloud / other host | 7 Lifecycle & branching | 1 |
-| 10 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
-| 11 | Pop session into own window | 1 Shell & IA | 0.5 |
-| 12 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
-| 13 | Worktree location / policy | 5 Settings | 0.5 |
-| 14 | Notification levels per event type | 5 Settings | 0.5 |
-| 15 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 9 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
+| 10 | Pop session into own window | 1 Shell & IA | 0.5 |
+| 11 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
+| 12 | Worktree location / policy | 5 Settings | 0.5 |
+| 13 | Notification levels per event type | 5 Settings | 0.5 |
+| 14 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 15 | Move session to cloud / other host | 7 Lifecycle & branching | 0.5 |
 | 16 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
 | 17 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
 

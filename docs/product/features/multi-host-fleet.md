@@ -12,6 +12,8 @@ links:
     - server/sessions/host_probe.py
     - server/api/fleet.py
     - server/ipc/orchestrator_rpc.py
+    - server/sessions/session_move.py
+    - src/viberpit/worktree_transfer.py
   prs: [720, 721, 807, 856, 884, 896, 900, 844]
 ---
 
@@ -43,7 +45,7 @@ within two reconcile passes so automation inserts stop failing the session forei
 upgrade lands the target SHA and the daemon's `/info` confirms it.
 
 **Non-goals** — automatic horizontal autoscaling or provisioning of new hosts (hosts are registered
-by hand); cross-host live migration of a running session (a session stays on its stamped host);
+by hand); cross-host live migration of a running session (only an idle session moves, by hand; see "Moving a session");
 sharding fleet-global automation across hosts (it is deliberately single-primary); token refresh on
 workers (the primary is the sole refresher to avoid racing shared token files).
 
@@ -99,6 +101,36 @@ workers (the primary is the sole refresher to avoid racing shared token files).
 - **Worker-role separation**: `VIBERPIT_DAEMON_ROLE` selects `primary` (all background loops:
   poller, rotation monitor, autopilot, deploy watcher, lease heartbeat) vs `worker` (serves
   dispatched sessions only, never refreshes tokens). See KNOWN GAPS.
+- **Moving a session** (D-17; `server/sessions/session_move.py`, `src/viberpit/worktree_transfer.py`):
+  "Move to host…" in a session's menu resumes an idle **Claude** session on another fleet host,
+  keeping its id, transcript and worktree path. It is manual and per session: no automatic
+  rebalancing, no Codex (its history stays on its host), no cloud. Where the move is refused, the
+  dialog says why.
+  - **What can move:** an idle session (no turn running, nothing queued, no open question,
+    permission or plan card) that is not steering, or steered by, a live child or parent session.
+    Live background tasks need a "Stop these tasks and move" confirm; the target re-arms them.
+  - **How:** the edge claims the session (`sessions.moving_to`), the source pushes the branch and
+    closes its driver, the row is restamped to the target, the target fetches, recreates the
+    worktree at the same path, checks the transcript (size and last entry against the source's
+    manifest, so a stale sshfs view is refused) and resumes. The source worktree is removed only
+    after the target's driver has started and a recovery snapshot ref exists. Any failure after the
+    export restores the session on the source. While it runs the card shows "Moving to <host>…"
+    and sends are held (the draft is kept). If the app cannot tell how a move ended, the dialog says
+    "outcome unknown"; check the session's host in a minute.
+  - **Recovery:** a claim left by a crash is reconciled on its own, at once after an edge restart
+    and otherwise after 10 minutes. The target is trusted only once it has written its
+    import-complete marker; holding the lease alone is not enough. One WARNING is logged per stuck
+    episode.
+  - **Privacy:** on a **private** repo, uncommitted changes are pushed to GitHub as a WIP commit
+    under a hidden ref and the ref is deleted afterwards, but the commit stays fetchable by its
+    SHA until GitHub garbage-collects it. You must tick a consent box naming the files. A **public**
+    repo (or one whose visibility cannot be determined) must be clean: a dirty tree is refused,
+    because a pushed commit would be readable by anyone with its SHA.
+  - **API / switch:** `POST /api/sessions/{id}/move` and `GET /api/sessions/{id}/move/preflight`,
+    both human-only; kill switch `VIBERPIT_SESSION_MOVE_ENABLED` (default on).
+  - **Not built:** a "Drain host" action, adoption of a dead host's sessions (#949), Codex as a
+    new thread, a UI to clear a claim stuck on a host removed from the fleet for good (manual
+    DB clear for now), and a check of org rulesets on private repos (`cairnea/KinDash`).
 
 **Known gaps (open issues)** —
 - **#840 — worker role incomplete.** `orchestrator.start()` still launches all fleet-global
