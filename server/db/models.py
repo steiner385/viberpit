@@ -2618,6 +2618,81 @@ class AttentionSample(Base):
     waiting: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
+class MilestoneLadder(Base):
+    """One product's release-milestone ladder (spec 2026-11-05 §7): the parsed
+    definition file cached at ``source_sha``. At most one per product.
+    ``refresh_requested_at`` is a watermark like ``ProjectRepo.sync_requested_at``."""
+
+    __tablename__ = "milestone_ladders"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        String, ForeignKey("projects.id"), nullable=False, unique=True)
+    source_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_sha: Mapped[str | None] = mapped_column(String, nullable=True)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    spec_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    definition: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    parse_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    parse_error_sha: Mapped[str | None] = mapped_column(String, nullable=True)
+    refresh_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+
+
+class Milestone(Base):
+    """One rung of a ladder. ``removed_at`` marks a rung that left the definition
+    file (row kept for history)."""
+
+    __tablename__ = "milestones"
+    __table_args__ = (UniqueConstraint("ladder_id", "key", name="uq_milestone_key"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    ladder_id: Mapped[str] = mapped_column(
+        String, ForeignKey("milestone_ladders.id"), nullable=False, index=True)
+    key: Mapped[str] = mapped_column(String, nullable=False)
+    ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    label: Mapped[str | None] = mapped_column(String, nullable=True)
+    audience: Mapped[str | None] = mapped_column(String, nullable=True)
+    platforms: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    epics: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    refs: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    gate: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    state: Mapped[str | None] = mapped_column(String, nullable=True)
+    entered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    exited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    exit_override: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status_note: Mapped[str | None] = mapped_column(String, nullable=True)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MilestoneMeasurement(Base):
+    """One cached reading. ``scope`` is a milestone key, ``numbers``, or
+    ``leaves:<milestone key>`` (the leaf list: ``key="leaves"``, ``value`` =
+    ``{done, total, items: [{repo, number, title, url, state, prs}]}``)."""
+
+    __tablename__ = "milestone_measurements"
+    __table_args__ = (
+        UniqueConstraint("ladder_id", "scope", "key", name="uq_milestone_measurement"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    ladder_id: Mapped[str] = mapped_column(
+        String, ForeignKey("milestone_ladders.id"), nullable=False, index=True)
+    scope: Mapped[str] = mapped_column(String, nullable=False)
+    key: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str | None] = mapped_column(String, nullable=True)
+    value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    target: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    manual_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    manual_evidence: Mapped[str | None] = mapped_column(String, nullable=True)
+    manual_url: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 class MaterializationProposal(Base):
     """One proposed decomposition of a merged plan, awaiting the human gate
     (spec 003 §7b). ``payload`` is the parsed `materialize.Decomposition`

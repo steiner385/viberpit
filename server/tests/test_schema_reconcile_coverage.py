@@ -57,6 +57,15 @@ RECONCILE_EXEMPT: set[str] = {
     "owner_recommendations.rule",
     "owner_recommendations.target_ref",
     "owner_recommendations.action",
+    # milestone_ladders / milestones / milestone_measurements (0103): NEW tables installed
+    # whole by create_all; the parent FKs and the (key / scope) identity columns are
+    # mandatory at first INSERT by the milestone sync writer, so no synthesizable default.
+    "milestone_ladders.project_id",
+    "milestones.ladder_id",
+    "milestones.key",
+    "milestone_measurements.ladder_id",
+    "milestone_measurements.scope",
+    "milestone_measurements.key",
     "attention_samples.project_id",
     "attention_samples.needs_you",
     "sessions.name",           # required at session create; no sane default

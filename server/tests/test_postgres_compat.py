@@ -257,6 +257,11 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     "owner_recommendations": {"project_id": "dtcheck-project", "rule": "done_but_open",
                               "target_ref": "o/r#1", "action": "close"},
     "attention_samples": {"project_id": "dtcheck-project", "needs_you": 0},
+    # milestones / milestone_measurements (0103) join the sweep via their DateTime columns;
+    # the (key / scope) identity columns are mandatory at INSERT. Their ladder_id (and the
+    # ladder's project_id) come from _FK_LINKS.
+    "milestones": {"key": "dtcheck"},
+    "milestone_measurements": {"scope": "dtcheck", "key": "dtcheck"},
 }
 
 # FK columns that must be filled from a parent row inserted earlier in this
@@ -285,6 +290,10 @@ _FK_LINKS: dict[str, dict[str, str]] = {
     # resolved persona→capability edge. Neither needs a _REQUIRED_EXTRAS entry —
     # id/created_at(/updated_at) are their only NOT NULL columns, all defaulted.
     "personas": {"project_id": "projects"},
+    # release milestones (0103): ladder hangs off a product; rungs and readings off the ladder.
+    "milestone_ladders": {"project_id": "projects"},
+    "milestones": {"ladder_id": "milestone_ladders"},
+    "milestone_measurements": {"ladder_id": "milestone_ladders"},
     "persona_features": {"persona_id": "personas", "feature_id": "features"},
     "work_items": {"feature_id": "features"},
     "triage_proposals": {"work_item_id": "work_items", "proposed_feature_id": "features"},
