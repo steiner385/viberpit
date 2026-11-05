@@ -1,4 +1,4 @@
-"""Release-milestone tables: roundtrip and uniqueness constraints (0103)."""
+"""Release-milestone tables: roundtrip and uniqueness constraints (0105)."""
 from __future__ import annotations
 
 import pytest

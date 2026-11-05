@@ -1,22 +1,22 @@
 """Release milestones: milestone_ladders, milestones, milestone_measurements.
 
-Revision ID: 0103_release_milestones
-Revises: 0102_output_styles
+Revision ID: 0105_release_milestones
+Revises: 0104_curated_marketplaces
 
 ``milestone_ladders`` caches one product's parsed milestone definition file (unique per
 project); ``milestones`` are its rungs; ``milestone_measurements`` are the cached gate
 readings, number readings and leaf lists, keyed by (ladder, scope, key). ``init_db``'s
 ``create_all`` creates these on both dialects; this revision is the reviewable record.
 
-Chaining note: chained off 0102_output_styles (master's newest revision when written).
+Chaining note: chained off 0104_curated_marketplaces (master's newest revision when written).
 If another revision lands first, re-chain ``down_revision`` to the newest one
 (``test_alembic_single_head`` enforces one head).
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0103_release_milestones"
-down_revision = "0102_output_styles"
+revision = "0105_release_milestones"
+down_revision = "0104_curated_marketplaces"
 branch_labels = None
 depends_on = None
 

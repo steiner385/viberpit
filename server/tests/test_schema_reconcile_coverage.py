@@ -57,7 +57,7 @@ RECONCILE_EXEMPT: set[str] = {
     "owner_recommendations.rule",
     "owner_recommendations.target_ref",
     "owner_recommendations.action",
-    # milestone_ladders / milestones / milestone_measurements (0103): NEW tables installed
+    # milestone_ladders / milestones / milestone_measurements (0105): NEW tables installed
     # whole by create_all; the parent FKs and the (key / scope) identity columns are
     # mandatory at first INSERT by the milestone sync writer, so no synthesizable default.
     "milestone_ladders.project_id",
