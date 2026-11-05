@@ -1254,6 +1254,18 @@ class RemoteOrchestrator:
         except DaemonError as exc:
             raise _settings_error(exc) from exc
 
+    async def set_mcp_tool(self, session_id, server: str, tool: str, enabled: bool, *,
+                           identity: str = SYSTEM_IDENTITY) -> list[dict]:
+        """Proxy set_mcp_tool (D-16b) to the daemon that owns the session. Errors are
+        rebuilt as for ``set_fast_mode``: KeyError, SettingsError with a known code, else
+        the DaemonError (an old daemon's ``UnknownMethod``)."""
+        try:
+            return await self._client.call("set_mcp_tool", session_id=session_id,
+                                           server=server, tool=tool, enabled=enabled,
+                                           identity=identity)
+        except DaemonError as exc:
+            raise _settings_error(exc) from exc
+
     async def resolve_model_approval(self, session_id: str, decision: str, *,
                                      model: str | None = None,
                                      identity: str) -> "SessionRecord":

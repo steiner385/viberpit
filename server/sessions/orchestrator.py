@@ -186,7 +186,8 @@ from server.usage.process_quota import (
 from server.github.pr_status import PullRequestInfo
 from server.mcp_health import store as mcp_store
 from server.mcp_scope import store as mcp_scope_store
-from server.mcp_scope.apply import disabled_for_session
+from server.mcp_scope.apply import disabled_for_session, tool_rules_for_session
+from server.mcp_scope.resolve import servers_wire as mcp_servers_wire
 from server.hostname import self_host_name  # noqa: F401 — re-exported; the fleet identity lives in server.hostname
 from server.sessions.pr_fix import build_conflict_fix_prompt, build_pr_fix_prompt
 
@@ -2981,6 +2982,7 @@ class SessionOrchestrator:
                 resume and getattr(rec, "interrupted_by_restart", False) is True),
             reasoning_effort=reasoning_effort,
             desired_disabled_mcp=desired_disabled_mcp,
+            load_mcp_tool_rules=tool_rules_for_session,
             before_execution=functools.partial(self._automation_before_execution, session_id,
                                                execution_id=execution_id),
             automation_execution_id=execution_id,
@@ -21787,11 +21789,62 @@ class SessionOrchestrator:
                    for r in list(self._records.values()))
 
     async def mcp_status_for(self, session_id: str) -> list[dict] | None:
-        """Live MCP status of a session's driver; ``None`` when it has no live driver."""
+        """Live MCP status of a session's driver; ``None`` when it has no live driver.
+        Each server carries ``tools[]`` with its per-tool state (D-16b), or ``tools:
+        null`` where there are no switches (``_mcp_wire``)."""
         d = self._drivers.get(session_id)
         if d is None:
             return None
-        return [s.to_wire() for s in await d.mcp_status()]
+        return self._mcp_wire(session_id, d, await d.mcp_status())
+
+    def _mcp_tool_rules(self, session_id: str, driver: Any):
+        """The per-tool rules a live driver runs under, or None when the session has no
+        per-tool switches: an engine without the flag-settings channel (Codex) or no
+        rules applied (a kill switch off)."""
+        if not flag_settings_supported(self._capabilities_of(session_id)):
+            return None
+        return getattr(driver, "mcp_tool_rules", None)
+
+    def _mcp_wire(self, session_id: str, driver: Any, states: list) -> list[dict]:
+        return mcp_servers_wire(states, self._mcp_tool_rules(session_id, driver))
+
+    async def set_mcp_tool(self, session_id: str, server: str, tool: str, enabled: bool, *,
+                           identity: str = SYSTEM_IDENTITY) -> list[dict]:
+        """Turn one MCP tool on or off in a live session (D-16b) and persist the override.
+
+        Applied live first — the whole recomposed ``permissions`` object through the flag
+        layer, reply awaited — then saved, so a refusal saves nothing. Returns the
+        session's servers as ``mcp_status_for`` serves them. ``KeyError`` for an unknown
+        session; ``SettingsError``: ``MCP_TOOLS_UNAVAILABLE`` with no switches (Codex,
+        not live, kill switch, a server whose tool list is unknown), ``MCP_TOOL_UNKNOWN``
+        for a tool the server's current list lacks, or the write's own code."""
+        if session_id not in self._records:
+            raise KeyError(session_id)
+        driver = self._flag_settings_driver(session_id)
+        rules = self._mcp_tool_rules(session_id, driver) if driver is not None else None
+        def refused(code: str, message: str) -> flag_settings.SettingsError:
+            err = flag_settings.SettingsError(code, message)
+            log.info("session.mcp_tool refused id=%s server=%s tool=%s error_data=%s",
+                     session_id, server, tool, err.error_data)
+            return err
+
+        if rules is None or driver is None:
+            raise refused(flag_settings.MCP_TOOLS_UNAVAILABLE,
+                          "MCP tool switches are not available here")
+        state = next((st for st in await driver.mcp_status() if st.name == server), None)
+        if state is not None and state.tools is None:
+            raise refused(flag_settings.MCP_TOOLS_UNAVAILABLE,
+                          f"the tool list of {server!r} is unknown")
+        if state is None or tool not in {t.name for t in state.tools}:
+            raise refused(flag_settings.MCP_TOOL_UNKNOWN, f"{server!r} has no tool {tool!r}")
+        await driver.set_mcp_tool_rules(rules.with_override(server, tool, enabled))
+        try:
+            await mcp_scope_store.set_session_tool_override(session_id, server, tool, enabled)
+        except KeyError:    # row deleted mid-flight: the toggle took effect, don't fail it
+            log.debug("mcp tool override not saved, session row gone session=%s", session_id)
+        log.info("session.mcp_tool id=%s server=%s tool=%s enabled=%s by=%s", session_id,
+                 server, tool, enabled, identity)
+        return self._mcp_wire(session_id, driver, driver.last_mcp_status)
 
     def _worktree_record(self, session_id: str) -> SessionRecord:
         """``record()`` for the worktree reads (diff, file list, file read). An unknown
@@ -21863,7 +21916,7 @@ class SessionOrchestrator:
             raise ValueError(str(exc)[:300]) from exc
         except Exception as exc:                    # SDK control errors / timeouts are plain Exception
             raise ValueError(str(exc)[:300]) from exc
-        return [s.to_wire() for s in await d.mcp_status()]
+        return self._mcp_wire(session_id, d, await d.mcp_status())
 
     async def mcp_toggle(self, session_id: str, server: str, enabled: bool) -> list[dict]:
         """Enable/disable one MCP server in a live session and persist the override.
@@ -21884,7 +21937,7 @@ class SessionOrchestrator:
             await mcp_scope_store.set_session_override(session_id, server, enabled)
         except KeyError:    # row deleted mid-flight: the toggle took effect, don't fail it
             log.debug("mcp toggle override not saved, session row gone session=%s", session_id)
-        return [s.to_wire() for s in await d.mcp_status()]
+        return self._mcp_wire(session_id, d, await d.mcp_status())
 
     async def reconnect_mcp_everywhere(self, server: str, statuses: list[str]) -> int:
         """Reconnect *server* in every live driver on this host whose last snapshot shows

@@ -2484,6 +2484,42 @@ async def session_mcp_toggle(
         return _action_error_response(exc)
 
 
+@router.post("/{session_id}/mcp/{server}/tools/{tool}")
+async def session_mcp_tool(
+    session_id: str,
+    server: str,
+    tool: str,
+    body: McpToggleRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+):
+    """Turn one MCP tool on or off in a live Claude session (D-16b): applied live as a
+    flag-layer deny rule and persisted as the session's override. Human-only both ways.
+    200 ``{servers}`` (each with ``tools[]``). 404 kill switch / unknown session, 400
+    unknown server, 403 ``SESSION_CONTROL_HUMAN_ONLY``; 409 ``MCP_TOOL_UNKNOWN`` (not in
+    the server's current list), ``MCP_TOOLS_UNAVAILABLE`` (Codex, not live, or the list
+    is unknown), another ``SETTINGS_CODES`` code when the CLI refused or never answered,
+    or ``daemon_outdated`` from an old daemon."""
+    if not get_settings().mcp_scope_enabled:
+        return JSONResponse(status_code=404, content={"error": "mcp_scope_disabled"})
+    if server not in await asyncio.to_thread(configured_server_keys):
+        raise HTTPException(status_code=400, detail={"code": "UNKNOWN_SERVER"})
+    try:
+        return await session_actions.set_mcp_tool(
+            _get_orchestrator(request), db, session_id=session_id, server=server, tool=tool,
+            enabled=body.enabled, identity=identity, via=human_gate_via(request))
+    except ActionError as exc:
+        return _action_error_response(exc)
+    except flag_settings.SettingsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail={"code": exc.code, "message": str(exc)}) from exc
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "toggle MCP tools")
+
+
 @router.post("/{session_id}/permissions/{perm_id}")
 async def resolve_session_permission(
     session_id: str,

@@ -36,10 +36,10 @@ from .rewind import (REWIND_BUSY, REWIND_CONTROL_TIMEOUT_S, REWIND_FAILED, REWIN
                      REWIND_UNAVAILABLE, RewindError, conversation_request, files_request,
                      map_cli_error)
 from .driver_stream import _STREAM_DONE, DriverStream
-from .flag_settings import (EFFORT_KEY, FAST_MODE_KEY, OUTPUT_STYLE_KEY, SETTINGS_CONTROL_TIMEOUT_S,
-                            SETTINGS_FAILED,
+from .flag_settings import (EFFORT_KEY, FAST_MODE_KEY, OUTPUT_STYLE_KEY, PERMISSIONS_KEY,
+                            SETTINGS_CONTROL_TIMEOUT_S, SETTINGS_FAILED,
                             SETTINGS_INVALID, SETTINGS_REFUSED, SETTINGS_UNAVAILABLE,
-                            SettingsError, effort_levels, live_fast_mode,
+                            SettingsError, compose_permissions, effort_levels, live_fast_mode,
                             live_output_style, model_options, output_styles)
 from .memory_files import normalize_memory_files
 from .failure import classify, TurnFailure
@@ -380,7 +380,8 @@ class ClaudeAgentDriver:
                  before_execution=None,
                  automation_execution_id=None, after_execution_close=None,
                  resumed_after_restart: bool = False,
-                 fork_resume_at: str | None = None):
+                 fork_resume_at: str | None = None,
+                 load_mcp_tool_rules=None):
         self.automation_execution_id = automation_execution_id
         self._automation_fence = AutomationExecutionFence(before_execution, after_execution_close)
         self._automation_tasks: set[str] = set()
@@ -460,6 +461,13 @@ class ClaudeAgentDriver:
         # CLI start because a racing compose() can erase that list before the CLI reads it.
         self._desired_disabled_mcp = desired_disabled_mcp
         self._mcp_enforced = False
+        # Per-tool MCP rules (D-16b): ``load_mcp_tool_rules(session_id)`` reads the
+        # persisted ones at every CLI start; the composed denies are sent through the flag
+        # layer before the first prompt. ``_permissions_sent`` is the last object the CLI
+        # accepted (None: nothing sent to this process yet).
+        self._load_mcp_tool_rules = load_mcp_tool_rules
+        self._mcp_tool_rules = None
+        self._permissions_sent: dict | None = None
         self._mcp_unsupported = False                 # latched after the first control-request failure
         self._mcp_poll_task: asyncio.Task | None = None
         # Fired (synchronously, with the session id) when a Task sub-agent starts or
@@ -1194,6 +1202,7 @@ class ClaudeAgentDriver:
         self._start_listener()
         self._start_mcp_settle()
         await self._report_model_options()
+        await self._apply_mcp_tool_denies()
 
     async def send_prompt(self, text: str, images: list[dict] | None = None, *,
                           interrupt: bool = False,
@@ -2630,7 +2639,63 @@ class ClaudeAgentDriver:
         if not enabled:
             desired.append(name)
         self._desired_disabled_mcp = desired
+        # A server switched off drops its tool denies; switched back on, they return.
+        await self._recompose_mcp_tool_denies()
         await self._poll_mcp_status()
+
+    @property
+    def mcp_tool_rules(self):
+        """The per-tool rules this CLI runs under (``McpToolRules``), or None when there
+        are none to apply (kill switch off, rules unreadable, no loader)."""
+        return self._mcp_tool_rules
+
+    def _composed_permissions(self, rules) -> dict:
+        return compose_permissions(rules, disabled_servers=self._desired_disabled_mcp or ())
+
+    async def _send_permissions(self, permissions: dict) -> None:
+        """THE one sender of the flag-layer ``permissions`` key (D-16b): *permissions* is
+        always a whole ``flag_settings.compose_permissions`` object. Refusals raise
+        ``SettingsError`` (INFO)."""
+        await self.apply_flag_settings({PERMISSIONS_KEY: permissions})
+        self._permissions_sent = permissions
+
+    async def _apply_mcp_tool_denies(self) -> None:
+        """Once per CLI start, right after ``initialize`` and before the first prompt: load
+        the persisted per-tool rules and send the composed denies. An empty deny set sends
+        nothing. Best-effort: a refusal is INFO (``_settings_refused``), anything else
+        DEBUG; a start never fails on it."""
+        self._permissions_sent = None
+        if self._load_mcp_tool_rules is None:
+            return
+        try:
+            self._mcp_tool_rules = await self._load_mcp_tool_rules(self.session_id)
+            if self._mcp_tool_rules is None:
+                return
+            composed = self._composed_permissions(self._mcp_tool_rules)
+            if composed["deny"]:
+                await self._send_permissions(composed)
+        except SettingsError:
+            pass  # logged at INFO by _settings_refused
+        except Exception:
+            log.debug("mcp tool denies not applied session=%s", self.session_id, exc_info=True)
+
+    async def _recompose_mcp_tool_denies(self) -> None:
+        """Resend the whole ``permissions`` object when the server-level set changed what
+        it holds. Best-effort, like ``_apply_mcp_tool_denies``."""
+        if self._mcp_tool_rules is None:
+            return
+        composed = self._composed_permissions(self._mcp_tool_rules)
+        if composed == (self._permissions_sent or {"deny": []}):
+            return
+        with contextlib.suppress(SettingsError):
+            await self._send_permissions(composed)
+
+    async def set_mcp_tool_rules(self, rules) -> None:
+        """Run under *rules* from now on (a live per-tool toggle, D-16b): recompose and
+        send the WHOLE ``permissions`` object — ``deny: []`` restores every tool. A
+        refusal raises ``SettingsError`` and leaves the old rules in force."""
+        await self._send_permissions(self._composed_permissions(rules))
+        self._mcp_tool_rules = rules
 
     async def _poll_mcp_status(self) -> list | None:
         """One get_mcp_status round-trip -> emit + persist. Best-effort, DEBUG on failure.
@@ -2832,6 +2897,7 @@ class ClaudeAgentDriver:
         self._closing = False
         self._start_listener()
         await self._report_model_options()
+        await self._apply_mcp_tool_denies()
         # Fresh CLI process: forget the old latch/snapshot and settle again.
         self._mcp_unsupported = False
         self._mcp_enforced = False
@@ -3031,4 +3097,5 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             after_execution_close=config.after_execution_close,
             resumed_after_restart=config.resumed_after_restart,
             fork_resume_at=config.fork_resume_at,
+            load_mcp_tool_rules=config.load_mcp_tool_rules,
         )

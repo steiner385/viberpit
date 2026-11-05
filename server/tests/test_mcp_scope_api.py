@@ -30,7 +30,10 @@ def test_get_merges_defaults_for_unset_keys():
         client.portal.call(store.set_default, "gh", False)
         client.portal.call(store.set_repo_rule, "Acme/Widgets", "gh", True)
         body = client.get(BASE, headers=_H).json()
-    assert body["servers"] == {"gh": {"defaultEnabled": False}, PLUGIN: {"defaultEnabled": True}}
+    # D-16b: no tool list seen yet, so ``tools: null`` (no switches).
+    none = {"tools": None, "toolsSeenAt": None}
+    assert body["servers"] == {"gh": {"defaultEnabled": False, **none},
+                               PLUGIN: {"defaultEnabled": True, **none}}
     assert body["rules"] == [{"repo": "acme/widgets", "server": "gh", "enabled": True}]
 
 
@@ -40,7 +43,7 @@ def test_put_default_round_trips_plugin_key_and_audits_server_only():
     with e, k, r, client:
         resp = client.put(f"{BASE}/plugin%3ANotion%3Anotion", json={"defaultEnabled": False}, headers=_H)
         assert resp.status_code == 204
-        assert client.get(BASE, headers=_H).json()["servers"][PLUGIN] == {"defaultEnabled": False}
+        assert client.get(BASE, headers=_H).json()["servers"][PLUGIN]["defaultEnabled"] is False
         events = client.portal.call(_audit_events)
     saved = [e for e in events if e[0] == "library_mcp_scope_saved"]
     assert [x[2] for x in saved] == [{"server": PLUGIN}]

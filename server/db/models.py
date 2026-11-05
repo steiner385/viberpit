@@ -127,6 +127,9 @@ class Session(Base):
     sub_agents: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     # Live per-session MCP toggles {server_key: enabled}; layered over repo rules + defaults.
     mcp_overrides: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # Per-tool MCP overrides for this session (D-16b): ``{server: {tool: enabled}}``. Wins
+    # over ``mcp_server_scope.tool_defaults``; applied live as flag-layer deny rules.
+    mcp_tool_overrides: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     # Open background work snapshot ({items, wakeup, wakeupAt}) behind a "Waiting…"
     # session — background shells / Monitors / Codex terminals and the armed wakeup —
     # refreshed at turn end (#2635). Nullable so init_db backfills it; none_as_null so
@@ -1593,6 +1596,12 @@ class McpServerHealth(Base):
     tool_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     scope: Mapped[str | None] = mapped_column(String, nullable=True)
     session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The last tool list a ``connected`` observation carried (D-16b), as
+    # ``McpTool.to_wire`` dicts, and when it was seen. Kept across observations without a
+    # list (disabled, failed, a ``toolCount``-only reply): Settings has no live session.
+    tools: Mapped[list | None] = mapped_column(JSON(none_as_null=True), nullable=True,
+                                               default=None)
+    tools_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class McpGrantHealth(Base):
@@ -1626,6 +1635,10 @@ class McpServerScope(Base):
     server: Mapped[str] = mapped_column(String, primary_key=True)
     default_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # Settings default per tool (D-16b): ``{tool: enabled}``; an absent tool is enabled.
+    # A row written only for a tool default carries ``default_enabled=True``, which
+    # ``resolve.effective_disabled`` reads exactly as no row.
+    tool_defaults: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
 
 
 class McpRepoRule(Base):

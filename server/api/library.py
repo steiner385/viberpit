@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 from viberpit import accounts, brand, creds
 from server.audit import record_audit
+from server.auth.identity import human_gate_via
 from server.auth.middleware import current_identity
 from server.codex.capabilities import CODEX_CAPABILITIES, CODEX_LIBRARY_UNSUPPORTED_DETAIL
 from server.db import db_session, get_db
@@ -36,6 +37,7 @@ from server.ipc.client import DaemonTimeout
 from server.api.repos import known_repo_slugs
 from server.mcp_auth import McpAuthBusy
 from server.mcp_scope import store as scope_store
+from server.mcp_scope.resolve import McpToolRules, tools_wire
 from server.mcp_scope.servers import configured_server_keys
 from server.mcp_health import grant_health
 from server.mcp_health import grants as mcp_grants
@@ -43,6 +45,9 @@ from server.mcp_health import overall as mcp_overall
 from server.mcp_health import store as mcp_store
 from server.sessions.facade import call_with_deadline
 from server.sessions.claude_driver import ClaudeAgentDriver
+from server.sessions.flag_settings import MCP_TOOL_UNKNOWN, MCP_TOOLS_UNAVAILABLE
+from server.sessions.session_actions import (SESSION_CONTROL_HUMAN_ONLY_CODE, ActionError,
+                                             require_human)
 
 log = logging.getLogger(__name__)
 
@@ -370,8 +375,19 @@ async def get_mcp_scope(_identity: str = Depends(current_identity)) -> Any:
         return off
     keys = await asyncio.to_thread(configured_server_keys)
     defaults = await scope_store.server_defaults()
-    return {"servers": {k: {"defaultEnabled": defaults.get(k, True)} for k in keys},
+    # D-16b: each server's last-seen tool list (Settings has no live session) with its
+    # Settings default per tool; ``tools: null`` until a probe or a live session saw one.
+    rules = McpToolRules(defaults=await scope_store.tool_defaults())
+    seen = await _last_seen_tools()
+    return {"servers": {k: {"defaultEnabled": defaults.get(k, True),
+                            "tools": tools_wire(k, seen[k][0] if k in seen else None, rules),
+                            "toolsSeenAt": seen[k][1] if k in seen else None}
+                        for k in keys},
             "rules": await scope_store.all_rules()}
+
+
+async def _last_seen_tools() -> dict:
+    return await mcp_store.last_seen_tools() if get_settings().mcp_status_enabled else {}
 
 
 @router.put("/mcp/scope/{server}")
@@ -383,6 +399,39 @@ async def put_mcp_scope_default(server: str, body: McpScopeDefaultBody,
     await scope_store.set_default(server, body.defaultEnabled)
     await record_audit(db=db, type="library_mcp_scope_saved", identity=identity,
                        detail={"server": server})
+    return Response(status_code=204)
+
+
+@router.put("/mcp/{server}/tools/{tool}")
+async def put_mcp_tool_default(server: str, tool: str, body: McpScopeRuleBody, request: Request,
+                               identity: str = Depends(current_identity),
+                               db=Depends(get_db)) -> Any:
+    """The Settings default of one MCP tool (D-16b): new Claude sessions start with it,
+    and a session can override it live. Human-only both ways (``require_human``). 204;
+    404 kill switch, 400 unknown server, 403 human-only, 409 ``MCP_TOOLS_UNAVAILABLE``
+    when no tool list was seen for the server yet, ``MCP_TOOL_UNKNOWN`` when the
+    last-seen list lacks the tool."""
+    if (off := _scope_off()) is not None:
+        return off
+    via = human_gate_via(request)
+    try:
+        require_human(identity, via, action="change MCP tool defaults",
+                      code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+    except ActionError as exc:
+        raise HTTPException(status_code=exc.http,
+                            detail={"code": exc.code, "message": exc.message}) from None
+    await _scope_server_or_400(server)
+    seen = (await _last_seen_tools()).get(server)
+    if seen is None:
+        raise HTTPException(status_code=409, detail={
+            "code": MCP_TOOLS_UNAVAILABLE, "message": "Test the server to load its tools."})
+    if tool not in {t.name for t in seen[0]}:
+        raise HTTPException(status_code=409, detail={
+            "code": MCP_TOOL_UNKNOWN, "message": f"{server!r} has no tool {tool!r}"})
+    await scope_store.set_tool_default(server, tool, body.enabled)
+    await record_audit(db=db, type="library_mcp_tool_saved", identity=identity,
+                       detail={"server": server, "tool": tool, "enabled": body.enabled},
+                       via=via)
     return Response(status_code=204)
 
 
