@@ -312,3 +312,13 @@ def test_publishable_store_withholds_keys_the_dir_is_ahead_of():
                "same": {"accessToken": "d", "refreshToken": "r", "expiresAt": 5}}
     assert publishable_store(dir_mcp, store) == {"same": store["same"], "other": store["other"]}
     assert publishable_store({}, store) is store
+
+
+def test_a_copy_the_store_holds_verbatim_is_never_ahead():
+    from viberpit.creds import publish_mcp, publishable_store, unmerged_offers
+    # the CLI's shape after a failed refresh: a refresh token, no access token
+    bundle = {"refreshToken": "r"}
+    assert unmerged_offers({"k": bundle}, {"k": dict(bundle)}) == frozenset()
+    # so the edge's publish after capture still strips the dir copy
+    store = {"k": dict(bundle)}
+    assert publish_mcp({"k": bundle}, publishable_store({"k": bundle}, store)) == {"k": {}}

@@ -257,7 +257,10 @@ def unmerged_offers(offers: dict, store: dict) -> frozenset[str]:
     copy — refresh token included — until a pushed view holds it, so a terminal login is
     never stripped from the only place it exists before the edge has merged it (#3287)."""
     merged = merge_mcp_bundles(store, offers)
-    return frozenset(k for k, v in offers.items() if merged.get(k) is v)
+    # A copy the store already holds verbatim is never "ahead", even where the policy would
+    # take it again (it replaces an access-less bundle unconditionally): withholding it would
+    # leave a refresh token in the dir on every sync.
+    return frozenset(k for k, v in offers.items() if merged.get(k) is v and store.get(k) != v)
 
 
 def publishable_store(dir_mcp: dict, store: dict, *, drop: frozenset[str] = frozenset()) -> dict:
