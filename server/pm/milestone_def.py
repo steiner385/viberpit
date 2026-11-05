@@ -13,6 +13,8 @@ from typing import Any
 
 import yaml
 
+# Where pm-sync reads a product's ladder definition, on its primary repo's default branch.
+MILESTONES_PATH = "docs/product/milestones.yaml"
 KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _REF_RE = re.compile(r"^(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<n>[0-9]+)$")
 OPS = frozenset({"eq", "ne", "lt", "le", "gt", "ge"})

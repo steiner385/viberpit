@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from server.pm.feature_index import FeatureDocsRead
     from server.pm.map_changes import MapChangesService, Pointer
     from server.pm.materialize import MaterializedDirectly
+    from server.pm.milestone_index import LadderRowsView, LadderSyncPlan
     from server.pm.onboarding import ProjectOnboardingView
     from server.sessions.native_display import NativeDisplay
     from server.sessions.replay import EngineReplay
@@ -1600,6 +1601,9 @@ class SessionOrchestrator:
             read_persona_docs=self._pm_sync_read_persona_docs,
             list_persona_rows=self._pm_sync_list_persona_rows,
             apply_persona_plan=self._pm_sync_apply_persona_plan,
+            read_milestones=self._pm_sync_read_milestones,
+            load_ladder_rows=self._pm_sync_load_ladder_rows,
+            apply_ladder_plan=self._pm_sync_apply_ladder_plan,
             # Projects v2 + relations mirror seams (003 Phase A). Discovery rides
             # the owner-aware fetch (App token, has read:project); relations reuse
             # the ambient-credential fetch seam above.
@@ -11840,6 +11844,60 @@ class SessionOrchestrator:
         `_pm_sync_read_repo_file` for the shared git plumbing and the
         best-effort contract (issue #2165)."""
         return await self._pm_sync_read_repo_file(repo, self._PM_SYNC_CONSTITUTION_PATH, ref)
+
+    async def _pm_sync_read_milestones(self, repo: str) -> tuple[str | None, str]:
+        """Read the release-milestone definition (``MILESTONES_PATH``) at the
+        default-branch head -> ``(text, sha)``. Unlike `_pm_sync_read_repo_file`
+        it pins the head to a commit SHA once (the ladder records which commit
+        it was parsed from) and separates the two failure kinds: a file absent
+        at that commit is ``(None, sha)``; a clone, ref or blob failure raises,
+        so the pass skips instead of recording "definition file removed"."""
+        import subprocess
+
+        from server.pm.milestone_def import MILESTONES_PATH
+
+        repo_root = await self._effective_repo_root()
+        clone = await asyncio.to_thread(
+            gitrepos.ensure_clone, repo_root, repo, f"https://github.com/{repo}.git")
+
+        def _git(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["git", "-C", clone, *args], capture_output=True, text=True, timeout=30)
+
+        head = await asyncio.to_thread(
+            _git, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+        resolved_ref = head.stdout.strip() or "refs/remotes/origin/master"
+        rp = await asyncio.to_thread(
+            _git, "rev-parse", "--verify", f"{resolved_ref}^{{commit}}")
+        if rp.returncode != 0:
+            raise RuntimeError(
+                f"pm_sync.read_milestones: cannot resolve {resolved_ref} in {repo}: "
+                f"{(rp.stderr or '').strip()[:200]}")
+        sha = rp.stdout.strip()
+        ls = await asyncio.to_thread(_git, "ls-tree", "--name-only", sha, "--", MILESTONES_PATH)
+        if ls.returncode != 0:
+            raise RuntimeError(
+                f"pm_sync.read_milestones: ls-tree failed for {repo}: "
+                f"{(ls.stderr or '').strip()[:200]}")
+        if not ls.stdout.strip():
+            return None, sha
+        show = await asyncio.to_thread(_git, "show", f"{sha}:{MILESTONES_PATH}")
+        if show.returncode != 0:
+            raise RuntimeError(
+                f"pm_sync.read_milestones: read failed for {repo}: "
+                f"{(show.stderr or '').strip()[:200]}")
+        return show.stdout, sha
+
+    async def _pm_sync_load_ladder_rows(self, project_id: str) -> "LadderRowsView":
+        """Thin wrapper over server/pm/milestone_sync_seams.py — see
+        _pm_sync_list_feature_rows for why this stays a bound method."""
+        from server.pm.milestone_sync_seams import load_ladder_rows
+        return await load_ladder_rows(project_id)
+
+    async def _pm_sync_apply_ladder_plan(self, project_id: str, plan: "LadderSyncPlan") -> None:
+        """Thin wrapper over server/pm/milestone_sync_seams.py."""
+        from server.pm.milestone_sync_seams import apply_ladder_plan
+        await apply_ladder_plan(project_id, plan)
 
     async def _pm_sync_read_artifact_doc(
         self, repo: str, path: str, ref: str | None = None

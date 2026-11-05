@@ -33,6 +33,7 @@ from server.pm.gh_projects import (
 from server.pm.github_sync import (
     WorkItemView, build_issues_query, build_prs_query, canonical_repo_name, parse_page)
 from server.pm.map_changes import MAP_CHANGES_STATUS_OPEN, Pointer
+from server.pm.milestone_index import LadderRowsView, LadderSyncPlan, plan_ladder_sync
 from server.pm.mirror_store import ProductSyncView
 from server.pm.persona_index import PersonaIndexPlan, PersonaRowView, plan_persona_index
 from server.pm.personadoc import NotAPersonaDoc, PersonaDoc, PersonaDocError, parse_persona_doc
@@ -169,6 +170,13 @@ ReadConstitution = Callable[..., Awaitable[str | None]]
 # no governance pass — every pre-existing PmSyncLoop caller keeps today's
 # behaviour (no constitution check at all).
 SaveConstitutionStatus = Callable[[str, str | None], Awaitable[None]]
+# Release milestones: read docs/product/milestones.yaml off the primary repo's
+# default branch -> (text, head sha); text None ⇒ the file is absent at that
+# commit, any other failure raises. Load/apply are the DB halves of
+# server/pm/milestone_index.py's planner. Any None ⇒ no milestones pass.
+ReadMilestones = Callable[[str], Awaitable[tuple[str | None, str]]]
+LoadLadderRows = Callable[[str], Awaitable[LadderRowsView]]
+ApplyLadderPlan = Callable[[str, LadderSyncPlan], Awaitable[None]]
 # The product's open map-changes pointer, if any (R8b-4/5). None ⇒ no branch
 # read — every pre-existing PmSyncLoop caller keeps today's default-branch-only
 # behaviour.
@@ -245,6 +253,9 @@ class PmSyncLoop:
         read_persona_docs: ReadFeatureDocs | None = None,
         list_persona_rows: ListPersonaRows | None = None,
         apply_persona_plan: ApplyPersonaPlan | None = None,
+        read_milestones: ReadMilestones | None = None,
+        load_ladder_rows: LoadLadderRows | None = None,
+        apply_ladder_plan: ApplyLadderPlan | None = None,
     ) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -268,6 +279,10 @@ class PmSyncLoop:
         # check and every test that doesn't care about it should keep working.
         self._read_constitution = read_constitution
         self._save_constitution_status = save_constitution_status
+        # None (any of the three) ⇒ no release-milestones pass.
+        self._read_milestones = read_milestones
+        self._load_ladder_rows = load_ladder_rows
+        self._apply_ladder_plan = apply_ladder_plan
         # None ⇒ the feature index only ever reads the default branch (R8b-4).
         self._read_map_changes = read_map_changes
         # None ⇒ no PR-lifecycle pass over the open pointer (R8b-6).
@@ -642,6 +657,7 @@ class PmSyncLoop:
                 await self._persona_index(view)
                 await self._feature_index(view)
                 await self._governance_check(view)
+                await self._milestones_pass(view)
                 await self._artifact_frontmatter_sync(view)
                 await self._ctx.emit("info", f"backfill complete for {view.repo}",
                                      kind="backfill_done", target=view.repo)
@@ -691,6 +707,7 @@ class PmSyncLoop:
         await self._persona_index(view)
         await self._feature_index(view)
         await self._governance_check(view)
+        await self._milestones_pass(view)
         await self._artifact_frontmatter_sync(view)
         await self._save_sync_state(
             view, watermark=max_seen or now, last_synced_at=now,
@@ -927,6 +944,27 @@ class PmSyncLoop:
                 log, str(exc), "pm_sync.constitution_read_failed repo=%s", view.repo, exc_info=True)
             return
         await self._save_constitution_status(view.project_id, classify_document(text))
+
+    async def _milestones_pass(self, view: RepoSyncView) -> None:
+        """Best-effort per-primary-repo release-milestone ladder sync: read the
+        definition file at the default-branch head, plan against the DB rows
+        (``plan_ladder_sync``) and apply. Same failure posture as
+        ``_governance_check``: a read failure skips the pass and leaves the
+        rows as the last successful pass wrote them."""
+        if (not view.is_primary or self._read_milestones is None
+                or self._load_ladder_rows is None or self._apply_ladder_plan is None):
+            return
+        try:
+            text, sha = await self._read_milestones(view.repo)
+        except Exception as exc:
+            self._observation_degraded = True
+            log_gh_failure(
+                log, str(exc), "pm_sync.milestones_read_failed repo=%s", view.repo, exc_info=True)
+            return
+        rows = await self._load_ladder_rows(view.project_id)
+        plan = plan_ladder_sync(
+            rows, text=text, sha=sha, primary_repo=view.repo, now=self._now_utc())
+        await self._apply_ladder_plan(view.project_id, plan)
 
     async def _artifact_frontmatter_sync(self, view: RepoSyncView) -> None:
         """Best-effort per-primary-repo pass (issue #2161): re-read every
