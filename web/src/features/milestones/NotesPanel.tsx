@@ -8,6 +8,7 @@ import type {
   AskStatus, DecisionStatus, MilestoneNote, NoteKind,
 } from '@/api/milestones'
 import { NOTE_TEXT_MAX, milestoneErrorText, useAddNote, useUpdateNote } from '@/api/milestones'
+import { isSafeHttpUrl } from '@/lib/safeUrl'
 import { Button } from '@/ui/Button'
 import { Dialog } from '@/ui/Dialog'
 import { Field } from '@/ui/Field'
@@ -40,7 +41,8 @@ function NoteItem({ note: n, where, onAct, busy }: {
     <li className="flex min-w-0 flex-col gap-1 rounded-md border border-edge bg-surface p-3 text-sm">
       <p className="text-ink [overflow-wrap:anywhere]">
         {n.ref && <span className="mr-1.5 font-mono text-xs text-ink-muted">{n.ref}</span>}
-        {n.url
+        {/* Only an absolute http(s) link becomes an href (stored-XSS guard). */}
+        {isSafeHttpUrl(n.url)
           ? <a href={n.url} target="_blank" rel="noreferrer" className="hover:underline">{n.text}</a>
           : n.text}
       </p>

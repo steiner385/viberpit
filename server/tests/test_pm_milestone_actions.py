@@ -547,3 +547,43 @@ async def test_complete_ladder_409_whatever_expected_current(isolated_db):
             e = await _err(advance(db, await _ladder(db), actor=OWNER,
                                    expected_current=expected, override_reason=None, now=_now()))
         assert (e.status, e.code) == (409, "ladder_complete"), expected
+
+
+# ---------------------------------------------------------------- link scheme (stored XSS)
+
+BAD_URLS = ("javascript:alert(1)", "data:text/html,<script>alert(1)</script>", "//evil.example/x",
+            "ftp://example.com/f", "https://", "notaurl", "https://e.x/" + "a" * 2000)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", BAD_URLS)
+async def test_tick_rejects_non_http_url(isolated_db, url):
+    await _seed()
+    async with db_session() as db:
+        e = await _err(tick_condition(db, await _ladder(db), "friendly", "setup", actor=OWNER,
+                                      met=True, evidence="x", url=url))
+    assert (e.status, e.code) == (400, "bad_url")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", BAD_URLS)
+async def test_add_note_rejects_non_http_url(isolated_db, url):
+    await _seed()
+    async with db_session() as db:
+        e = await _err(add_note(db, await _ladder(db), actor=OWNER, kind="ask", text="x", url=url))
+    assert (e.status, e.code) == (400, "bad_url")
+
+
+@pytest.mark.asyncio
+async def test_http_urls_and_blank_are_accepted(isolated_db):
+    await _seed()
+    async with db_session() as db:
+        lad = await _ladder(db)
+        row = await tick_condition(db, lad, "friendly", "setup", actor=OWNER, met=True,
+                                   evidence="x", url="  HTTP://Example.com/a  ")
+        assert row.manual_url == "HTTP://Example.com/a"
+        n = await add_note(db, lad, actor=OWNER, kind="ask", text="x", url="   ")
+        assert n.url is None
+        n = await add_note(db, lad, actor=OWNER, kind="ask", text="x",
+                           url="https://e.x/" + "a" * (2000 - len("https://e.x/")))
+        assert n.url is not None and len(n.url) == 2000

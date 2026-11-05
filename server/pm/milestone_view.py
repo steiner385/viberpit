@@ -74,6 +74,7 @@ def _condition(cond: Condition, row: Any | None, now: datetime) -> dict[str, Any
         "sourceUrl": row.source_url if row is not None else None,
         "manualBy": row.manual_by if row is not None else None,
         "manualEvidence": row.manual_evidence if row is not None else None,
+        "manualUrl": row.manual_url if row is not None else None,
     }
 
 

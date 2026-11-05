@@ -38,6 +38,7 @@ from server.pm.milestone_def import Condition, from_json
 from server.pm.milestone_status import Reading, evaluate, gate_met
 from server.pm.milestone_view import read_time_gate
 from server.time_iso import iso_utc
+from server.url_safety import MAX_URL_LEN, is_absolute_http_url
 
 _STATUSES: dict[str, tuple[str, ...]] = {"decision": DECISION_STATUSES, "ask": ASK_STATUSES}
 _DEFAULT_STATUS: dict[str, str] = {"decision": "locked", "ask": "open"}
@@ -95,6 +96,15 @@ def _require_person(actor: Actor) -> None:
 def _clean(text: str | None) -> str | None:
     s = (text or "").strip()
     return s or None
+
+
+def _link(url: str | None) -> str | None:
+    """An optional link, trimmed: blank is none; anything but an absolute http(s)
+    URL is refused (it is rendered as an ``href``)."""
+    link = _clean(url)
+    if link is not None and not is_absolute_http_url(link):
+        raise MilestoneActionError(400, "bad_url", {"max": MAX_URL_LEN})
+    return link
 
 
 async def _audit(db: AsyncSession, verb: str, actor: Actor, ladder: MilestoneLadder,
@@ -162,6 +172,7 @@ async def tick_condition(
     proof = _clean(evidence)
     if proof is None:
         raise MilestoneActionError(400, "evidence_required")
+    link = _link(url)
 
     row = (await db.execute(select(MilestoneMeasurement).where(
         MilestoneMeasurement.ladder_id == ladder.id,
@@ -178,7 +189,6 @@ async def tick_condition(
 
     now = _utcnow()
     reading_value: dict[str, Any] = {"met": met} if met is not None else {"n": value}
-    link = _clean(url)
     row.value = reading_value
     row.status = evaluate(cond.measure, Reading(reading_value, now, None, link))
     row.measured_at = now
@@ -240,6 +250,7 @@ async def add_note(db: AsyncSession, ladder: MilestoneLadder, *, actor: Actor, k
     if kind not in NOTE_KINDS:
         raise MilestoneActionError(400, "bad_kind", {"allowed": list(NOTE_KINDS)})
     body = _note_text(text)
+    link = _link(url)
     state = status if status is not None else _DEFAULT_STATUS[kind]
     _check_status(kind, state)
     if milestone_key is not None:
@@ -248,7 +259,7 @@ async def add_note(db: AsyncSession, ladder: MilestoneLadder, *, actor: Actor, k
             raise MilestoneActionError(404, "unknown_milestone", {"milestoneKey": milestone_key})
     now = _utcnow()
     note = MilestoneNote(ladder_id=ladder.id, milestone_key=milestone_key, kind=kind,
-                         ref=_clean(ref), text=body, url=_clean(url), status=state,
+                         ref=_clean(ref), text=body, url=link, status=state,
                          created_by=actor.identity, created_at=now, updated_at=now)
     if kind == "ask" and state in _RESOLVED_ASK:
         note.resolved_by, note.resolved_at = actor.identity, now

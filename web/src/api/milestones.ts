@@ -37,6 +37,8 @@ export interface MilestoneCondition {
   sourceUrl: string | null
   manualBy: string | null
   manualEvidence: string | null
+  /** The tick's optional evidence link. Untrusted: render through `isSafeHttpUrl`. */
+  manualUrl: string | null
 }
 
 export interface MilestonePlatform { name: string | null; off: boolean; note: string | null }
@@ -233,6 +235,7 @@ const MILESTONE_ERROR_COPY: Record<string, string> = {
   unknown_note: 'That note no longer exists. Reload the page.',
   nothing_to_update: 'There was nothing to change.',
   no_ladder: 'This product has no milestone ladder.',
+  bad_url: 'A link must be a full web address that starts with http:// or https://.',
 }
 
 export function milestoneErrorCopy(code: string | null): string {

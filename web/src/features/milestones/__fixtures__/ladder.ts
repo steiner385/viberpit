@@ -22,6 +22,7 @@ export function cond(over: Partial<MilestoneCondition> & { key: string }): Miles
     sourceUrl: null,
     manualBy: null,
     manualEvidence: null,
+    manualUrl: null,
     ...over,
   }
 }

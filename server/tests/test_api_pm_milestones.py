@@ -371,9 +371,13 @@ def test_put_condition_tick_returns_full_view(isolated_db):
     assert setup["status"] == "met" and setup["value"] == {"met": True}
     assert setup["manualBy"] == "testuser@example.com"
     assert setup["manualEvidence"] == "all set up"
+    assert setup["manualUrl"] == "https://e.x/1"
     assert n.status_code == 200, n.text
     outside = next(x for x in n.json()["numbers"] if x["key"] == "outside-families")
     assert outside["value"] == {"n": 4} and outside["status"] == "info"
+    assert outside["manualUrl"] is None   # no link given
+    # A condition with no measurement row still carries the key, null.
+    assert all("manualUrl" in g for m in n.json()["milestones"] for g in m["gate"])
 
 
 def test_patch_status_note_returns_full_view(isolated_db):

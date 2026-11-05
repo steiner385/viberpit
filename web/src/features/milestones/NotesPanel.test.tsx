@@ -108,3 +108,19 @@ describe('NotesPanel — Decisions', () => {
       expect.anything())
   })
 })
+
+describe('NotesPanel — note links', () => {
+  it('links an http(s) note url', () => {
+    render(<NotesPanel kind="decision" slug="kindash" view={view} />)
+    expect(screen.getByRole('link', { name: 'Founder pricing at $4/month' }))
+      .toHaveAttribute('href', 'https://github.com/cairnea/KinDash/issues/20300')
+  })
+
+  it.each(['javascript:alert(1)', 'data:text/html,<script>alert(1)</script>'])(
+    'renders an unsafe url as plain text, never an anchor (%s)', (url) => {
+      const asks = [{ ...view.notes.asks[0], url }]
+      render(<NotesPanel kind="ask" slug="kindash" view={{ ...view, notes: { ...view.notes, asks } }} />)
+      expect(screen.getByText(view.notes.asks[0].text)).toBeInTheDocument()
+      expect(document.querySelector('a')).toBeNull()
+    })
+})

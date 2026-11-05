@@ -19,7 +19,7 @@ const SERVER_CODES = [
   'person_required', 'unknown_milestone', 'unknown_condition', 'not_manual', 'bad_tick',
   'evidence_required', 'owner_required', 'too_long', 'text_required', 'bad_status', 'bad_kind',
   'unknown_note', 'nothing_to_update', 'ladder_complete', 'stale_current', 'no_milestones',
-  'override_not_needed', 'gate_unmet', 'reason_too_short', 'override_requires_owner', 'no_ladder',
+  'override_not_needed', 'gate_unmet', 'reason_too_short', 'override_requires_owner', 'no_ladder', 'bad_url',
 ]
 
 function setup() {

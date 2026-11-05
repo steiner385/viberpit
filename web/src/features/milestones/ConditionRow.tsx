@@ -9,6 +9,7 @@ import type { MilestoneCondition } from '@/api/milestones'
 import { TONE_TEXT } from '@/ui/Badge'
 import { cn } from '@/lib/utils'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
+import { isSafeHttpUrl } from '@/lib/safeUrl'
 import { Button } from '@/ui/Button'
 import { STATUS_META, conditionValue } from './format'
 import { TickDialog } from './TickDialog'
@@ -57,13 +58,19 @@ export function ConditionRow({ condition: c, manage }: { condition: MilestoneCon
         </span>
         {value && <span className="tabular-nums text-ink">{value}</span>}
         <span>{isValidTimestamp(c.measuredAt) ? relTime(c.measuredAt) : 'Never measured'}</span>
-        {c.sourceUrl && (
+        {isSafeHttpUrl(c.sourceUrl) && (
           <a href={c.sourceUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">
             source ↗
           </a>
         )}
         {c.manualBy && (
-          <span className="[overflow-wrap:anywhere]">by {c.manualBy}{c.manualEvidence ? ` · ${c.manualEvidence}` : ''}</span>
+          <span className="[overflow-wrap:anywhere]">
+            by {c.manualBy}{c.manualEvidence ? ` · ${c.manualEvidence}` : ''}
+            {/* Only an absolute http(s) link becomes an href (stored-XSS guard). */}
+            {isSafeHttpUrl(c.manualUrl) && (
+              <>{' · '}<a href={c.manualUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">evidence</a></>
+            )}
+          </span>
         )}
       </div>
       {c.error && <span id={errorId} className="sr-only">{c.error}</span>}

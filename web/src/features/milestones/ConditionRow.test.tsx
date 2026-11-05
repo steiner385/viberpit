@@ -91,4 +91,18 @@ describe('ConditionRow', () => {
     mount(cond({ key: 'x' }))
     expect(screen.getByRole('listitem')).toHaveTextContent('Never measured')
   })
+
+  it('links the tick evidence when it has an http(s) url', () => {
+    mount(cond({ key: 'm', status: 'met', value: { met: true }, manualBy: 'tony', manualEvidence: 'call notes',
+      manualUrl: 'https://example.com/notes', measuredAt: ago(60) }))
+    expect(screen.getByRole('link', { name: 'evidence' })).toHaveAttribute('href', 'https://example.com/notes')
+  })
+
+  it.each(['javascript:alert(1)', 'data:text/html,<script>alert(1)</script>'])(
+    'never renders an anchor for an unsafe url (%s)', (url) => {
+      mount(cond({ key: 'm', status: 'met', value: { met: true }, manualBy: 'tony', manualEvidence: 'call notes',
+        manualUrl: url, sourceUrl: url, measuredAt: ago(60) }))
+      expect(screen.queryByRole('link')).toBeNull()
+      expect(document.querySelector('a')).toBeNull()
+    })
 })
