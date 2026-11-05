@@ -118,6 +118,28 @@ async def set_mcp_tool(orch, db, *, session_id: str, server: str, tool: str, ena
     return {"servers": servers}
 
 
+async def move_session(orch, *, session_id: str, target: str, identity: str,
+                       via: str | None, carry_dirty: bool = False,
+                       stop_background: bool = False) -> dict:
+    """Move a session to another fleet host (D-17). Human-only: it publishes the
+    worktree to a hidden ref and stops the session's background work, so no token-borne
+    caller (assistant, external MCP, CLI, session) may do it. The saga, its audit row
+    (``session.move``) and every refusal code live in ``session_move``; a refusal or
+    failure becomes an ActionError carrying the code, its extras and the outcome."""
+    from server.sessions import session_move
+    require_human(identity, via, action="move a session to another host",
+                  code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+    try:
+        return await session_move.move_session(
+            orch, session_id, target, identity=identity, via=via,
+            carry_dirty=carry_dirty, stop_background=stop_background)
+    except session_move.MoveError as exc:
+        extra = dict(exc.extra)
+        if exc.outcome is not None:
+            extra["outcome"] = exc.outcome
+        raise ActionError(exc.code, exc.message, exc.http, extra=extra) from exc
+
+
 RULE_HUMAN_ONLY_CODE = "RULES_HUMAN_ONLY"
 
 

@@ -359,6 +359,10 @@ def register_orchestrator_rpc(app, orch) -> None:
         # D-16b MCP per-tool toggle: the servers list, applied on the daemon that owns the
         # live client and its tool list. A refusal raises SettingsError (code in error_data).
         "set_mcp_tool",
+        # D-17 move to host: each step of the edge's saga, routed to one host
+        # explicitly. JSON-scalar dicts in and out; a refusal or failure raises
+        # MoveError, whose error_data carries the code (and dirty paths / tasks).
+        "transfer_preflight", "transfer_export", "transfer_import", "transfer_finalize",
         "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "set_pr_autofix_paused", "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
         "stop_subagent",
         "set_permission_mode", "set_model_for_session",

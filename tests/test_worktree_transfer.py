@@ -330,3 +330,95 @@ class FinalizeTests(unittest.TestCase):
         b = wt.export(self.cwd, self.sid, carry_dirty=False)
         self.assertTrue(wt.finalize(b, self.cwd))
         self.assertFalse(wt.finalize(b, self.cwd))
+
+
+class MoveSupportTests(unittest.TestCase):
+    """D-17: the pieces the session move adds on top of the transfer primitives."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.src_root = self.root / "hostA"; self.src_root.mkdir()
+        self.dst_root = self.root / "hostB"; self.dst_root.mkdir()
+        self.src = _make_origin_and_clone(self.root, name="hostA/myrepo")
+        self.dst = _make_origin_and_clone(self.root, name="hostB/myrepo")
+        self.sid = "eeee5555-0000"
+        self.info = worktrees.create_worktree(str(self.src), "main", self.sid, str(self.src_root))
+        self.cwd = self.info.path
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_inspect_lists_dirty_paths_capped(self) -> None:
+        for i in range(wt.DIRTY_PATHS_CAP + 5):
+            (Path(self.cwd) / f"f{i:03d}.txt").write_text("x\n")
+        st = wt.inspect(self.cwd)
+        self.assertEqual(st.dirty_files, wt.DIRTY_PATHS_CAP + 5)
+        self.assertEqual(len(st.dirty_paths), wt.DIRTY_PATHS_CAP)
+        self.assertIn("f000.txt", st.dirty_paths)
+
+    def test_restore_reuse_unpacks_the_wip_commit_on_the_source(self) -> None:
+        """Restore-to-source reuses the source tree; the WIP commit export left on the
+        agent's branch must be unpacked again, never left on the branch."""
+        base = _git("rev-parse", "HEAD", cwd=self.cwd)
+        (Path(self.cwd) / "x.txt").write_text("x\n")
+        b = wt.export(self.cwd, self.sid, carry_dirty=True)
+        self.assertEqual(_git("rev-parse", "HEAD", cwd=self.cwd), b.head_sha)
+        info = wt.import_(b, str(self.src), str(self.src_root))
+        self.assertEqual(info.path, self.cwd)
+        self.assertEqual(_git("rev-parse", "HEAD", cwd=self.cwd), base)
+        self.assertEqual((Path(self.cwd) / "x.txt").read_text(), "x\n")
+        self.assertTrue(wt.inspect(self.cwd).dirty)
+
+    def test_unpack_wip_without_a_bundle_detects_the_wip_subject(self) -> None:
+        base = _git("rev-parse", "HEAD", cwd=self.cwd)
+        (Path(self.cwd) / "x.txt").write_text("x\n")
+        wt.export(self.cwd, self.sid, carry_dirty=True)
+        self.assertTrue(wt.unpack_wip(self.cwd, self.sid))
+        self.assertEqual(_git("rev-parse", "HEAD", cwd=self.cwd), base)
+        self.assertTrue(wt.inspect(self.cwd).dirty)
+        # idempotent: nothing left to unpack
+        self.assertFalse(wt.unpack_wip(self.cwd, self.sid))
+        self.assertEqual(_git("rev-parse", "HEAD", cwd=self.cwd), base)
+
+    def test_unpack_wip_ignores_another_sessions_wip(self) -> None:
+        (Path(self.cwd) / "x.txt").write_text("x\n")
+        b = wt.export(self.cwd, self.sid, carry_dirty=True)
+        self.assertFalse(wt.unpack_wip(self.cwd, "ffff6666-0000"))
+        self.assertEqual(_git("rev-parse", "HEAD", cwd=self.cwd), b.head_sha)
+
+    def test_finalize_snapshots_the_wip_before_removing(self) -> None:
+        (Path(self.cwd) / "x.txt").write_text("precious\n")
+        b = wt.export(self.cwd, self.sid, carry_dirty=True)
+        done = wt.finalize(b, self.cwd)
+        self.assertTrue(done)
+        self.assertTrue(done.removed)
+        self.assertIsNotNone(done.recovery_ref)
+        self.assertFalse(os.path.isdir(self.cwd))
+        shown = _git("show", f"{done.recovery_ref}:x.txt", cwd=str(self.src))
+        self.assertEqual(shown, "precious")
+        self.assertIn(done.recovery_ref, worktrees.recovery_refs(str(self.src), self.sid))
+
+    def test_finalize_without_a_bundle_unpacks_a_leftover_wip(self) -> None:
+        """Crash reconcile knows no bundle: the WIP is found by its subject."""
+        (Path(self.cwd) / "x.txt").write_text("precious\n")
+        wt.export(self.cwd, self.sid, carry_dirty=True)
+        done = wt.finalize(None, self.cwd, session_id=self.sid)
+        self.assertTrue(done.removed)
+        self.assertIsNotNone(done.recovery_ref)
+
+    def test_finalize_clean_tree_has_no_recovery_ref(self) -> None:
+        b = wt.export(self.cwd, self.sid, carry_dirty=False)
+        done = wt.finalize(b, self.cwd)
+        self.assertTrue(done.removed)
+        self.assertIsNone(done.recovery_ref)
+
+    def test_import_into_the_other_host_then_delete_refs(self) -> None:
+        (Path(self.cwd) / "x.txt").write_text("x\n")
+        b = wt.export(self.cwd, self.sid, carry_dirty=True)
+        info = wt.import_(b, str(self.dst), str(self.dst_root))
+        wt.delete_transfer_refs(info.path, self.sid)
+        origin = str(self.root / "origin.git")
+        listed = subprocess.run(["git", "-C", origin, "for-each-ref", f"{wt.TRANSFER_REF_NS}/"],
+                                capture_output=True, text=True).stdout
+        self.assertEqual(listed.strip(), "")

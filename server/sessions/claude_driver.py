@@ -367,6 +367,10 @@ class ClaudeAgentDriver:
         # Live flag settings (D-14): `apply_flag_settings` on the control channel —
         # fast mode and a live effort change — verified on CLI 2.1.318.
         flag_settings=True,
+        # Move to host (D-17): the transcript lives on the shared ~/.claude tree and
+        # `--resume <id>` loads it from any cwd — verified on CLI 2.1.293 and 2.1.318.
+        # Also gated by VIBERPIT_SESSION_MOVE_ENABLED (engine.move_supported).
+        cross_host_transfer=True,
     )
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,

@@ -9,8 +9,7 @@ from server.auth.middleware import current_identity
 from server.config import get_settings
 from server.db import db_session
 from server.db.models import Host
-from server.sessions.claude_driver import ClaudeAgentDriver
-from server.sessions.engine import capabilities_to_wire
+from server.sessions.engine import capabilities_to_wire, declared_capabilities
 from server.sessions.host_engines import (
     engine_dispatchable,
     expected_contract_sha256,
@@ -24,17 +23,11 @@ router = APIRouter(prefix="/api/config", tags=["config"])
 
 
 def _capabilities_for(engine: AgentEngine) -> dict[str, bool]:
-    """The engine's declared control surface, read from the driver that owns it.
-
-    Never restated here: each driver class publishes its own ``capabilities``, and
-    a second copy in the config route is exactly how a UI ends up offering a
-    control the engine does not implement.
-    """
-    if engine is AgentEngine.CLAUDE_CODE:
-        return capabilities_to_wire(ClaudeAgentDriver.capabilities)
-    from server.codex.capabilities import CODEX_CAPABILITIES
-
-    return capabilities_to_wire(CODEX_CAPABILITIES)
+    """The engine's declared control surface, read from the driver that owns it
+    (``engine.declared_capabilities``) — never restated here: a second copy in the
+    config route is exactly how a UI ends up offering a control the engine does not
+    implement."""
+    return capabilities_to_wire(declared_capabilities(engine))
 
 
 async def _engine_offers() -> list[dict]:

@@ -170,6 +170,12 @@ class SessionRecord:
     # Why a would-be-native session went virtual (display_policy.native_fallback);
     # mirrors DB Session.display_fallback_reason. None = no fallback.
     display_fallback_reason: str | None = None
+    # Move to host (D-17). ``moving_to``: the target host while a move is in flight
+    # (the edge overlays its live saga state on every read); ``moved_from`` / ``moved_at``:
+    # the last completed move, mirroring the DB columns of the same names.
+    moving_to: str | None = None
+    moved_from: str | None = None
+    moved_at: datetime | None = None
     # Wall-clock time the user last steered this session (prompt/answer/permission/typing ping).
     # Drives autopilot human-deference + the cooldown badge. In-memory/process-local ONLY: NOT in
     # to_dict/from_dict, NOT a DB column — a 120s window is meaningless across a restart.
@@ -374,6 +380,9 @@ class SessionRecord:
             "host": self.host,
             "displayMode": self.display_mode,
             "displayFallbackReason": self.display_fallback_reason,
+            "movingTo": self.moving_to,
+            "movedFrom": self.moved_from,
+            "movedAt": iso_utc(self.moved_at),
             "usageUnverified": self.usage_unverified,
             "interruptedByRestart": self.interrupted_by_restart,
             "interruptedFromStatus": self.interrupted_from_status,
@@ -454,6 +463,9 @@ class SessionRecord:
             host=d.get("host"),
             display_mode=d.get("displayMode"),
             display_fallback_reason=d.get("displayFallbackReason"),
+            moving_to=d.get("movingTo"),
+            moved_from=d.get("movedFrom"),
+            moved_at=(datetime.fromisoformat(d["movedAt"]) if d.get("movedAt") else None),
             usage_unverified=d.get("usageUnverified", False),
             interrupted_by_restart=d.get("interruptedByRestart", False),
             interrupted_from_status=d.get("interruptedFromStatus"),

@@ -58,6 +58,7 @@ from starlette.websockets import WebSocketState
 
 from server.aio import cancel_and_reap
 from server.automations.ownership import StaleOwnership
+from server.sessions.session_move import SESSION_MOVING, SessionMoving
 from server.api.ratelimit import TokenBucketRateLimiter
 from server.assistant.context import validate_context
 from server.audit import record_audit, redact_event
@@ -936,6 +937,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 await _log_attach_daemon_unavailable(session_id)
                 if not auto:
                     await _close_once(websocket, 1013)
+                return None
+            except SessionMoving as exc:
+                # D-17: the session is between hosts. Expected and short — INFO, and
+                # the client shows "Moving to <host>…" and re-attaches.
+                log.info("ws.attach: session %s is moving to %s", session_id, exc.target)
+                await _attach_failed(session_id, SESSION_MOVING,
+                                     f"Moving to {exc.target}…", auto)
                 return None
             except Exception as exc:
                 # A resumed/rehydrated session can fail to start its SDK subprocess —

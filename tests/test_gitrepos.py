@@ -1124,3 +1124,35 @@ class TestStaleRefLocks:
         os.utime(outside, (1, 1))
         assert gitrepos.remove_stale_locks(tmp_path, self._err(outside)) == []
         assert outside.exists()
+
+
+class RepoVisibilityTests(unittest.TestCase):
+    """D-17 revised D1: a dirty move is allowed only for a repo GitHub says is private.
+    Anything else — public, an error, an unparsable answer — is not private."""
+
+    def _visibility(self, returncode: int, stdout: str):
+        def fake_run(cmd, **kwargs):
+            self.cmd = cmd
+            self.env = kwargs.get("env") or {}
+            return subprocess.CompletedProcess(cmd, returncode, stdout, "boom")
+        with mock.patch.object(gitrepos, "_app_token", return_value="app-tok"):
+            with mock.patch("viberpit.gitrepos.subprocess.run", side_effect=fake_run):
+                return gitrepos.repo_is_private("acme/widget")
+
+    def test_private_true(self) -> None:
+        self.assertIs(self._visibility(0, "true\n"), True)
+        self.assertEqual(self.cmd[:3], ["gh", "api", "repos/acme/widget"])
+        self.assertEqual(self.env.get("GH_TOKEN"), "app-tok")
+
+    def test_public_false(self) -> None:
+        self.assertIs(self._visibility(0, "false\n"), False)
+
+    def test_error_is_unknown(self) -> None:
+        self.assertIsNone(self._visibility(1, ""))
+
+    def test_garbage_is_unknown(self) -> None:
+        self.assertIsNone(self._visibility(0, "maybe"))
+
+    def test_bad_name_is_unknown(self) -> None:
+        self.assertIsNone(gitrepos.repo_is_private("no-slash"))
+        self.assertIsNone(gitrepos.repo_is_private(None))

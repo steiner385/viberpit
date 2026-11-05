@@ -248,6 +248,34 @@ _PER_SESSION: frozenset[str] = frozenset({
 })
 
 
+# Per-session calls that would build a driver or change live session state. While a
+# move (D-17) is in flight the edge refuses them with SessionMoving (HTTP 409 /
+# WS SESSION_MOVING) instead of letting one race the saga onto either host. Reads
+# (get_session, transcripts, diffs) keep working and show ``movingTo``.
+_MOVE_BLOCKED: frozenset[str] = frozenset({
+    "send_prompt", "ensure_driver", "start_queued_now", "archive_session",
+    "permanent_delete", "set_autopilot_paused", "mcp_reconnect", "mcp_toggle", "fork_session", "rewind_session", "undo_rewind",
+    "set_fast_mode", "set_output_style", "set_mcp_tool", "set_permission_mode",
+    "set_model_for_session", "resolve_permission", "answer_question", "run_command",
+    "request_pr_fix", "unarchive", "x11_open_browser", "resolve_model_approval",
+    "resume_interrupted", "certify_harvested_complete", "reload_session",
+    "rotate_to_best", "set_account_pin", "generate_suggestions_now",
+})
+# A cached route whose host answers these with "no such session" is stale (the row
+# was restamped behind this edge's back, #1432): drop it, re-read the stamp, retry once.
+_NONE_MEANS_UNKNOWN: frozenset[str] = frozenset({"get_session", "ensure_driver"})
+
+
+def _is_unknown_session_error(exc: BaseException) -> bool:
+    """"No session with id …" from a host — in process (KeyError) or over the RPC
+    envelope (DaemonError carrying the KeyError)."""
+    from server.ipc.client import DaemonError
+    if isinstance(exc, KeyError):
+        return True
+    return (isinstance(exc, DaemonError) and exc.err_type == "KeyError"
+            and "No session with id" in exc.message)
+
+
 def _orch_for_endpoint(endpoint: str):
     """Build a RemoteOrchestrator for a non-primary host endpoint.
 
@@ -299,6 +327,10 @@ class FleetOrchestrator:
         self._unreachable_log = LogThrottle()
         # host -> consecutive creds_sync pushes it failed to answer (#2757).
         self._creds_unreachable: dict[str, int] = {}
+        # session_id -> target host of a move saga running in THIS edge (D-17). The
+        # edge guard reads it (SessionMoving) and every served record carries it as
+        # ``moving_to``. The DB's ``sessions.moving_to`` is the durable twin.
+        self._moving: dict[str, str] = {}
 
     def _primary_orch(self):
         return self._router.get(self._primary)
@@ -390,17 +422,111 @@ class FleetOrchestrator:
         except Exception:
             return self._primary_orch()
 
+    def _orch_for_host_or_primary(self, host: str | None):
+        try:
+            return self._router.get(host) if host else self._primary_orch()
+        except Exception:
+            return self._primary_orch()
+
+    async def _reroute(self, session_id: str, host: str | None):
+        """Self-heal a stale route (#1432, D-17): the cached host said it has no such
+        session. Drop the entry and re-read the row's stamp; return the new host's
+        orchestrator when the stamp moved, else None (nothing to retry)."""
+        self._host_cache.pop(session_id, None)
+        fresh = await self._host_for(session_id)
+        if fresh is None or fresh == host:
+            return None
+        log.info("fleet.route_healed session=%s %s→%s", session_id, host, fresh)
+        return self._orch_for_host_or_primary(fresh)
+
     def _make_per_session(self, name: str):
         async def _call(session_id, *a, **k):
+            target = self._moving.get(session_id)
+            if target is not None and name in _MOVE_BLOCKED:
+                from server.sessions.session_move import SessionMoving
+                raise SessionMoving(session_id, target)
+            cached = session_id in self._host_cache
             host = await self._host_for(session_id)
+            orch = self._orch_for_host_or_primary(host)
             try:
-                orch = self._router.get(host) if host else self._primary_orch()
-            except Exception:
-                orch = self._primary_orch()
-            return await getattr(orch, name)(session_id, *a, **k)
+                result = await getattr(orch, name)(session_id, *a, **k)
+            except Exception as exc:
+                if not (cached and _is_unknown_session_error(exc)):
+                    raise
+                healed = await self._reroute(session_id, host)
+                if healed is None:
+                    raise
+                result = await getattr(healed, name)(session_id, *a, **k)
+            else:
+                if result is None and cached and name in _NONE_MEANS_UNKNOWN:
+                    healed = await self._reroute(session_id, host)
+                    if healed is not None:
+                        result = await getattr(healed, name)(session_id, *a, **k)
+            if name == "get_session":
+                if result is None and target is not None:
+                    # Between export and import neither daemon may hold a record (a
+                    # worker source forgets it; the target has not loaded it yet).
+                    # The session still exists: serve its row through the one mapper.
+                    result = await self._record_from_row_of(session_id)
+                self._overlay_moving(result)
+            return result
         if getattr(getattr(RemoteOrchestrator, name, None), _DEADLINE_ATTR, False):
             setattr(_call, _DEADLINE_ATTR, True)
         return _call
+
+    # ── Move to host (D-17): what server/sessions/session_move.py drives ──────────
+    @property
+    def primary_name(self) -> str:
+        return self._primary
+
+    def host_names(self) -> list[str]:
+        return self._router.names()
+
+    async def host_candidates(self):
+        return await self._router.candidates()
+
+    def orch_for_host(self, host: str):
+        """The orchestrator of fleet host *host*, explicitly — the saga routes export and
+        import to DIFFERENT hosts for one session id, so never through ``_host_for``.
+        Raises ``UnknownHost``."""
+        return self._router.get(host)
+
+    def note_host(self, session_id: str, host: str) -> None:
+        """The edge restamped *session_id* to *host*: route there from now on."""
+        self._host_cache[session_id] = host
+
+    def begin_move(self, session_id: str, target: str) -> None:
+        self._moving[session_id] = target
+
+    def end_move(self, session_id: str) -> None:
+        self._moving.pop(session_id, None)
+
+    def moving_target(self, session_id: str) -> str | None:
+        return self._moving.get(session_id)
+
+    @staticmethod
+    async def _record_from_row_of(session_id: str):
+        from sqlalchemy import select as _sel
+        from server.db import db_session
+        from server.db.models import Session as _S
+        from server.sessions.orchestrator import SessionOrchestrator
+        async with db_session() as db:
+            row = (await db.execute(_sel(_S).where(_S.id == session_id))).scalar_one_or_none()
+        return SessionOrchestrator._record_from_row(row) if row is not None else None
+
+    def _overlay_moving(self, rec) -> None:
+        """Every record this edge serves says whether it is moving right now."""
+        if rec is None:
+            return
+        try:
+            rec.moving_to = self._moving.get(rec.id)
+        except Exception:  # pragma: no cover — frozen record types
+            pass
+
+    async def move_reconcile_loop(self) -> None:
+        """Settle move claims a dead saga left behind (startup, then every minute)."""
+        from server.sessions.session_move import reconcile_loop
+        await reconcile_loop(self)
 
     async def create_session(self, *, prefer: str | None = None,
                              platform: str | None = None, **kwargs):
@@ -892,6 +1018,8 @@ class FleetOrchestrator:
                 log.info("fleet.list_sessions dropped stale primary mirror "
                          "session_id=%s owner=%s (owner answered without it)", sid, owner)
                 del merged[sid]
+        for rec in merged.values():
+            self._overlay_moving(rec)
         return list(merged.values())
 
     async def codex_invalidate_credentials(self, account: str) -> dict:

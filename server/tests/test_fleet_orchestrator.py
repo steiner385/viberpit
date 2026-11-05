@@ -654,7 +654,12 @@ def test_every_remote_method_is_classified():
                 "creds_sync",
                 # D-16c plugin ops: plugin_op_everywhere is defined on FleetOrchestrator
                 # and names EVERY host's outcome; it calls plugin_op per host by name.
-                "plugin_op", "plugin_op_everywhere"}
+                "plugin_op", "plugin_op_everywhere",
+                # Move to host (D-17): the saga routes each step to a host explicitly
+                # (export/finalize on the source, import on the target) through
+                # FleetOrchestrator.orch_for_host, never by the session's stamp.
+                "transfer_preflight", "transfer_export", "transfer_import",
+                "transfer_finalize", "_transfer_call"}
     # Global/primary-routed: everything not per-session, fan-out, merge-all, or
     # explicit. Listed so adding a NEW method forces a conscious classification here.
     GLOBAL = {

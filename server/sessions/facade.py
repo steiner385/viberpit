@@ -128,6 +128,12 @@ class InProcessOrchestratorAdapter:
     # rather than reporting a permanently-idle pool that does not exist.
     def daemon_pool_stats(self): return None
     async def archive_session(self, *a, **k): return await _maybe_await(self._orch.archive_session(*a, **k))
+    # D-17 move steps: in-process there is no second host to move to (the API answers
+    # MOVE_NO_FLEET), but the steps are the orchestrator's own and stay reachable.
+    async def transfer_preflight(self, *a, **k): return await _maybe_await(self._orch.transfer_preflight(*a, **k))
+    async def transfer_export(self, *a, **k): return await _maybe_await(self._orch.transfer_export(*a, **k))
+    async def transfer_import(self, *a, **k): return await _maybe_await(self._orch.transfer_import(*a, **k))
+    async def transfer_finalize(self, *a, **k): return await _maybe_await(self._orch.transfer_finalize(*a, **k))
     async def unarchive(self, *a, **k): return await _maybe_await(self._orch.unarchive(*a, **k))
     async def permanent_delete(self, *a, **k): return await _maybe_await(self._orch.permanent_delete(*a, **k))
     async def adopt_session(self, *a, **k): return await _maybe_await(self._orch.adopt_session(*a, **k))

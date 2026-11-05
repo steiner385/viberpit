@@ -435,6 +435,7 @@ async def _lifespan(app: FastAPI):
     app.state.fleet_creds_task = None
     app.state.fleet_queue_drain_task = None
     app.state.fleet_archive_reopen_task = None
+    app.state.fleet_move_reconcile_task = None
     _endpoint = getattr(app.state, "daemon_endpoint", None)
     if _endpoint is not None:
         try:
@@ -466,6 +467,10 @@ async def _lifespan(app: FastAPI):
             # them here (#3142).
             app.state.fleet_archive_reopen_task = asyncio.create_task(
                 app.state.sessions.archive_reopen_loop(), name="fleet-archive-reopen")
+            # A move saga (D-17) that died with a previous edge left its claim behind;
+            # settle stale ones now and every minute (session_move.reconcile_stale_moves).
+            app.state.fleet_move_reconcile_task = asyncio.create_task(
+                app.state.sessions.move_reconcile_loop(), name="fleet-move-reconcile")
             _logging.getLogger("server").info(
                 "fleet: dispatcher ready; hosts=%s", list(_router.names()))
         except Exception:
@@ -668,7 +673,8 @@ async def _lifespan(app: FastAPI):
                           ("fleet_probe_task", "fleet-probe"),
                           ("fleet_creds_task", "fleet-creds-push"),
                           ("fleet_queue_drain_task", "fleet-queue-drain"),
-                          ("fleet_archive_reopen_task", "fleet-archive-reopen")):
+                          ("fleet_archive_reopen_task", "fleet-archive-reopen"),
+                          ("fleet_move_reconcile_task", "fleet-move-reconcile")):
         _t = getattr(app.state, _attr, None)
         if _t is not None:
             _t.cancel()
@@ -980,6 +986,15 @@ def create_app(
                 "code": "daemon_unavailable",
             },
         )
+
+    from server.sessions.session_move import SessionMoving
+
+    @app.exception_handler(SessionMoving)
+    async def _session_moving_handler(_request, _exc):  # noqa: ANN001
+        # D-17: a call that would build a driver while the session is being moved.
+        return JSONResponse(status_code=409, content={"detail": {
+            "code": _exc.code, "message": f"This session is moving to {_exc.target}.",
+            "movingTo": _exc.target}})
 
     @app.exception_handler(DaemonError)
     async def _daemon_error_handler(_request, _exc):  # noqa: ANN001
