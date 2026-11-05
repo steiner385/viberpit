@@ -208,7 +208,8 @@ export function MilestonesPage() {
                   className="grid gap-3"
                 >
                   {view.milestones.map((m) => (
-                    <MilestoneCard key={m.key} milestone={m} slug={productSlug} next={upcoming} advance={advance} />
+                    <MilestoneCard key={m.key} milestone={m} slug={productSlug} next={upcoming} advance={advance}
+                      currentRemoved={view.ladder.currentRemoved} />
                   ))}
                 </ol>
                 {/* Spec §9 order, kept when it stacks under the ladder below 2xl. */}

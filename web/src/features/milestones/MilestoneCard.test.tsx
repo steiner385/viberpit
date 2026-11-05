@@ -11,8 +11,9 @@ vi.mock('@/api/milestones', async (orig) => ({
   useTickCondition: idle,
 }))
 
-const mount = (m: Milestone, next: Milestone | null = FRIENDLY) =>
-  render(<ol><MilestoneCard milestone={m} slug="kindash" next={next} advance={idle() as unknown as AdvanceMutation} /></ol>)
+const mount = (m: Milestone, next: Milestone | null = FRIENDLY, currentRemoved = false) =>
+  render(<ol><MilestoneCard milestone={m} slug="kindash" next={next} currentRemoved={currentRemoved}
+    advance={idle() as unknown as AdvanceMutation} /></ol>)
 
 describe('MilestoneCard', () => {
   it('marks the current milestone as the current step with its status line', () => {
@@ -103,5 +104,31 @@ describe('MilestoneCard', () => {
   it('a done card offers no actions', () => {
     mount({ ...FRIENDLY, state: 'done' })
     expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  describe('a current milestone removed from the definition file', () => {
+    const REMOVED_HINT = 'This milestone was removed from the definition file; restore it there to tick its conditions.'
+    const currentWithManual: Milestone = { ...FRIENDLY, state: 'current' }
+    const tickName = 'Tick: Every family completes setup with no support call'
+
+    it('hides Tick and says how to restore it', () => {
+      mount(currentWithManual, null, true)
+      expect(screen.queryByRole('button', { name: tickName })).toBeNull()
+      expect(screen.getByText(REMOVED_HINT)).toBeInTheDocument()
+      // The rung can still be advanced off.
+      expect(screen.getByRole('button', { name: /Advance/ })).toBeInTheDocument()
+    })
+
+    it('keeps Tick on the current card while it is still defined', () => {
+      mount(currentWithManual, null, false)
+      expect(screen.getByRole('button', { name: tickName })).toBeInTheDocument()
+      expect(screen.queryByText(REMOVED_HINT)).toBeNull()
+    })
+
+    it('leaves an upcoming card alone when the current one is the removed one', () => {
+      mount(FRIENDLY, null, true)
+      expect(screen.getByRole('button', { name: tickName })).toBeInTheDocument()
+      expect(screen.queryByText(REMOVED_HINT)).toBeNull()
+    })
   })
 })

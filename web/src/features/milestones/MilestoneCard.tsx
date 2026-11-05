@@ -2,7 +2,8 @@
 // platform chips, status line), the gate, the leaves bar, and the open leaves.
 // The current card is the `aria-current="step"`; done cards are muted. The current
 // card edits its status line and advances; a card not yet done ticks its manual
-// conditions; a done card is a record and offers nothing.
+// conditions (not a current one the definition file removed: the server ticks only
+// defined conditions); a done card is a record and offers nothing.
 import { useId, useState } from 'react'
 import type { AdvanceMutation, Milestone, MilestoneLeaf } from '@/api/milestones'
 import { Banner } from '@/ui/Banner'
@@ -35,9 +36,11 @@ function LeafRow({ leaf }: { leaf: MilestoneLeaf }) {
   )
 }
 
-export function MilestoneCard({ milestone: m, slug, next, advance }: {
+export function MilestoneCard({ milestone: m, slug, next, advance, currentRemoved }: {
   milestone: Milestone
   slug: string
+  /** The ladder's `currentRemoved`: the current rung is gone from the definition file. */
+  currentRemoved: boolean
   /** The page's advance mutation (its error must outlive this card). */
   advance: AdvanceMutation
   /** The rung an Advance moves to (null: it completes the ladder). Read only on the current card. */
@@ -47,6 +50,8 @@ export function MilestoneCard({ milestone: m, slug, next, advance }: {
   const [advancing, setAdvancing] = useState(false)
   const current = m.state === 'current'
   const done = m.state === 'done'
+  const removed = current && currentRemoved
+  const tickable = !done && !removed
   const open = [
     ...m.leaves.items.filter((l) => l.state === 'in_flight'),
     ...m.leaves.items.filter((l) => l.state === 'not_started'),
@@ -94,9 +99,14 @@ export function MilestoneCard({ milestone: m, slug, next, advance }: {
 
       {m.gate.length > 0
         ? <ul aria-label="Gate" className="flex flex-col divide-y divide-edge">
-            {m.gate.map((c) => <ConditionRow key={c.key} condition={c} manage={done ? undefined : { slug, scope: m.key }} />)}
+            {m.gate.map((c) => <ConditionRow key={c.key} condition={c} manage={tickable ? { slug, scope: m.key } : undefined} />)}
           </ul>
         : <p className="text-xs text-ink-muted">No gate conditions.</p>}
+      {removed && m.gate.some((c) => c.kind === 'manual') && (
+        <p className="text-xs text-ink-muted">
+          This milestone was removed from the definition file; restore it there to tick its conditions.
+        </p>
+      )}
 
       {m.leaves.total > 0 && (
         <div className="flex flex-col gap-2">
