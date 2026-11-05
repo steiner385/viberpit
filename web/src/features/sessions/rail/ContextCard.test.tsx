@@ -20,6 +20,7 @@ vi.mock('@/api/hooks', () => ({
 }))
 vi.mock('@/api/mcpScopeHooks', () => ({
   useToggleSessionMcp: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null, variables: undefined }),
+  useSetSessionMcpTool: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null, variables: undefined }),
 }))
 
 import { ContextCard } from './ContextCard'
@@ -134,6 +135,18 @@ describe('ContextCard', () => {
     // No popover trigger: the list is inline.
     expect(screen.queryByRole('button', { name: /^MCP \d/ })).toBeNull()
     expect(sessionMcp).toHaveBeenCalledWith('s1', false)
+  })
+
+  it('offers per-tool switches only with the flag-settings capability (none for Codex)', async () => {
+    const { unmount } = render(<ContextCard {...base} mcpLive={[server('github')]} />, { wrapper: Wrapper })
+    expect(await screen.findByText('github')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Tools for github' })).toBeNull()
+    unmount()
+    sessionMcp.mockReturnValue({ data: { servers: [{ ...server('github'), tools: [] }] }, isPending: false, isError: false })
+    render(<ContextCard {...base} mcpLive={[server('github')]} mcpToolSwitches />, { wrapper: Wrapper })
+    fireEvent.click(await screen.findByRole('button', { name: 'Tools for github' }))
+    expect(screen.getByText('No tools.')).toBeInTheDocument()
+    expect(sessionMcp).toHaveBeenCalledWith('s1', true, true)
   })
 
   it('falls back to the MCP snapshot when there is no live status', async () => {

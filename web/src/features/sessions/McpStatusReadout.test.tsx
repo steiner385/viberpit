@@ -22,6 +22,7 @@ vi.mock('@/api/hooks', () => ({
 
 vi.mock('@/api/mcpScopeHooks', () => ({
   useToggleSessionMcp: () => toggle(),
+  useSetSessionMcpTool: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
 }))
 
 function Wrapper({ children }: { children: ReactNode }) {

@@ -18,6 +18,7 @@ vi.mock('@/api/hooks', () => ({
 }))
 vi.mock('@/api/mcpScopeHooks', () => ({
   useToggleSessionMcp: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
+  useSetSessionMcpTool: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
 }))
 
 beforeEach(() => startAuth.mockReset())

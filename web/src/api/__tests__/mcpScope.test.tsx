@@ -9,6 +9,8 @@ import {
   useSetMcpRepoRule,
   useDeleteMcpRepoRule,
   useToggleSessionMcp,
+  useSetMcpToolDefault,
+  useSetSessionMcpTool,
 } from '../mcpScopeHooks'
 import { api } from '../client'
 
@@ -74,5 +76,40 @@ describe('MCP scope hooks', () => {
     result.current.mutate({ server: 'plugin:p:s', enabled: false })
     await waitFor(() => expect(qc.getQueryData(['session-mcp', 's 1'])).toEqual(data))
     expect(api.post).toHaveBeenCalledWith('/sessions/s%201/mcp/plugin%3Ap%3As/toggle', { enabled: false })
+  })
+
+  it('useSetSessionMcpTool POSTs the encoded server and tool and writes the reply into the session cache', async () => {
+    const data = { servers: [{ name: 'plugin:p:s', status: 'connected', tools: [] }] }
+    vi.mocked(api.post).mockResolvedValue(data)
+    const { qc, wrapper } = setup()
+    const { result } = renderHook(() => useSetSessionMcpTool('s 1'), { wrapper })
+    result.current.mutate({ server: 'plugin:p:s', tool: 'tool.d', enabled: false })
+    await waitFor(() => expect(qc.getQueryData(['session-mcp', 's 1'])).toEqual(data))
+    expect(api.post).toHaveBeenCalledWith('/sessions/s%201/mcp/plugin%3Ap%3As/tools/tool.d', { enabled: false })
+  })
+
+  it('useSetMcpToolDefault PUTs the tool default, writes it into the scope cache, then invalidates', async () => {
+    vi.mocked(api.put).mockResolvedValue(undefined)
+    const { qc, wrapper } = setup()
+    const tool = { name: 'a b', description: null, annotations: { readOnly: null, destructive: null, openWorld: null }, enabled: true, source: 'default' }
+    qc.setQueryData(QK.mcpScope, { servers: { 'plugin:p:s': { defaultEnabled: true, tools: [tool], toolsSeenAt: null } }, rules: [] })
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    const { result } = renderHook(() => useSetMcpToolDefault(), { wrapper })
+    result.current.mutate({ server: 'plugin:p:s', tool: 'a b', enabled: false })
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: QK.mcpScope }))
+    expect(api.put).toHaveBeenCalledWith('/library/mcp/plugin%3Ap%3As/tools/a%20b', { enabled: false })
+    const scope = qc.getQueryData<{ servers: Record<string, { tools: { enabled: boolean }[] }> }>(QK.mcpScope)
+    expect(scope?.servers['plugin:p:s'].tools[0].enabled).toBe(false)
+  })
+
+  it('a refused tool toggle leaves the caches untouched', async () => {
+    vi.mocked(api.post).mockRejectedValue(new Error('409'))
+    const { qc, wrapper } = setup()
+    const before = { servers: [{ name: 's', status: 'connected', tools: [] }] }
+    qc.setQueryData(['session-mcp', 's1'], before)
+    const { result } = renderHook(() => useSetSessionMcpTool('s1'), { wrapper })
+    result.current.mutate({ server: 's', tool: 't', enabled: true })
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(qc.getQueryData(['session-mcp', 's1'])).toBe(before)
   })
 })

@@ -7,6 +7,7 @@ import { McpServerDialog } from './McpServerDialog'
 import { McpAuthFlow } from './McpAuthFlow'
 import { McpStatusPill } from './McpStatusPill'
 import { McpScopeControl } from './McpScopeControl'
+import { McpToolDefaults, McpToolsToggle } from './McpToolDefaults'
 import { serverKey } from './mcpServerKey'
 import { relativeAge } from './mcpStatus'
 
@@ -71,6 +72,7 @@ export function McpSection() {
   const [pasteBack] = useState(() => new URLSearchParams(window.location.search).get('pasteBack'))
   const [dialogServer, setDialogServer] = useState<LibraryMcpServer | null | undefined>(undefined)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [toolsOpen, setToolsOpen] = useState<Set<string>>(new Set())
   const [outcome, setOutcome] = useState<TestOutcome | null>(null)
 
   useEffect(() => {
@@ -96,13 +98,12 @@ export function McpSection() {
     })
   }
 
-  function toggle(key: string) {
-    setExpanded((prev) => {
-      const next = new Set(prev)
-      if (!next.delete(key)) next.add(key)
-      return next
-    })
+  const flip = (key: string) => (prev: Set<string>) => {
+    const next = new Set(prev)
+    if (!next.delete(key)) next.add(key)
+    return next
   }
+  const toggle = (key: string) => setExpanded(flip(key))
 
   const testingTarget = test.isPending ? (test.variables?.server ?? null) : undefined
 
@@ -128,6 +129,8 @@ export function McpSection() {
           const key = `${s.source}/${s.name}`
           const signInNeeded = s.overall.status === 'needs-auth' && SIGN_IN_GRANTS.includes(s.overall.grant)
           const open = expanded.has(key)
+          const scopeKey = serverKey(s)
+          const toolsId = `mcp-tools-${key}`
           return (
           <li key={key}>
             <button
@@ -176,8 +179,15 @@ export function McpSection() {
               >
                 {testingTarget === s.name ? 'Testing…' : 'Test'}
               </button>
+              <McpToolsToggle
+                serverKey={scopeKey}
+                open={toolsOpen.has(key)}
+                onToggle={() => setToolsOpen(flip(key))}
+                controls={toolsId}
+              />
             </div>
-            <McpScopeControl serverKey={serverKey(s)} />
+            {toolsOpen.has(key) && <McpToolDefaults serverKey={scopeKey} id={toolsId} />}
+            <McpScopeControl serverKey={scopeKey} />
             <div className="px-3">
               <TestOutcomeNote outcome={outcome} target={s.name} />
             </div>

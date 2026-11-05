@@ -16,13 +16,17 @@ interface Props {
   sessionId: string
   account: string
   live: McpServerState[] | null
+  /** Offer per-tool switches (the engine's `flagSettings` capability; D-16b). */
+  toolSwitches?: boolean
 }
 
 /** The server list plus the `Manage →` link into Settings → MCP. */
-function McpServerPanel({ sessionId, account, servers }: { sessionId: string; account: string; servers: McpServerState[] }) {
+function McpServerPanel({ sessionId, account, servers, toolSwitches }: {
+  sessionId: string; account: string; servers: McpServerState[]; toolSwitches?: boolean
+}) {
   return (
     <>
-      <McpServerList sessionId={sessionId} account={account} servers={servers} />
+      <McpServerList sessionId={sessionId} account={account} servers={servers} toolSwitches={toolSwitches} />
       <div className="py-1.5 text-xs">
         <Link to={settingsSectionPath('mcp')} className="text-accent hover:underline">
           Manage →
@@ -34,13 +38,13 @@ function McpServerPanel({ sessionId, account, servers }: { sessionId: string; ac
 
 /** The same list, inline (no popover) — the session rail's Context card.
  *  Renders nothing when the session reports no servers. */
-export function McpInlineList({ sessionId, account, live }: Props) {
+export function McpInlineList({ sessionId, account, live, toolSwitches }: Props) {
   const servers = useMcpServers(sessionId, live)
   if (servers.length === 0) return null
   return (
     <div role="group" aria-label="MCP servers" className="min-w-0">
       <p className="text-ink-muted">MCP servers</p>
-      <McpServerPanel sessionId={sessionId} account={account} servers={servers} />
+      <McpServerPanel sessionId={sessionId} account={account} servers={servers} toolSwitches={toolSwitches} />
     </div>
   )
 }

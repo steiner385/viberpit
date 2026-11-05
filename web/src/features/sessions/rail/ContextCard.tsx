@@ -44,6 +44,8 @@ interface Props {
   commands: Command[]
   /** Live MCP status (`rt.state.mcpServers`); null falls back to the GET snapshot. */
   mcpLive: McpServerState[] | null
+  /** Offer per-tool MCP switches: the engine's `flagSettings` capability (false for Codex; D-16b). */
+  mcpToolSwitches?: boolean
   /** The memory files the CLI loaded, in its order (`rt.memoryFiles`); null or empty hides the list. */
   memoryFiles: MemoryFile[] | null
   /** `session.cwd` — the worktree a file path is shown relative to; null shows paths absolute. */
@@ -53,7 +55,7 @@ interface Props {
 }
 
 export function ContextCard({
-  sessionId, account, contextPct, quota, commands, mcpLive, memoryFiles, cwd, onCompact,
+  sessionId, account, contextPct, quota, commands, mcpLive, mcpToolSwitches = false, memoryFiles, cwd, onCompact,
 }: Props) {
   const severity = contextSeverity(contextPct)
   const canCompact = commands.some((c) => c.name === 'compact')
@@ -138,7 +140,7 @@ export function ContextCard({
         </Suspense>
       )}
 
-      <DeferredMcpInlineList sessionId={sessionId} account={account} live={mcpLive} />
+      <DeferredMcpInlineList sessionId={sessionId} account={account} live={mcpLive} toolSwitches={mcpToolSwitches} />
 
       <SessionRulesReadout sessionId={sessionId} />
 
