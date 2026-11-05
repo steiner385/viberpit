@@ -9,6 +9,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import type { AccountUsage, Session } from '@/api/types'
 import { QK } from '@/api/hooks'
+import { SESSION_MOVING } from '@/api/sessionMove'
 import type { SessionEvent, PromptContext } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
 import type { PromptStage } from '@/session/promptStage'
@@ -117,6 +118,15 @@ export class SessionSocket {
   private _heldRetryAttempt = 0
   static readonly HELD_RETRY_BASE_MS = 5_000
   static readonly HELD_RETRY_MAX_MS = 60_000
+  // D-17: an attach the edge refused with SESSION_MOVING (the session is between
+  // hosts) is retried on this cadence, for at most the move claim's lifetime — the
+  // edge's reconcile settles any claim older than 10 min (`MOVE_STALE_S`) on its next
+  // pass (≤ 1 min). One timer per socket, re-armed only by another SESSION_MOVING
+  // frame, so a successful attach (a replay, no error) ends it by itself.
+  private _movingRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private _movingRetryUntil = 0
+  static readonly MOVING_RETRY_MS = 5_000
+  static readonly MOVING_RETRY_WINDOW_MS = 11 * 60_000
   private _gap: GapState = createGapState()
   // revAt the transcript stream was last demonstrably synced to: whenever session
   // frames arrive we adopt the cached row's revAt as "seen". Compared against the
@@ -282,6 +292,7 @@ export class SessionSocket {
     }
     this._clearStableTimer()
     this._clearHeldRetry()
+    this._clearMovingRetry()
     this.ws?.close()
     this.ws = null
   }
@@ -332,6 +343,33 @@ export class SessionSocket {
     }, delay)
   }
 
+  private _clearMovingRetry() {
+    if (this._movingRetryTimer !== null) {
+      clearTimeout(this._movingRetryTimer)
+      this._movingRetryTimer = null
+    }
+    this._movingRetryUntil = 0
+  }
+
+  /** The edge refused an attach with SESSION_MOVING: try again in MOVING_RETRY_MS,
+   *  inside the window that began with the first such refusal. When the timer fires
+   *  and the cached row's `movingTo` has cleared, that re-attach is the last one the
+   *  move needs — the window closes, and only a fresh refusal would open another. */
+  private _scheduleMovingRetry(sessionId: string) {
+    if (sessionId !== this._activeSessionId || this._movingRetryTimer !== null) return
+    const now = Date.now()
+    if (this._movingRetryUntil === 0) this._movingRetryUntil = now + SessionSocket.MOVING_RETRY_WINDOW_MS
+    if (now >= this._movingRetryUntil) return
+    this._movingRetryTimer = setTimeout(() => {
+      this._movingRetryTimer = null
+      if (this._activeSessionId !== sessionId) return
+      if (!this._cachedRow(sessionId)?.movingTo) this._movingRetryUntil = 0
+      // A closed socket: the reconnect's onopen re-attaches the active session.
+      if (this.ws?.readyState !== WebSocket.OPEN) return
+      this._send(this._attachFrame(sessionId))
+    }, SessionSocket.MOVING_RETRY_MS)
+  }
+
   private _clearStableTimer() {
     if (this._stableTimer !== null) {
       clearTimeout(this._stableTimer)
@@ -342,6 +380,7 @@ export class SessionSocket {
   // ── Outbound messages ───────────────────────────────────────────────────────
 
   attach(sessionId: string) {
+    if (this._activeSessionId !== sessionId) this._clearMovingRetry()
     this._activeSessionId = sessionId
     // Fresh view: baseline the probe so pre-attach staleness can't instantly fire.
     this._lastSessionFrameAt = Date.now()
@@ -360,7 +399,10 @@ export class SessionSocket {
   }
 
   detach(sessionId: string) {
-    if (this._activeSessionId === sessionId) this._activeSessionId = null
+    if (this._activeSessionId === sessionId) {
+      this._activeSessionId = null
+      this._clearMovingRetry()
+    }
     this._send({ type: 'detach', sessionId })
   }
 
@@ -809,6 +851,7 @@ export class SessionSocket {
         break
       case 'error':
         this._emit('error', msg)
+        if (msg.code === SESSION_MOVING && msg.sessionId) this._scheduleMovingRetry(msg.sessionId)
         break
       case 'batch': {
         // replayReset re-baselining happens INSIDE handleLiveBatch, in frame

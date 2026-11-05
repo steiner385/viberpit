@@ -2,8 +2,8 @@
 // can return (`server/sessions/session_move.py`; contract in the D-17 task-1 report).
 // THE one map: the dialog's refusal line, its per-host option hints and its outcome
 // lines all read it. It ships in the lazy dialog chunk; the few strings the entry
-// bundle needs (chip, menu) live in `@/api/sessionMove`. An unknown code falls back to the server's own message, then to
-// the code itself, so a new refusal is still SHOWN rather than swallowed.
+// bundle needs (chip, menu) live in `@/api/sessionMove`. An unknown code shows the
+// server's own message, else a generic line — never the raw code.
 import { CODEX_STAYS_COPY } from '@/api/sessionMove'
 
 /** The exact copy the owner ruled on (revised D1): consent cannot fix a public repo. */
@@ -14,7 +14,25 @@ export const MID_TURN_COPY = 'Wait for the turn to finish or Interrupt first'
 export const CARRY_DIRTY_COPY =
   'Carry uncommitted changes (they are pushed to a hidden ref on GitHub and deleted after the move)'
 
-export const MOVE_REASON_COPY: Record<string, string> = {
+/** Every code the contract names — THE list. `MOVE_REASON_COPY` is typed against it, so
+ *  a code added here without copy (or copy for a code not listed) fails the typecheck. */
+export const MOVE_REASON_CODES = [
+  'MOVE_DISABLED', 'MOVE_NO_FLEET', 'MOVE_NOT_FOUND', 'MOVE_ENGINE_UNSUPPORTED', 'MOVE_ASSISTANT',
+  'MOVE_NATIVE_DISPLAY', 'MOVE_IN_FLIGHT', 'MOVE_INACTIVE', 'MOVE_NOT_STARTED', 'MOVE_MID_TURN',
+  'MOVE_AWAITING_ANSWER', 'MOVE_HAS_CHILDREN', 'MOVE_IS_CHILD', 'MOVE_NOT_MANAGED_WORKTREE',
+  'MOVE_UNKNOWN_HOST', 'MOVE_SAME_HOST', 'MOVE_TARGET_DISABLED', 'MOVE_TARGET_UNHEALTHY',
+  'MOVE_TARGET_ENGINE', 'MOVE_TARGET_PLATFORM', 'MOVE_TARGET_FULL', 'MOVE_TARGET_UNAVAILABLE',
+  'MOVE_DIRTY_NEEDS_CONSENT', 'MOVE_DIRTY_PUBLIC_REPO', 'MOVE_BACKGROUND_NEEDS_CONFIRM',
+  'MOVE_SOURCE_UNREACHABLE', 'MOVE_EXPORT_FAILED', 'MOVE_RESTAMP_FAILED', 'MOVE_IMPORT_FAILED',
+  'MOVE_TRANSCRIPT_STALE', 'MOVE_RESUME_FAILED', 'MOVE_LEASE_HELD', 'MOVE_PATH_MISMATCH',
+  'MOVE_WORKTREE_MISSING', 'MOVE_NOT_STAMPED', 'MOVE_FINALIZE_REFUSED', 'SESSION_CONTROL_HUMAN_ONLY',
+] as const
+export type MoveReasonCode = (typeof MOVE_REASON_CODES)[number]
+
+/** What an unknown code with no server message reads as. */
+export const MOVE_GENERIC_COPY = "This session can't move right now."
+
+export const MOVE_REASON_COPY: Record<MoveReasonCode, string> = {
   MOVE_DISABLED: 'Moving sessions is turned off on this server.',
   MOVE_NO_FLEET: 'This deployment has only one host, so there is nowhere to move to.',
   MOVE_NOT_FOUND: 'This session no longer exists.',
@@ -56,7 +74,6 @@ export const MOVE_REASON_COPY: Record<string, string> = {
 
 /** The plain-language line for a reason code. */
 export function moveReasonText(code: string | null | undefined, serverMessage?: string | null): string {
-  if (code && MOVE_REASON_COPY[code]) return MOVE_REASON_COPY[code]
-  if (serverMessage) return serverMessage
-  return code ?? 'This session cannot move right now.'
+  if (code && Object.hasOwn(MOVE_REASON_COPY, code)) return MOVE_REASON_COPY[code as MoveReasonCode]
+  return serverMessage || MOVE_GENERIC_COPY
 }

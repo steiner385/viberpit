@@ -47,6 +47,26 @@ type Outcome =
   | { kind: 'moved'; host: string }
   | { kind: 'restored'; host: string; reason: string }
   | { kind: 'failed' }
+  /** The request died without a verdict (5xx with no outcome, proxy page, network). */
+  | { kind: 'unknown' }
+
+/** What the dialog says when a move's fate is unknown. */
+export const MOVE_UNKNOWN_COPY = 'We lost track of this move — the session may still be moving. Check its host in a minute.'
+
+/**
+ * Whether a failed POST is a refusal the server gave BEFORE touching anything — the
+ * only failure after which Move may be offered again. That is a 4xx without an
+ * `outcome` (every pre-claim refusal: 400/403/404/409), or a coded 503 for a host the
+ * edge could not resolve before the claim. Anything else — a 5xx with no outcome, a
+ * proxy's non-JSON 502/504 (`client.ts` throws a SyntaxError), a network TypeError —
+ * may have died mid-saga, so the move's fate is unknown.
+ */
+function isPreClaimRefusal(err: unknown): boolean {
+  if (!(err instanceof ApiRequestError)) return false
+  if (err.status >= 400 && err.status < 500) return true
+  const code = apiErrorCode(err)
+  return err.status === 503 && (code === 'MOVE_SOURCE_UNREACHABLE' || code === 'MOVE_TARGET_UNAVAILABLE')
+}
 
 /** `{detail: {code, message, outcome?, …}}` off a failed request. */
 function errorDetail(err: unknown): { code: string | null; message: string | null; outcome: string | null } {
@@ -85,18 +105,27 @@ export default function MoveSessionDialog({ sessionId, source, onClose, onSettle
   const selectId = useId()
   const hosts = useEnabledFleetHosts().filter((h) => h.name !== source)
   const [target, setTarget] = useState('')
-  const [carryDirty, setCarryDirty] = useState(false)
-  const [stopBackground, setStopBackground] = useState(false)
   const [outcome, setOutcome] = useState<Outcome | null>(null)
-  const [refusal, setRefusal] = useState<string | null>(null)
   const preflight = useMovePreflight(sessionId, target)
   const move = useMoveSession()
 
+  // Consent, the background confirm and a POST refusal all answer ONE preflight
+  // answer: they are stored against the host + fetch that produced it, so a refetch
+  // (a dirty list that grew, a verdict that changed) or another host drops them
+  // without an effect to keep in sync.
+  const pfKey = `${target}@${preflight.dataUpdatedAt}`
+  const [carryKey, setCarryKey] = useState<string | null>(null)
+  const [stopKey, setStopKey] = useState<string | null>(null)
+  const [refused, setRefused] = useState<{ text: string; key: string } | null>(null)
+  const carryDirty = carryKey === pfKey
+  const stopBackground = stopKey === pfKey
+  const refusal = refused?.key === pfKey ? refused.text : null
+
   function choose(host: string) {
     setTarget(host)
-    setCarryDirty(false)
-    setStopBackground(false)
-    setRefusal(null)
+    setCarryKey(null)
+    setStopKey(null)
+    setRefused(null)
   }
 
   const pf: MovePreflight | undefined = preflight.data
@@ -127,7 +156,8 @@ export default function MoveSessionDialog({ sessionId, source, onClose, onSettle
 
   function submit() {
     if (!canMove) return
-    setRefusal(null)
+    setRefused(null)
+    const at = pfKey
     move.mutate(
       { sessionId, host: target, carryDirty: needsConsent && carryDirty, stopBackgroundTasks: needsConfirm && stopBackground },
       {
@@ -139,8 +169,11 @@ export default function MoveSessionDialog({ sessionId, source, onClose, onSettle
           else if (d.outcome === 'restored') {
             setOutcome({ kind: 'restored', host: source ?? 'its host', reason }); onSettled?.()
           } else if (d.outcome === 'failed') setOutcome({ kind: 'failed' })
-          // Refused before anything was touched: back to the form, with the reason.
-          else setRefusal(reason)
+          // Refused before anything was touched: back to the form, with the reason —
+          // until the preflight this refusal answered is refetched.
+          else if (isPreClaimRefusal(err)) setRefused({ text: reason, key: at })
+          // No verdict at all: never offer Move again as if it had been refused.
+          else setOutcome({ kind: 'unknown' })
         },
       },
     )
@@ -224,7 +257,7 @@ export default function MoveSessionDialog({ sessionId, source, onClose, onSettle
                   )}
                 </ul>
                 {needsConsent && (
-                  <Consent label={CARRY_DIRTY_COPY} checked={carryDirty} onChange={setCarryDirty} />
+                  <Consent label={CARRY_DIRTY_COPY} checked={carryDirty} onChange={(on) => setCarryKey(on ? pfKey : null)} />
                 )}
               </div>
             )}
@@ -239,7 +272,7 @@ export default function MoveSessionDialog({ sessionId, source, onClose, onSettle
                     </li>
                   ))}
                 </ul>
-                <Consent label="Stop these tasks and move" checked={stopBackground} onChange={setStopBackground} />
+                <Consent label="Stop these tasks and move" checked={stopBackground} onChange={(on) => setStopKey(on ? pfKey : null)} />
               </div>
             )}
 
@@ -271,6 +304,11 @@ function OutcomeView({ outcome, onClose }: { outcome: Outcome; onClose: () => vo
           </p>
           <p className="text-sm text-ink-muted break-words">{outcome.reason}</p>
         </div>
+      )}
+      {outcome.kind === 'unknown' && (
+        <p role="alert" data-testid="move-outcome" className="text-sm font-medium text-danger">
+          {MOVE_UNKNOWN_COPY}
+        </p>
       )}
       {outcome.kind === 'failed' && (
         <p role="alert" data-testid="move-outcome" className="text-sm font-medium text-danger">

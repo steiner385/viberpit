@@ -12,8 +12,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ApiRequestError } from '@/api/client'
 import { FLEET_HOSTS_KEY, type FleetHost } from '@/api/fleet'
 import type { MovePreflight } from '@/api/types'
-import MoveSessionDialog, { DIRTY_LIST_CAP } from './MoveSessionDialog'
-import { CARRY_DIRTY_COPY, MOVE_REASON_COPY, PUBLIC_REPO_COPY } from './moveReasons'
+import MoveSessionDialog, { DIRTY_LIST_CAP, MOVE_UNKNOWN_COPY } from './MoveSessionDialog'
+import {
+  CARRY_DIRTY_COPY, MOVE_GENERIC_COPY, MOVE_REASON_CODES, MOVE_REASON_COPY, PUBLIC_REPO_COPY, moveReasonText,
+} from './moveReasons'
 
 // `get` is the PREFLIGHT mock; the fleet list (refetched on mount) answers from `fleet`.
 const get = vi.fn()
@@ -53,7 +55,7 @@ function renderDialog(hosts: FleetHost[] = [host('dobby'), host('rocky'), host('
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   )
   render(<MoveSessionDialog sessionId="s1" source="dobby" onClose={onClose} onSettled={onSettled} />, { wrapper })
-  return { onClose, onSettled }
+  return { onClose, onSettled, qc }
 }
 
 const moveButton = () => screen.getByRole('button', { name: 'Move' })
@@ -101,18 +103,18 @@ describe('MoveSessionDialog — refusals in plain language (Review Focus 4)', ()
     expect(moveButton()).toBeDisabled()
   })
 
-  it('every contract code has its own copy', () => {
-    for (const code of [
-      'MOVE_DISABLED', 'MOVE_NO_FLEET', 'MOVE_NOT_FOUND', 'MOVE_ENGINE_UNSUPPORTED', 'MOVE_ASSISTANT',
-      'MOVE_NATIVE_DISPLAY', 'MOVE_IN_FLIGHT', 'MOVE_INACTIVE', 'MOVE_NOT_STARTED', 'MOVE_MID_TURN',
-      'MOVE_AWAITING_ANSWER', 'MOVE_HAS_CHILDREN', 'MOVE_IS_CHILD', 'MOVE_NOT_MANAGED_WORKTREE',
-      'MOVE_UNKNOWN_HOST', 'MOVE_SAME_HOST', 'MOVE_TARGET_DISABLED', 'MOVE_TARGET_UNHEALTHY',
-      'MOVE_TARGET_ENGINE', 'MOVE_TARGET_PLATFORM', 'MOVE_TARGET_FULL', 'MOVE_TARGET_UNAVAILABLE',
-      'MOVE_DIRTY_NEEDS_CONSENT', 'MOVE_DIRTY_PUBLIC_REPO', 'MOVE_BACKGROUND_NEEDS_CONFIRM',
-      'MOVE_SOURCE_UNREACHABLE', 'MOVE_EXPORT_FAILED', 'MOVE_RESTAMP_FAILED', 'MOVE_IMPORT_FAILED',
-      'MOVE_TRANSCRIPT_STALE', 'MOVE_RESUME_FAILED', 'MOVE_LEASE_HELD', 'MOVE_PATH_MISMATCH',
-      'MOVE_WORKTREE_MISSING', 'MOVE_NOT_STAMPED', 'MOVE_FINALIZE_REFUSED',
-    ]) expect(MOVE_REASON_COPY[code], code).toBeTruthy()
+  it('every listed contract code has its own copy (one list, shared with the map)', () => {
+    for (const code of MOVE_REASON_CODES) {
+      expect(moveReasonText(code), code).toBe(MOVE_REASON_COPY[code])
+      expect(MOVE_REASON_COPY[code], code).toMatch(/\S/)
+    }
+  })
+
+  it('an unknown code shows the server message, else a generic line — never the raw code', () => {
+    expect(moveReasonText('MOVE_SOMETHING_NEW')).toBe(MOVE_GENERIC_COPY)
+    expect(moveReasonText('MOVE_SOMETHING_NEW', 'Server words.')).toBe('Server words.')
+    expect(moveReasonText(null)).toBe(MOVE_GENERIC_COPY)
+    expect(moveReasonText('toString')).toBe(MOVE_GENERIC_COPY)
   })
 
   it('an unreachable source (factsError) is a refusal', async () => {
@@ -266,11 +268,109 @@ describe('MoveSessionDialog — outcomes', () => {
     expect(onSettled).not.toHaveBeenCalled()
   })
 
-  it('a refusal before the claim returns to the form with its reason', async () => {
-    await submitWith(async () => {
-      throw new ApiRequestError(409, { detail: { code: 'MOVE_MID_TURN', message: 'x' } })
-    })
-    expect(await screen.findByTestId('move-refusal')).toHaveTextContent('Wait for the turn to finish or Interrupt first')
+  it('a refusal before the claim returns to the form with its reason (until the preflight is refetched)', async () => {
+    // The POST's own onSettled refetches the preflight: hold that refetch so the
+    // refusal can be seen, then answer it with the verdict that now applies.
+    let answer: (v: unknown) => void = () => {}
+    get.mockResolvedValueOnce(preflight()).mockImplementationOnce(() => new Promise((r) => { answer = r }))
+    post.mockRejectedValue(new ApiRequestError(409, { detail: { code: 'MOVE_IN_FLIGHT', message: 'x' } }))
+    renderDialog()
+    await pick()
+    await waitFor(() => expect(moveButton()).toBeEnabled())
+    await userEvent.click(moveButton())
+    expect(await screen.findByTestId('move-refusal')).toHaveTextContent(MOVE_REASON_COPY.MOVE_IN_FLIGHT)
     expect(screen.queryByTestId('move-outcome')).toBeNull()
+    // Newer preflight data outranks the stale POST refusal (fix round 1, item 3).
+    answer(preflight({ verdict: { ok: false, reason: 'MOVE_MID_TURN', message: 'x' } }))
+    await waitFor(() => expect(screen.getByTestId('move-refusal'))
+      .toHaveTextContent('Wait for the turn to finish or Interrupt first'))
+    expect(screen.getByTestId('move-refusal')).not.toHaveTextContent(MOVE_REASON_COPY.MOVE_IN_FLIGHT)
+  })
+
+  it('a stale refusal clears when a newer preflight says ok', async () => {
+    get.mockResolvedValue(preflight())
+    post.mockRejectedValue(new ApiRequestError(409, { detail: { code: 'MOVE_IN_FLIGHT', message: 'x' } }))
+    renderDialog()
+    await pick()
+    await waitFor(() => expect(moveButton()).toBeEnabled())
+    await userEvent.click(moveButton())
+    // The refetched preflight (ok) is newer than the refusal: Move is offered again.
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByTestId('move-refusal')).toBeNull())
+    await waitFor(() => expect(moveButton()).toBeEnabled())
+  })
+
+  it('a coded 503 for a host the edge could not resolve is a pre-claim refusal', async () => {
+    // Hold the post-refusal preflight refetch, or its newer answer would clear the refusal.
+    get.mockResolvedValueOnce(preflight()).mockImplementationOnce(() => new Promise(() => {}))
+    post.mockRejectedValue(new ApiRequestError(503, { detail: { code: 'MOVE_TARGET_UNAVAILABLE', message: 'x' } }))
+    renderDialog()
+    await pick()
+    await waitFor(() => expect(moveButton()).toBeEnabled())
+    await userEvent.click(moveButton())
+    expect(await screen.findByTestId('move-refusal')).toHaveTextContent(MOVE_REASON_COPY.MOVE_TARGET_UNAVAILABLE)
+    expect(screen.queryByTestId('move-outcome')).toBeNull()
+  })
+
+  it.each<[string, () => unknown]>([
+    ['a 5xx with no outcome', () => new ApiRequestError(500, { detail: { code: 'MOVE_EXPORT_FAILED', message: 'x' } })],
+    ['a 503 from the edge (daemon unavailable)', () => new ApiRequestError(503, { detail: 'restarting', code: 'daemon_unavailable' })],
+    ["a proxy's non-JSON 502/504 (SyntaxError)", () => new SyntaxError('Unexpected token < in JSON')],
+    ['a network failure (TypeError)', () => new TypeError('Failed to fetch')],
+  ])('%s: outcome unknown, Move never comes back, sessions refetch', async (_name, make) => {
+    const spy = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
+    const { onSettled } = await submitWith(async () => { throw make() })
+    expect(await screen.findByTestId('move-outcome')).toHaveTextContent(MOVE_UNKNOWN_COPY)
+    expect(screen.queryByRole('button', { name: 'Move' })).toBeNull()
+    expect(screen.queryByTestId('move-refusal')).toBeNull()
+    expect(onSettled).not.toHaveBeenCalled()
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] }))
+    spy.mockRestore()
+  })
+})
+
+describe('MoveSessionDialog — consent answers one preflight', () => {
+  const dirtyPf = (count: number) => preflight({
+    dirty: { count, paths: Array.from({ length: count }, (_, i) => `f${i}.ts`) }, repoPrivate: true,
+  })
+  const consent = () => screen.getByRole('checkbox', { name: CARRY_DIRTY_COPY })
+
+  it('a refetch for the same host (the dirty list grew) unticks consent', async () => {
+    get.mockResolvedValueOnce(dirtyPf(1)).mockResolvedValueOnce(dirtyPf(3))
+    const { qc } = renderDialog()
+    await pick()
+    await userEvent.click(await screen.findByRole('checkbox', { name: CARRY_DIRTY_COPY }))
+    expect(consent()).toBeChecked()
+    expect(moveButton()).toBeEnabled()
+    await qc.invalidateQueries({ queryKey: ['move-preflight'] })
+    await waitFor(() => expect(screen.getByTestId('move-dirty-paths')).toHaveTextContent('f2.ts'))
+    expect(consent()).not.toBeChecked()
+    expect(moveButton()).toBeDisabled()
+  })
+
+  it('a refetch unticks the background confirm too', async () => {
+    const withTasks = () => preflight({ backgroundTasks: [{ kind: 'monitor', name: 'Monitor' }] })
+    get.mockResolvedValueOnce(withTasks()).mockResolvedValueOnce(withTasks())
+    const { qc } = renderDialog()
+    await pick()
+    const box = await screen.findByRole('checkbox', { name: 'Stop these tasks and move' })
+    await userEvent.click(box)
+    expect(box).toBeChecked()
+    await qc.invalidateQueries({ queryKey: ['move-preflight'] })
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Stop these tasks and move' })).not.toBeChecked())
+  })
+
+  it('changing the host resets a ticked consent box, and going back does not restore it', async () => {
+    get.mockImplementation(async () => dirtyPf(2))
+    renderDialog([host('dobby'), host('rocky'), host('win11')])
+    await pick('rocky')
+    await userEvent.click(await screen.findByRole('checkbox', { name: CARRY_DIRTY_COPY }))
+    expect(consent()).toBeChecked()
+    await pick('win11')
+    expect(await screen.findByRole('checkbox', { name: CARRY_DIRTY_COPY })).not.toBeChecked()
+    await pick('rocky')
+    expect(await screen.findByRole('checkbox', { name: CARRY_DIRTY_COPY })).not.toBeChecked()
+    expect(moveButton()).toBeDisabled()
   })
 })
