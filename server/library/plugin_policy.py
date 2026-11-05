@@ -450,18 +450,41 @@ def is_reviewed(listing: Mapping[str, Any] | None) -> bool:
     return review_state(listing) == "done"
 
 
-def _listing_repo(listing: Mapping[str, Any]) -> str | None:
+def _repository(listing: Mapping[str, Any]) -> object:
     source = listing.get("source")
-    repo = source.get("repository") if isinstance(source, Mapping) else None
-    url = repo.get("url") if isinstance(repo, Mapping) else None
-    return _normalize_url(url) if isinstance(url, str) else None
+    return source.get("repository") if isinstance(source, Mapping) else None
+
+
+def _same_source(cached: Mapping[str, Any], live: Mapping[str, Any]) -> bool:
+    """Every install-relevant field of ``source`` agrees: ``type``, and the WHOLE
+    ``repository`` object (``url`` by normalized identity, every other key — ``path``,
+    ``reviewed_commit`` … — exactly, with the same key set). Other ``source`` keys the live
+    API adds (``marketplace_slug``) are not install inputs and are ignored."""
+    cs, ls = cached.get("source"), live.get("source")
+    if (cs.get("type") if isinstance(cs, Mapping) else None) \
+            != (ls.get("type") if isinstance(ls, Mapping) else None):
+        return False
+    crepo, lrepo = _repository(cached), _repository(live)
+    if crepo is None and lrepo is None:
+        return True
+    if not isinstance(crepo, Mapping) or not isinstance(lrepo, Mapping) \
+            or set(crepo) != set(lrepo):
+        return False
+    for key, value in crepo.items():
+        if key == "url":
+            curl, lurl = value, lrepo[key]
+            norm = _normalize_url(curl) if isinstance(curl, str) else None
+            if norm is None or norm != (_normalize_url(lurl) if isinstance(lurl, str) else None):
+                return False
+        elif value != lrepo[key]:
+            return False
+    return True
 
 
 def check_directory_listing(cached: Mapping[str, Any], live: object) -> None:
     """The cache file is forgeable; the live Directory API is the authority. Passes only
-    when *live* is the same listing (``id``), is reviewed, and names the same repository as
-    the cached one (both absent passes on id + review alone; one-sided or unparseable is a
-    mismatch)."""
+    when *live* is the same listing (``id``), is reviewed, and its install-relevant
+    ``source`` equals the cached one (:func:`_same_source`)."""
     mismatch = PolicyRefusal(
         PLUGIN_UNREVIEWED,
         "The Anthropic Directory does not confirm this listing as reviewed and unchanged, "
@@ -469,13 +492,8 @@ def check_directory_listing(cached: Mapping[str, Any], live: object) -> None:
     if not isinstance(live, Mapping) or live.get("id") != cached.get("id") \
             or not isinstance(cached.get("id"), str) or not is_reviewed(live):
         raise mismatch
-    if _listing_repo(live) != _listing_repo(cached):
+    if not _same_source(cached, live):
         raise mismatch
-    for side in (cached, live):  # a repository that is present but unparseable never matches
-        source = side.get("source")
-        has_repo = isinstance(source, Mapping) and source.get("repository") is not None
-        if has_repo and _listing_repo(side) is None:
-            raise mismatch
 
 
 def check_curated(marketplace: str, curated: Mapping[str, str],

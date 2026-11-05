@@ -1542,3 +1542,62 @@ def test_curated_marketplace_installs_never_call_the_directory(env, monkeypatch)
     r = client.post("/api/library/plugins/good@mine/install", json={"confirm": True}, headers=_H)
     assert r.status_code == 200
     assert len(fleet.calls) == 1
+
+
+_EXPO_CACHED = {"id": "plugin_expo", "checks": {"review": {"state": "done"}},
+                "source": {"type": "directory", "repository": {
+                    "url": "https://github.com/expo/skills", "path": "plugins/expo",
+                    "reviewed_commit": "170589a7"}}}
+
+
+def _expo_live(**repo: Any) -> dict[str, Any]:
+    return {"id": "plugin_expo", "checks": {"review": {"state": "done"}},
+            "source": {"marketplace_slug": DIR, "type": "directory",
+                       "repository": {"path": "plugins/expo", "reviewed_commit": "170589a7",
+                                      "url": "https://github.com/expo/skills", **repo}}}
+
+
+def test_directory_listing_passes_the_real_live_shape_with_marketplace_slug() -> None:
+    plugin_policy.check_directory_listing(_EXPO_CACHED, _expo_live())
+
+
+@pytest.mark.parametrize("repo", [{"path": "plugins/other"}, {"reviewed_commit": "deadbeef"},
+                                  {"extra": "x"}])
+def test_directory_listing_refuses_any_changed_repository_field(repo: dict) -> None:
+    with pytest.raises(PolicyRefusal) as exc:
+        plugin_policy.check_directory_listing(_EXPO_CACHED, _expo_live(**repo))
+    assert exc.value.reason == plugin_policy.REASON_DIRECTORY_MISMATCH
+
+
+def test_directory_listing_refuses_a_changed_source_type() -> None:
+    live = _expo_live()
+    live["source"]["type"] = "github"
+    with pytest.raises(PolicyRefusal):
+        plugin_policy.check_directory_listing(_EXPO_CACHED, live)
+
+
+def _raw_cache(shared: Path, listings: list[dict], names: dict[str, str]) -> None:
+    (shared / "plugins" / "plugin-directory-cache-v2.json").write_text(
+        json.dumps({"schemaVersion": 2, "listings": listings, "entryNames": names}))
+
+
+def test_duplicate_listing_ids_void_the_directory_cache(shared: Path) -> None:
+    _raw_cache(shared, [{**_listing("done"), "id": "dup"}, {**_listing("done"), "id": "dup"}],
+               {"dup": "x"})
+    assert scan.directory_listings() is None
+
+
+def test_two_ids_mapped_to_one_entry_name_void_the_directory_cache(shared: Path) -> None:
+    _raw_cache(shared, [{**_listing("done"), "id": "a"}, {**_listing("done"), "id": "b"}],
+               {"a": "x", "b": "x"})
+    assert scan.directory_listings() is None
+
+
+def test_install_from_a_duplicate_cache_is_refused_and_never_fanned_out(env) -> None:
+    client, fleet, shared = env
+    _raw_cache(shared, [{**_listing("done"), "id": "a"}, {**_listing("done"), "id": "b"}],
+               {"a": "reviewed", "b": "reviewed"})
+    r = client.post(f"/api/library/plugins/reviewed@{DIR}/install", json={"confirm": True}, headers=_H)
+    assert r.status_code in (404, 409)
+    assert r.json()["detail"]["code"] in ("PLUGIN_NOT_FOUND", "PLUGIN_UNREVIEWED")
+    assert fleet.calls == []
