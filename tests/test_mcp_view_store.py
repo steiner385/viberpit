@@ -1,6 +1,8 @@
 """McpViewStore: the runner-side cache of the MCP store's public view (#3287)."""
 import os
 
+import pytest
+
 from viberpit.mcp_view_store import McpViewStore
 
 
@@ -44,3 +46,24 @@ def test_torn_cache_file_loads_as_never_synced(tmp_path):
     store = McpViewStore(tmp_path)
     assert store.bundles() is None
     assert store.drop_keys() == frozenset()
+
+
+def test_failed_write_leaves_memory_behind_so_the_next_push_retries(tmp_path, monkeypatch):
+    store = McpViewStore(tmp_path)
+    store.sync({"k1": {"accessToken": "a"}})
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr("os.replace", boom)
+    with pytest.raises(OSError):
+        store.sync({"k1": {"accessToken": "b"}})
+    assert store.bundles() == {"k1": {"accessToken": "a"}}
+    monkeypatch.undo()
+    assert store.sync({"k1": {"accessToken": "b"}}) is True
+    assert McpViewStore(tmp_path).bundles() == {"k1": {"accessToken": "b"}}
+
+
+def test_load_strips_a_refresh_token_from_the_cache_file(tmp_path):
+    (tmp_path / "mcp-view.json").write_text(
+        '{"bundles": {"k1": {"accessToken": "a", "refreshToken": "rt"}}, "drop": []}')
+    assert McpViewStore(tmp_path).bundles() == {"k1": {"accessToken": "a"}}

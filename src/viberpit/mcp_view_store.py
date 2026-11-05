@@ -42,22 +42,30 @@ class McpViewStore:
     def _path(self) -> Path:
         return (self._dir or state_dir()) / _CACHE_FILE
 
+    @staticmethod
+    def _public(bundles: Mapping[str, object]) -> dict[str, dict]:
+        """Non-dict values dropped and every bundle reduced to its public view, so neither a
+        push nor a cache file of any provenance can put a refresh token in memory."""
+        from .creds import public_view  # creds imports this module
+
+        return {str(k): public_view(v) for k, v in bundles.items() if isinstance(v, dict)}
+
     def _load(self) -> None:
         try:
             raw = json.loads(self._path.read_text())
             bundles = raw["bundles"]
             if not isinstance(bundles, dict):
                 raise TypeError("bundles is not a mapping")
-            self._bundles = {str(k): v for k, v in bundles.items() if isinstance(v, dict)}
+            self._bundles = self._public(bundles)
             self._drop = frozenset(str(k) for k in raw.get("drop") or [])
         except (OSError, ValueError, KeyError, TypeError):
             self._bundles, self._drop = None, frozenset()
 
-    def _persist(self) -> None:
+    def _persist(self, bundles: dict[str, dict], drop: frozenset[str]) -> None:
         path = self._path
         path.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(path.parent, 0o700)
-        payload = {"bundles": self._bundles or {}, "drop": sorted(self._drop)}
+        payload = {"bundles": bundles, "drop": sorted(drop)}
         tmp = path.with_name(path.name + ".tmp")
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
@@ -68,17 +76,18 @@ class McpViewStore:
         """Take a push from the edge; return True when the cache file was rewritten.
 
         Non-dict values are ignored and every bundle is reduced to its public view, so the
-        cache never holds a refresh token whatever the edge sent.
+        cache never holds a refresh token whatever the edge sent. The file is written before
+        memory is updated: a failed write (disk full, read-only state dir) leaves the held
+        view as it was, so the next identical push retries instead of short-circuiting on
+        "unchanged" with a stale file behind it.
         """
-        from .creds import public_view  # creds imports this module
-
-        incoming = {str(k): public_view(v) for k, v in bundles.items() if isinstance(v, dict)}
+        incoming = self._public(bundles)
         drop_keys = frozenset(str(k) for k in drop)
         with self._lock:
             if self._bundles == incoming and self._drop == drop_keys:
                 return False
+            self._persist(incoming, drop_keys)
             self._bundles, self._drop = incoming, drop_keys
-            self._persist()
             return True
 
     def bundles(self) -> dict[str, dict] | None:
