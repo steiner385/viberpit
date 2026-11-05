@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -202,9 +203,16 @@ def marketplace_catalog(name: str, config: dict[str, Any] | None = None) -> dict
             if isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]}
 
 
-def install_catalog(curated: frozenset[str] | set[str]) -> plugin_policy.InstallCatalog:
-    """What ``plugin_policy.check_install`` judges against: every curated marketplace's
-    catalog that reads, and the Directory cache."""
+def marketplace_sources(markets: Mapping[str, dict[str, Any]] | None = None) -> dict[str, str | None]:
+    """Each configured marketplace's ``plugin_policy.normalize_source`` on THIS host."""
+    markets = known_marketplaces() if markets is None else markets
+    return {name: plugin_policy.normalize_source(cfg.get("source")) for name, cfg in markets.items()}
+
+
+def install_catalog(curated: Mapping[str, str]) -> plugin_policy.InstallCatalog:
+    """What ``plugin_policy.check_install`` judges against on this host: every configured
+    marketplace's normalized source, each curated marketplace's catalog that reads, and
+    the Directory cache."""
     markets = known_marketplaces()
     catalogs = {}
     for name in sorted(curated):
@@ -212,7 +220,8 @@ def install_catalog(curated: frozenset[str] | set[str]) -> plugin_policy.Install
             entries = marketplace_catalog(name, markets[name])
             if entries is not None:
                 catalogs[name] = entries
-    return plugin_policy.InstallCatalog(marketplaces=catalogs, directory=directory_listings())
+    return plugin_policy.InstallCatalog(
+        marketplaces=catalogs, directory=directory_listings(), sources=marketplace_sources(markets))
 
 
 def _cap(text: object) -> str | None:
@@ -226,15 +235,21 @@ def _browse_components(cat: dict[str, Any] | None) -> dict[str, int] | None:
     return {k: len(comps.get(k) or []) for k in ("hooks", "mcpServers", "lspServers", "agents", "skills")}
 
 
-def browse_entries(curated: frozenset[str] | set[str]) -> list[dict[str, Any]]:
-    """Every installable plugin: curated marketplaces' catalogs minus command-source
-    entries, plus REVIEWED Directory listings only. Unreviewed listings never leave here."""
+def browse_entries(curated: Mapping[str, str]) -> list[dict[str, Any]]:
+    """Every installable plugin: confirmed marketplaces whose source is unchanged
+    (``plugin_policy.check_curated``), minus command-source entries, plus REVIEWED
+    Directory listings only. Unreviewed listings never leave here."""
     installed = set(installed_registry())
     catalog = _catalog()
     markets = known_marketplaces()
+    sources = marketplace_sources(markets)
     out: list[dict[str, Any]] = []
     for mkt in sorted(curated):
         if mkt not in markets or mkt == plugin_policy.DIRECTORY_MARKETPLACE:
+            continue
+        try:
+            plugin_policy.check_curated(mkt, curated, sources)
+        except plugin_policy.PolicyRefusal:
             continue
         for name, entry in sorted((marketplace_catalog(mkt, markets[mkt]) or {}).items()):
             pid = f"{name}@{mkt}"

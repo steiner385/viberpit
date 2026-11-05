@@ -3,8 +3,8 @@
 Revision ID: 0104_curated_marketplaces
 Revises: 0103_mcp_tool_toggles
 
-A JSON list of the marketplace names the owner curated; NULL until first read seeds it
-from the host's ``known_marketplaces.json``. Nullable: ``init_db``'s reconcile adds it on
+A JSON object ``{name: normalized_source}`` of the marketplaces the owner confirmed
+(server/library/curated.py); NULL means none. Nullable: ``init_db``'s reconcile adds it on
 both dialects; this revision is the reviewable record.
 
 Chaining note: chained off 0103_mcp_tool_toggles (master's newest revision when written).

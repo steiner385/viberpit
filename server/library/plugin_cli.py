@@ -192,15 +192,19 @@ def parse_result(op: str, rc: int, stdout: str, nonce: str) -> dict[str, Any]:
         return _outcome("failed", plugin_policy.COMMAND_SOURCE_REFUSED,
                         "This plugin installs by running a command its marketplace declares. "
                         "ViberPit never accepts those.")
-    # The line carrying OUR nonce is the CLI's own; the first line is the fallback for a
-    # CLI too old to echo the nonce (rocky ran 2.1.293).
-    result = next((c for c in candidates if c.get("nonce") == nonce), first)
+    # A CLI that echoes nonces (2.1.318+) marks its own line: once ANY line carries a
+    # nonce, only ours is accepted and there is no fallback. Only output with no nonce at
+    # all (a CLI too old to echo it — rocky ran 2.1.293) falls back to the first line.
+    if any("nonce" in c for c in candidates):
+        result = next((c for c in candidates if c.get("nonce") == nonce), None)
+        if result is None:
+            return _outcome("failed", "result_nonce_mismatch",
+                            "No CLI result line carried this run's nonce.")
+    else:
+        result = first
     if result is None:
         return _outcome("failed", "unparseable_result",
                         f"The claude CLI printed no readable result (exit {rc}).")
-    if "nonce" in result and result.get("nonce") != nonce:
-        return _outcome("failed", "result_nonce_mismatch",
-                        "The CLI result line did not carry this run's nonce.")
     message = result.get("message") if isinstance(result.get("message"), str) else None
     code = result.get("failureCode") if isinstance(result.get("failureCode"), str) else None
     if result.get("outcome") == "ok":
@@ -221,10 +225,46 @@ def _installed_version(plugin_id: str) -> str | None:
     return version if isinstance(version, str) else None
 
 
+def host_policy(op: str, args: dict[str, Any]) -> dict[str, Any] | None:
+    """Re-run the D1 policy on THIS host, against its OWN ``known_marketplaces.json``,
+    marketplace catalog and Directory cache, before the CLI runs; a refusal outcome, or
+    ``None`` to proceed. The edge's check is not enough: a session on a worker can swap
+    what a curated name points at there without the edge seeing it.
+
+    ``install``/``update`` of ``<p>@<mkt>`` and ``marketplace_update`` carry
+    ``expected_source`` — the normalized source the owner confirmed — and refuse unless this
+    host's configured source normalizes equal (``source_changed``); a missing one refuses
+    as unconfirmed. Directory installs re-check the review state from this host's cache."""
+    from server.library import scan
+    try:
+        if op in ("install", "update"):
+            pid = str(args.get("plugin_id"))
+            marketplace = pid.partition("@")[2]
+            if marketplace == plugin_policy.DIRECTORY_MARKETPLACE:
+                refresh_available()
+                plugin_policy.check_install(pid, {}, scan.install_catalog({}))
+            else:
+                curated = _expected(marketplace, args)
+                plugin_policy.check_install(pid, curated, scan.install_catalog(curated))
+        elif op == "marketplace_update":
+            name = str(args.get("name"))
+            plugin_policy.check_curated(name, _expected(name, args), scan.marketplace_sources())
+    except plugin_policy.PolicyRefusal as exc:
+        log.info("plugin_cli.host_policy_refused op=%s code=%s reason=%s", op, exc.code, exc.reason)
+        return _outcome("failed", exc.code, exc.message, reason=exc.reason)
+    return None
+
+
+def _expected(marketplace: str, args: dict[str, Any]) -> dict[str, str]:
+    expected = args.get("expected_source")
+    return {marketplace: expected} if isinstance(expected, str) and expected else {}
+
+
 def run_op(op: str, args: dict[str, Any]) -> dict[str, Any]:
     """Run one plugin op on THIS host and report ``{outcome, failureCode?, message?,
-    version?, marketplace?}``. Blocking: callers run it in a thread. Never raises for an
-    expected failure; a refused op is ``failed`` with ``invalid_args``."""
+    reason?, version?, marketplace?}``. Blocking: callers run it in a thread. Never raises
+    for an expected failure; a refused op is ``failed`` (``invalid_args`` or a policy code)
+    and never reaches the CLI."""
     binary = _claude_bin()
     if binary is None:
         return _outcome("failed", "claude_not_found", "No claude binary resolves on this host.")
@@ -233,6 +273,9 @@ def run_op(op: str, args: dict[str, Any]) -> dict[str, Any]:
     except InvalidPluginOp as exc:
         log.info("plugin_cli.refused op=%s reason=%s", op, exc)
         return _outcome("failed", "invalid_args", str(exc))
+    refused = host_policy(op, args)
+    if refused is not None:
+        return refused
     nonce = secrets.token_hex(16)
     try:
         rc, stdout = _run(argv, env=_env(nonce), cwd=_cwd(), timeout=CLI_TIMEOUT_S)
@@ -258,8 +301,13 @@ _last_available_refresh = 0.0
 def refresh_available(*, force: bool = False) -> bool:
     """Run ``plugin list --json --available`` on this host so the CLI (re)fetches the
     Directory cache (``plugin-directory-cache-v2.json``). Its ~7 MB stdout is discarded:
-    browse reads the cache file. At most once per ``AVAILABLE_REFRESH_TTL_S`` unless
-    *force*. Returns whether a run happened and exited 0."""
+    browse reads the cache file. Callers ask before EVERY read of the review state, so it
+    runs on a miss AND whenever ``AVAILABLE_REFRESH_TTL_S`` has passed since the last run
+    (not only when the file is missing); between runs it is a no-op unless *force*.
+
+    Residual: the cache lives in the shared config dir, which any session on this host can
+    write, so a session could mark a listing reviewed until the next refresh (≤ one TTL,
+    and only if the CLI then re-fetches). Returns whether a run happened and exited 0."""
     global _last_available_refresh
     now = time.monotonic()
     if not force and _last_available_refresh and now - _last_available_refresh < AVAILABLE_REFRESH_TTL_S:

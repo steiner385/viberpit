@@ -30,8 +30,19 @@ DIR = plugin_policy.DIRECTORY_MARKETPLACE
 
 # =========================================================================== policy (D1)
 
+PUBLIC_IP = "140.82.112.3"
+
+
+@pytest.fixture(autouse=True)
+def _dns(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
+    """No real DNS in unit tests: every name resolves public unless a test says otherwise."""
+    table: dict[str, list[str]] = {}
+    monkeypatch.setattr(plugin_policy, "_resolve", lambda host: table.get(host, [PUBLIC_IP]))
+    return table
+
+
 @pytest.mark.parametrize("source", [
-    "pbakaus/impeccable", "obra/superpowers", "a/b.c-d_e",
+    "pbakaus/impeccable", "obra/superpowers", "a/b.c-d_e", "MixedCase/Repo",
     "https://github.com/obra/superpowers.git", "https://gitlab.com/group/sub/repo",
     "anthropics/claude-plugins-official",
 ])
@@ -42,15 +53,49 @@ def test_marketplace_source_accepts_github_and_https(source: str) -> None:
 @pytest.mark.parametrize("source", [
     "", " a/b", "a/b ", "/tmp/mkt", "./mkt", "../mkt", "~/mkt", "file:///tmp/mkt",
     "http://github.com/a/b", "git@github.com:a/b.git", "ssh://git@github.com/a/b",
-    "a/b;rm -rf ~", "a/b|x", "a/$(id)", "a/`id`", "a/b&&x", "a/b\nc", "-y", "--accept-command",
+    "a/b;rm -rf ~", "a/b|x", "a/$(id)", "a/`id`", "a/b&&x", "a/b\nc", "a/b\n", "a/b%0A",
+    "-y", "--accept-command",
     "https://user:pw@github.com/a/b", "https://github.com/a/b?x=1", "https://github.com/a/b#main",
-    "https://localhost/a/b", "https://127.0.0.1/a/b", "https://github.com:8443/a/b",
-    "https://github.com/a/../b", "a/b/c", 42, None,
+    "https://github.com:8443/a/b", "https://github.com/a/../b", "a/b/c", 42, None,
 ])
 def test_marketplace_source_refuses_everything_else(source: object) -> None:
     with pytest.raises(PolicyRefusal) as ei:
         plugin_policy.check_marketplace_source(source)
     assert ei.value.code == plugin_policy.MARKETPLACE_SOURCE_REFUSED and ei.value.http == 400
+
+
+@pytest.mark.parametrize("host", [
+    # Every IP-literal spelling inet_aton accepts, and localhost names.
+    "127.0.0.1", "127.1", "0x7f.1", "0x7f.0.0.1", "017700000001", "2130706433", "0177.0.0.1",
+    "10.0.0.1", "0.0.0.0", "169.254.169.254", "localhost", "foo.localhost", "a.b.localhost",
+])
+def test_marketplace_source_refuses_ip_literals_and_localhost(host: str, _dns) -> None:
+    with pytest.raises(PolicyRefusal) as ei:
+        plugin_policy.check_marketplace_source(f"https://{host}/a/b")
+    assert ei.value.code == plugin_policy.MARKETPLACE_SOURCE_REFUSED
+
+
+@pytest.mark.parametrize("addrs", [
+    ["127.0.0.1"], ["10.1.2.3"], ["192.168.1.5"], ["172.16.0.9"], ["169.254.0.1"],
+    ["100.100.1.2"], ["100.64.0.1"],  # CGNAT: the tailnet
+    ["224.0.0.1"], ["0.0.0.0"], ["::1"], ["fd00::1"], ["fe80::1%eth0"], ["::ffff:10.0.0.1"],
+    [PUBLIC_IP, "10.0.0.1"],  # any internal answer refuses
+    [],  # does not resolve
+])
+def test_marketplace_source_refuses_hosts_resolving_internal(addrs: list[str], _dns) -> None:
+    _dns["git.example.com"] = addrs
+    with pytest.raises(PolicyRefusal) as ei:
+        plugin_policy.check_marketplace_source("https://git.example.com/a/b")
+    assert ei.value.code == plugin_policy.MARKETPLACE_SOURCE_REFUSED
+
+
+def test_marketplace_source_resolution_failure_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(host: str) -> list[str]:
+        raise OSError("NXDOMAIN")
+    monkeypatch.setattr(plugin_policy, "_resolve", boom)
+    with pytest.raises(PolicyRefusal):
+        plugin_policy.check_marketplace_source("https://git.example.com/a/b")
+    assert plugin_policy.check_marketplace_source("o/r") == "o/r"  # no lookup for GitHub shorthand
 
 
 @pytest.mark.parametrize("source", [
@@ -64,6 +109,41 @@ def test_marketplace_source_refuses_official_impersonation(source: str) -> None:
     assert ei.value.code == plugin_policy.MARKETPLACE_NAME_RESERVED
 
 
+@pytest.mark.parametrize("given,want", [
+    # The owner's add string and every form the CLI records for it (bCe @280765576).
+    ("O/Repo", "github:o/repo"),
+    ({"source": "github", "repo": "O/Repo"}, "github:o/repo"),
+    ("https://github.com/O/Repo", "github:o/repo"),
+    ({"source": "git", "url": "https://github.com/O/Repo.git"}, "github:o/repo"),
+    ("https://gitlab.com/g/sub/r.git", "https:gitlab.com/g/sub/r"),
+    ({"source": "git", "url": "https://GitLab.com/g/sub/r.git"}, "https:gitlab.com/g/sub/r"),
+    ({"source": "url", "url": "https://x.example/m/"}, "https:x.example/m"),
+    ({"source": "directory", "path": "/tmp/m"}, "directory:/tmp/m"),
+    # Pins, other transports and unknown types never equal a recorded source.
+    ({"source": "github", "repo": "o/r", "ref": "evil"}, None),
+    ({"source": "git", "url": "https://github.com/o/r.git", "path": "sub"}, None),
+    ({"source": "git", "url": "git@github.com:o/r.git"}, None),
+    ({"source": "url", "url": "http://x.example/m"}, None),
+    ({"source": "npm", "package": "x"}, None),
+    ({"source": "directory", "path": "rel"}, None),
+    ("/tmp/m", None), (None, None), (3, None),
+])
+def test_normalize_source(given: object, want: str | None) -> None:
+    assert plugin_policy.normalize_source(given) == want
+
+
+def test_add_form_round_trips_and_refuses_local() -> None:
+    assert plugin_policy.add_form("github:o/r") == "o/r"
+    assert plugin_policy.add_form("https:gitlab.com/g/r") == "https://gitlab.com/g/r"
+    assert plugin_policy.add_form("directory:/tmp/m") is None and plugin_policy.add_form(None) is None
+
+
+def test_marketplace_names_accept_case_and_refuse_newlines() -> None:
+    assert plugin_policy.valid_marketplace_name("MixedCase-Mkt")
+    for bad in ("mine\n", "mine\r", "", "-x", "a b", "a/b", 3):
+        assert not plugin_policy.valid_marketplace_name(bad)
+
+
 def _listing(state: object = "done", **extra: Any) -> dict[str, Any]:
     checks = {"review": {"state": state}} if state is not None else {}
     return {"id": "plugin_x", "name": "X", "summary": "s", "checks": checks,
@@ -71,6 +151,8 @@ def _listing(state: object = "done", **extra: Any) -> dict[str, Any]:
             **extra}
 
 
+MINE = "github:o/mine"
+CURATED = {"mine": MINE}
 CATALOG = InstallCatalog(
     marketplaces={"mine": {
         "good": {"name": "good", "source": "./plugins/good"},
@@ -81,45 +163,61 @@ CATALOG = InstallCatalog(
     }},
     directory={"reviewed": _listing("done"), "unreviewed": _listing("none"),
                "weird": _listing("pending"), "nostate": _listing(None)},
+    sources={"mine": MINE, "other": "github:o/other"},
 )
 
 
 def test_install_allows_curated_marketplace_and_reviewed_directory() -> None:
-    plugin_policy.check_install("good@mine", {"mine"}, CATALOG)
-    plugin_policy.check_install(f"reviewed@{DIR}", set(), CATALOG)
+    plugin_policy.check_install("good@mine", CURATED, CATALOG)
+    plugin_policy.check_install(f"reviewed@{DIR}", {}, CATALOG)
 
 
 @pytest.mark.parametrize("pid,curated,code", [
     # Review Focus 1: unreviewed / unknown-state Directory plugins.
-    (f"unreviewed@{DIR}", set(), plugin_policy.PLUGIN_UNREVIEWED),
-    (f"weird@{DIR}", set(), plugin_policy.PLUGIN_UNREVIEWED),
-    (f"nostate@{DIR}", set(), plugin_policy.PLUGIN_UNREVIEWED),
-    (f"absent@{DIR}", set(), plugin_policy.PLUGIN_NOT_FOUND),
-    # Review Focus 1: a marketplace never added through Settings.
-    ("good@mine", set(), plugin_policy.MARKETPLACE_NOT_CURATED),
-    ("x@other", {"mine"}, plugin_policy.MARKETPLACE_NOT_CURATED),
-    ("absent@mine", {"mine"}, plugin_policy.PLUGIN_NOT_FOUND),
+    (f"unreviewed@{DIR}", {}, plugin_policy.PLUGIN_UNREVIEWED),
+    (f"weird@{DIR}", {}, plugin_policy.PLUGIN_UNREVIEWED),
+    (f"nostate@{DIR}", {}, plugin_policy.PLUGIN_UNREVIEWED),
+    (f"absent@{DIR}", {}, plugin_policy.PLUGIN_NOT_FOUND),
+    # Review Focus 1: a marketplace never confirmed through Settings.
+    ("good@mine", {}, plugin_policy.MARKETPLACE_NOT_CURATED),
+    ("x@other", CURATED, plugin_policy.MARKETPLACE_NOT_CURATED),
+    ("absent@mine", CURATED, plugin_policy.PLUGIN_NOT_FOUND),
     # Review Focus 2: command and headersHelper sources, wherever they sit.
-    ("cmd@mine", {"mine"}, plugin_policy.COMMAND_SOURCE_REFUSED),
-    ("helper@mine", {"mine"}, plugin_policy.COMMAND_SOURCE_REFUSED),
-    ("nested@mine", {"mine"}, plugin_policy.COMMAND_SOURCE_REFUSED),
+    ("cmd@mine", CURATED, plugin_policy.COMMAND_SOURCE_REFUSED),
+    ("helper@mine", CURATED, plugin_policy.COMMAND_SOURCE_REFUSED),
+    ("nested@mine", CURATED, plugin_policy.COMMAND_SOURCE_REFUSED),
 ])
-def test_install_refusals(pid: str, curated: set[str], code: str) -> None:
+def test_install_refusals(pid: str, curated: dict[str, str], code: str) -> None:
     with pytest.raises(PolicyRefusal) as ei:
         plugin_policy.check_install(pid, curated, CATALOG)
     assert ei.value.code == code
 
 
+@pytest.mark.parametrize("configured", ["github:evil/x", None])
+def test_install_refuses_a_re_pointed_curated_name(configured: str | None) -> None:
+    """Fix round 1, finding 1: ``tools`` re-added from another repo (or a source that no
+    longer normalizes) is no longer curated, with a reason the UI can act on."""
+    swapped = InstallCatalog(marketplaces=CATALOG.marketplaces, directory=None,
+                             sources={"mine": configured})
+    with pytest.raises(PolicyRefusal) as ei:
+        plugin_policy.check_install("good@mine", CURATED, swapped)
+    assert (ei.value.code, ei.value.reason) == (plugin_policy.MARKETPLACE_NOT_CURATED,
+                                                plugin_policy.REASON_SOURCE_CHANGED)
+    with pytest.raises(PolicyRefusal) as ei:
+        plugin_policy.check_install("good@mine", {}, CATALOG)
+    assert ei.value.reason == plugin_policy.REASON_NOT_CONFIRMED
+
+
 def test_install_fails_closed_without_catalogs() -> None:
-    empty = InstallCatalog(marketplaces={}, directory=None)
-    for pid, curated in ((f"reviewed@{DIR}", set()), ("good@mine", {"mine"})):
+    empty = InstallCatalog(marketplaces={}, directory=None, sources={"mine": MINE})
+    for pid, curated in ((f"reviewed@{DIR}", {}), ("good@mine", CURATED)):
         with pytest.raises(PolicyRefusal):
             plugin_policy.check_install(pid, curated, empty)
 
 
 def test_command_plugin_refusal_is_409() -> None:
     with pytest.raises(PolicyRefusal) as ei:
-        plugin_policy.check_install("cmd@mine", {"mine"}, CATALOG)
+        plugin_policy.check_install("cmd@mine", CURATED, CATALOG)
     assert ei.value.http == 409 and ei.value.code == "PLUGIN_COMMAND_SOURCE_REFUSED"
 
 
@@ -234,9 +332,21 @@ def test_parse_result_prefers_the_nonce_line_and_falls_back_to_first() -> None:
     stdout = "human preamble\n" + _line(outcome="ok", marketplace="mine")
     out = plugin_cli.parse_result("marketplace_add", 0, stdout, N)
     assert out == {"outcome": "ok", "marketplace": "mine"}
-    # An older CLI that echoes no nonce: the first line is the result.
+    # An older CLI that echoes no nonce at all: the first line is the result.
     old = json.dumps({"outcome": "failed", "failureCode": "already_in_goal_state"})
     assert plugin_cli.parse_result("disable", 1, old, N)["outcome"] == "noop"
+
+
+@pytest.mark.parametrize("stdout", [
+    # Fix round 1, finding 5: once any line carries a nonce, only ours counts — a nonce-less
+    # first line (e.g. forged by text the CLI echoes) is never the fallback.
+    json.dumps({"outcome": "ok"}) + "\n" + json.dumps({"outcome": "failed", "nonce": "other"}),
+    json.dumps({"outcome": "ok"}) + "\n" + json.dumps({"outcome": "ok", "nonce": "other"}),
+    json.dumps({"outcome": "ok", "nonce": "other"}),
+])
+def test_parse_result_never_falls_back_when_a_nonce_is_present(stdout: str) -> None:
+    out = plugin_cli.parse_result("install", 0, stdout, N)
+    assert (out["outcome"], out["failureCode"]) == ("failed", "result_nonce_mismatch")
 
 
 @pytest.fixture()
@@ -267,13 +377,72 @@ def test_run_op_pins_env_config_dir_and_cwd(shared: Path, monkeypatch: pytest.Mo
     assert seen["cwd"].endswith("helper-cwd") and seen["timeout"] == plugin_cli.CLI_TIMEOUT_S
 
 
+def _ok_runner(calls: list[list[str]] | None = None):
+    def fake_run(argv, *, env, cwd, timeout):
+        if calls is not None:
+            calls.append(argv)
+        return 0, json.dumps({"outcome": "ok", "nonce": env["CLAUDE_CODE_RESULT_NONCE"]})
+    return fake_run
+
+
 def test_run_op_reads_back_the_installed_version(shared: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_marketplace(shared, "m", [{"name": "p", "source": "./p"}])
     (shared / "plugins" / "installed_plugins.json").write_text(json.dumps(
         {"version": 2, "plugins": {"p@m": [{"version": "3.1.0", "lastUpdated": "z"}]}}))
     monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
-    monkeypatch.setattr(plugin_cli, "_run", lambda argv, *, env, cwd, timeout: (
-        0, json.dumps({"outcome": "ok", "nonce": env["CLAUDE_CODE_RESULT_NONCE"]})))
-    assert plugin_cli.run_op("install", {"plugin_id": "p@m"})["version"] == "3.1.0"
+    monkeypatch.setattr(plugin_cli, "_run", _ok_runner())
+    out = plugin_cli.run_op("install", {"plugin_id": "p@m", "expected_source": "github:o/m"})
+    assert out == {"outcome": "ok", "version": "3.1.0"}
+
+
+@pytest.mark.parametrize("op,args,reason", [
+    # Fix round 1, finding 1, on a WORKER: a session there removed `tools` and re-added
+    # evil/x under the same name. The edge never sees it; this host refuses on its own.
+    ("install", {"plugin_id": "foo@tools", "expected_source": "github:o/tools"}, "source_changed"),
+    ("update", {"plugin_id": "foo@tools", "expected_source": "github:o/tools"}, "source_changed"),
+    ("marketplace_update", {"name": "tools", "expected_source": "github:o/tools"}, "source_changed"),
+    ("install", {"plugin_id": "foo@tools"}, "not_confirmed"),  # no expected source: fail closed
+    ("marketplace_update", {"name": "tools"}, "not_confirmed"),
+])
+def test_host_refuses_a_re_pointed_marketplace_without_spawning(
+        shared: Path, monkeypatch: pytest.MonkeyPatch, op: str, args: dict, reason: str) -> None:
+    _write_marketplace(shared, "tools", [{"name": "foo", "source": "./foo"}], repo="evil/x")
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", lambda *a, **k: pytest.fail("the CLI ran"))
+    out = plugin_cli.run_op(op, args)
+    assert (out["outcome"], out["failureCode"], out["reason"]) == (
+        "failed", "PLUGIN_MARKETPLACE_NOT_CURATED", reason)
+
+
+def test_host_installs_when_its_source_matches(shared: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_marketplace(shared, "tools", [{"name": "foo", "source": "./foo"},
+                                         {"name": "cmd", "source": {"source": "command", "command": "x"}}])
+    calls: list[list[str]] = []
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", _ok_runner(calls))
+    args = {"plugin_id": "foo@tools", "expected_source": "github:o/tools"}
+    assert plugin_cli.run_op("install", args)["outcome"] == "ok"
+    assert plugin_cli.run_op("marketplace_update", {"name": "tools", "expected_source": "github:o/tools"})["outcome"] == "ok"
+    # The command-source check runs on the host too, against ITS catalog.
+    cmd = plugin_cli.run_op("install", {"plugin_id": "cmd@tools", "expected_source": "github:o/tools"})
+    assert cmd["failureCode"] == "PLUGIN_COMMAND_SOURCE_REFUSED"
+    assert [c[2] for c in calls] == ["install", "marketplace"]
+
+
+def test_host_rechecks_directory_review_state(shared: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_directory(shared, {"good": _listing("done"), "bad": _listing("none")})
+    refreshed: list[bool] = []
+
+    def fake_refresh(**_k: Any) -> bool:
+        refreshed.append(True)
+        return False
+
+    monkeypatch.setattr(plugin_cli, "refresh_available", fake_refresh)
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", _ok_runner())
+    assert plugin_cli.run_op("install", {"plugin_id": f"bad@{DIR}"})["failureCode"] == "PLUGIN_UNREVIEWED"
+    assert plugin_cli.run_op("install", {"plugin_id": f"good@{DIR}"})["outcome"] == "ok"
+    assert refreshed == [True, True]
 
 
 @pytest.mark.parametrize("exc,code", [
@@ -321,8 +490,11 @@ def test_run_op_against_a_fake_claude_executable(shared: Path, tmp_path: Path, m
                     "cfg": str(shared), "key": None}
 
 
-def test_refresh_available_is_ttl_gated(shared: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_refresh_available_runs_on_a_miss_and_again_once_the_ttl_expires(
+        shared: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix round 1, finding 7: refreshed on expiry, not only when the cache is missing."""
     calls: list[list[str]] = []
+    clock = {"now": 10_000.0}
 
     def fake_run(argv: list[str], **_k: Any) -> tuple[int, str]:
         calls.append(argv)
@@ -331,9 +503,14 @@ def test_refresh_available_is_ttl_gated(shared: Path, monkeypatch: pytest.Monkey
     monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
     monkeypatch.setattr(plugin_cli, "_run", fake_run)
     monkeypatch.setattr(plugin_cli, "_last_available_refresh", 0.0)
+    monkeypatch.setattr(plugin_cli.time, "monotonic", lambda: clock["now"])
     assert plugin_cli.refresh_available() is True
+    _write_directory(shared, {"x": _listing("done")})  # the cache now exists
+    clock["now"] += plugin_cli.AVAILABLE_REFRESH_TTL_S - 1
     assert plugin_cli.refresh_available() is False
-    assert calls == [["/fake/claude", "plugin", "list", "--json", "--available"]]
+    clock["now"] += 2
+    assert plugin_cli.refresh_available() is True  # expired: refreshed though the file exists
+    assert calls == [["/fake/claude", "plugin", "list", "--json", "--available"]] * 2
 
 
 # =========================================================================== fan-out (D2)
@@ -480,13 +657,16 @@ class _Fleet:
         return [dict(h) for h in self.reply]
 
 
-def _write_marketplace(base: Path, name: str, plugins: list[dict], **cfg: Any) -> None:
+def _write_marketplace(base: Path, name: str, plugins: list[dict], *, repo: str | None = None,
+                       **cfg: Any) -> None:
+    """Configure *name* the way ``marketplace add <repo>`` would (default ``o/<name>``)."""
     loc = base / "plugins" / "marketplaces" / name
-    (loc / ".claude-plugin").mkdir(parents=True)
+    (loc / ".claude-plugin").mkdir(parents=True, exist_ok=True)
     (loc / ".claude-plugin" / "marketplace.json").write_text(json.dumps({"name": name, "plugins": plugins}))
     km = base / "plugins" / "known_marketplaces.json"
     known = json.loads(km.read_text()) if km.exists() else {}
-    known[name] = {"source": {"source": "github", "repo": f"o/{name}"}, "installLocation": str(loc), **cfg}
+    known[name] = {"source": {"source": "github", "repo": repo or f"o/{name}"},
+                   "installLocation": str(loc), **cfg}
     km.write_text(json.dumps(known))
 
 
@@ -496,6 +676,14 @@ def _write_directory(base: Path, listings: dict[str, dict]) -> None:
         "listings": [{**v, "id": f"id_{k}"} for k, v in listings.items()],
         "entryNames": {f"id_{k}": k for k in listings},
     }))
+
+
+def _confirm(client: TestClient, name: str) -> Any:
+    """The owner's Confirm: echo back the normalizedSource the list showed."""
+    shown = next(m for m in client.get("/api/library/plugins", headers=_H).json()["marketplaces"]
+                 if m["name"] == name)
+    return client.post(f"/api/library/marketplaces/{name}/confirm",
+                       json={"source": shown["normalizedSource"], "confirm": True}, headers=_H)
 
 
 @pytest.fixture()
@@ -523,6 +711,7 @@ def env(shared: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         app.state.sessions = fleet
         client = TestClient(app, raise_server_exceptions=False)
         with client:
+            assert _confirm(client, "mine").status_code == 200
             yield client, fleet, shared
 
 
@@ -534,7 +723,7 @@ async def _audit() -> list[tuple]:
         return [(r.type, r.identity, r.detail) for r in (await db.execute(select(AuditEvent))).scalars()]
 
 
-def test_install_happy_path_fans_out_and_audits(env) -> None:
+def test_install_happy_path_fans_out_with_the_expected_source_and_audits(env) -> None:
     client, fleet, _ = env
     fleet.reply = [{"host": "dobby", "outcome": "ok", "version": "1.0.0"},
                    {"host": "rocky", "outcome": "failed", "failureCode": "host_unreachable"}]
@@ -543,7 +732,8 @@ def test_install_happy_path_fans_out_and_audits(env) -> None:
     assert r.json() == {"op": "install", "ok": False, "hosts": fleet.reply}
     r = client.post(f"/api/library/plugins/reviewed@{DIR}/install", json={"confirm": True}, headers=_H)
     assert r.status_code == 200
-    assert fleet.calls == [("install", {"plugin_id": "good@mine"}),
+    # Every host re-checks against its own state with the confirmed source.
+    assert fleet.calls == [("install", {"plugin_id": "good@mine", "expected_source": "github:o/mine"}),
                            ("install", {"plugin_id": f"reviewed@{DIR}"})]
     events = [e for e in client.portal.call(_audit) if e[0] == "library_plugin_installed"]
     assert events[0][1] == "owner@example.com"
@@ -555,17 +745,104 @@ def test_install_happy_path_fans_out_and_audits(env) -> None:
     (f"absent@{DIR}", 404, "PLUGIN_NOT_FOUND"),
     ("good@handadded", 409, "PLUGIN_MARKETPLACE_NOT_CURATED"),
     ("cmd@mine", 409, "PLUGIN_COMMAND_SOURCE_REFUSED"),
+    ("good%0A@mine", 400, None), ("good@mine%0A", 400, None),
 ])
 @pytest.mark.parametrize("verb", ["install", "update"])
-def test_crafted_installs_are_refused_server_side(env, pid: str, status: int, code: str, verb: str) -> None:
+def test_crafted_installs_are_refused_server_side(env, pid: str, status: int, code: str | None,
+                                                  verb: str) -> None:
     """Review Focus 1+2 through the route: nothing reaches any host."""
     client, fleet, shared = env
-    client.get("/api/library/plugins", headers=_H)  # seeds the curated set: {"mine"}
-    # A marketplace added outside ViberPit AFTER seeding is not curated.
-    _write_marketplace(shared, "handadded", [{"name": "good", "source": "./g"}])
+    _write_marketplace(shared, "handadded", [{"name": "good", "source": "./g"}])  # never confirmed
     r = client.post(f"/api/library/plugins/{pid}/{verb}", json={"confirm": True}, headers=_H)
-    assert r.status_code == status and r.json()["detail"]["code"] == code
+    assert r.status_code == status
+    if code:
+        assert r.json()["detail"]["code"] == code
     assert fleet.calls == []
+
+
+def test_name_swap_on_the_edge_is_refused_until_reconfirmed(env) -> None:
+    """Fix round 1, finding 1: a session removes `mine` and re-adds evil/x under the same
+    name. Install, update, browse and marketplace update all refuse with reason
+    source_changed; the list says so; re-confirming the NEW source is an explicit act."""
+    client, fleet, shared = env
+    _write_marketplace(shared, "mine", [{"name": "good", "source": "./evil"}], repo="evil/x")
+    for url in ("/api/library/plugins/good@mine/install", "/api/library/plugins/good@mine/update"):
+        r = client.post(url, json={"confirm": True}, headers=_H)
+        assert r.status_code == 409
+        assert r.json()["detail"] | {"message": ""} == {
+            "code": "PLUGIN_MARKETPLACE_NOT_CURATED", "reason": "source_changed", "message": ""}
+    r = client.post("/api/library/marketplaces/mine/update", headers=_H)
+    assert r.status_code == 409 and r.json()["detail"]["reason"] == "source_changed"
+    assert [p["pluginId"] for p in client.get("/api/library/plugins/browse", headers=_H).json()["plugins"]] \
+        == [f"reviewed@{DIR}"]
+    shown = {m["name"]: m for m in client.get("/api/library/plugins", headers=_H).json()["marketplaces"]}["mine"]
+    assert (shown["curation"], shown["confirmedSource"], shown["normalizedSource"]) == (
+        "source_changed", "github:o/mine", "github:evil/x")
+    assert fleet.calls == []
+    # A confirm that echoes the OLD source is refused (the swap happened after display).
+    r = client.post("/api/library/marketplaces/mine/confirm",
+                    json={"source": "github:o/mine", "confirm": True}, headers=_H)
+    assert r.status_code == 409 and r.json()["detail"]["reason"] == "source_changed"
+    assert _confirm(client, "mine").status_code == 200  # the owner re-confirms evil/x on purpose
+    assert client.post("/api/library/plugins/good@mine/install", json={"confirm": True},
+                       headers=_H).status_code == 200
+
+
+def test_unconfirmed_marketplaces_are_listed_not_installable(env) -> None:
+    """Fix round 1, finding 2: a marketplace configured outside ViberPit (at ship time or
+    by a session) is unconfirmed — listed with its source, not browsable or installable —
+    until the owner confirms it once, through the human gate, with an audit row."""
+    client, fleet, shared = env
+    _write_marketplace(shared, "byhand", [{"name": "tool", "source": "./t"}])
+    shown = {m["name"]: m for m in client.get("/api/library/plugins", headers=_H).json()["marketplaces"]}
+    assert (shown["byhand"]["curation"], shown["byhand"]["normalizedSource"],
+            shown["byhand"]["confirmedSource"]) == ("unconfirmed", "github:o/byhand", None)
+    assert shown["mine"]["curation"] == "confirmed"
+    r = client.post("/api/library/plugins/tool@byhand/install", json={"confirm": True}, headers=_H)
+    assert r.status_code == 409 and r.json()["detail"]["reason"] == "not_confirmed"
+    assert "tool@byhand" not in json.dumps(client.get("/api/library/plugins/browse", headers=_H).json())
+    r = client.post("/api/library/marketplaces/byhand/confirm",
+                    json={"source": "github:o/byhand"}, headers=_H)
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "PLUGIN_CONFIRM_REQUIRED"
+    r = _confirm(client, "byhand")
+    assert r.json() == {"name": "byhand", "confirmedSource": "github:o/byhand", "curation": "confirmed"}
+    assert "tool@byhand" in json.dumps(client.get("/api/library/plugins/browse", headers=_H).json())
+    assert client.post("/api/library/plugins/tool@byhand/install", json={"confirm": True},
+                       headers=_H).status_code == 200
+    events = [e for e in client.portal.call(_audit) if e[0] == "library_marketplace_confirmed"]
+    assert events[-1][2] == {"name": "byhand", "normalizedSource": "github:o/byhand"}
+
+
+@pytest.mark.parametrize("source", [
+    {"source": "directory", "path": "/tmp/local"}, {"source": "github", "repo": "o/r", "ref": "x"},
+    {"source": "url", "url": "http://plain.example/m"},
+])
+def test_confirm_refuses_sources_the_add_policy_refuses(env, source: dict) -> None:
+    client, _, shared = env
+    km = shared / "plugins" / "known_marketplaces.json"
+    known = json.loads(km.read_text())
+    known["odd"] = {"source": source, "installLocation": "/nowhere"}
+    km.write_text(json.dumps(known))
+    shown = {m["name"]: m for m in client.get("/api/library/plugins", headers=_H).json()["marketplaces"]}
+    norm = shown["odd"]["normalizedSource"]
+    r = client.post("/api/library/marketplaces/odd/confirm", json={"source": norm or "x", "confirm": True},
+                    headers=_H)
+    assert r.status_code in (400, 409)
+    after = {m["name"]: m for m in client.get("/api/library/plugins", headers=_H).json()["marketplaces"]}
+    assert after["odd"]["curation"] == "unconfirmed"
+
+
+def test_confirm_resolves_https_hosts_and_refuses_internal(env, _dns) -> None:
+    client, _, shared = env
+    km = shared / "plugins" / "known_marketplaces.json"
+    known = json.loads(km.read_text())
+    known["internal"] = {"source": {"source": "git", "url": "https://git.corp.example/m.git"},
+                         "installLocation": "/nowhere"}
+    km.write_text(json.dumps(known))
+    _dns["git.corp.example"] = ["100.101.102.103"]  # a tailnet address
+    r = client.post("/api/library/marketplaces/internal/confirm",
+                    json={"source": "https:git.corp.example/m", "confirm": True}, headers=_H)
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "PLUGIN_MARKETPLACE_SOURCE_REFUSED"
 
 
 def test_install_requires_confirm(env) -> None:
@@ -584,6 +861,7 @@ MUTATIONS = [
     ("post", "/api/library/marketplaces", {"source": "o/r", "confirm": True}),
     ("post", "/api/library/marketplaces/mine/update", None),
     ("delete", "/api/library/marketplaces/mine", None),
+    ("post", "/api/library/marketplaces/mine/confirm", {"source": "github:o/mine", "confirm": True}),
 ]
 
 
@@ -592,23 +870,41 @@ def _send(client: TestClient, method: str, url: str, body: dict | None):
 
 
 @pytest.mark.parametrize("method,url,body", MUTATIONS)
-@pytest.mark.parametrize("via", ["assistant", "local"])
+@pytest.mark.parametrize("via", ["assistant", "local", "local-trusted"])
 def test_every_mutation_is_human_only(env, monkeypatch, method: str, url: str, body, via: str) -> None:
+    """Fix round 1, finding 6: not even the operator's local-host opt-in admits these."""
     client, fleet, _ = env
     from server.api import library
     from server.auth import identity
+    before = len(client.portal.call(_audit))
     if via == "local":
         monkeypatch.setattr(identity, "attested_front_end_hop", lambda _c: False)
+    elif via == "local-trusted":
+        monkeypatch.setenv("VIBERPIT_RULES_TRUST_LOCAL_HOST", "true")
+        monkeypatch.setattr(identity, "attested_front_end_hop", lambda _c: False)
+        assert identity.LOCAL_TRUSTED_VIA == "local-trusted"
+        monkeypatch.setattr(library, "human_gate_via", lambda _r: identity.LOCAL_TRUSTED_VIA)
     else:
         monkeypatch.setattr(library, "human_gate_via", lambda _r: "assistant")
     r = _send(client, method, url, body)
     assert r.status_code == 403 and r.json()["detail"]["code"] == "SESSION_CONTROL_HUMAN_ONLY"
-    assert fleet.calls == []
+    if via == "local-trusted":
+        assert "VIBERPIT_RULES_TRUST_LOCAL_HOST does not extend" in r.json()["detail"]["message"]
+    assert fleet.calls == [] and len(client.portal.call(_audit)) == before
+
+
+def test_require_human_strict_variant_is_one_parameter() -> None:
+    from server.auth.identity import LOCAL_TRUSTED_VIA
+    from server.sessions.session_actions import ActionError, require_human
+    require_human("o@example.com", LOCAL_TRUSTED_VIA)  # default: the opt-in is honoured
+    with pytest.raises(ActionError):
+        require_human("o@example.com", LOCAL_TRUSTED_VIA, trust_local_host=False)
+    require_human("o@example.com", None, trust_local_host=False)  # an attested person passes
 
 
 @pytest.mark.parametrize("method,url,body,blocked", [
     (*MUTATIONS[0], True), (*MUTATIONS[1], True), (*MUTATIONS[2], False), (*MUTATIONS[3], False),
-    (*MUTATIONS[4], True), (*MUTATIONS[5], True), (*MUTATIONS[6], False),
+    (*MUTATIONS[4], True), (*MUTATIONS[5], True), (*MUTATIONS[6], False), (*MUTATIONS[7], True),
 ])
 def test_kill_switch(env, monkeypatch, method: str, url: str, body, blocked: bool) -> None:
     client, fleet, shared = env
@@ -643,6 +939,22 @@ def test_browse_lists_curated_and_reviewed_only(env) -> None:
     assert "unreviewed" not in json.dumps(body)
 
 
+def test_browse_and_install_refresh_the_directory_cache_every_time(env, monkeypatch) -> None:
+    """Fix round 1, finding 7: the (TTL-gated) refresh is asked before every read, not only
+    when the cache file is missing."""
+    client, _, _ = env
+    asked: list[bool] = []
+
+    def fake_refresh(**_k: Any) -> bool:
+        asked.append(True)
+        return False
+
+    monkeypatch.setattr(plugin_cli, "refresh_available", fake_refresh)
+    client.get("/api/library/plugins/browse", headers=_H)
+    client.post(f"/api/library/plugins/reviewed@{DIR}/install", json={"confirm": True}, headers=_H)
+    assert asked == [True, True]
+
+
 def test_browse_search_and_pagination(env) -> None:
     client, _, _ = env
     page = client.get("/api/library/plugins/browse?q=REVIEW&limit=1", headers=_H).json()
@@ -655,20 +967,23 @@ def test_browse_search_and_pagination(env) -> None:
         assert client.get(f"/api/library/plugins/browse?{bad}", headers=_H).status_code == 422
 
 
-def test_marketplace_add_validates_curates_and_audits(env) -> None:
+def test_marketplace_add_validates_confirms_and_audits(env, shared) -> None:
     client, fleet, _ = env
-    r = client.post("/api/library/marketplaces", json={"source": "/tmp/local", "confirm": True}, headers=_H)
-    assert r.status_code == 400 and r.json()["detail"]["code"] == "PLUGIN_MARKETPLACE_SOURCE_REFUSED"
+    for bad in ("/tmp/local", "o/r%0A", "https://0x7f.1/a/b"):
+        r = client.post("/api/library/marketplaces", json={"source": bad, "confirm": True}, headers=_H)
+        assert r.status_code == 400 and r.json()["detail"]["code"] == "PLUGIN_MARKETPLACE_SOURCE_REFUSED"
     r = client.post("/api/library/marketplaces", json={"source": "o/newmkt"}, headers=_H)
     assert r.status_code == 400 and r.json()["detail"]["code"] == "PLUGIN_CONFIRM_REQUIRED"
     assert fleet.calls == []
     fleet.reply = [{"host": "dobby", "outcome": "ok", "marketplace": "newmkt"},
                    {"host": "rocky", "outcome": "failed", "failureCode": "daemon_outdated"}]
-    r = client.post("/api/library/marketplaces", json={"source": "o/newmkt", "confirm": True}, headers=_H)
+    r = client.post("/api/library/marketplaces", json={"source": "O/NewMkt", "confirm": True}, headers=_H)
     assert r.status_code == 200 and r.json()["marketplaces"] == ["newmkt"]
-    assert fleet.calls == [("marketplace_add", {"source": "o/newmkt"})]
-    # Now curated: its update route is allowed; removing it un-curates it.
+    assert fleet.calls == [("marketplace_add", {"source": "O/NewMkt"})]
+    _write_marketplace(shared, "newmkt", [], repo="O/NewMkt")  # what the CLI recorded
+    # Confirmed at the source the owner typed: update is allowed and carries it.
     assert client.post("/api/library/marketplaces/newmkt/update", headers=_H).status_code == 200
+    assert fleet.calls[-1] == ("marketplace_update", {"name": "newmkt", "expected_source": "github:o/newmkt"})
     assert client.delete("/api/library/marketplaces/newmkt", headers=_H).status_code == 200
     r = client.post("/api/library/marketplaces/newmkt/update", headers=_H)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "PLUGIN_MARKETPLACE_NOT_CURATED"
@@ -676,7 +991,19 @@ def test_marketplace_add_validates_curates_and_audits(env) -> None:
     assert types.count("library_marketplace_added") == 1
     assert "library_marketplace_updated" in types and "library_marketplace_removed" in types
     added = next(e for e in client.portal.call(_audit) if e[0] == "library_marketplace_added")
-    assert added[2]["source"] == "o/newmkt" and added[2]["hosts"] == fleet.reply
+    assert added[2]["source"] == "O/NewMkt" and added[2]["normalizedSource"] == "github:o/newmkt"
+    assert added[2]["hosts"] == fleet.reply
+
+
+def test_mixed_case_marketplace_is_confirmable_and_installable(env) -> None:
+    """Fix round 1, finding 8: the CLI accepts case (Hello@MixedCase-Mkt), so do we."""
+    client, fleet, shared = env
+    _write_marketplace(shared, "MixedCase-Mkt", [{"name": "Hello", "source": "./h"}], repo="o/MixedCase-Mkt")
+    assert _confirm(client, "MixedCase-Mkt").status_code == 200
+    r = client.post("/api/library/plugins/Hello@MixedCase-Mkt/install", json={"confirm": True}, headers=_H)
+    assert r.status_code == 200
+    assert fleet.calls[-1] == ("install", {"plugin_id": "Hello@MixedCase-Mkt",
+                                           "expected_source": "github:o/mixedcase-mkt"})
 
 
 def test_uninstall_keeps_data_and_toggle_reaches_every_host(env) -> None:
@@ -693,7 +1020,7 @@ def test_uninstall_keeps_data_and_toggle_reaches_every_host(env) -> None:
 
 def test_plugins_list_carries_version_auto_update_source_and_curation(env) -> None:
     client, _, shared = env
-    _write_marketplace(shared, "claude-plugins-official", [])
+    _write_marketplace(shared, "claude-plugins-official", [], repo="anthropics/claude-plugins-official")
     (shared / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {
         "good@mine": [{"version": "1.0.0"}], "x@claude-plugins-official": [{"version": "9"}]}}))
     body = client.get("/api/library/plugins", headers=_H).json()
@@ -701,8 +1028,9 @@ def test_plugins_list_carries_version_auto_update_source_and_curation(env) -> No
     assert (rows["good@mine"]["version"], rows["good@mine"]["autoUpdate"]) == ("1.0.0", False)
     assert rows["good@mine"]["source"] == {"source": "github", "repo": "o/mine"}
     assert rows["x@claude-plugins-official"]["autoUpdate"] is True
-    assert {m["name"]: m["curated"] for m in body["marketplaces"]} == {
-        "mine": True, "claude-plugins-official": True}  # both configured at first read
+    # Configured but never confirmed: the official one too (fix round 1, finding 2).
+    assert {m["name"]: m["curation"] for m in body["marketplaces"]} == {
+        "mine": "confirmed", "claude-plugins-official": "unconfirmed"}
     assert body["installEnabled"] is True
 
 
@@ -718,5 +1046,5 @@ def test_settings_lists_the_kill_switch() -> None:
 
 def test_browse_entries_never_include_unreviewed(shared: Path) -> None:
     _write_directory(shared, {f"p{i}": _listing("none" if i % 2 else "done") for i in range(6)})
-    out = scan.browse_entries(set())
+    out = scan.browse_entries({})
     assert [e["pluginId"] for e in out] == [f"p{i}@{DIR}" for i in (0, 2, 4)]

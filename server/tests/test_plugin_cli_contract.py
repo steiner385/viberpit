@@ -81,16 +81,21 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return shared, acct, mkt
 
 
-def _add_local(mkt: Path) -> dict:
-    """``marketplace add <dir>`` through the wrapper's seam + parser (the route would refuse
-    a local path; only this test may add one)."""
+def _raw(words: list[str], op: str) -> dict:
+    """One CLI call through the wrapper's seam + parser, bypassing ``build_argv``/host
+    policy: the route refuses a local marketplace, and the host policy refuses a command
+    source before the CLI would. Only this test drives the CLI past them."""
     assert BINARY is not None
     nonce = "contract-" + os.urandom(4).hex()
-    argv = [BINARY, "plugin", "marketplace", "add", str(mkt), "--scope", "user", "--json"]
+    argv = [BINARY, "plugin", *words, "--json"]
     plugin_cli.assert_safe_argv(argv)
     rc, stdout = plugin_cli._run(argv, env=plugin_cli._env(nonce), cwd=plugin_cli._cwd(),
                                  timeout=plugin_cli.CLI_TIMEOUT_S)
-    return plugin_cli.parse_result("marketplace_add", rc, stdout, nonce)
+    return plugin_cli.parse_result(op, rc, stdout, nonce)
+
+
+def _add_local(mkt: Path) -> dict:
+    return _raw(["marketplace", "add", str(mkt), "--scope", "user"], "marketplace_add")
 
 
 def test_cli_contract_round_trip(sandbox) -> None:
@@ -100,7 +105,13 @@ def test_cli_contract_round_trip(sandbox) -> None:
     added = _add_local(mkt)
     assert (added["outcome"], added.get("marketplace")) == ("ok", "d16c-contract"), added
     assert _add_local(mkt)["outcome"] in ("ok", "noop")  # re-adding is idempotent
-    out =plugin_cli.run_op("install", {"plugin_id": pid})
+    # The host-side policy (fix round 1) needs the confirmed source; this local fixture's
+    # normalized source is directory:<path>, which only a test can hand it.
+    expected = f"directory:{mkt}"
+    swapped = plugin_cli.run_op("install", {"plugin_id": pid, "expected_source": "github:o/other"})
+    assert (swapped["failureCode"], swapped["reason"]) == ("PLUGIN_MARKETPLACE_NOT_CURATED", "source_changed")
+    assert not (shared / "plugins" / "installed_plugins.json").exists()  # the CLI never ran
+    out = plugin_cli.run_op("install", {"plugin_id": pid, "expected_source": expected})
     assert out["outcome"] == "ok" and out["version"] == "1.0.0", out
     registry = json.loads((shared / "plugins" / "installed_plugins.json").read_text())
     install_path = registry["plugins"][pid][0]["installPath"]
@@ -112,13 +123,17 @@ def test_cli_contract_round_trip(sandbox) -> None:
     assert json.loads((shared / "settings.json").read_text())["enabledPlugins"][pid] is False
     assert plugin_cli.run_op("enable", {"plugin_id": pid})["outcome"] == "ok"
 
-    upd = plugin_cli.run_op("update", {"plugin_id": pid})
+    upd = plugin_cli.run_op("update", {"plugin_id": pid, "expected_source": expected})
     assert upd["outcome"] == "ok" and upd["version"] == "1.0.0", upd
 
-    missing = plugin_cli.run_op("install", {"plugin_id": "nosuch@d16c-contract"})
+    missing = _raw(["install", "nosuch@d16c-contract", "--scope", "user"], "install")
     assert (missing["outcome"], missing["failureCode"]) == ("failed", "not_found")
 
-    refused = plugin_cli.run_op("install", {"plugin_id": "cmdp@d16c-contract"})
+    # The CLI's own gate: human prompt first, then a nonce'd line with shownCommand.
+    gated = _raw(["install", "cmdp@d16c-contract", "--scope", "user"], "install")
+    assert (gated["outcome"], gated["failureCode"]) == ("failed", "PLUGIN_COMMAND_SOURCE_REFUSED")
+    # Through the wrapper the host policy refuses it first, from this host's catalog.
+    refused = plugin_cli.run_op("install", {"plugin_id": "cmdp@d16c-contract", "expected_source": expected})
     assert (refused["outcome"], refused["failureCode"]) == ("failed", "PLUGIN_COMMAND_SOURCE_REFUSED")
     assert "cmdp@d16c-contract" not in json.loads(
         (shared / "plugins" / "installed_plugins.json").read_text())["plugins"]
@@ -127,7 +142,8 @@ def test_cli_contract_round_trip(sandbox) -> None:
     again = plugin_cli.run_op("uninstall", {"plugin_id": pid})
     assert (again["outcome"], again["failureCode"]) == ("noop", "not_installed")
 
-    assert plugin_cli.run_op("marketplace_update", {"name": "d16c-contract"})["outcome"] == "ok"
+    assert plugin_cli.run_op("marketplace_update",
+                             {"name": "d16c-contract", "expected_source": expected})["outcome"] == "ok"
     assert plugin_cli.run_op("marketplace_remove", {"name": "d16c-contract"})["outcome"] == "ok"
     gone = plugin_cli.run_op("marketplace_remove", {"name": "d16c-contract"})
     assert (gone["outcome"], gone["failureCode"]) == ("noop", "not_configured")

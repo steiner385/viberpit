@@ -16,7 +16,7 @@ import logging
 from typing import Any
 
 from server.audit import record_audit
-from server.auth.identity import LOCAL_PROCESS_VIA, human_via
+from server.auth.identity import LOCAL_PROCESS_VIA, LOCAL_TRUSTED_VIA, human_via
 from server.config import get_settings
 from server.sessions.engine import (EFFORT_UNCHANGED, AgentEngine, _EffortUnchanged,
                                     flag_settings_enabled)
@@ -123,7 +123,7 @@ RULE_HUMAN_ONLY_CODE = "RULES_HUMAN_ONLY"
 
 def require_human(identity: str, via: str | None, *,
                   action: str = "manage always-allow rules and permission profiles",
-                  code: str = RULE_HUMAN_ONLY_CODE) -> None:
+                  code: str = RULE_HUMAN_ONLY_CODE, trust_local_host: bool = True) -> None:
     """Standing rules widen what a session may do unattended, so only a person at the UI
     may create, edit, revoke or preview one, or write permission-profile patterns: no
     token-borne caller (assistant, external MCP, CLI, internal, session), no process on
@@ -134,10 +134,22 @@ def require_human(identity: str, via: str | None, *,
     is a person is ``identity.human_via`` — the one rule the app-command gate uses too.
 
     ``action``/``code`` name the change for the refusal: the same gate guards widening a
-    session's permission mode and its reasoning effort (#3291)."""
+    session's permission mode and its reasoning effort (#3291).
+
+    ``trust_local_host=False`` is the stricter variant: the operator's local-host opt-in is
+    NOT honoured, so only an attested remote person passes. Plugin and marketplace changes
+    use it (D-16c): they fan out to every host, so an agent on the edge that the opt-in
+    admits must not be able to install code fleet-wide."""
     refusal = f"Only a person in the UI can {action}."
     if identity == SYSTEM_IDENTITY:
         raise ActionError(code, refusal, 403)
+    if via == LOCAL_TRUSTED_VIA and not trust_local_host:
+        raise ActionError(
+            code,
+            "This request came from the ViberPit host itself. VIBERPIT_RULES_TRUST_LOCAL_HOST "
+            f"does not extend to this: to {action}, use a browser on another device on your "
+            "tailnet (phone, laptop).",
+            403)
     if human_via(via):
         return
     if via == LOCAL_PROCESS_VIA:

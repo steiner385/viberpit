@@ -1,10 +1,18 @@
 """Plugin marketplace policy (D-16c, owner decision D1 "curated only"): the ONE place that
-decides whether a marketplace may be added and whether a plugin may be installed or updated.
+decides whether a marketplace may be added or confirmed and whether a plugin may be
+installed or updated.
 
-Pure functions over data the caller loads (``scan.install_catalog``, the curated set), so the
-rules are testable without a CLI and every route asks the same question. Everything fails
-closed: an unknown marketplace, an unknown plugin, an unknown review state, a source that
-might run a command — each is a refusal, never a pass.
+Pure functions over data the caller loads (``scan.install_catalog``, the curated record),
+so the edge and every host's daemon ask the same question. Everything fails closed: an
+unknown marketplace, an unknown plugin, an unknown review state, a source that might run a
+command, or a marketplace whose source no longer matches what the owner confirmed — each is
+a refusal, never a pass.
+
+**Curation is bound to a source, not a name.** The curated record maps a marketplace name
+to the :func:`normalize_source` of the source the owner confirmed. A session can remove
+``tools`` and re-add a different repo under the same name; the configured source then no
+longer normalizes to the recorded one, and every check refuses with reason
+``source_changed`` until the owner re-confirms.
 
 Constants mirrored from the ``claude`` binary (2.1.318, docs/superpowers/specs/
 2026-11-04-d16-verification.md §1.5) carry their offsets so the next CLI bump can re-check
@@ -14,7 +22,9 @@ from a CLI result.
 """
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -55,36 +65,176 @@ PLUGIN_NOT_FOUND = "PLUGIN_NOT_FOUND"
 PLUGIN_UNREVIEWED = "PLUGIN_UNREVIEWED"
 COMMAND_SOURCE_REFUSED = "PLUGIN_COMMAND_SOURCE_REFUSED"
 
-_GITHUB_RE = re.compile(r"^(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/(?P<repo>[A-Za-z0-9._-]{1,100})$")
-_HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}))+$")
-_URL_PATH_RE = re.compile(r"^(?:/[A-Za-z0-9._~-]+)+/?$")
+#: ``MARKETPLACE_NOT_CURATED`` reasons — the UI tells "confirm it" from "it changed".
+REASON_NOT_CONFIRMED = "not_confirmed"
+REASON_SOURCE_CHANGED = "source_changed"
+
+# The CLI's own GitHub shorthand (``Lon`` @280765576); ``fullmatch`` everywhere (a ``$``
+# under ``re.match`` also accepts a trailing newline).
+_GITHUB_RE = re.compile(r"(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/(?P<repo>[A-Za-z0-9._-]{1,100})")
+_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_HOST_RE = re.compile(rf"{_LABEL}(?:\.{_LABEL})+")
+_URL_PATH_RE = re.compile(r"(?:/[A-Za-z0-9._~-]+)+/?")
+# An IPv4 literal in any inet_aton spelling: every label decimal, octal or hex.
+_NUMERIC_LABEL_RE = re.compile(r"(?:0[xX][0-9A-Fa-f]*|[0-9]+)")
 _MAX_SOURCE = 300
-MARKETPLACE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+MARKETPLACE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")  # the tailnet's range
 
 
 class PolicyRefusal(Exception):
-    """A D1 refusal: ``code`` is the wire code, ``http`` the status a route answers with."""
+    """A D1 refusal: ``code`` is the wire code, ``http`` the status a route answers with,
+    ``reason`` a finer cause where the UI acts differently (``source_changed``)."""
 
-    def __init__(self, code: str, message: str, http: int = 409) -> None:
+    def __init__(self, code: str, message: str, http: int = 409, reason: str | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.http = http
+        self.reason = reason
 
 
 @dataclass(frozen=True)
 class InstallCatalog:
-    """What the policy reads to judge an install: each curated marketplace's
-    ``marketplace.json`` plugin entries (``{marketplace: {name: entry}}``; a marketplace
-    whose file is unreadable is absent) and the Directory cache listings by entry name
-    (``None`` when the cache is unreadable)."""
+    """What the policy reads on ONE host: each configured marketplace's normalized source
+    (``sources``; ``None`` when it does not normalize), each curated marketplace's
+    ``marketplace.json`` entries (``{marketplace: {name: entry}}``; absent when unreadable),
+    and the Directory cache by entry name (``None`` when unreadable)."""
 
     marketplaces: Mapping[str, Mapping[str, dict[str, Any]]] = field(default_factory=dict)
     directory: Mapping[str, dict[str, Any]] | None = None
+    sources: Mapping[str, str | None] = field(default_factory=dict)
 
 
-def valid_marketplace_name(name: str) -> bool:
-    return bool(MARKETPLACE_NAME_RE.match(name))
+def valid_marketplace_name(name: object) -> bool:
+    """The CLI accepts mixed case and is case-sensitive (probed), so case is kept."""
+    return isinstance(name, str) and bool(MARKETPLACE_NAME_RE.fullmatch(name))
+
+
+# --------------------------------------------------------------------------- normalizer
+
+def _normalize_url(url: str) -> str | None:
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password \
+            or parts.query or parts.fragment:
+        return None
+    host = parts.hostname.lower()
+    path = parts.path.rstrip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    segments = [s for s in path.split("/") if s]
+    if host in ("github.com", "www.github.com") and len(segments) == 2:
+        return f"github:{segments[0]}/{segments[1]}".lower()
+    port = f":{parts.port}" if parts.port is not None else ""
+    return f"https:{host}{port}{path}"
+
+
+def normalize_source(source: object) -> str | None:
+    """THE marketplace-source identity, shared by add time (the owner's string) and check
+    time (``known_marketplaces.json``'s source object as the CLI recorded it, ``bCe``
+    @280765576). Two sources are the same marketplace iff they normalize equal:
+
+    * ``owner/repo``, ``{"source": "github", "repo": …}`` and any ``https://github.com/o/r
+      [.git]`` git/url form → ``github:o/r`` (lower-cased: GitHub names are case-blind);
+    * another ``https`` URL, as ``git`` or ``url`` → ``https:<host><path>`` without a
+      trailing ``/`` or ``.git``;
+    * ``{"source": "directory", "path": P}`` → ``directory:P`` (exists so a host-side check
+      can name it; the add and confirm policies refuse it);
+    * a ``ref``/``path``/``sparsePaths`` pin, an ``http``/ssh/file URL, or any other source
+      type → ``None``, which never equals a recorded source (fail closed).
+    """
+    if isinstance(source, str):
+        s = source.strip()
+        if _GITHUB_RE.fullmatch(s):
+            return f"github:{s}".lower()
+        return _normalize_url(s) if s.startswith("https://") else None
+    if not isinstance(source, Mapping):
+        return None
+    kind = source.get("source")
+    if kind == "directory":
+        path = source.get("path")
+        return f"directory:{path}" if isinstance(path, str) and path.startswith("/") else None
+    if any(k in source for k in ("ref", "path", "sparsePaths", "headers", "headersHelper")):
+        return None
+    if kind == "github":
+        repo = source.get("repo")
+        return f"github:{repo}".lower() if isinstance(repo, str) and _GITHUB_RE.fullmatch(repo) else None
+    if kind in ("git", "url"):
+        url = source.get("url")
+        return _normalize_url(url) if isinstance(url, str) else None
+    return None
+
+
+def add_form(normalized: str | None) -> str | None:
+    """The ``marketplace add`` argument for a normalized source (``github:o/r`` → ``o/r``,
+    ``https:h/p`` → ``https://h/p``), or ``None`` for one the add policy would refuse."""
+    if not normalized:
+        return None
+    if normalized.startswith("github:"):
+        return normalized[len("github:"):]
+    if normalized.startswith("https:"):
+        return "https://" + normalized[len("https:"):]
+    return None
+
+
+# --------------------------------------------------------------------------- add policy
+
+def _resolve(host: str) -> list[str]:
+    """The seam tests replace: every address *host* resolves to."""
+    infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    return [str(info[4][0]) for info in infos]
+
+
+def _internal(addr: str) -> bool:
+    ip = ipaddress.ip_address(addr.split("%", 1)[0])
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
+            or ip.is_unspecified or ip.is_reserved
+            or (isinstance(ip, ipaddress.IPv4Address) and ip in _CGNAT))
+
+
+def _check_host(host: str, *, resolve: bool) -> str | None:
+    """Why *host* is refused, else ``None``. Refuses every IP-literal spelling
+    (``127.1``, ``0x7f.1``, ``017700000001`` …), ``localhost`` and ``*.localhost``, and —
+    when *resolve* — a name that resolves to a private, loopback, link-local, CGNAT
+    (``100.64/10``, the tailnet), multicast, unspecified or reserved address, or does not
+    resolve at all.
+
+    Residual: DNS rebinding. The name is resolved here and again by git when the CLI
+    clones, so a name that answers public now and internal later passes this check. The
+    check stops the plain case (a URL that names an internal service); closing rebinding
+    would need the clone to be pinned to the checked address, which the CLI does not offer.
+    """
+    lowered = host.lower().rstrip(".")
+    if lowered == "localhost" or lowered.endswith(".localhost"):
+        return "localhost"
+    if all(_NUMERIC_LABEL_RE.fullmatch(label) for label in lowered.split(".")):
+        return "an IP address"
+    try:
+        ipaddress.ip_address(lowered)
+        return "an IP address"
+    except ValueError:
+        pass
+    try:
+        socket.inet_aton(lowered)
+        return "an IP address"
+    except OSError:
+        pass
+    if not resolve:
+        return None
+    try:
+        addrs = _resolve(lowered)
+    except (OSError, UnicodeError):
+        return "a host that does not resolve"
+    if not addrs:
+        return "a host that does not resolve"
+    try:
+        if any(_internal(a) for a in addrs):
+            return "a host on a private or internal network"
+    except ValueError:
+        return "a host with an unreadable address"
+    return None
 
 
 def _would_be_name(repo: str) -> str:
@@ -100,13 +250,14 @@ def _guard_reserved(owner: str, repo: str) -> None:
                             f"{name!r} is reserved for Anthropic's own marketplaces.", 400)
 
 
-def check_marketplace_source(source: object) -> str:
-    """The marketplace source an owner may add, normalized, or a ``PolicyRefusal``.
+def check_marketplace_source(source: object, *, resolve: bool = True) -> str:
+    """The marketplace source an owner may add, unchanged, or a ``PolicyRefusal``.
 
-    Only a GitHub ``owner/repo`` or an ``https://`` git URL (no credentials, query,
-    fragment, port-less IP or ``localhost``). Local paths, ``http://``, ``file:``, ssh and
-    anything carrying whitespace or shell metacharacters are refused, as is a source whose
-    name would impersonate an official marketplace from anyone but ``anthropics``."""
+    Only a GitHub ``owner/repo`` or an ``https://`` git URL (no credentials, port, query
+    or fragment; see :func:`_check_host` for the host rules). Local paths, ``http://``,
+    ``file:``, ssh and anything carrying whitespace or shell metacharacters are refused, as
+    is a source whose name would impersonate an official marketplace from anyone but
+    ``anthropics``. *resolve* does a blocking DNS lookup: call it off the event loop."""
     def refuse(why: str) -> PolicyRefusal:
         return PolicyRefusal(MARKETPLACE_SOURCE_REFUSED,
                              f"Marketplace source refused: {why}. Use a GitHub owner/repo "
@@ -122,7 +273,7 @@ def check_marketplace_source(source: object) -> str:
         raise refuse("shell metacharacters or a parent-path segment")
     if source.startswith("-"):
         raise refuse("looks like a flag")
-    m = _GITHUB_RE.match(source)
+    m = _GITHUB_RE.fullmatch(source)
     if m:
         _guard_reserved(m["owner"], m["repo"])
         return source
@@ -131,15 +282,19 @@ def check_marketplace_source(source: object) -> str:
     parts = urlsplit(source)
     host = parts.hostname or ""
     if (parts.username or parts.password or "@" in parts.netloc or parts.port is not None
-            or parts.query or parts.fragment or not _HOST_RE.match(host)
-            or host.lower() == "localhost" or host.replace(".", "").isdigit()
-            or not _URL_PATH_RE.match(parts.path or "")):
+            or parts.query or parts.fragment or not _HOST_RE.fullmatch(host)
+            or not _URL_PATH_RE.fullmatch(parts.path or "")):
         raise refuse("unsupported https URL")
+    why = _check_host(host, resolve=resolve)
+    if why:
+        raise refuse(f"it names {why}")
     segments = [s for s in parts.path.split("/") if s]
     owner = segments[0] if host.lower() == "github.com" and len(segments) >= 2 else ""
     _guard_reserved(owner, segments[-1])
     return source
 
+
+# --------------------------------------------------------------------------- install policy
 
 def is_command_source(entry: object) -> bool:
     """True when a catalog entry might run a marketplace-declared command at install: a
@@ -171,13 +326,30 @@ def is_reviewed(listing: Mapping[str, Any] | None) -> bool:
     return review_state(listing) == "done"
 
 
-def check_install(plugin_id: str, curated: frozenset[str] | set[str], catalog: InstallCatalog) -> None:
-    """THE install/update gate (D1). Returns only when *plugin_id* may be installed:
+def check_curated(marketplace: str, curated: Mapping[str, str],
+                  sources: Mapping[str, str | None]) -> None:
+    """THE "is this marketplace curated, as configured right now?" check: the owner
+    confirmed it, and its configured source still normalizes to the confirmed one."""
+    recorded = curated.get(marketplace)
+    if not recorded:
+        raise PolicyRefusal(MARKETPLACE_NOT_CURATED,
+                            f"Marketplace {marketplace!r} has not been confirmed in Settings, "
+                            "so its plugins cannot be installed from here.",
+                            reason=REASON_NOT_CONFIRMED)
+    if sources.get(marketplace) != recorded:
+        raise PolicyRefusal(MARKETPLACE_NOT_CURATED,
+                            f"Marketplace {marketplace!r} now points at a different source than "
+                            "the one confirmed — source changed, re-confirm in Settings.",
+                            reason=REASON_SOURCE_CHANGED)
+
+
+def check_install(plugin_id: str, curated: Mapping[str, str], catalog: InstallCatalog) -> None:
+    """THE install/update gate (D1), run on the edge AND on every host against that host's
+    own catalog. Returns only when *plugin_id* may be installed:
 
     * ``<name>@anthropic-plugin-directory`` whose Directory listing is reviewed (``done``);
-    * ``<name>@<mkt>`` where *mkt* is curated (added by the owner through ViberPit, or
-      configured on the host when D-16c shipped) and its catalog lists *name* with a
-      source that runs no command.
+    * ``<name>@<mkt>`` where *mkt* is curated (:func:`check_curated`: confirmed, and its
+      source unchanged) and its catalog lists *name* with a source that runs no command.
 
     Anything else raises :class:`PolicyRefusal`, including a missing/unreadable catalog."""
     name, sep, marketplace = plugin_id.partition("@")
@@ -195,10 +367,7 @@ def check_install(plugin_id: str, curated: frozenset[str] | set[str], catalog: I
         if is_command_source(listing):
             raise _command_refusal(plugin_id)
         return
-    if marketplace not in curated:
-        raise PolicyRefusal(MARKETPLACE_NOT_CURATED,
-                            f"Marketplace {marketplace!r} was not added in Settings, so its "
-                            "plugins cannot be installed from here.")
+    check_curated(marketplace, curated, catalog.sources)
     entry = (catalog.marketplaces.get(marketplace) or {}).get(name)
     if entry is None:
         raise PolicyRefusal(PLUGIN_NOT_FOUND,

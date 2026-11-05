@@ -112,10 +112,17 @@ def _bad(message: str) -> HTTPException:
 
 @router.get("/plugins")
 async def get_plugins(_identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
+    """Installed plugins and configured marketplaces. Each marketplace carries its
+    ``normalizedSource`` (what a Confirm must echo back), ``curation``
+    (``confirmed`` | ``unconfirmed`` | ``source_changed``) and the ``confirmedSource`` on
+    record; ``installEnabled`` is the kill-switch signal."""
     out = await asyncio.to_thread(scan.list_plugins)
-    picked = await curated.curated(db)
+    records = await curated.confirmed(db)
     for m in out["marketplaces"]:
-        m["curated"] = m["name"] in picked
+        norm = plugin_policy.normalize_source(m.get("source"))
+        m["normalizedSource"] = norm
+        m["confirmedSource"] = records.get(m["name"])
+        m["curation"] = curated.curation_state(m["name"], records, norm)
     out["installEnabled"] = get_settings().plugin_install_enabled
     return out
 
@@ -123,7 +130,8 @@ async def get_plugins(_identity: str = Depends(current_identity), db=Depends(get
 # ---------------------------------------------------------------------------
 # Plugin marketplace (D-16c). The CLI wrapper (server/library/plugin_cli.py) is the only
 # writer, fanned out to every host (orch.plugin_op_everywhere); plugin_policy decides
-# what may be added or installed. Every mutation is human-only and audited.
+# what may be added or installed — here, and again on every host against its own state.
+# Every mutation is human-only (not even the local-host opt-in) and audited.
 # ---------------------------------------------------------------------------
 
 PLUGIN_INSTALL_DISABLED = "plugin_install_disabled"
@@ -138,19 +146,25 @@ class MarketplaceAddBody(BaseModel):
     confirm: bool = False
 
 
+class MarketplaceConfirmBody(BaseModel):
+    source: str  # the normalizedSource the UI showed
+    confirm: bool = False
+
+
 def _install_off() -> JSONResponse | None:
-    """Kill switch: install, update and add routes answer 404 while it is off."""
+    """Kill switch: install, update, add and confirm routes answer 404 while it is off."""
     if get_settings().plugin_install_enabled:
         return None
     return JSONResponse(status_code=404, content={"error": PLUGIN_INSTALL_DISABLED})
 
 
 def _plugin_human_gate(request: Request, identity: str) -> str | None:
-    """Only a person may change what code every session runs; returns ``via``."""
+    """Only an attested person may change what code every session on every host runs;
+    the local-host opt-in is not honoured (``trust_local_host=False``). Returns ``via``."""
     via = human_gate_via(request)
     try:
         require_human(identity, via, action="install, update, remove or toggle plugins",
-                      code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+                      code=SESSION_CONTROL_HUMAN_ONLY_CODE, trust_local_host=False)
     except ActionError as exc:
         log.info("library.plugin_refused code=%s identity=%s via=%s", exc.code, identity, via)
         raise HTTPException(status_code=exc.http,
@@ -159,8 +173,11 @@ def _plugin_human_gate(request: Request, identity: str) -> str | None:
 
 
 def _policy_http(exc: plugin_policy.PolicyRefusal, subject: str) -> HTTPException:
-    log.info("library.plugin_refused code=%s subject=%s", exc.code, subject)
-    return HTTPException(status_code=exc.http, detail={"code": exc.code, "message": exc.message})
+    log.info("library.plugin_refused code=%s reason=%s subject=%s", exc.code, exc.reason, subject)
+    detail = {"code": exc.code, "message": exc.message}
+    if exc.reason:
+        detail["reason"] = exc.reason
+    return HTTPException(status_code=exc.http, detail=detail)
 
 
 def _require_confirm(confirm: bool, subject: str) -> None:
@@ -190,18 +207,24 @@ async def _fan_out(request: Request, op: str, args: dict) -> dict:
             "hosts": hosts}
 
 
-async def _check_install(db, plugin_id: str) -> None:
-    """``plugin_policy.check_install`` over the curated set and this host's catalogs. A
-    missing Directory cache is fetched once (TTL-gated) before judging a Directory id."""
-    picked = await curated.curated(db)
-    catalog = await asyncio.to_thread(scan.install_catalog, picked)
-    if catalog.directory is None and plugin_id.endswith("@" + plugin_policy.DIRECTORY_MARKETPLACE):
+async def _check_install(db, plugin_id: str) -> dict:
+    """``plugin_policy.check_install`` on the edge, over the confirmed records and this
+    host's catalogs (the Directory cache refreshed first when its TTL has passed). Returns
+    the RPC args: every host re-checks against its own state, so a curated marketplace's
+    confirmed source rides along as ``expected_source``."""
+    records = await curated.confirmed(db)
+    marketplace = plugin_id.partition("@")[2]
+    if marketplace == plugin_policy.DIRECTORY_MARKETPLACE:
         await asyncio.to_thread(plugin_cli.refresh_available)
-        catalog = await asyncio.to_thread(scan.install_catalog, picked)
+    catalog = await asyncio.to_thread(scan.install_catalog, records)
     try:
-        plugin_policy.check_install(plugin_id, picked, catalog)
+        plugin_policy.check_install(plugin_id, records, catalog)
     except plugin_policy.PolicyRefusal as exc:
         raise _policy_http(exc, plugin_id) from None
+    args = {"plugin_id": plugin_id}
+    if marketplace in records:
+        args["expected_source"] = records[marketplace]
+    return args
 
 
 @router.get("/plugins/browse")
@@ -212,16 +235,15 @@ async def browse_plugins(
     limit: int = Query(default=50, ge=1, le=scan.BROWSE_LIMIT_MAX),
     _identity: str = Depends(current_identity), db=Depends(get_db),
 ) -> dict:
-    """Installable plugins: curated marketplaces' catalogs plus REVIEWED Directory
-    listings only (unreviewed ones never reach the client). Empty while the kill switch
-    is off."""
+    """Installable plugins: confirmed marketplaces (source unchanged) plus REVIEWED
+    Directory listings only (unreviewed ones never reach the client). Empty while the kill
+    switch is off."""
     if not get_settings().plugin_install_enabled:
         return {"plugins": [], "total": 0, "offset": offset, "limit": limit,
                 "installEnabled": False}
-    picked = await curated.curated(db)
-    if scan.directory_listings() is None:
-        await asyncio.to_thread(plugin_cli.refresh_available)
-    entries = await asyncio.to_thread(scan.browse_entries, picked)
+    records = await curated.confirmed(db)
+    await asyncio.to_thread(plugin_cli.refresh_available)  # no-op within the TTL
+    entries = await asyncio.to_thread(scan.browse_entries, records)
     page = scan.browse_page(entries, q=q, marketplace=marketplace, offset=offset, limit=limit)
     return {**page, "installEnabled": True}
 
@@ -234,8 +256,8 @@ async def install_plugin(plugin_id: str, body: ConfirmBody, request: Request,
     via = _plugin_human_gate(request, identity)
     _valid_plugin_or_400(plugin_id)
     _require_confirm(body.confirm, plugin_id)
-    await _check_install(db, plugin_id)
-    out = await _fan_out(request, "install", {"plugin_id": plugin_id})
+    args = await _check_install(db, plugin_id)
+    out = await _fan_out(request, "install", args)
     await record_audit(db=db, type="library_plugin_installed", identity=identity,
                        detail={"pluginId": plugin_id, "hosts": out["hosts"]}, via=via)
     return out
@@ -249,8 +271,8 @@ async def update_plugin(plugin_id: str, body: ConfirmBody, request: Request,
     via = _plugin_human_gate(request, identity)
     _valid_plugin_or_400(plugin_id)
     _require_confirm(body.confirm, plugin_id)
-    await _check_install(db, plugin_id)  # an update pulls new code: same gate
-    out = await _fan_out(request, "update", {"plugin_id": plugin_id})
+    args = await _check_install(db, plugin_id)  # an update pulls new code: same gate
+    out = await _fan_out(request, "update", args)
     await record_audit(db=db, type="library_plugin_updated", identity=identity,
                        detail={"pluginId": plugin_id, "hosts": out["hosts"]}, via=via)
     return out
@@ -268,30 +290,68 @@ async def uninstall_plugin(plugin_id: str, request: Request,
     return out
 
 
+async def _vetted_source(source: object) -> str:
+    """``check_marketplace_source`` — including its blocking DNS check — off the loop."""
+    try:
+        return await asyncio.to_thread(plugin_policy.check_marketplace_source, source)
+    except plugin_policy.PolicyRefusal as exc:
+        raise _policy_http(exc, repr(source)[:120]) from None
+
+
 @router.post("/marketplaces")
 async def add_marketplace(body: MarketplaceAddBody, request: Request,
                           identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
-    """Add a marketplace on every host and curate it. The UI shows ``source`` verbatim
-    before the confirm; only a GitHub owner/repo or an https git URL is accepted."""
+    """Add a marketplace on every host and confirm it at the source the owner was shown
+    (the UI shows ``source`` verbatim before the confirm). Only a GitHub owner/repo or an
+    https git URL is accepted."""
     if (off := _install_off()) is not None:
         return off
     via = _plugin_human_gate(request, identity)
-    try:
-        source = plugin_policy.check_marketplace_source(body.source)
-    except plugin_policy.PolicyRefusal as exc:
-        raise _policy_http(exc, repr(body.source)[:120]) from None
+    source = await _vetted_source(body.source)
     _require_confirm(body.confirm, source)
+    normalized = plugin_policy.normalize_source(source)
+    if normalized is None:  # unreachable for a vetted source; fail closed regardless
+        raise _policy_http(plugin_policy.PolicyRefusal(
+            plugin_policy.MARKETPLACE_SOURCE_REFUSED, "Unrecognized source.", 400), source)
     out = await _fan_out(request, "marketplace_add", {"source": source})
     names = sorted({h["marketplace"] for h in out["hosts"]
                     if h.get("outcome") in ("ok", "noop") and isinstance(h.get("marketplace"), str)
                     and plugin_policy.valid_marketplace_name(h["marketplace"])})
     for name in names:
-        await curated.add(db, name)
+        await curated.confirm(db, name, normalized)
     out["marketplaces"] = names
     await record_audit(db=db, type="library_marketplace_added", identity=identity,
-                       detail={"source": source, "marketplaces": names, "hosts": out["hosts"]},
-                       via=via)
+                       detail={"source": source, "normalizedSource": normalized,
+                               "marketplaces": names, "hosts": out["hosts"]}, via=via)
     return out
+
+
+@router.post("/marketplaces/{name}/confirm")
+async def confirm_marketplace(name: str, body: MarketplaceConfirmBody, request: Request,
+                              identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
+    """Confirm a marketplace configured outside ViberPit (or re-confirm one whose source
+    changed) at the source the UI showed. ``body.source`` must equal its CURRENT
+    ``normalizedSource``, so a swap between showing and clicking is refused; the source
+    must pass the same policy as an add."""
+    if (off := _install_off()) is not None:
+        return off
+    via = _plugin_human_gate(request, identity)
+    _valid_marketplace_or_400(name)
+    _require_confirm(body.confirm, name)
+    config = (await asyncio.to_thread(scan.known_marketplaces)).get(name)
+    if config is None:
+        raise HTTPException(status_code=404, detail={"error": "unknown_marketplace"})
+    current = plugin_policy.normalize_source(config.get("source"))
+    if current is None or body.source != current:
+        raise _policy_http(plugin_policy.PolicyRefusal(
+            plugin_policy.MARKETPLACE_NOT_CURATED,
+            f"Marketplace {name!r} no longer points at the source shown — source changed, "
+            "review it again.", reason=plugin_policy.REASON_SOURCE_CHANGED), name)
+    await _vetted_source(plugin_policy.add_form(current))
+    await curated.confirm(db, name, current)
+    await record_audit(db=db, type="library_marketplace_confirmed", identity=identity,
+                       detail={"name": name, "normalizedSource": current}, via=via)
+    return {"name": name, "confirmedSource": current, "curation": curated.CONFIRMED}
 
 
 @router.post("/marketplaces/{name}/update")
@@ -301,11 +361,13 @@ async def update_marketplace(name: str, request: Request,
         return off
     via = _plugin_human_gate(request, identity)
     _valid_marketplace_or_400(name)
-    if name not in await curated.curated(db):
-        raise _policy_http(plugin_policy.PolicyRefusal(
-            plugin_policy.MARKETPLACE_NOT_CURATED,
-            f"Marketplace {name!r} was not added in Settings."), name)
-    out = await _fan_out(request, "marketplace_update", {"name": name})
+    records = await curated.confirmed(db)
+    try:
+        plugin_policy.check_curated(name, records, await asyncio.to_thread(scan.marketplace_sources))
+    except plugin_policy.PolicyRefusal as exc:
+        raise _policy_http(exc, name) from None
+    out = await _fan_out(request, "marketplace_update",
+                         {"name": name, "expected_source": records[name]})
     await record_audit(db=db, type="library_marketplace_updated", identity=identity,
                        detail={"name": name, "hosts": out["hosts"]}, via=via)
     return out
@@ -314,7 +376,7 @@ async def update_marketplace(name: str, request: Request,
 @router.delete("/marketplaces/{name}")
 async def remove_marketplace(name: str, request: Request,
                              identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
-    """Remove on every host; it leaves the curated set whatever the hosts answer (the
+    """Remove on every host; the confirmed record goes whatever the hosts answer (the
     safe direction)."""
     via = _plugin_human_gate(request, identity)
     _valid_marketplace_or_400(name)

@@ -42,7 +42,10 @@ def test_mcp_and_plugin_ids():
     assert valid_plugin_id("code-review@claude-plugins-official")
     assert not valid_plugin_id("code-review")            # no marketplace
     assert not valid_plugin_id("a@b@c")
-    assert not valid_plugin_id("UPPER@market")
+    assert valid_plugin_id("Hello@MixedCase-Mkt")         # the CLI is case-sensitive, not lower-only
+    for bad in ("a@m\n", "a@m\r", "\na@m", "a@m\x00"):  # %0A et al.: fullmatch, not match+$
+        assert not valid_plugin_id(bad)
+    assert not valid_skill_name("skill\n") and not valid_mcp_name("srv\n")
 
 
 def test_resolve_under(tmp_path: Path):
