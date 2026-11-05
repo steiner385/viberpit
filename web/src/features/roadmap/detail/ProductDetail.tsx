@@ -19,6 +19,7 @@ import { OnboardingWizard } from '@/projects/OnboardingWizard'
 import { DependencyPanel } from '@/projects/DependencyPanel'
 import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TAB_LABEL, TIER_LABEL } from '@/features/products/vocab'
 import { CapabilitiesTab } from '@/features/products/CapabilitiesTab'
+import { MilestonesSummaryBlock } from '@/features/milestones/MilestonesSummaryBlock'
 import { useTabParam } from '../useTabParam'
 import { initiativePath } from '../roadmapNavState'
 import { programTitleOf } from '../lookup'
@@ -143,6 +144,11 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                     <p className="text-xs text-ink-muted">
                       {project.workItemCount} {ISSUE.plural.toLowerCase()} mirrored
                     </p>
+                    {/* A link line in the identity block, not a 4th summary block:
+                        Overview already holds three (Needs you, the map notice,
+                        the in-flight preview — docs/PAGE-TABS.md §5). Renders
+                        nothing when the product has no milestone ladder. */}
+                    <MilestonesSummaryBlock productSlug={product.slug} />
                   </section>
                   {/* Mounted only while open, like `NewCapabilityDialog` below — each
                       opening starts from the project's current values rather than

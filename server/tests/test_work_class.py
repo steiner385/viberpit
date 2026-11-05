@@ -49,6 +49,7 @@ def test_every_registered_automation_declares_its_work_class():
         "session-feedback": "maintenance",
         "capacity-governor": "maintenance",
         "needs-you-hygiene": "maintenance",
+        "milestones-refresh": "maintenance",
     }
 
 

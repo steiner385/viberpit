@@ -1,12 +1,13 @@
 // One product's detail: what each tab answers, and that its Needs-you number is
 // the same number the portfolio shows for it.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, within } from '@testing-library/react'
+import { cleanup, render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { MAP } from '../__fixtures__/map'
 import { needsYouCount } from './needsYou'
 import { ProductDetail } from './ProductDetail'
 import { ViewportProvider } from '@/shell/useViewport'
+import { ladderView } from '@/features/milestones/__fixtures__/ladder'
 
 // The project query is per-test state: a failed fetch is one of the states this
 // component has to render, and the map still holds the product either way.
@@ -25,6 +26,8 @@ const policySchemaQuery = vi.hoisted(() => ({ data: [] as unknown[], isLoading: 
 // test can give it real data; every other test leaves it `undefined`, which
 // renders nothing and stays out of their assertions.
 const projectHealthQuery = vi.hoisted(() => ({ data: undefined as unknown, isLoading: false, isError: false }))
+// The Overview's milestones line — `{ ladder: null }` (no ladder) by default.
+const milestonesQuery = vi.hoisted(() => ({ data: { ladder: null } as unknown }))
 
 // Every hook the tree under test reaches: `useProject` here, `useQueue` in
 // `RankedList`, the two incident hooks in `IncidentQueue` (mounted by
@@ -86,6 +89,9 @@ vi.mock('@/api/hooks', () => ({
   useProjectHealth: () => projectHealthQuery,
 }))
 
+// The Overview's milestones line (MilestonesSummaryBlock).
+vi.mock('@/api/milestones', () => ({ useMilestones: () => milestonesQuery }))
+
 vi.mock('@/api/pm', async (orig) => ({
   ...(await orig<typeof import('@/api/pm')>()),
   useProjectDeps: () => ({
@@ -135,6 +141,7 @@ beforeEach(() => {
   Object.assign(onboardingQuery, { data: ONBOARDING, isLoading: false })
   Object.assign(policySchemaQuery, { data: [], isLoading: false })
   Object.assign(projectHealthQuery, { data: undefined, isLoading: false, isError: false })
+  milestonesQuery.data = { ladder: null }
 })
 
 describe('ProductDetail', () => {
@@ -148,6 +155,19 @@ describe('ProductDetail', () => {
     // The stage track travels with the initiative it belongs to.
     expect(screen.getAllByLabelText(/Build: in progress/).length).toBeGreaterThan(0)
     expect(tile('Capabilities')).toHaveTextContent('3')
+  })
+
+  it('Overview: a milestones line in the identity block, hidden with no ladder', () => {
+    mount()
+    expect(screen.queryByRole('link', { name: 'Milestones' })).toBeNull()
+    cleanup()
+    milestonesQuery.data = ladderView()
+    mount()
+    const link = screen.getByRole('link', { name: 'Milestones' })
+    expect(link).toHaveAttribute('href', '/roadmap/kindash/milestones')
+    expect(link.closest('p')).toHaveTextContent('Phase 0 · Household gate · 1 of 4 gate conditions met · 1 unknown')
+    // Inside the identity block (beside "N issues mirrored"), not a 4th summary block.
+    expect(link.closest('section')).toHaveTextContent('40 issues mirrored')
   })
 
   it('Overview: shows the map-changes PR card when the product has an open pointer', () => {

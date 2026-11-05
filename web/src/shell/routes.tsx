@@ -73,7 +73,7 @@ import { useArchiveAdvance } from '@/features/sessions/useArchiveAdvance'
 import { SubAgentReaderPage } from '@/features/sessions/SubAgentPage'
 import { ArchivedReviewPage } from '@/features/sessions/ReviewPage'
 import {
-  CAPABILITY_ROUTE, INITIATIVE_ROUTE, INITIATIVES_PATH, PRODUCT_ROUTE,
+  CAPABILITY_ROUTE, INITIATIVE_ROUTE, INITIATIVES_PATH, MILESTONES_ROUTE, PRODUCT_ROUTE,
   inboxPath, productPath, roadmapPath,
 } from '@/features/roadmap/roadmapNavState'
 import {
@@ -103,10 +103,12 @@ import { PageContent } from '@/ui/PageContent'
  */
 const PipelinePage = lazy(() => import('@/features/pipeline/PipelinePage')
   .then((m) => ({ default: m.PipelinePage })))
-const RoadmapPage = lazy(() => import('@/features/roadmap/RoadmapPage')
+const RoadmapPage = lazy(() => import('@/features/roadmap/sectionPages')
   .then((m) => ({ default: m.RoadmapPage })))
 const InitiativePage = lazy(() => import('@/features/roadmap/InitiativePage')
   .then((m) => ({ default: m.InitiativePage })))
+const MilestonesPage = lazy(() => import('@/features/roadmap/sectionPages')
+  .then((m) => ({ default: m.MilestonesPage })))
 const DeliveryPage = lazy(() => import('@/features/delivery/DeliveryPage')
   .then((m) => ({ default: m.DeliveryPage })))
 const SettingsPage = lazy(() => import('@/features/settings/SettingsPage')
@@ -343,6 +345,9 @@ const PAGES: RouteObject[] = [
   { path: NAV_BY_ID.roadmap.path, element: <DeferredPage><RoadmapPage /></DeferredPage> },
   { path: PRODUCT_ROUTE, element: <DeferredPage><RoadmapPage /></DeferredPage> },
   { path: CAPABILITY_ROUTE, element: <DeferredPage><RoadmapPage /></DeferredPage> },
+  // A product's release-milestone ladder: its own page under the product
+  // (spec 2026-11-05 §9), not a level of the roadmap master/detail.
+  { path: MILESTONES_ROUTE, element: <DeferredPage><MilestonesPage /></DeferredPage> },
   // Initiative detail keeps its own `/initiatives` prefix; `navDefForPath`'s
   // section alias is what puts it in the Roadmap section anyway.
   { path: INITIATIVE_ROUTE, element: <DeferredPage><InitiativePage /></DeferredPage> },

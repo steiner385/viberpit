@@ -92,6 +92,9 @@ vi.mock('@/api/hooks', () => ({
   useProjectHealth: () => ({ data: undefined, isLoading: false, isError: false }),
 }))
 
+// The product Overview's milestones line — no ladder, so it renders nothing.
+vi.mock('@/api/milestones', () => ({ useMilestones: () => ({ data: { ladder: null } }) }))
+
 vi.mock('@/api/pm', async (orig) => ({
   ...(await orig<typeof import('@/api/pm')>()),
   useProjectDeps: () => ({

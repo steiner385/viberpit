@@ -1,0 +1,106 @@
+version: 1
+title: Launch readiness
+spec: docs/sdlc/launch-readiness-ladder-household-to-public-self-serve/spec.md
+start: household
+milestones:
+  - key: household
+    name: Household gate
+    label: Phase 0
+    audience: The owner's family, onboarded and in daily use
+    platforms: [Web, PWA, Kiosk wall, Android (Play)]
+    epics: ['#20191']
+    gate:
+      - key: rubric
+        label: Evidence rubric satisfied for every live capability
+        measure: {kind: ci_metric, workflow: milestone-metrics.yml, metric: rubric_missing_live, op: eq, target: 0}
+      - key: lane-fixes
+        label: Nine lane-integrity fixes landed
+        measure:
+          kind: refs_closed
+          refs: ['#20200', '#20201', '#20202', '#20203', '#20204', '#20205', '#20206', '#20207', '#20208']
+      - key: nightly
+        label: Nightly full suite green three runs running
+        measure: {kind: workflow_streak, workflow: nightly.yml, branch: main, target: 3}
+      - key: consent
+        label: Card-consent charge captured; processor DPAs on file
+        measure: {kind: refs_closed, refs: ['#20234', '#19215', '#19230']}
+  - key: friendly
+    name: Friendly families
+    label: Phase 1
+    audience: 3 to 5 households the owner names, lifetime free PLUS
+    platforms:
+      - Web
+      - PWA
+      - Android
+      - {name: Kiosk, off: true, note: not yet}
+    epics: ['#20192']
+    gate:
+      - key: setup
+        label: Every family completes setup with no support call
+        measure: {kind: manual}
+      - key: week-two
+        label: All but one household (min. two) active in week two, with a child or teen login
+        measure: {kind: manual}
+      - key: p0
+        label: Zero open P0
+        measure: {kind: issue_count, query: 'is:issue is:open label:"priority:P0-stability"', op: eq, target: 0}
+      - key: critical-7d
+        label: No critical bug in the last 7 days
+        measure: {kind: issue_count, query: 'is:issue label:"type:bug" label:"priority:P1-security" created:>={now-7d}', op: eq, target: 0}
+      - key: cohort-bugs
+        label: Every cohort bug closes with a regression test
+        measure: {kind: issue_count, query: 'is:issue is:open label:"cohort:phase-1"', op: eq, target: 0}
+  - key: community
+    name: Community cohort
+    label: Phase 2
+    audience: One ND-parent community, batches of ≤25, Plus checkout live at founder pricing
+    platforms: [Web, PWA, Android, Kiosk (any browser, paired)]
+    epics: ['#20193']
+    gate:
+      - key: paying
+        label: About 20 paying families; trial-to-paid ≥ 12%
+        measure: {kind: manual}
+      - key: week-four
+        label: ≥ 60% of households active in week four
+        measure: {kind: manual}
+      - key: support
+        label: Support < 5% of cohort; consent completion measured
+        measure: {kind: manual}
+      - key: crash-free
+        label: Android crash-free ≥ 99.5%
+        measure: {kind: manual}
+      - key: p0
+        label: Zero open P0
+        measure: {kind: issue_count, query: 'is:issue is:open label:"priority:P0-stability"', op: eq, target: 0}
+  - key: public
+    name: Public self-serve
+    label: Phase 3
+    audience: Anyone in the US · the PUBLIC_LAUNCH flip in one commit-pinned deploy
+    platforms:
+      - All of the above
+      - In-app paywall
+      - {name: iOS, off: true, note: 'after launch, funded by revenue'}
+    epics: ['#20194']
+    gate:
+      - key: phase2-readout
+        label: Phase 2 readout green
+        measure: {kind: manual}
+      - key: launch-day
+        label: Launch-day runbook complete; register probe returns the open-gate response
+        measure: {kind: manual}
+      - key: daily-watch
+        label: Two weeks of daily watch
+        measure: {kind: manual}
+numbers:
+  - key: rubric-gap
+    label: evidence cells missing in live capabilities
+    measure: {kind: ci_metric, workflow: milestone-metrics.yml, metric: rubric_missing_live}
+  - key: leaves
+    label: phase leaves closed
+    measure: {kind: ladder_leaves}
+  - key: outside-families
+    label: outside families on production
+    measure: {kind: manual}
+  - key: defects-by-ci
+    label: of recent defects found by CI (%)
+    measure: {kind: manual}

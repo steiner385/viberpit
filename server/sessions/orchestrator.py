@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from server.pm.feature_index import FeatureDocsRead
     from server.pm.map_changes import MapChangesService, Pointer
     from server.pm.materialize import MaterializedDirectly
+    from server.pm.milestone_index import LadderRowsView, LadderSyncPlan
     from server.pm.onboarding import ProjectOnboardingView
     from server.sessions.native_display import NativeDisplay
     from server.sessions.replay import EngineReplay
@@ -1006,7 +1007,7 @@ _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_archive_limit_task", "_recurring_task", "_mirror_task",
     "_error_triage_task", "_session_feedback_task",
     "_deploy_monitor_task", "_capacity_governor_task", "_decision_escalation_task",
-    "_needs_you_hygiene_task",
+    "_needs_you_hygiene_task", "_milestones_refresh_task",
 })
 
 
@@ -1600,6 +1601,9 @@ class SessionOrchestrator:
             read_persona_docs=self._pm_sync_read_persona_docs,
             list_persona_rows=self._pm_sync_list_persona_rows,
             apply_persona_plan=self._pm_sync_apply_persona_plan,
+            read_milestones=self._pm_sync_read_milestones,
+            load_ladder_rows=self._pm_sync_load_ladder_rows,
+            apply_ladder_plan=self._pm_sync_apply_ladder_plan,
             # Projects v2 + relations mirror seams (003 Phase A). Discovery rides
             # the owner-aware fetch (App token, has read:project); relations reuse
             # the ambient-credential fetch seam above.
@@ -1949,6 +1953,18 @@ class SessionOrchestrator:
             record_parked_run=self._needs_you_hygiene_record_parked_run,
             digest=self._needs_you_hygiene_digest_seams())
         self._needs_you_hygiene_task: asyncio.Task | None = None
+        # Milestones Refresh: release-milestone measurements every 10 min or on a
+        # stamped request (spec 2026-11-05 §8). Primary-only, like pm-sync.
+        from server.automations.milestones_refresh import MilestonesRefreshLoop
+        from server.pm.milestone_refresh import list_ladder_fetch_times, list_refresh_requests
+        self._milestones_refresh_ctx = AutomationContext("milestones-refresh")
+        self._milestones_refresh_loop = MilestonesRefreshLoop(
+            self._milestones_refresh_ctx,
+            read_config=self._milestones_refresh_read_config,
+            list_ladder_projects=list_ladder_fetch_times,
+            list_requested=list_refresh_requests,
+            refresh=self._milestones_refresh_run)
+        self._milestones_refresh_task: asyncio.Task | None = None
         # Archive Audit control loop: periodic re-audit of recently-archived sessions.
         from server.automations.archive_audit import ArchiveAuditLoop, _real_gh, _real_gh_num
         from server.automations.archive_audit import (
@@ -3246,6 +3262,13 @@ class SessionOrchestrator:
                 self._needs_you_hygiene_tick_loop(interval=_HYGIENE_TICK_S),
                 name="needs-you-hygiene-loop"
             )
+            # Milestones Refresh: a 15 s wake so a refresh request lands within a
+            # tick; each ladder is read only when due (10 min, or a newer request).
+            from server.automations.milestones_refresh import TICK_S as _MILESTONES_TICK_S
+            self._milestones_refresh_task = asyncio.create_task(
+                self._milestones_refresh_tick_loop(interval=_MILESTONES_TICK_S),
+                name="milestones-refresh-loop"
+            )
             # Archive Audit: re-audit recently-archived sessions every 6 hours.
             self._archaudit_task = asyncio.create_task(
                 self._archaudit_tick_loop(interval=21600.0), name="archive-audit-loop"
@@ -3902,7 +3925,7 @@ class SessionOrchestrator:
                      "_cicd_task", "_cicd_systemic_task", "_error_triage_task",
                      "_session_feedback_task",
                      "_deploy_monitor_task", "_decision_escalation_task",
-                     "_needs_you_hygiene_task",
+                     "_needs_you_hygiene_task", "_milestones_refresh_task",
                      "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
                      "_lease_task", "_session_lease_task", "_hb_task", "_drain_timer"):
@@ -11633,6 +11656,19 @@ class SessionOrchestrator:
             for key, value in updates.items():
                 setattr(row, key, value)
 
+    @staticmethod
+    def _pm_sync_default_head(clone: str) -> str:
+        """The clone's default-branch ref: ``origin/HEAD``'s target, or
+        ``refs/remotes/origin/master`` when origin/HEAD is unset. The one
+        resolution every pm-sync default-branch read shares (blocking; run it
+        in a thread)."""
+        import subprocess
+        head = subprocess.run(
+            ["git", "-C", clone, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+            capture_output=True, text=True, timeout=30,
+        )
+        return head.stdout.strip() or "refs/remotes/origin/master"
+
     async def _pm_sync_read_docs_at_ref(
         self, repo: str, subdir: str, ref: str | None = None,
     ) -> "FeatureDocsRead":
@@ -11674,13 +11710,7 @@ class SessionOrchestrator:
             if ref is not None:
                 resolved_ref = f"refs/remotes/origin/{ref}"
             else:
-                head = await asyncio.to_thread(
-                    subprocess.run,
-                    ["git", "-C", clone, "symbolic-ref", "--quiet",
-                     "refs/remotes/origin/HEAD"],
-                    capture_output=True, text=True, timeout=30,
-                )
-                resolved_ref = head.stdout.strip() or "refs/remotes/origin/master"
+                resolved_ref = await asyncio.to_thread(self._pm_sync_default_head, clone)
             # Pin the ref to a concrete commit so every blob read below is against
             # one consistent snapshot, immune to a concurrent ref-moving fetch.
             rp = await asyncio.to_thread(
@@ -11815,13 +11845,7 @@ class SessionOrchestrator:
             if ref is not None:
                 resolved_ref = f"refs/remotes/origin/{ref}"
             else:
-                head = await asyncio.to_thread(
-                    subprocess.run,
-                    ["git", "-C", clone, "symbolic-ref", "--quiet",
-                     "refs/remotes/origin/HEAD"],
-                    capture_output=True, text=True, timeout=30,
-                )
-                resolved_ref = head.stdout.strip() or "refs/remotes/origin/master"
+                resolved_ref = await asyncio.to_thread(self._pm_sync_default_head, clone)
             show = await asyncio.to_thread(
                 subprocess.run,
                 ["git", "-C", clone, "show", f"{resolved_ref}:{path}"],
@@ -11840,6 +11864,58 @@ class SessionOrchestrator:
         `_pm_sync_read_repo_file` for the shared git plumbing and the
         best-effort contract (issue #2165)."""
         return await self._pm_sync_read_repo_file(repo, self._PM_SYNC_CONSTITUTION_PATH, ref)
+
+    async def _pm_sync_read_milestones(self, repo: str) -> tuple[str | None, str]:
+        """Read the release-milestone definition (``MILESTONES_PATH``) at the
+        default-branch head -> ``(text, sha)``. Unlike `_pm_sync_read_repo_file`
+        it pins the head to a commit SHA once (the ladder records which commit
+        it was parsed from) and separates the two failure kinds: a file absent
+        at that commit is ``(None, sha)``; a clone, ref or blob failure raises,
+        so the pass skips instead of recording "definition file removed"."""
+        import subprocess
+
+        from server.pm.milestone_def import MILESTONES_PATH
+
+        repo_root = await self._effective_repo_root()
+        clone = await asyncio.to_thread(
+            gitrepos.ensure_clone, repo_root, repo, f"https://github.com/{repo}.git")
+
+        def _git(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["git", "-C", clone, *args], capture_output=True, text=True, timeout=30)
+
+        resolved_ref = await asyncio.to_thread(self._pm_sync_default_head, clone)
+        rp = await asyncio.to_thread(
+            _git, "rev-parse", "--verify", f"{resolved_ref}^{{commit}}")
+        if rp.returncode != 0:
+            raise RuntimeError(
+                f"pm_sync.read_milestones: cannot resolve {resolved_ref} in {repo}: "
+                f"{(rp.stderr or '').strip()[:200]}")
+        sha = rp.stdout.strip()
+        ls = await asyncio.to_thread(_git, "ls-tree", "--name-only", sha, "--", MILESTONES_PATH)
+        if ls.returncode != 0:
+            raise RuntimeError(
+                f"pm_sync.read_milestones: ls-tree failed for {repo}: "
+                f"{(ls.stderr or '').strip()[:200]}")
+        if not ls.stdout.strip():
+            return None, sha
+        show = await asyncio.to_thread(_git, "show", f"{sha}:{MILESTONES_PATH}")
+        if show.returncode != 0:
+            raise RuntimeError(
+                f"pm_sync.read_milestones: read failed for {repo}: "
+                f"{(show.stderr or '').strip()[:200]}")
+        return show.stdout, sha
+
+    async def _pm_sync_load_ladder_rows(self, project_id: str) -> "LadderRowsView":
+        """Thin wrapper over server/pm/milestone_sync_seams.py — see
+        _pm_sync_list_feature_rows for why this stays a bound method."""
+        from server.pm.milestone_sync_seams import load_ladder_rows
+        return await load_ladder_rows(project_id)
+
+    async def _pm_sync_apply_ladder_plan(self, project_id: str, plan: "LadderSyncPlan") -> None:
+        """Thin wrapper over server/pm/milestone_sync_seams.py."""
+        from server.pm.milestone_sync_seams import apply_ladder_plan
+        await apply_ladder_plan(project_id, plan)
 
     async def _pm_sync_read_artifact_doc(
         self, repo: str, path: str, ref: str | None = None
@@ -15662,6 +15738,43 @@ class SessionOrchestrator:
             ids = {slug: pid for slug, pid in (await db.execute(
                 select(Project.slug, Project.id))).all() if slug}
             return await record_samples(db, counts, ids, now=datetime.now(timezone.utc))
+
+    # ------------------------------------------------------------------
+    # Milestones Refresh control loop (spec 2026-11-05 §8)
+    # ------------------------------------------------------------------
+    async def _milestones_refresh_tick_loop(self, interval: float) -> None:
+        while True:
+            await self._milestones_refresh_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _milestones_refresh_tick_once(self) -> None:
+        if not await self._schedule_allows_tick("milestones-refresh"):
+            return
+        await self._milestones_refresh_loop.tick()
+        try:
+            mode, _ = await self._milestones_refresh_read_config()
+            if mode != "off":
+                await self._bump_automation_active("milestones-refresh")
+        except Exception:
+            log.debug("milestones_refresh.heartbeat_failed", exc_info=True)
+
+    async def _milestones_refresh_read_config(self) -> tuple[str, dict]:
+        from server.automations.milestones_refresh import read_config
+        return await read_config()
+
+    async def _milestones_refresh_run(self, project_id: str, *, dry_run: bool):
+        """One ladder's refresh through the owner-aware GraphQL seam. ``partial_ok``:
+        a ref the token can't read errors only its alias, never the ladder."""
+        from server.db.models import _utcnow
+        from server.github import actions_api
+        from server.pm import milestone_refresh
+
+        async def graphql(owner: str, query: str) -> dict:
+            return await self._pm_gh_graphql(owner, query, partial_ok=True)
+
+        return await milestone_refresh.refresh_ladder(
+            project_id, graphql=graphql, list_runs=actions_api.list_workflow_runs,
+            now=_utcnow(), dry_run=dry_run)
 
     # ------------------------------------------------------------------
     # Archive Audit control-loop dependencies (injected into ArchiveAuditLoop)
@@ -21298,6 +21411,7 @@ class SessionOrchestrator:
             "deploy-monitor": getattr(self, "_deploy_monitor_ctx", None),
             "decision-escalation": getattr(self, "_decision_escalation_ctx", None),
             "needs-you-hygiene": getattr(self, "_needs_you_hygiene_ctx", None),
+            "milestones-refresh": getattr(self, "_milestones_refresh_ctx", None),
             "sdlc-intake": getattr(self, "_sdlc_intake_ctx", None),
             "sdlc-synthesizer": getattr(self, "_sdlc_synth_ctx", None),
             "control-band-monitor": getattr(self, "_control_band_ctx", None),
