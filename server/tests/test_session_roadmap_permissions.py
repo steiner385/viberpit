@@ -14,8 +14,9 @@ from server.sessions.tools.codex import CodexSessionTools
 from server.sessions.tools.context import SessionToolContext
 from server.tests.test_codex_driver import Harness, SESSION, THREAD
 
-READS = ("roadmap_needs_you", "roadmap_item")
-MUTATIONS = ("roadmap_resolve", "roadmap_hold", "roadmap_advance")
+READS = ("roadmap_needs_you", "roadmap_item", "roadmap_milestones")
+MUTATIONS = ("roadmap_resolve", "roadmap_hold", "roadmap_advance", "roadmap_milestone_tick",
+             "roadmap_milestone_advance")
 
 
 @pytest.mark.asyncio

@@ -224,6 +224,7 @@ const MILESTONE_ERROR_COPY: Record<string, string> = {
   evidence_required: 'Add evidence for this tick.',
   owner_required: 'Only the owner can change what someone else recorded.',
   person_required: 'Only a person can make this change, not an automation.',
+  person_or_session_required: 'Only a person or a session can write this, not an automation.',
   ladder_complete: 'This ladder is complete. There is nothing left to advance.',
   no_milestones: 'This ladder has no milestones to start.',
   not_manual: 'This condition is measured automatically, so it cannot be ticked.',

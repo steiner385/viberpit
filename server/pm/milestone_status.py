@@ -14,6 +14,15 @@ from typing import Any
 from server.pm.milestone_def import _ALL_CLOSED_KINDS, MEASURE_KINDS, Measure
 from server.time_iso import aware_utc
 
+#: The ``key`` of a milestone's leaf-list row (scope ``leaves:<milestone key>``). Here,
+#: in the pure module, so the view reads it without importing the refresh service.
+LEAVES_KEY = "leaves"
+
+
+def leaves_scope(milestone_key: str) -> str:
+    return f"leaves:{milestone_key}"
+
+
 _OPS: dict[str, Callable[[float, float], bool]] = {
     "eq": operator.eq,
     "ne": operator.ne,

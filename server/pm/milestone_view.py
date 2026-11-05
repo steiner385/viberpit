@@ -13,10 +13,21 @@ from datetime import datetime
 from typing import Any
 
 from server.pm.milestone_asks import ASK_KIND, DECISION_STATUSES, is_open_ask
-from server.pm.milestone_def import Condition, LadderDef, condition_from_json, from_json
+from server.pm.milestone_def import (
+    MILESTONES_PATH,
+    Condition,
+    LadderDef,
+    condition_from_json,
+    from_json,
+)
 from server.pm.milestone_github import DONE_REF_STATES
-from server.pm.milestone_refresh import LEAVES_KEY, leaves_scope
-from server.pm.milestone_status import effective_max_age, gate_met, status_at
+from server.pm.milestone_status import (
+    LEAVES_KEY,
+    effective_max_age,
+    gate_met,
+    leaves_scope,
+    status_at,
+)
 from server.time_iso import aware_utc, iso_utc
 
 LEAF_STATES: tuple[str, ...] = ("done", "in_flight", "not_started")
@@ -230,3 +241,128 @@ def build_milestones_view(
         "numbers": numbers,
         "notes": _notes(note_rows),
     }
+
+
+# ---------------------------------------------------------------- text summary
+
+#: Bounds on the session tools' summary (the web renders the view itself).
+SUMMARY_MAX = 1500
+LABEL_MAX = 60
+_GATE_LINES, _ASKS, _DECISIONS, _UPCOMING = 8, 5, 6, 5
+_GLYPH = {"met": "✔", "unmet": "✖", "unknown": "?", "info": "·"}
+_OP = {"eq": "=", "ne": "≠", "lt": "<", "le": "≤", "gt": ">", "ge": "≥"}
+
+
+def _clip(text: str | None, limit: int = LABEL_MAX) -> str:
+    s = " ".join((text or "").split())
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
+def _num(x: Any) -> str:
+    return str(int(x)) if isinstance(x, float) and x.is_integer() else str(x)
+
+
+def _reading(c: Mapping[str, Any]) -> str | None:
+    """"8 of 9 closed", "293 → 0", "0 of ≥3" or a bare count; None with no number."""
+    raw = c.get("value")
+    v: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    done, total, n = v.get("done"), v.get("total"), v.get("n")
+    if isinstance(done, (int, float)) and isinstance(total, (int, float)):
+        return f"{_num(done)} of {_num(total)} closed"
+    if not isinstance(n, (int, float)) or isinstance(n, bool):
+        return None
+    op, target = c.get("op"), c.get("target")
+    if op in _OP and target is not None:
+        return f"{_num(n)} → {_num(target)}" if op == "eq" else f"{_num(n)} of {_OP[op]}{_num(target)}"
+    return _num(n)
+
+
+def _ago(seconds: Any) -> str | None:
+    if not isinstance(seconds, int):
+        return None
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds >= size:
+            return f"{seconds // size}{unit} ago"
+    return "just now"
+
+
+def _condition_line(c: Mapping[str, Any]) -> str:
+    status = c.get("status") or "unknown"
+    if status == "unknown" and c.get("error"):
+        detail = f"unknown: {_clip(c['error'], 80)}"
+    else:
+        reading = _reading(c)
+        if reading is None and c.get("manualBy"):
+            reading = f"ticked by {c['manualBy']}"
+        parts = [p for p in (reading, _ago(c.get("ageSeconds"))) if p]
+        if status == "unknown":
+            parts.append("stale" if parts else "no reading yet")
+        detail = ", ".join(parts)
+    manual = " [manual]" if c.get("kind") == "manual" else ""
+    line = f"  {_GLYPH.get(status, '?')} {c.get('key')}{manual}: {_clip(c.get('label'))}"
+    return f"{line} ({detail})" if detail else line
+
+
+def _listed(items: list[str], limit: int, sep: str) -> str:
+    shown = sep.join(items[:limit])
+    return f"{shown} +{len(items) - limit} more" if len(items) > limit else shown
+
+
+def _title(m: Mapping[str, Any]) -> str:
+    return " · ".join(p for p in (m.get("label"), m.get("name")) if p) or str(m.get("key"))
+
+
+def summarize_milestones(view: Mapping[str, Any], *, product: str = "",
+                         viewer: str | None = None) -> str:
+    """THE compact text the session tools put in front of a milestones view: the
+    current rung and its gate, leaves, open asks, decisions and what is upcoming.
+    Labels are clipped to ``LABEL_MAX``, long lists end "+N more", and the whole is
+    at most ``SUMMARY_MAX`` characters. A product with no ladder gets one line. Keys an
+    agent passes back (milestone, condition, note id) are printed; *viewer* (the
+    caller's identity) marks the asks it created "(by you)"."""
+    ladder = view.get("ladder")
+    if not ladder:
+        return f"{product or 'This product'}: no milestone ladder (add {MILESTONES_PATH})"
+    milestones = list(view.get("milestones") or [])
+    current = next((m for m in milestones if m.get("key") == ladder.get("currentKey")), None)
+    title = ladder.get("title") or "Milestones"
+    lines: list[str] = []
+    if current is None:
+        state = "complete" if ladder.get("ladderComplete") else "not started"
+        lines.append(f"{title} — ladder {state}")
+    else:
+        s = current.get("gateSummary") or {}
+        head = f"{s.get('met', 0)}/{s.get('total', 0)} met"
+        if s.get("unknown"):
+            head += f", {s['unknown']} unknown"
+        head += f", ready: {'yes' if s.get('ready') else 'no'}"
+        removed = " — removed from the definition" if ladder.get("currentRemoved") else ""
+        lines.append(f"{title} — current: {current.get('key')} ({_title(current)}) — {head}{removed}")
+        if current.get("statusNote"):
+            lines.append(f"  status: {_clip(current['statusNote'], 120)}")
+        gate = [_condition_line(c) for c in current.get("gate") or []]
+        lines += gate[:_GATE_LINES]
+        if len(gate) > _GATE_LINES:
+            lines.append(f"  +{len(gate) - _GATE_LINES} more")
+        leaves = current.get("leaves") or {}
+        if leaves.get("total"):
+            lines.append(f"  leaves: {leaves.get('done', 0)} done · {leaves.get('inFlight', 0)} "
+                         f"in flight · {leaves.get('notStarted', 0)} not started")
+    if ladder.get("parseError"):
+        lines.append(f"Definition error: {_clip(ladder['parseError'], 120)}")
+    notes = view.get("notes") or {}
+    asks = [a for a in notes.get("asks") or [] if a.get("status") == "open"]
+    if asks:
+        rows = [f"#{a.get('id')}" + (" (by you)" if viewer and a.get("createdBy") == viewer else "")
+                + (f" [{a['milestoneKey']}]" if a.get("milestoneKey") else "")
+                + f" {_clip(a.get('text'))}" for a in asks]
+        lines.append(f"Open asks ({len(rows)}): {_listed(rows, _ASKS, ' · ')}")
+    decisions = notes.get("decisions") or []
+    if decisions:
+        rows = [f"{d.get('ref') or _clip(d.get('text'), 30)} {d.get('status')}" for d in decisions]
+        lines.append(f"Decisions ({len(rows)}): {_listed(rows, _DECISIONS, ', ')}")
+    upcoming = [_title(m) for m in milestones if m.get("state") == "upcoming"]
+    if upcoming:
+        lines.append(f"Upcoming: {_listed(upcoming, _UPCOMING, ', ')}")
+    text = "\n".join(lines)
+    return text if len(text) <= SUMMARY_MAX else text[:SUMMARY_MAX - 1] + "…"

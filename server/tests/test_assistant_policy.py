@@ -137,6 +137,7 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("GET", "/api/pm/projects/acme-billing", True),
     ("GET", "/api/pm/projects/acme-billing/deps", True),
     ("GET", "/api/pm/projects/acme-billing/onboarding", True),
+    ("GET", "/api/pm/projects/acme-billing/milestones", True),
     # update_product_policy is operator tier ONLY (test_operator_routes_need_the_flag).
     ("PATCH", "/api/pm/projects/acme-billing/policy", False),
     # get_pr_files: the files sub-route, and nothing deeper.
@@ -266,3 +267,20 @@ def test_operator_routes_not_matched_by_ordinary_allowlist(method, path):
     # route must never become reachable just because ASSISTANT_ROUTE_ALLOW happens to
     # match it, independent of the `operator` flag.
     assert not any(m == method and rx.match(path) for m, rx in ASSISTANT_ROUTE_ALLOW)
+
+
+@pytest.mark.parametrize("method,path", [
+    ("PUT", "/api/pm/projects/acme-billing/milestones"),
+    ("POST", "/api/pm/projects/acme-billing/milestones"),
+    ("PATCH", "/api/pm/projects/acme-billing/milestones"),
+    ("PUT", "/api/pm/projects/acme-billing/milestones/m1"),
+    ("PATCH", "/api/pm/projects/acme-billing/milestones/m1"),
+    ("POST", "/api/pm/projects/acme-billing/milestones/refresh"),
+    ("GET", "/api/pm/projects/acme-billing/milestones/m1"),
+    ("POST", "/api/pm/projects/acme-billing/milestones/notes"),
+    ("PATCH", "/api/pm/projects/acme-billing/milestones/notes/n1"),
+    ("POST", "/api/pm/projects/acme-billing/milestones/advance"),
+    ("PUT", "/api/pm/projects/acme-billing/milestones/m1/conditions/c1"),
+])
+def test_milestone_write_routes_not_allowlisted(method, path):
+    assert route_allowed(method, path) is False

@@ -12,6 +12,20 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("roadmap_resolve", ToolClass.MUTATION, "Resolve a roadmap proposal", idempotent=False),
     ToolSpec("roadmap_hold", ToolClass.MUTATION, "Hold or release a roadmap item"),
     ToolSpec("roadmap_advance", ToolClass.MUTATION, "Approve an initiative stage", idempotent=False),
+    # Release milestones (spec 2026-11-05 M8–M11). The read is unconditional like the
+    # other roadmap reads; a tick and an advance are owner-delegated MUTATIONs with a
+    # card (an advance is also never-ruled, R3).
+    ToolSpec("roadmap_milestones", ToolClass.READ, "Read product milestones"),
+    ToolSpec("roadmap_milestone_tick", ToolClass.MUTATION, "Tick a manual milestone condition",
+             idempotent=False),
+    ToolSpec("roadmap_milestone_advance", ToolClass.MUTATION, "Advance the current milestone",
+             idempotent=False),
+    # SIGNAL, the propose_decision precedent (R2): it writes a milestone note, the status
+    # line or a refresh request as the SESSION itself (``session:<id>``, R1), and the
+    # write rules let a session change only notes it created — so an unattended session
+    # records an ask with no card nobody is there to answer. Not a turn signal.
+    ToolSpec("roadmap_milestone_note", ToolClass.SIGNAL, "Record a milestone note",
+             idempotent=False),
     ToolSpec("session_context", ToolClass.READ, "Read this session's context"),
     ToolSpec("report_feedback", ToolClass.READ, f"Report a problem with {brand.NAME}"),
     # SIGNAL, not READ: each moves something the user sees (a status badge, a
@@ -127,6 +141,8 @@ def mounted_signal_names(*, signalling_tools: bool, self_model_switch: bool) -> 
     ``hand_back`` for the half that is missing. ``share_artifact`` rides
     unconditionally too: every session that can finish has deliverables to show.
     ``rename_self`` rides with it: any session whose scope drifts can retitle itself.
+    ``roadmap_milestone_note`` rides unconditionally too: it acts as the session, so it
+    needs no owner and no engine capability.
 
     ``request_model`` is named only when ``self_model_switch`` — declaring it otherwise
     offers a call whose result is silently dropped (no engine capability to honour it).
@@ -134,7 +150,7 @@ def mounted_signal_names(*, signalling_tools: bool, self_model_switch: bool) -> 
     if not signalling_tools:
         return ()
     names = ["mark_complete", "mark_no_pr", "hand_back", "set_hold", "propose_decision",
-             "share_artifact", "rename_self"]
+             "share_artifact", "rename_self", "roadmap_milestone_note"]
     if self_model_switch:
         names.append("request_model")
     return tuple(names)
@@ -154,7 +170,8 @@ def mounted_names(*, signalling_tools: bool, self_model_switch: bool,
     # `dispatch_session` and its answer half `reply_to_child` ride only on a durable surface — there is no marker for a
     # dispatch — and only while the kill switch (``child_sessions``) is on.
     if signalling_tools:
-        names += ("roadmap_resolve", "roadmap_hold", "roadmap_advance", "request_draft_ready")
+        names += ("roadmap_resolve", "roadmap_hold", "roadmap_advance", "roadmap_milestone_tick",
+                  "roadmap_milestone_advance", "request_draft_ready")
     if signalling_tools and child_sessions:
         names = names + ("dispatch_session", "reply_to_child")
     return names

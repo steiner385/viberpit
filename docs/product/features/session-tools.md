@@ -40,7 +40,8 @@ declaration the session made on purpose.
 the operators who triage `session_feedback` rows into the backlog.
 
 **Desired outcome** — every coding session mounts an in-process `viberpit` MCP server with up to
-eleven tools (plus the roadmap tools):
+thirteen tools (plus the nine roadmap tools: five for triage and four for release milestones,
+below):
 
 | Tool | Class | Args | What it does |
 |---|---|---|---|
@@ -517,3 +518,38 @@ Both Claude and Codex receive the shared tool registry. Mutations mount on the d
 surface; reads are always available while session tools are enabled. Start a fresh
 Codex session to gain newly added tools: dynamic tools are registered at thread start
 and an existing thread retains its original declaration on resume.
+
+### Release milestones
+
+Four tools reach a product's release-milestone ladder (spec 2026-11-05, M8–M11). Each one calls
+the Phase 2 route handlers in `server/api/pm_milestones.py` in-process, so every write rule stays
+in `server/pm/milestone_actions.py`. Every result opens with a compact text summary (THE
+`summarize_milestones` in `server/pm/milestone_view.py`, at most 1,500 characters). The full view
+follows it as the JSON envelope's `data`. A product with no ladder answers
+`<product>: no milestone ladder (add docs/product/milestones.yaml)` with `data: null`.
+
+| Tool | Class | Args | Acts as |
+|---|---|---|---|
+| `roadmap_milestones` | READ | product | — (reads the view) |
+| `roadmap_milestone_tick` | MUTATION, card, never-ruled | product, milestone, condition, met \| value, evidence, url? | the human owner, `via="session"` |
+| `roadmap_milestone_advance` | MUTATION, card, never-ruled | product, expected_current | the human owner, `via="session"` |
+| `roadmap_milestone_note` | SIGNAL, no card | product, action (`add` \| `set_status` \| `status_line` \| `refresh`), kind?, text?, ref?, url?, milestone?, note_id?, status? | the session itself, `session:<id>` |
+
+- **Ticks and advance** go through `session_triage.invoke`, the same owner delegation as the
+  triage mutations above. A permission card is raised in every mode, `_owner` refuses an
+  unattributed session or `bypassPermissions`, and a `pm.session.delegate` row is written in
+  the same transaction. A computed condition refuses a tick (`not_manual`).
+- **R3.** `roadmap_milestone_advance` has no override parameter. An unmet gate comes back as
+  `gate_unmet`, because an override is the owner's alone, in the web app (M4/M10). Both it and
+  `roadmap_milestone_tick` (a tick is recorded as the person's answer and can unlock an advance)
+  are in `NEVER_RULED_TOOLS` under both brand prefixes, like `roadmap_advance`, so "Always
+  allow" can never cover either.
+- **R1/R2.** `roadmap_milestone_note` is a `SIGNAL`, following the `propose_decision` precedent.
+  It raises no card, and it is not a turn signal, so it renders as an ordinary ToolCall card.
+  Its actor is the session itself, never the owner, so an unattended session can record an ask
+  with nobody there to answer a card. The write rules let a session add notes, set a status
+  line, and change only the notes it created. Resolving the owner's ask returns
+  `403 owner_required`. `refresh` returns `409 automatic_refresh_off` or `429 refresh_too_soon`
+  as a tool error.
+- Refusals arrive as `<status> <code>: <plain words>`. The Python copy lives in
+  `server/pm/milestone_tool_result.py`, and the web keeps its own copy for the page.

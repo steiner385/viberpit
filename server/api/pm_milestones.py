@@ -21,7 +21,6 @@ from sqlalchemy import select
 from server.api.pm import _load_project
 from server.audit import record_audit
 from server.auth.middleware import current_identity
-from server.automations.milestones_refresh import automatic_refresh_enabled
 from server.db import get_db
 from server.db.models import (
     Milestone,
@@ -33,6 +32,7 @@ from server.db.models import (
 )
 from server.pm import milestone_actions as actions
 from server.pm.milestone_refresh import REFRESH_MIN_INTERVAL_S, newest_fetched_at
+from server.pm.milestone_refresh_config import automatic_refresh_enabled
 from server.pm.milestone_view import build_milestones_view
 from server.time_iso import aware_utc
 

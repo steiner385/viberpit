@@ -166,7 +166,7 @@ def test_orchestrator_refresh_seam_uses_partial_ok_graphql(monkeypatch):
 
 
 def test_automatic_refresh_enabled_reads_the_automation_row(isolated_db):
-    from server.automations.milestones_refresh import automatic_refresh_enabled
+    from server.pm.milestone_refresh_config import automatic_refresh_enabled
     from server.db import db_session
     from server.db.models import Automation
 

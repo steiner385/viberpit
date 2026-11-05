@@ -9,7 +9,8 @@ write raises :class:`MilestoneActionError`; nothing here touches the definition 
 product repo's YAML is the only definition, M2).
 
 Who may do what (M9, amended): every write needs a *person* identity, which includes a
-session or the assistant delegating for its human. An *owner* action additionally
+session or the assistant delegating for its human. Notes and the status line also accept
+a session acting as itself (M8); a session may change only notes it created. An *owner* action additionally
 needs a direct request (``via == "api"``; fail closed): override advance,
 re-ticking another person's tick, and resolving or editing another person's note.
 """
@@ -33,7 +34,7 @@ from server.db.models import (
     MilestoneNote,
     _utcnow,
 )
-from server.pm.holds import actor_class
+from server.pm.holds import SESSION_PREFIX, actor_class
 from server.pm.milestone_asks import ASK_STATUSES, DECISION_STATUSES, NOTE_KINDS
 from server.pm.milestone_def import Condition, from_json
 from server.pm.milestone_status import Reading, evaluate, gate_met
@@ -90,9 +91,19 @@ def is_owner(actor: Actor) -> bool:
     return is_person(actor) and actor.via == OWNER_VIA
 
 
+def is_session(actor: Actor) -> bool:
+    return actor.identity.startswith(SESSION_PREFIX)
+
+
 def _require_person(actor: Actor) -> None:
     if not is_person(actor):
         raise MilestoneActionError(403, "person_required")
+
+
+def _require_writer(actor: Actor) -> None:
+    """Notes and the status line also accept a session as itself (M8, R1)."""
+    if not (is_person(actor) or is_session(actor)):
+        raise MilestoneActionError(403, "person_or_session_required")
 
 
 def _clean(text: str | None) -> str | None:
@@ -224,7 +235,7 @@ async def tick_condition(
 async def set_status_note(db: AsyncSession, ladder: MilestoneLadder, milestone_key: str, *,
                           actor: Actor, text: str | None) -> Milestone:
     """Set (or, with empty text, clear) a milestone's one-line status."""
-    _require_person(actor)
+    _require_writer(actor)
     note = _clean(text)
     if note is not None and len(note) > STATUS_NOTE_MAX:
         raise MilestoneActionError(400, "too_long", {"max": STATUS_NOTE_MAX})
@@ -259,7 +270,7 @@ async def add_note(db: AsyncSession, ladder: MilestoneLadder, *, actor: Actor, k
                    text: str, ref: str | None = None, url: str | None = None,
                    milestone_key: str | None = None, status: str | None = None) -> MilestoneNote:
     """Record an owner decision or ask, ladder-wide or on one live milestone."""
-    _require_person(actor)
+    _require_writer(actor)
     if kind not in NOTE_KINDS:
         raise MilestoneActionError(400, "bad_kind", {"allowed": list(NOTE_KINDS)})
     body = _note_text(text)
@@ -291,7 +302,7 @@ async def update_note(db: AsyncSession, ladder: MilestoneLadder, note_id: str, *
                       status: str | None = None, text: str | None = None) -> MilestoneNote:
     """Change a note's status and/or text. Moving an ask to done/dropped stamps who
     resolved it; reopening clears that."""
-    _require_person(actor)
+    _require_writer(actor)
     note = (await db.execute(select(MilestoneNote).where(
         MilestoneNote.id == note_id, MilestoneNote.ladder_id == ladder.id))).scalar_one_or_none()
     if note is None:
@@ -301,7 +312,11 @@ async def update_note(db: AsyncSession, ladder: MilestoneLadder, note_id: str, *
     if status is not None:
         _check_status(note.kind, status)
     body = _note_text(text) if text is not None else None
-    if note.created_by not in (None, actor.identity) and not is_owner(actor):
+    # A session changes only its own notes: NULL counts as someone else's for it. For a
+    # person a NULL creator stays editable (a pre-attribution note has no one to defer to).
+    own = (note.created_by == actor.identity if is_session(actor)
+           else note.created_by in (None, actor.identity))
+    if not own and not is_owner(actor):
         raise MilestoneActionError(403, "owner_required", {"createdBy": note.created_by})
 
     before = {"status": note.status, "text": note.text}

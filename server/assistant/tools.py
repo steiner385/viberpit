@@ -73,6 +73,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("list_products", ToolClass.READ, "List products"),
     ToolSpec("get_product", ToolClass.READ, "Get product"),
     ToolSpec("get_product_deps", ToolClass.READ, "Get product dependencies"),
+    ToolSpec("get_milestones", ToolClass.READ, "Get milestones"),
     ToolSpec("get_priority_queue", ToolClass.READ, "Get priority queue"),
     ToolSpec("list_triage", ToolClass.READ, "List triage proposals"),
     ToolSpec("list_decisions", ToolClass.READ, "List pending decision proposals"),
@@ -1460,6 +1461,14 @@ def build_tools(api: AssistantApi, *, operator: bool = False,
     async def get_product(args: dict[str, Any]) -> Any:
         return await api.get(f"/api/pm/projects/{_slug(args['slug'])}")
 
+    @spec_tool("get_milestones",
+               "A product's release milestones: each one's status, its conditions and "
+               "their evidence, the current phase and the milestone notes.",
+               {"slug": str})
+    @guarded
+    async def get_milestones(args: dict[str, Any]) -> Any:
+        return await api.get(f"/api/pm/projects/{_slug(args['slug'])}/milestones")
+
     @spec_tool("get_product_deps",
                "Issue-level dependencies for a product. Default (summary=true): edge "
                "counts by source, drift counts (prose-only deps, unresolved targets, "
@@ -2581,7 +2590,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False,
             test_notification, list_watches,
             list_repos, list_branches, list_stage_models,
             list_initiatives, get_initiative, preview_stale_dependencies,
-            list_products, get_product, get_product_deps, get_priority_queue, list_triage,
+            list_products, get_product, get_product_deps, get_milestones, get_priority_queue,
+            list_triage,
             list_decisions, list_holds, get_owner_digest, list_queue_items,
             get_onboarding_status,
             get_automation_actionable, list_automation_sessions, list_backlog_candidates,

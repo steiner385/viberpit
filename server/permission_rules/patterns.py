@@ -59,10 +59,11 @@ NEVER_RULED_TOOLS = frozenset(
             "resolve_permission", "set_permission_mode", "resolve_model_approval",
             "set_autopilot_paused", "set_automation_enabled",
             # Human-in-the-loop decisions: another session's question, a decision or triage
-            # proposal, an initiative stage, a roadmap proposal.
+            # proposal, an initiative stage, a roadmap proposal, a release milestone.
             "answer_question", "resolve_decision", "resolve_triage", "advance_initiative",
             "close_initiative",
-            "roadmap_resolve", "roadmap_advance",
+            "roadmap_resolve", "roadmap_advance", "roadmap_milestone_advance",
+            "roadmap_milestone_tick",
         )
     }
 )  # fmt: skip

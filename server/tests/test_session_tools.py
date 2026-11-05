@@ -35,7 +35,7 @@ def test_registry_is_a_registered_surface_with_two_read_tools():
     from server import mcp_spec
     from server.sessions.tools.registry import SESSION_TOOL_SPECS
     read_tools = {"session_context", "report_feedback",
-                     "roadmap_needs_you", "roadmap_item"}
+                     "roadmap_needs_you", "roadmap_item", "roadmap_milestones"}
     assert read_tools <= set(SESSION_TOOL_SPECS)
     assert all(SESSION_TOOL_SPECS[name].tool_class is mcp_spec.ToolClass.READ
                for name in read_tools)
@@ -58,7 +58,7 @@ def test_every_session_tool_has_a_spec_and_an_eval_case():
     tools = build_session_tools(_ctx())
     names = {t.name for t in tools}
     assert names == {"session_context", "report_feedback",
-                     "roadmap_needs_you", "roadmap_item"}
+                     "roadmap_needs_you", "roadmap_item", "roadmap_milestones"}
     assert names <= set(SESSION_TOOL_SPECS)
     covered = set()
     for line in CASES.read_text().splitlines():

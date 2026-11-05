@@ -40,7 +40,7 @@ from server.pm.milestone_github import (
     streak_from_runs,
     sub_issues_epic,
 )
-from server.pm.milestone_status import Reading, evaluate
+from server.pm.milestone_status import LEAVES_KEY, Reading, evaluate, leaves_scope
 from server.time_iso import aware_utc, parse_iso_utc
 
 log = logging.getLogger(__name__)
@@ -59,8 +59,6 @@ RUNS_LIMIT = 100
 CI_METRIC_RUNS_LIMIT = 10
 CI_METRIC_PROBE_RUNS = 3
 DEFAULT_STREAK_EVENTS: tuple[str, ...] = ("schedule", "workflow_dispatch")
-#: The ``key`` of a milestone's leaf-list row (scope ``leaves:<milestone key>``).
-LEAVES_KEY = "leaves"
 
 GraphQL = Callable[[str, str], Awaitable[dict]]
 ListRuns = Callable[..., list[dict]]
@@ -73,10 +71,6 @@ _Key = tuple[str, str]
 class RefreshResult:
     written: int
     errors: int
-
-
-def leaves_scope(milestone_key: str) -> str:
-    return f"leaves:{milestone_key}"
 
 
 def _utc(dt: datetime) -> datetime:

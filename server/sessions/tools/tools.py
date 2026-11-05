@@ -12,7 +12,7 @@ from typing import Any
 from claude_agent_sdk import SdkMcpTool, tool
 
 from viberpit import brand
-from server.mcp_spec import ToolArgError, ToolSpec, annotations_for, tool_err
+from server.mcp_spec import Summarized, ToolArgError, ToolSpec, annotations_for, tool_err
 from server.obs.metrics import session_tool_calls_total
 from server.sessions.artifacts import ARTIFACT_KINDS, github_pr_ref, parse_share_artifact, read_image
 from server.sessions.child_sessions import ChildSessionLimit
@@ -45,9 +45,14 @@ _THREE_WAYS = (
 
 
 def tool_ok(data: Any) -> dict[str, Any]:
+    """The JSON envelope block; a ``Summarized`` result puts its text summary first."""
+    summary = None
+    if isinstance(data, Summarized):
+        summary, data = data.text, data.data
     env = {"source": brand.SLUG, "now": datetime.now(timezone.utc).isoformat(timespec="seconds"),
            "data": data}
-    return {"content": [{"type": "text", "text": json.dumps(env, separators=(",", ":"), ensure_ascii=False)}]}
+    block = {"type": "text", "text": json.dumps(env, separators=(",", ":"), ensure_ascii=False)}
+    return {"content": ([{"type": "text", "text": summary}] if summary is not None else []) + [block]}
 
 
 async def _audit_tool_call(ctx: SessionToolContext, spec: ToolSpec, ok: bool, ms: float) -> None:

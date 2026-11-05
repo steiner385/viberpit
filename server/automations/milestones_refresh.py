@@ -67,13 +67,6 @@ async def read_config() -> tuple[str, dict]:
         MilestonesRefresh, modes=active, default_mode="on", log_key="milestones_refresh")
 
 
-async def automatic_refresh_enabled() -> bool:
-    """Whether ladders refresh on their own (the automation is not ``off``). The view
-    reads this to say "automatic refresh is off"."""
-    mode, _config = await read_config()
-    return mode != "off"
-
-
 class MilestonesRefreshLoop:
     def __init__(self, ctx: Any, *,
                  read_config: Callable[[], Awaitable[tuple[str, dict]]],

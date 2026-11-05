@@ -72,6 +72,7 @@ ARGS: dict[str, dict] = {
     "list_decisions": {}, "list_holds": {}, "get_owner_digest": {"product": "a"},
     "list_queue_items": {"product": "a", "reason": "held"},
     "get_onboarding_status": {"slug": "a"},
+    "get_milestones": {"slug": "a"},
     "get_automation_actionable": {"id": "pr-doctor"},
     "list_automation_sessions": {"id": "autopilot"},
     "list_backlog_candidates": {}, "get_backlog_groups": {}, "get_cicd_findings": {},
