@@ -264,10 +264,11 @@ async def test_last_seen_tools_survive_observations_without_a_list(db) -> None:
                                          source="session", session_id="s")
         assert [t.name for t in (await health_store.last_seen_tools())["probe"][0]] == [
             "tool_a", "tool_b", "tool_c"]
-    # A newer list on another account wins.
+    # A newer list on another account is merged in: no tool vanishes (a hidden default stays listed).
     newer = sanitize_statuses({"mcpServers": [{**PROBE, "tools": [_tool("tool_z")]}]})
     await health_store.upsert_states("other", "h", newer, source="probe", session_id=None)
-    assert [t.name for t in (await health_store.last_seen_tools())["probe"][0]] == ["tool_z"]
+    assert [t.name for t in (await health_store.last_seen_tools())["probe"][0]] == [
+        "tool_a", "tool_b", "tool_c", "tool_z"]
     # The status rows' wire shape is unchanged (no tool lists in GET /library/mcp).
     assert all("tools" not in r for r in await health_store.rows())
 

@@ -1,12 +1,11 @@
 import { useId, useState } from 'react'
 import { useGithubRepos } from '@/api/hooks'
 import { useDeleteMcpRepoRule, useMcpScope, useSetMcpDefault, useSetMcpRepoRule } from '@/api/mcpScopeHooks'
-import { extractMutationErrorMessage } from '@/api/queryClient'
 import type { McpScope } from '@/api/types'
 import { Button } from '@/ui/Button'
 import { RadioGroup } from '@/ui/RadioGroup'
 import { Select } from '@/ui/Select'
-import { isMcpScopeDisabled, shortName } from './mcpStatus'
+import { isMcpScopeDisabled, mcpMutationErrorMessage, shortName } from './mcpStatus'
 
 type Mode = 'on' | 'off'
 
@@ -133,7 +132,7 @@ function ScopeBody({ serverKey, data }: { serverKey: string; data: McpScope }) {
 
       {error != null && (
         <p className="text-xs text-danger break-words" role="alert">
-          {extractMutationErrorMessage(error, 'Could not update scope.')}
+          {mcpMutationErrorMessage(error, 'Could not update scope.')}
         </p>
       )}
     </div>
