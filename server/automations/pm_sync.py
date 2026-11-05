@@ -949,8 +949,8 @@ class PmSyncLoop:
         """Best-effort per-primary-repo release-milestone ladder sync: read the
         definition file at the default-branch head, plan against the DB rows
         (``plan_ladder_sync``) and apply. Same failure posture as
-        ``_governance_check``: a read failure skips the pass and leaves the
-        rows as the last successful pass wrote them."""
+        ``_governance_check``: a read, load or apply failure skips the pass and
+        leaves the rows as the last successful pass wrote them."""
         if (not view.is_primary or self._read_milestones is None
                 or self._load_ladder_rows is None or self._apply_ladder_plan is None):
             return
@@ -961,10 +961,17 @@ class PmSyncLoop:
             log_gh_failure(
                 log, str(exc), "pm_sync.milestones_read_failed repo=%s", view.repo, exc_info=True)
             return
-        rows = await self._load_ladder_rows(view.project_id)
-        plan = plan_ladder_sync(
-            rows, text=text, sha=sha, primary_repo=view.repo, now=self._now_utc())
-        await self._apply_ladder_plan(view.project_id, plan)
+        # Load/plan/apply are best-effort too: a raise here (a bad row, a DB
+        # hiccup) must not abort the rest of the repo's incremental pass.
+        try:
+            rows = await self._load_ladder_rows(view.project_id)
+            plan = plan_ladder_sync(
+                rows, text=text, sha=sha, primary_repo=view.repo, now=self._now_utc())
+            await self._apply_ladder_plan(view.project_id, plan)
+        except Exception as exc:
+            self._observation_degraded = True
+            log_gh_failure(
+                log, str(exc), "pm_sync.milestones_apply_failed repo=%s", view.repo, exc_info=True)
 
     async def _artifact_frontmatter_sync(self, view: RepoSyncView) -> None:
         """Best-effort per-primary-repo pass (issue #2161): re-read every

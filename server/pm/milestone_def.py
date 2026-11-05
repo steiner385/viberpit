@@ -6,6 +6,7 @@ Pure code, no DB. The parsed ladder is stored as JSON (``to_json`` / ``from_json
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -169,6 +170,8 @@ def _platform(v: Any, where: str) -> Platform:
 def _number(v: Any, where: str) -> float:
     if isinstance(v, bool) or not isinstance(v, int | float):
         raise MilestoneDefError(f"{where}: expected a number")
+    if not math.isfinite(v):
+        raise MilestoneDefError(f"{where}: expected a finite number")
     return v
 
 

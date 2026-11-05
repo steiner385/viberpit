@@ -183,6 +183,47 @@ async def test_pass_runs_in_incremental_after_governance(isolated_db):
     assert len(rows) == 4 and rows["household"].state == "current"
 
 
+@pytest.mark.parametrize("seam", ["_load_ladder_rows", "_apply_ladder_plan"])
+@pytest.mark.asyncio
+async def test_load_or_apply_failure_degrades_and_pass_continues(isolated_db, seam):
+    """A raise in the load/apply seam is best-effort like the read: the rest of the
+    repo's incremental pass (artifact sync, the sync-state save) still runs."""
+    pid = await _project()
+    pages = [
+        {"data": {"repository": {"issues": {"pageInfo": {"endCursor": None, "hasNextPage": False},
+                                             "nodes": []}}}},
+        {"data": {"repository": {"pullRequests": {"pageInfo": {"endCursor": None, "hasNextPage": False},
+                                                   "nodes": []}}}},
+    ]
+    loop = _loop(_reader(FIXTURE))
+
+    async def fetch(_q):
+        return pages.pop(0)
+
+    async def boom(*_a, **_k):
+        raise ValueError("cannot convert float NaN to integer")
+
+    saved: list[dict] = []
+
+    async def save_sync_state(_view, **kw):
+        saved.append(kw)
+
+    after: list[str] = []
+
+    async def artifact_sync(view):
+        after.append(view.repo)
+
+    loop._fetch = fetch
+    setattr(loop, seam, boom)
+    loop._save_sync_state = save_sync_state
+    loop._artifact_frontmatter_sync = artifact_sync  # type: ignore[method-assign]
+    loop._observation_degraded = False
+    await loop._incremental(_view(pid), datetime(2026, 11, 5, tzinfo=timezone.utc))
+    assert loop._observation_degraded is True
+    assert after == [REPO]
+    assert saved and saved[-1]["sync_requested_at"] is None
+
+
 # ---------------------------------------------------------------- orchestrator read seam
 
 

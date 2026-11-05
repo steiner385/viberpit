@@ -76,3 +76,12 @@ def test_parse_ref():
 def test_rejects(yaml_text, msg):
     with pytest.raises(MilestoneDefError, match=msg):
         parse_ladder(yaml_text, primary_repo="o/r")
+
+
+# PyYAML (YAML 1.1) reads a bare ``1e400`` as a string; ``1.0e+400`` is the float spelling, which overflows to inf.
+@pytest.mark.parametrize("target", [".inf", "-.inf", ".nan", "1.0e+400"])
+def test_rejects_non_finite_target(target):
+    text = ("version: 1\ntitle: t\nmilestones: [{key: a, name: A, gate: [{key: g, label: G, "
+            f"measure: {{kind: issue_count, query: q, op: le, target: {target}}}}}]}}]")
+    with pytest.raises(MilestoneDefError, match="finite"):
+        parse_ladder(text, primary_repo="o/r")
