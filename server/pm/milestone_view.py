@@ -21,8 +21,13 @@ from server.pm.milestone_def import (
     from_json,
 )
 from server.pm.milestone_github import DONE_REF_STATES
-from server.pm.milestone_refresh import LEAVES_KEY, leaves_scope
-from server.pm.milestone_status import effective_max_age, gate_met, status_at
+from server.pm.milestone_status import (
+    LEAVES_KEY,
+    effective_max_age,
+    gate_met,
+    leaves_scope,
+    status_at,
+)
 from server.time_iso import aware_utc, iso_utc
 
 LEAF_STATES: tuple[str, ...] = ("done", "in_flight", "not_started")

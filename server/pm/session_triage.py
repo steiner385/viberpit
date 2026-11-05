@@ -20,6 +20,7 @@ from server.db.models import Initiative, Project, ProjectRepo, WorkItem
 from server.mcp_spec import ToolArgError
 from server.pm.holds import actor_class
 from server.pm.milestone_asks import open_milestone_asks
+from server.pm.milestone_tool_result import milestone_tool_error, summarized
 from server.sessions.tools.context import SessionToolContext
 
 
@@ -85,7 +86,7 @@ def _owner(ctx: SessionToolContext) -> str:
     return identity
 
 
-def _request(identity: str) -> Request:
+def delegated_request(identity: str) -> Request:
     # This is a server-bound delegation after permission approval, not HTTP auth
     # and not an assistant bearer token. No route or identity comes from tool args.
     request = Request({"type": "http", "headers": []})
@@ -151,7 +152,6 @@ async def _needs_you(db: Any, args: NeedsYou, identity: str) -> dict:
 async def invoke(ctx: SessionToolContext, operation: str, raw: dict[str, Any]) -> Any:
     """Explicit allowlist of internal operations; no general-purpose API proxy."""
     from server.api import pm, pm_milestones, sdlc
-    from server.sessions.tools.milestone_note import milestone_tool_error, summarized
     models: dict[str, type[Arguments]] = {"roadmap_needs_you": NeedsYou, "roadmap_item": Item,
               "roadmap_resolve": Resolve, "roadmap_hold": Hold, "roadmap_advance": Advance,
               "roadmap_milestones": MilestonesRead, "roadmap_milestone_tick": MilestoneTick,
@@ -161,7 +161,7 @@ async def invoke(ctx: SessionToolContext, operation: str, raw: dict[str, Any]) -
         args = models[operation].model_validate(raw)
         mutation = isinstance(args, (Resolve, Hold, Advance, MilestoneTick, MilestoneAdvance))
         identity = _owner(ctx) if mutation else ctx.identity
-        request = _request(identity)
+        request = delegated_request(identity)
         async with db_session() as db:
             if mutation:
                 # Write BEFORE calling the handler: decision accept commits before

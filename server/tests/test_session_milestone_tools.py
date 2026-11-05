@@ -375,3 +375,23 @@ def test_summarize_no_ladder():
     from server.pm.milestone_view import summarize_milestones
     assert summarize_milestones({"ladder": None}, product="kd") == (
         "kd: no milestone ladder (add docs/product/milestones.yaml)")
+
+
+# ---------------------------------------------------------------- import order
+
+
+@pytest.mark.parametrize("modules", [
+    "import server.pm.milestone_view; import server.api.pm_milestones",
+    "import server.api.pm_milestones",
+    "import server.sessions.tools.milestone_note",
+])
+def test_milestone_modules_import_cold(modules):
+    """A fresh interpreter importing the milestone view (or the routes) FIRST must
+    not hit a partially initialised module: milestone_view/the routes once reached
+    server.automations, whose registry re-imports milestone_refresh mid-load."""
+    import subprocess
+    import sys
+    root = Path(__file__).resolve().parents[2]
+    proc = subprocess.run([sys.executable, "-c", modules], cwd=root, capture_output=True,
+                          text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr[-2000:]

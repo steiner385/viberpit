@@ -460,13 +460,13 @@ def test_write_errors_map_to_error_code_shape(isolated_db):
 
 @pytest.mark.asyncio
 async def test_via_comes_from_request_state(isolated_db):
-    """A session-delegated call (``session_triage._request``: the person's identity,
+    """A session-delegated call (``session_triage.delegated_request``: the person's identity,
     ``state.via = "session"``) may tick, but its override is refused as non-owner."""
     from fastapi import HTTPException
 
     from server.api import pm_milestones
     from server.db.models import AuditEvent
-    from server.pm.session_triage import _request
+    from server.pm.session_triage import delegated_request
 
     await _seed()
     who = "owner@example.com"
@@ -474,14 +474,14 @@ async def test_via_comes_from_request_state(isolated_db):
         view = await pm_milestones.put_condition_tick(
             "kd", "friendly", "setup",
             pm_milestones.TickBody(met=True, evidence="all set up"),
-            request=_request(who), identity=who, db=db)
+            request=delegated_request(who), identity=who, db=db)
         assert view["ladder"]["currentKey"] == "household"
     async with db_session() as db:
         with pytest.raises(HTTPException) as exc:
             await pm_milestones.advance_milestone(
                 "kd", pm_milestones.AdvanceBody(expectedCurrent="household",
                                                 overrideReason="session says ship it"),
-                request=_request(who), identity=who, db=db)
+                request=delegated_request(who), identity=who, db=db)
     assert exc.value.status_code == 403
     assert exc.value.detail == {"error": "override_requires_owner"}
     async with db_session() as db:

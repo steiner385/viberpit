@@ -551,4 +551,4 @@ follows it as the JSON envelope's `data`. A product with no ladder answers
   `403 owner_required`. `refresh` returns `409 automatic_refresh_off` or `429 refresh_too_soon`
   as a tool error.
 - Refusals arrive as `<status> <code>: <plain words>`. The Python copy lives in
-  `server/sessions/tools/milestone_note.py`, and the web keeps its own copy for the page.
+  `server/pm/milestone_tool_result.py`, and the web keeps its own copy for the page.
