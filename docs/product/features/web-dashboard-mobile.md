@@ -411,6 +411,23 @@ ways into it from the composer and the transcript.
   they keep working, but cleanup skips them. **Reset** returns it to the server default. The branch prefix
   `viberpit/` is shown read-only: it guards automatic branch cleanup.
 
+**Output styles and app slash commands (D-16a)** — Claude sessions only.
+- **Style ›** in the composer's `+` menu lists the styles the session's CLI reports (built-ins, your own, and
+  plugin styles) and switches the style for the running session. Changing style mid-session re-sends the system
+  prompt, so the next turn costs a prompt-cache miss; the tooltip says so. The menu is hidden for Codex, the
+  Assistant drawer and a session that has not reported its styles yet. `/output-style <name>` does the same;
+  bare `/output-style` lists the styles.
+- **Settings › Claude config › Output styles** sets the style new sessions start with and lists the built-in and
+  shared user styles (read-only viewer). Your own styles are `.md` files in `~/.claude/output-styles/`, shared by
+  every account; there is no editor yet. A session you set to `default` keeps `default` even when the app default
+  is another style.
+- **`/plan [on|off]`** turns plan mode on or off (bare toggles) and says so when nothing changed.
+- **Only a person runs these.** `/plan`, `/fast`, `/effort` and `/output-style` run only when typed or sent by a
+  signed-in person. Automation, API tokens and unattested local senders are refused with "Slash commands from
+  automation are not run" and nothing is forwarded to the CLI. A browser on the server's own host is refused
+  too unless `VIBERPIT_RULES_TRUST_LOCAL_HOST` is set (the mode picker and ⚡ still work). A refused command's text
+  returns to the composer.
+
 **PR tab (D-15)** — a session that has a pull request gets a **PR** tab after Changes (`?view=pr`).
 - **Header:** title, `#N`, state (Open, Draft, Merged, Closed), and badges for auto-merge on, in the merge
   queue (read-only) and **Held for a human**. A line explains the merge state in plain words, for example

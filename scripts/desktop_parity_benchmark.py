@@ -51,13 +51,13 @@ D=[
 ]),
 ("4 Commands & config",[
  ("Engine slash-command passthrough",3,"Y",""),
- ("App-handled /fork /rewind /btw /plan /effort /fast /add-dir",2,"P","/help /context /clear /model /account /mcp /fork /rewind /btw (opens the side chat and sends; D-12) /effort /fast (D-14); no /plan /add-dir"),
+ ("App-handled /fork /rewind /btw /plan /effort /fast /add-dir",2,"Y","/help /context /clear /model /account /mcp /fork /rewind /btw (opens the side chat and sends; D-12) /effort /fast (D-14) /plan /output-style (D-16a, human senders only); /add-dir out of scope (not in D15)"),
  ("Plugins + marketplace browse/install",2,"P","enable/disable + detail; no marketplace"),
  ("Skills management",1,"Y",""),
  ("MCP servers + per-tool toggles",2,"P","servers, OAuth, scope; no per-tool toggles"),
  ("CLAUDE.md / memory-file editor",2,"Y","as decided (D8): the Context card lists every memory file the CLI loaded, with tokens, each viewable; Settings › Memory edits the user CLAUDE.md shared by every account (etag conflict, Keep my draft); repo files read-only. Claude only (Codex reports none); type labels are the CLI's (rules/imports show as User/Project); rocky sees a save after up to 10 min (#3246) (D-13)"),
  ("Hooks editor",1,"Y","Desktop has none — VP ahead"),
- ("Output styles",1,"N",""),
+ ("Output styles",1,"Y","per-session picker in the + menu, Settings default and list; user styles shared across accounts; custom-style editing not yet"),
  ("Custom commands",1,"Y",""),
 ]),
 ("5 Settings",[
