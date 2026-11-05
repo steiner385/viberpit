@@ -54,6 +54,9 @@ UNREACHABLE_ESCALATE_AFTER = 3
 # exception's class, so a timeout run that ends in refusals escalates at 3 total.
 UNREACHABLE_TIMEOUT_ESCALATE_AFTER = 10
 _CONSECUTIVE_UNREACHABLE: dict[str, int] = {}
+# host -> sessions a resume admitted past its cap, as last reported on /info (#3255).
+# Dropped when the host is unreachable, so a stale count can never excuse an overage.
+_RESUMED_OVER_CAP: dict[str, int] = {}
 # Edge-triggered over-cap / no-dispatchable-host alarms, fed once per probe_all tick.
 CAPACITY_ALARM = CapacityAlarm()
 
@@ -99,6 +102,9 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
     try:
         info = await fetch(endpoint)
         _CONSECUTIVE_UNREACHABLE.pop(name, None)
+        resumed = info.get("resumedOverCap")
+        # Absent on a daemon older than #3255: no excuse, so its overage still alarms.
+        _RESUMED_OVER_CAP[name] = resumed if isinstance(resumed, int) else 0
         daemon_proto = info.get("protocol")
         # The engine advertisement is recorded on EVERY outcome below, including a
         # fenced one: it describes what the runner can run, not whether the edge may
@@ -123,6 +129,7 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
                                state=state, is_ancestor=is_ancestor)
             values.update(healthy=skew is None, last_error=skew, **metrics)
     except Exception as exc:
+        _RESUMED_OVER_CAP.pop(name, None)
         # Record the failure; do NOT leave a previous healthy=True in place.
         values.update(healthy=False, last_error=f"{type(exc).__name__}: {exc}"[:500])
         # healthy=False regardless — dispatch must avoid the host either way. Only the
@@ -267,7 +274,8 @@ async def _observe_capacity() -> None:
                            max_sessions=h.max_sessions, load_avg=h.load_avg,
                            mem_available_mb=h.mem_available_mb)
              for h in hosts],
-            deploy_excused=await _deploy_excused(hosts))
+            deploy_excused=await _deploy_excused(hosts),
+            resumed_over_cap=dict(_RESUMED_OVER_CAP))
     except Exception:
         log.debug("fleet.capacity: alarm check failed", exc_info=True)
 

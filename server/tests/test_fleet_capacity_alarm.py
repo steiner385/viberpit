@@ -248,3 +248,51 @@ def test_deploy_running_reads_a_fleet_ui_upgrade(_no_upgrades):
     assert asyncio.run(host_upgrade.deploy_running(controller_status=no_controller)) is False
     host_upgrade._STATE["rocky"] = {"state": "running"}
     assert asyncio.run(host_upgrade.deploy_running(controller_status=no_controller)) is True
+
+
+# #3255: resumes (a WebSocket attach of a detached session, or restart-time resume) are
+# admitted past the cap by design. An overage the daemon attributes to them is INFO, not
+# an auto-error; only the part no resume explains escalates.
+
+def test_over_cap_explained_by_resumes_is_info_and_never_warns(caplog):
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    alarm = CapacityAlarm()
+    _tick_resumed(alarm, OVER_CAP_ESCALATE_AFTER * 3, _host(active=6, cap=5), resumed=1)
+    assert _warnings(caplog) == []
+    assert any("resume" in r.getMessage() for r in caplog.records
+               if r.levelno == logging.INFO)
+
+
+def test_resume_explained_overage_clears_with_info(caplog):
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    alarm = CapacityAlarm()
+    _tick_resumed(alarm, 1, _host(active=6, cap=5), resumed=1)
+    caplog.clear()
+    alarm.observe([_host(active=5, cap=5)], resumed_over_cap={"dobby": 1})
+    assert any("back within its cap" in r.getMessage() for r in caplog.records)
+    assert _warnings(caplog) == []
+
+
+def test_unexplained_part_of_an_overage_still_warns_after_the_run(caplog):
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    alarm = CapacityAlarm()
+    # Two over the cap, only one of them a resume: the other is an accounting fault.
+    _tick_resumed(alarm, OVER_CAP_ESCALATE_AFTER - 1, _host(active=7, cap=5), resumed=1)
+    assert _warnings(caplog) == []
+    _tick_resumed(alarm, 1, _host(active=7, cap=5), resumed=1)
+    [w] = _warnings(caplog)
+    assert "dobby" in w.getMessage() and "7" in w.getMessage()
+
+
+def test_resumes_never_excuse_more_overage_than_exists(caplog):
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    alarm = CapacityAlarm()
+    # One session over the cap, five resumes recorded: the one over-cap session is fully
+    # excused, so the surplus resume count never hides a fault elsewhere (nothing to hide).
+    _tick_resumed(alarm, OVER_CAP_ESCALATE_AFTER * 2, _host(active=6, cap=5), resumed=5)
+    assert _warnings(caplog) == []
+
+
+def _tick_resumed(alarm, n, host, *, resumed):
+    for _ in range(n):
+        alarm.observe([host], resumed_over_cap={host.name: resumed})
