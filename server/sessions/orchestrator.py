@@ -6827,6 +6827,14 @@ class SessionOrchestrator:
 
     async def close_session(self, session_id: str) -> None:
         """Stop the driver, clean up the session worktree, mark the row ended."""
+        closing: set[str] = self.__dict__.setdefault("_closing", set())
+        closing.add(session_id)
+        try:
+            await self._close_session(session_id)
+        finally:
+            closing.discard(session_id)
+
+    async def _close_session(self, session_id: str) -> None:
         driver = await self._teardown_driver_state(session_id)
         if driver is not None:
             await self._close_automation_driver(driver, session_id)
@@ -22663,10 +22671,15 @@ class SessionOrchestrator:
 
     async def _close_for_transfer(self, session_id: str) -> None:
         """Tear the driver down (releases the lease) and close it, bounded."""
+        from server.sessions import session_move as sm
         popped = await self._teardown_driver_state(session_id)
-        if popped is not None:
-            await bounded_wait(popped.aclose(), timeout=DRIVER_RELEASE_WAIT_S,
-                               phase=f"move.close:{session_id}")
+        if popped is not None and not await bounded_wait(
+                popped.aclose(), timeout=DRIVER_RELEASE_WAIT_S,
+                phase=f"move.close:{session_id}"):
+            # The CLI may still be flushing the shared transcript: going on would let the
+            # other host resume from a file still being written.
+            raise sm.MoveError(sm.MOVE_EXPORT_FAILED,
+                               "The session's CLI did not close in time.")
 
     async def transfer_preflight(self, session_id: str) -> dict:
         """Read-only: what a move of *session_id* off this host would carry — the dirty
@@ -22685,6 +22698,7 @@ class SessionOrchestrator:
         out: dict = {"sessionId": session_id, "host": self_host_name(), "known": rec is not None,
                      "present": present, "driverLive": driver is not None,
                      "turnActive": bool(getattr(driver, "turn_active", False)),
+                     "pendingCard": self._has_live_card(session_id),
                      "dirtyCount": 0, "dirtyPaths": [], "repo": None, "repoPrivate": None,
                      "backgroundTasks": []}
         if present:
@@ -22719,7 +22733,7 @@ class SessionOrchestrator:
         from viberpit import worktree_transfer as wtx
         from server.sessions import session_move as sm
         from server.sessions.engine import session_move_enabled
-        from server.sessions.status import MID_TURN_STATUSES, STRUCTURED_HOLD_STATUSES
+        from server.sessions.status import MID_TURN_STATUSES
         me = self_host_name()
         if not session_move_enabled():
             raise sm.MoveError(sm.MOVE_DISABLED, "Moving sessions is turned off.")
@@ -22740,7 +22754,7 @@ class SessionOrchestrator:
                     or (callable(queued) and list(queued()))):
                 raise sm.MoveError(sm.MOVE_MID_TURN,
                                    "Wait for the turn to finish or Interrupt first.")
-            if rec.status in STRUCTURED_HOLD_STATUSES:
+            if self._has_live_card(session_id):
                 raise sm.MoveError(sm.MOVE_AWAITING_ANSWER, "Answer the open card first.")
             if rec.status in INACTIVE_SESSION_STATUSES:
                 raise sm.MoveError(sm.MOVE_INACTIVE, "The session is not active.")
@@ -22792,8 +22806,12 @@ class SessionOrchestrator:
             marker = await asyncio.to_thread(
                 lambda: sm.transcript_marker(self.transcript_path(session_id)))
             try:
-                bundle = await asyncio.to_thread(wtx.export, rec.cwd, session_id,
-                                                 carry_dirty=carry_dirty)
+                # Only the VETTED verdict may carry bytes (revised D1): a tree that got
+                # dirty after the visibility/consent checks above is refused by export
+                # (dirty_worktree → MOVE_EXPORT_FAILED → restore), never pushed.
+                bundle = await asyncio.to_thread(
+                    functools.partial(wtx.export, rec.cwd, session_id,
+                                      carry_dirty=carry_dirty and state.dirty, vetted=state))
             except wtx.TransferError as exc:
                 raise sm.MoveError(sm.MOVE_EXPORT_FAILED, f"{exc.code}: {exc.detail}",
                                    extra={"gitCode": exc.code}) from exc
@@ -22878,8 +22896,14 @@ class SessionOrchestrator:
 
         async def _abandon() -> None:
             if local:
-                # A restore keeps the session here, detached: the stamp says so.
                 await self._close_for_transfer(session_id)
+                # A restore keeps the session here, detached — unless its claim lost to
+                # a live holder elsewhere: then the record it just installed must not
+                # stay stamped here (a twin-capable copy).
+                state = await _lease_state(session_id)
+                if (state is not None and state.holder != me
+                        and state.age_s < SESSION_LEASE_TTL_S):
+                    self._retarget_record(session_id, state.holder)
                 return
             await self._close_for_transfer(session_id)
             self._retarget_record(session_id, source or "")
@@ -22920,6 +22944,10 @@ class SessionOrchestrator:
             driver = await self.ensure_driver(session_id)
             if driver is None:
                 raise sm.MoveError(sm.MOVE_RESUME_FAILED, "The conversation did not resume.")
+            if not local:
+                # Import-complete evidence for the crash reconcile: written only now,
+                # after the transcript check and a started driver.
+                await sm.mark_import_complete(session_id, me)
         except BaseException:
             try:
                 await _abandon()
@@ -22972,12 +23000,47 @@ class SessionOrchestrator:
                    or (manifest or {}).get("cwd"))
             await self._close_for_transfer(session_id)
             self._retarget_record(session_id, owner)
-            done = (await asyncio.to_thread(wtx.finalize, bundle, cwd, session_id=session_id)
+            if cwd and os.path.isdir(cwd):
+                try:
+                    await asyncio.to_thread(wtx.delete_transfer_refs, cwd, session_id)
+                except Exception:
+                    log.info("session.move ref cleanup failed id=%s", session_id,
+                             exc_info=True)
+            done = (await asyncio.to_thread(
+                        functools.partial(wtx.finalize, bundle, cwd, session_id=session_id))
                     if cwd else wtx.Finalized(False))
         log.info("session.move_finalize id=%s owner=%s removed=%s recovery_ref=%s",
                  session_id, owner, done.removed, done.recovery_ref)
         return {"sessionId": session_id, "removed": done.removed,
                 "recoveryRef": done.recovery_ref}
+
+    def _has_live_card(self, session_id: str) -> bool:
+        """A permission / question / plan card a person could answer right now — the
+        live driver's, or one re-offered from the transcript after a restart. Not the
+        resting status: a restart seeds ``waiting_question`` with no card behind it."""
+        driver = self._drivers.get(session_id)
+        if driver is not None and getattr(driver, "awaiting_user_input", False):
+            return True
+        try:
+            return self.orphaned_interaction(session_id) is not None
+        except Exception:
+            log.debug("orphaned_interaction failed for %s", session_id, exc_info=True)
+            return False
+
+    async def _unpack_stray_wip(self, session_id: str, cwd: str) -> None:
+        """Defence in depth (D-17): never resume on this session's own transfer WIP
+        commit — a move that ended ``failed`` can leave one at HEAD, and the agent's
+        next push would publish it. Unpacked back into unstaged edits; never raises."""
+        from viberpit import worktree_transfer as wtx
+        if not cwd or not os.path.isdir(cwd):
+            return
+        try:
+            if await asyncio.to_thread(wtx.unpack_wip, cwd, session_id):
+                log.warning("session.resume id=%s found its transfer WIP commit at HEAD — "
+                            "unpacked it into unstaged edits", session_id)
+        except Exception:
+            log.warning("session.resume id=%s stray WIP unpack failed", session_id,
+                        exc_info=True)
 
     async def _load_unrehydrated_row(self, session_id: str) -> SessionRecord | None:
         """ensure_driver for an id this daemon holds no record of (§B.3): a worker only
@@ -22990,7 +23053,10 @@ class SessionOrchestrator:
             log.debug("ensure_driver: row read failed for %s", session_id, exc_info=True)
             return None
         if (row is None or row.status in INACTIVE_SESSION_STATUSES
-                or getattr(row, "moving_to", None)):
+                or getattr(row, "moving_to", None)
+                or session_id in getattr(self, "_closing", ())):
+            # _closing: close/archive pop the record BEFORE persisting the terminal
+            # status — this is that window, not a row to bring back.
             return None
         getter = getattr(self, "_enabled_host_names", None)
         enabled = await getter() if getter is not None else None
@@ -23358,6 +23424,7 @@ class SessionOrchestrator:
                 self._resume_recovery.setdefault(session_id, 0)
                 await self._release_session_lease(session_id)
                 return None
+            await self._unpack_stray_wip(session_id, rec.cwd)
             disabled_mcp = (None if resume_engine is AgentEngine.CODEX else
                             await disabled_for_session(
                                 repo=getattr(rec, "repo", None), session_id=rec.id))
@@ -27737,6 +27804,18 @@ class SessionOrchestrator:
 
     async def archive_session(self, session_id: str, *, archived_by: str = "user",
                               context: dict | None = None) -> None:
+        """Archive a session (``_archive_session``). The id sits in ``_closing`` for the
+        whole call: the record is popped before ``archived`` is persisted, and
+        ensure_driver's row fallback must not rebuild it in that window."""
+        closing: set[str] = self.__dict__.setdefault("_closing", set())
+        closing.add(session_id)
+        try:
+            await self._archive_session(session_id, archived_by=archived_by, context=context)
+        finally:
+            closing.discard(session_id)
+
+    async def _archive_session(self, session_id: str, *, archived_by: str = "user",
+                               context: dict | None = None) -> None:
         """Archive a session: stop the driver and flip status='archived'. Nothing moves.
 
         The DB row is KEPT (status='archived') and the working directory STAYS IN

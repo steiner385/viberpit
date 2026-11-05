@@ -253,14 +253,19 @@ class Session(Base):
     display_mode: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Move to host (D-17, server/sessions/session_move.py). ``moving_to`` is the
     # target host while a move saga is in flight — the compare-and-set claim, NULL in
-    # every terminal state; ``move_started_at`` is when it was claimed, so a saga that
-    # died with its edge is reconciled once stale. ``moved_from`` / ``moved_at`` record
+    # every terminal state but ``failed`` (then the reconcile owns it); ``move_started_at``
+    # is when it was claimed — NULL on a claim the saga abandoned — so a saga that died
+    # with its edge is reconciled once stale, and an abandoned one at once. ``moved_from`` / ``moved_at`` record
     # the last completed restamp. All naive UTC via db_utc_now, all nullable so init_db
     # reconcile adds them on both dialects (migration 0106 is the record).
     moving_to: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     move_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     moved_from: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     moved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    # Import-complete evidence for the crash reconcile: the target host writes its name
+    # here once its driver started on the moved session (transcript verified). A
+    # directory on the target is NOT that evidence — a half-finished import has one.
+    move_imported_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Why a session the locality rule would have made "native" was routed to "virtual"
     # (NativeDisplay.unavailable_reason(), or "native_disabled" when this host has no
     # native display). NULL = no fallback happened. Nullable so init_db backfills it.

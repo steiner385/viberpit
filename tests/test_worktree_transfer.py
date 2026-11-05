@@ -121,7 +121,7 @@ class ExportTests(unittest.TestCase):
     def test_dirty_with_consent_ships_a_wip_commit(self) -> None:
         base = _git("rev-parse", "HEAD", cwd=self.cwd)
         (Path(self.cwd) / "x.txt").write_text("x\n")
-        b = wt.export(self.cwd, "bbbb2222-0000", carry_dirty=True)
+        b = wt.export(self.cwd, "bbbb2222-0000", carry_dirty=True, vetted=wt.inspect(self.cwd))
         self.assertTrue(b.wip_commit)
         self.assertEqual(b.base_sha, base)
         self.assertNotEqual(b.head_sha, base)
@@ -145,7 +145,7 @@ class ExportTests(unittest.TestCase):
 
         with mock.patch.object(wt, "_run", side_effect=fake_run):
             with self.assertRaises(wt.TransferError) as ctx:
-                wt.export(self.cwd, "bbbb2222-0000", carry_dirty=True)
+                wt.export(self.cwd, "bbbb2222-0000", carry_dirty=True, vetted=wt.inspect(self.cwd))
         self.assertEqual(ctx.exception.code, "wip_commit_failed")
         self.assertEqual(_git("rev-parse", "HEAD", cwd=self.cwd), base)
         self.assertTrue(wt.inspect(self.cwd).dirty)
@@ -166,7 +166,7 @@ class ExportTests(unittest.TestCase):
         (Path(self.cwd) / "x.txt").write_text("x\n")
         _git("remote", "set-url", "origin", str(self.root / "does-not-exist.git"), cwd=self.cwd)
         with self.assertRaises(wt.TransferError) as ctx:
-            wt.export(self.cwd, "bbbb2222-0000", carry_dirty=True)
+            wt.export(self.cwd, "bbbb2222-0000", carry_dirty=True, vetted=wt.inspect(self.cwd))
         self.assertEqual(ctx.exception.code, "push_failed")
         self.assertEqual(_git("rev-parse", "HEAD", cwd=self.cwd), base)
         self.assertTrue(wt.inspect(self.cwd).dirty)
@@ -207,7 +207,7 @@ class ImportTests(unittest.TestCase):
     def test_wip_arrives_as_unstaged_edits_with_tip_at_base(self) -> None:
         (Path(self.cwd) / "x.txt").write_text("x\n")
         (Path(self.cwd) / "README.md").write_text("changed\n")
-        b = wt.export(self.cwd, self.sid, carry_dirty=True)
+        b = wt.export(self.cwd, self.sid, carry_dirty=True, vetted=wt.inspect(self.cwd))
         info = wt.import_(b, str(self.dst), str(self.dst_root))
         self.assertEqual(_git("rev-parse", "HEAD", cwd=info.path), b.base_sha)
         st = wt.inspect(info.path)
@@ -312,7 +312,7 @@ class FinalizeTests(unittest.TestCase):
     def test_finalize_after_wip_export_restores_branch_tip_and_removes_dir(self) -> None:
         base = _git("rev-parse", "HEAD", cwd=self.cwd)
         (Path(self.cwd) / "x.txt").write_text("x\n")
-        b = wt.export(self.cwd, self.sid, carry_dirty=True)
+        b = wt.export(self.cwd, self.sid, carry_dirty=True, vetted=wt.inspect(self.cwd))
         self.assertTrue(wt.finalize(b, self.cwd))
         self.assertFalse(os.path.isdir(self.cwd))
         # the child branch was deleted by remove_worktree; no ref may still point at the WIP
@@ -362,7 +362,7 @@ class MoveSupportTests(unittest.TestCase):
         agent's branch must be unpacked again, never left on the branch."""
         base = _git("rev-parse", "HEAD", cwd=self.cwd)
         (Path(self.cwd) / "x.txt").write_text("x\n")
-        b = wt.export(self.cwd, self.sid, carry_dirty=True)
+        b = wt.export(self.cwd, self.sid, carry_dirty=True, vetted=wt.inspect(self.cwd))
         self.assertEqual(_git("rev-parse", "HEAD", cwd=self.cwd), b.head_sha)
         info = wt.import_(b, str(self.src), str(self.src_root))
         self.assertEqual(info.path, self.cwd)
@@ -373,7 +373,7 @@ class MoveSupportTests(unittest.TestCase):
     def test_unpack_wip_without_a_bundle_detects_the_wip_subject(self) -> None:
         base = _git("rev-parse", "HEAD", cwd=self.cwd)
         (Path(self.cwd) / "x.txt").write_text("x\n")
-        wt.export(self.cwd, self.sid, carry_dirty=True)
+        wt.export(self.cwd, self.sid, carry_dirty=True, vetted=wt.inspect(self.cwd))
         self.assertTrue(wt.unpack_wip(self.cwd, self.sid))
         self.assertEqual(_git("rev-parse", "HEAD", cwd=self.cwd), base)
         self.assertTrue(wt.inspect(self.cwd).dirty)
@@ -383,13 +383,13 @@ class MoveSupportTests(unittest.TestCase):
 
     def test_unpack_wip_ignores_another_sessions_wip(self) -> None:
         (Path(self.cwd) / "x.txt").write_text("x\n")
-        b = wt.export(self.cwd, self.sid, carry_dirty=True)
+        b = wt.export(self.cwd, self.sid, carry_dirty=True, vetted=wt.inspect(self.cwd))
         self.assertFalse(wt.unpack_wip(self.cwd, "ffff6666-0000"))
         self.assertEqual(_git("rev-parse", "HEAD", cwd=self.cwd), b.head_sha)
 
     def test_finalize_snapshots_the_wip_before_removing(self) -> None:
         (Path(self.cwd) / "x.txt").write_text("precious\n")
-        b = wt.export(self.cwd, self.sid, carry_dirty=True)
+        b = wt.export(self.cwd, self.sid, carry_dirty=True, vetted=wt.inspect(self.cwd))
         done = wt.finalize(b, self.cwd)
         self.assertTrue(done)
         self.assertTrue(done.removed)
@@ -402,7 +402,7 @@ class MoveSupportTests(unittest.TestCase):
     def test_finalize_without_a_bundle_unpacks_a_leftover_wip(self) -> None:
         """Crash reconcile knows no bundle: the WIP is found by its subject."""
         (Path(self.cwd) / "x.txt").write_text("precious\n")
-        wt.export(self.cwd, self.sid, carry_dirty=True)
+        wt.export(self.cwd, self.sid, carry_dirty=True, vetted=wt.inspect(self.cwd))
         done = wt.finalize(None, self.cwd, session_id=self.sid)
         self.assertTrue(done.removed)
         self.assertIsNotNone(done.recovery_ref)
@@ -415,10 +415,64 @@ class MoveSupportTests(unittest.TestCase):
 
     def test_import_into_the_other_host_then_delete_refs(self) -> None:
         (Path(self.cwd) / "x.txt").write_text("x\n")
-        b = wt.export(self.cwd, self.sid, carry_dirty=True)
+        b = wt.export(self.cwd, self.sid, carry_dirty=True, vetted=wt.inspect(self.cwd))
         info = wt.import_(b, str(self.dst), str(self.dst_root))
         wt.delete_transfer_refs(info.path, self.sid)
         origin = str(self.root / "origin.git")
         listed = subprocess.run(["git", "-C", origin, "for-each-ref", f"{wt.TRANSFER_REF_NS}/"],
                                 capture_output=True, text=True).stdout
         self.assertEqual(listed.strip(), "")
+
+
+class FixRound1CoreTests(unittest.TestCase):
+    """D-17 review fix round 1: export never WIP-commits a tree its caller did not vet
+    (revised D1), and finalize never removes a dirty tree it could not snapshot (D4)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.clone = _make_origin_and_clone(self.root)
+        self.origin = str(self.root / "origin.git")
+        self.sid = "abab1212-0000"
+        self.info = worktrees.create_worktree(str(self.clone), "main", self.sid, str(self.root))
+        self.cwd = self.info.path
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _pushed(self) -> str:
+        return subprocess.run(["git", "-C", self.origin, "for-each-ref", wt.TRANSFER_REF_NS + "/"],
+                              capture_output=True, text=True).stdout.strip()
+
+    def test_a_tree_dirtied_after_vetting_is_not_pushed(self) -> None:
+        vetted = wt.inspect(self.cwd)                     # clean when the policy ran
+        (Path(self.cwd) / "late.env").write_text("TOKEN=x\n")
+        with self.assertRaises(wt.TransferError) as ctx:
+            wt.export(self.cwd, self.sid, carry_dirty=True, vetted=vetted)
+        self.assertEqual(ctx.exception.code, "dirty_worktree")
+        self.assertEqual(self._pushed(), "")
+        self.assertTrue(wt.inspect(self.cwd).dirty)       # untouched
+
+    def test_carry_dirty_without_a_vetted_state_is_refused(self) -> None:
+        (Path(self.cwd) / "x.txt").write_text("x\n")
+        with self.assertRaises(wt.TransferError) as ctx:
+            wt.export(self.cwd, self.sid, carry_dirty=True)
+        self.assertEqual(ctx.exception.code, "dirty_worktree")
+        self.assertEqual(self._pushed(), "")
+
+    def test_a_tree_that_changed_since_vetting_is_refused(self) -> None:
+        (Path(self.cwd) / "a.txt").write_text("a\n")
+        vetted = wt.inspect(self.cwd)
+        (Path(self.cwd) / "b.txt").write_text("b\n")      # a new file nobody consented to
+        with self.assertRaises(wt.TransferError):
+            wt.export(self.cwd, self.sid, carry_dirty=True, vetted=vetted)
+        self.assertEqual(self._pushed(), "")
+
+    def test_a_dirty_tree_whose_snapshot_fails_is_not_removed(self) -> None:
+        (Path(self.cwd) / "x.txt").write_text("precious\n")
+        b = wt.export(self.cwd, self.sid, carry_dirty=True, vetted=wt.inspect(self.cwd))
+        with mock.patch.object(wt, "snapshot_recovery_ref", return_value=None):
+            done = wt.finalize(b, self.cwd)
+        self.assertFalse(done.removed)
+        self.assertTrue(os.path.isdir(self.cwd))
+        self.assertEqual((Path(self.cwd) / "x.txt").read_text(), "precious\n")

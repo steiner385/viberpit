@@ -331,6 +331,10 @@ class FleetOrchestrator:
         # edge guard reads it (SessionMoving) and every served record carries it as
         # ``moving_to``. The DB's ``sessions.moving_to`` is the durable twin.
         self._moving: dict[str, str] = {}
+        # session_id -> target of a claim NO saga in this edge is running: a move that
+        # ended ``failed``, or one a dead edge left behind. Held (driver builds answer
+        # SessionMoving) until the reconcile settles it.
+        self._held: dict[str, str] = {}
 
     def _primary_orch(self):
         return self._router.get(self._primary)
@@ -441,7 +445,7 @@ class FleetOrchestrator:
 
     def _make_per_session(self, name: str):
         async def _call(session_id, *a, **k):
-            target = self._moving.get(session_id)
+            target = self._moving.get(session_id) or self._held.get(session_id)
             if target is not None and name in _MOVE_BLOCKED:
                 from server.sessions.session_move import SessionMoving
                 raise SessionMoving(session_id, target)
@@ -502,7 +506,14 @@ class FleetOrchestrator:
         self._moving.pop(session_id, None)
 
     def moving_target(self, session_id: str) -> str | None:
+        """The target of a saga running in THIS edge (the reconcile skips these)."""
         return self._moving.get(session_id)
+
+    def hold_move(self, session_id: str, target: str) -> None:
+        self._held[session_id] = target
+
+    def release_hold(self, session_id: str) -> None:
+        self._held.pop(session_id, None)
 
     @staticmethod
     async def _record_from_row_of(session_id: str):
@@ -519,7 +530,7 @@ class FleetOrchestrator:
         if rec is None:
             return
         try:
-            rec.moving_to = self._moving.get(rec.id)
+            rec.moving_to = self._moving.get(rec.id) or self._held.get(rec.id)
         except Exception:  # pragma: no cover — frozen record types
             pass
 

@@ -135,12 +135,18 @@ class Bundle:
                    branches=dict(d.get("branches") or {}))
 
 
-def export(cwd: str, session_id: str, *, carry_dirty: bool) -> Bundle:
+def export(cwd: str, session_id: str, *, carry_dirty: bool,
+           vetted: WorktreeState | None = None) -> Bundle:
     """Push *cwd*'s HEAD and unpushed authored branches to the transfer namespace.
 
     A dirty tree is refused unless ``carry_dirty`` (the user ticked the consent
-    box; the rebalancer never passes True). With consent the edits become one WIP
-    commit on top of HEAD, pushed as the transfer head; on a push failure that
+    box; the rebalancer never passes True) AND the caller hands back the *vetted*
+    state its policy approved — the consent, and the repo-visibility check behind it
+    (D-17 revised D1: never on a public repo), were about THAT tree. A tree that is
+    not exactly the vetted one any more (dirtied after a clean vet, or new files
+    since) is refused with ``dirty_worktree`` and nothing is committed or pushed, so
+    no caller can WIP-commit bytes nobody vetted. With consent the edits become one
+    WIP commit on top of HEAD, pushed as the transfer head; on a push failure that
     commit is undone (``reset --mixed``) so the worktree is exactly as found.
     """
     top = _repo_top(cwd)
@@ -151,6 +157,12 @@ def export(cwd: str, session_id: str, *, carry_dirty: bool) -> Bundle:
     state = inspect(cwd)
     if state.dirty and not carry_dirty:
         raise TransferError("dirty_worktree", f"{state.dirty_files} uncommitted change(s)")
+    if state.dirty and (vetted is None or not vetted.dirty
+                        or vetted.dirty_files != state.dirty_files
+                        or vetted.dirty_paths != state.dirty_paths
+                        or vetted.head_sha != state.head_sha):
+        raise TransferError("dirty_worktree",
+                            "the worktree changed since it was vetted; nothing was pushed")
     base_sha = state.head_sha
     head_sha = base_sha
     wip = False
@@ -331,6 +343,14 @@ def finalize(bundle: Bundle | None, worktree_path: str, *,
     if parent is not None:
         _run(["git", "-C", worktree_path, "reset", "-q", "--soft", parent])
     ref = snapshot_recovery_ref(worktree_path, sid, reason=RECOVERY_FORCED)
+    if ref is None:
+        # None means "clean, nothing to keep" OR "the snapshot failed": tell them apart.
+        status = _run(["git", "-C", worktree_path, "status", "--porcelain"])
+        if status.returncode != 0 or status.stdout.strip():
+            log.warning("transfer.finalize_refused session=%s path=%s — the tree has "
+                        "uncommitted changes and no recovery snapshot could be taken; "
+                        "leaving it in place", sid, worktree_path)
+            return Finalized(False)
     removed = remove_worktree(worktree_path, force=True, session_id=sid)
     log.info("transfer.finalize session=%s removed=%s path=%s recovery_ref=%s",
              sid, removed, worktree_path, ref)

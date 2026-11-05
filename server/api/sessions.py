@@ -55,7 +55,6 @@ from server.sessions.orchestrator import (
     ModelBlockedError,
 )
 from server.sessions import session_actions
-from server.sessions import session_move
 from server.sessions import read_state
 from server.sessions import worktree_files
 from server.sessions import flag_settings
@@ -2819,12 +2818,14 @@ async def move_session_preflight(
     """What the "Move to host…" dialog shows before posting (D-17): the verdict for
     ``host`` (or for the session when omitted), per-host verdicts, the dirty file list
     (capped at 50), the repo's visibility and the background tasks that would stop.
-    Read-only. 404 unknown session; 409 ``MOVE_NO_FLEET`` without a fleet."""
+    Read-only, and human-only like the move (403 ``SESSION_CONTROL_HUMAN_ONLY``): it
+    reveals dirty file names. 404 unknown session; 409 ``MOVE_NO_FLEET`` without a fleet."""
     try:
-        return await session_move.preflight(_get_orchestrator(request), session_id, host)
-    except session_move.MoveError as exc:
-        return JSONResponse(status_code=exc.http, content={"detail": {
-            "code": exc.code, "message": exc.message, **exc.extra}})
+        return await session_actions.move_preflight(
+            _get_orchestrator(request), session_id=session_id, target=host,
+            identity=identity, via=human_gate_via(request))
+    except ActionError as exc:
+        return _action_error_response(exc)
 
 
 @router.post("/{session_id}/move")

@@ -1,12 +1,13 @@
 """Move a session to another fleet host (D-17): sessions.moving_to, move_started_at,
-moved_from, moved_at.
+moved_from, moved_at, move_imported_by.
 
 Revision ID: 0106_session_move
 Revises: 0105_release_milestones
 
 ``moving_to`` is the compare-and-set claim of an in-flight move (NULL in every terminal
 state) and ``move_started_at`` its claim time, so a saga that died with its edge is
-reconciled once stale. ``moved_from`` / ``moved_at`` record the last completed restamp.
+reconciled once stale. ``moved_from`` / ``moved_at`` record the last completed restamp;
+``move_imported_by`` is the target's import-complete evidence for the reconcile.
 All nullable: ``init_db``'s reconcile adds them on both dialects; this revision is the
 reviewable record.
 
@@ -28,9 +29,11 @@ def upgrade() -> None:
     op.add_column("sessions", sa.Column("move_started_at", sa.DateTime(), nullable=True))
     op.add_column("sessions", sa.Column("moved_from", sa.String(), nullable=True))
     op.add_column("sessions", sa.Column("moved_at", sa.DateTime(), nullable=True))
+    op.add_column("sessions", sa.Column("move_imported_by", sa.String(), nullable=True))
 
 
 def downgrade() -> None:
+    op.drop_column("sessions", "move_imported_by")
     op.drop_column("sessions", "moved_at")
     op.drop_column("sessions", "moved_from")
     op.drop_column("sessions", "move_started_at")

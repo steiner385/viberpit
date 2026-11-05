@@ -73,8 +73,6 @@ def test_an_idle_claude_session_is_movable():
     ({"status": "in_progress"}, sm.MOVE_MID_TURN),
     ({"status": "condensing"}, sm.MOVE_MID_TURN),
     ({"status": "retrying"}, sm.MOVE_MID_TURN),
-    ({"status": "waiting_input"}, sm.MOVE_AWAITING_ANSWER),
-    ({"status": "waiting_question"}, sm.MOVE_AWAITING_ANSWER),
     ({"status": "queued"}, sm.MOVE_NOT_STARTED),
     ({"status": "pending_approval"}, sm.MOVE_NOT_STARTED),
     ({"status": "archived"}, sm.MOVE_INACTIVE),
@@ -220,6 +218,7 @@ class FakeHost:
         self.calls: list[str] = []
         self.gate: asyncio.Event | None = None
         self.preflight: dict = {}
+        self.events: list[tuple[str, str]] = []
 
     def seed(self, sid: str = SID) -> None:
         self.records[sid] = SessionRecord(
@@ -267,19 +266,34 @@ class FakeHost:
             row = await db.get(DbSession, sid)
         if row.host != self.name:
             raise sm.MoveError(sm.MOVE_NOT_STAMPED, f"stamped {row.host}")
-        if await session_lease.acquire(sid, self.name, ttl_s=120) is None:
-            raise sm.MoveError(sm.MOVE_LEASE_HELD)
-        self.trees.add(sid)
-        self.records[sid] = SessionRecord(
+        if local and sid not in self.trees:
+            raise sm.MoveError(sm.MOVE_WORKTREE_MISSING)
+        self.trees.add(sid)               # worktree first (import_ / reuse) …
+        self.records[sid] = SessionRecord(  # … then the record, stamped here …
             id=sid, name="s", account="acct", engine=AgentEngine.CLAUDE_CODE,
             engine_session_id="c-1", cols=80, rows=24, cwd="/wt/viberpit/5e55a0aa",
             detached=False, status="done", host=self.name)
+        if await session_lease.acquire(sid, self.name, ttl_s=120) is None:
+            # … then the claim. A lost claim gives the record to the lease holder,
+            # exactly as the daemon's _abandon does.
+            holder = await _lease_holder(sid)
+            if self.role == "worker":
+                self.records.pop(sid, None)
+            else:
+                self.records[sid].host = holder
+            if not local:
+                self.trees.discard(sid)
+            raise sm.MoveError(sm.MOVE_LEASE_HELD)
         self.drivers.add(sid)
+        self.events.append((self.name, "restore" if local else "import"))
+        if not local:
+            await sm.mark_import_complete(sid, self.name)
         self.origin.discard(sid)          # delete_transfer_refs (best-effort, both paths)
         return {"sessionId": sid, "host": self.name, "driver": True}
 
     async def transfer_finalize(self, sid, manifest=None, *, owner):
         self.calls.append("finalize")
+        self.events.append((self.name, "finalize"))
         if "finalize" in self.fail:
             raise self.fail["finalize"]
         async with db_session() as db:
@@ -318,6 +332,7 @@ def fleet(isolated_db):
             await db.commit()
         assert await session_lease.acquire(SID, "dobby", ttl_s=120) is not None
     asyncio.run(_seed())
+    rocky.events = dobby.events                      # one ordered log for both hosts
     router = FleetRouter()
     router.add("dobby", dobby)
     router.add("rocky", rocky)
@@ -505,7 +520,11 @@ async def test_finalize_failure_keeps_the_move_and_the_source_tree(fleet):
 
 
 @pytest.mark.asyncio
-async def test_restore_failure_is_failed_but_unwedged(fleet):
+async def test_restore_failure_is_failed_and_left_to_the_reconcile(fleet):
+    """Fix round 1, item 3: a source unreachable during restore must not hand the
+    session back half-restored. The claim stays (marked abandoned), driver-building
+    calls keep answering SESSION_MOVING, and the reconcile finishes the restore: the
+    WIP is unpacked, the refs deleted and the session runs on exactly one host."""
     fx = fleet
     fx.rocky.fail["import"] = RuntimeError("boom")
     fx.dobby.fail["restore"] = RuntimeError("source down too")
@@ -513,8 +532,20 @@ async def test_restore_failure_is_failed_but_unwedged(fleet):
         await _move(fx)
     assert ei.value.outcome == "failed"
     row = await _row()
-    assert (row.host, row.moving_to) == ("dobby", None)        # never wedged
+    assert (row.host, row.moving_to) == ("dobby", "rocky")     # left for the reconcile
+    assert row.move_started_at is None                         # … marked abandoned
+    with pytest.raises(sm.SessionMoving):
+        await fx.f.ensure_driver(SID)
     assert (await _audits())[-1]["outcome"] == "failed"
+    assert fx.origin == {SID}                                  # refs still published
+    fx.dobby.fail.pop("restore")                               # the source is back
+    assert await sm.reconcile_stale_moves(fx.f) == [SID]
+    row = await _row()
+    assert (row.host, row.moving_to) == ("dobby", None)
+    assert fx.origin == set()
+    _on_source_only(fx)
+    assert await _lease_holder() == "dobby"
+    assert await fx.f.ensure_driver(SID) is not None            # no longer refused
 
 
 @pytest.mark.asyncio
@@ -528,13 +559,18 @@ async def test_restore_never_overrides_a_target_holding_the_lease(fleet):
         await real_import(sid, manifest, source=source, local=local)
         raise RuntimeError("edge gave up waiting")
     fx.rocky.transfer_import = late
-    fx.dobby.fail["restore"] = sm.MoveError(sm.MOVE_LEASE_HELD)
     with pytest.raises(sm.MoveError) as ei:
         await _move(fx)
     assert ei.value.outcome == "moved"
     row = await _row()
     assert (row.host, row.moving_to) == ("rocky", None)
     assert await _lease_holder() == "rocky"
+    # Fix round 1, item 2: the source's restore unpacked and installed a record before
+    # its claim lost — no twin-capable copy may stay behind on it.
+    assert "finalize" in fx.dobby.calls
+    assert SID not in fx.dobby.trees and SID in fx.rocky.trees
+    assert fx.dobby.records[SID].host == "rocky"
+    assert SID in fx.rocky.drivers and SID not in fx.dobby.drivers
 
 
 @pytest.mark.asyncio
@@ -686,6 +722,43 @@ async def test_reconcile_crash_after_restamp_before_import_restores_the_source(f
     assert (row.host, row.moving_to) == ("dobby", None)
     assert await _lease_holder() == "dobby"
     _on_source_only(fx)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_target_died_mid_import_keeps_the_source(fleet):
+    """Fix round 1, item 4: the target got as far as `worktree add` and died, then the
+    edge died. A directory on the target is not evidence of a finished import: the
+    source wins, resumes FIRST, and only then is the target's half copy dropped."""
+    fx = fleet
+    await fx.dobby.transfer_export(SID, target="rocky")
+    await _stale_claim(host="rocky", moved_from="dobby")
+    fx.rocky.trees.add(SID)                                  # the half-finished import
+    fx.rocky.preflight = {"present": True}
+    assert await sm.reconcile_stale_moves(fx.f) == [SID]
+    row = await _row()
+    assert (row.host, row.moving_to) == ("dobby", None)
+    assert SID in fx.dobby.trees and SID not in fx.rocky.trees
+    assert fx.dobby.events[-2:] == [("dobby", "restore"), ("rocky", "finalize")]
+    _on_source_only(fx)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_falls_back_when_the_winner_cannot_resume(fleet):
+    """The import completed (marker) but the target cannot resume now: fall back to
+    the source, never finalizing the source first."""
+    fx = fleet
+    manifest = await fx.dobby.transfer_export(SID, target="rocky")
+    await _stale_claim(host="rocky", moved_from="dobby")
+    await fx.rocky.transfer_import(SID, manifest, source="dobby")
+    await _release(SID, "rocky")                              # its driver went idle
+    fx.rocky.drivers.discard(SID)
+    fx.dobby.trees.add(SID)                                   # source tree still there
+    fx.rocky.fail["restore"] = RuntimeError("cannot resume")
+    assert await sm.reconcile_stale_moves(fx.f) == [SID]
+    row = await _row()
+    assert (row.host, row.moving_to) == ("dobby", None)
+    assert ("dobby", "finalize") not in fx.dobby.events
+    assert fx.dobby.events[-2:] == [("dobby", "restore"), ("rocky", "finalize")]
 
 
 @pytest.mark.asyncio
@@ -1003,7 +1076,7 @@ async def _target(monkeypatch, h, *, role="worker"):
 
 
 def _manifest(h, *, carry=False) -> dict:
-    b = wt.export(str(h.cwd), SID, carry_dirty=carry)
+    b = wt.export(str(h.cwd), SID, carry_dirty=carry, vetted=wt.inspect(str(h.cwd)))
     return {"sessionId": SID, "bundle": b.to_dict(), "originUrl": str(h.origin),
             "transcript": sm.transcript_marker(str(h.transcript)),
             "preambles": ["carried note"], "cwd": str(h.b_cwd)}
@@ -1229,3 +1302,157 @@ def test_move_error_round_trips_the_rpc_envelope():
                                                     {"dirtyPaths": ["a"]}, None)
     failed = sm.MoveError(sm.MOVE_IMPORT_FAILED, outcome="restored")
     assert sm.MoveError.from_error_data("x", failed.error_data).outcome == "restored"
+
+
+
+# ═════════════════════════════════════════════════════════════════════════════════════
+# Fix round 1
+# ═════════════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_a_host_missing_from_the_router_is_a_coded_refusal(fleet, monkeypatch):
+    """Item 8: the registry lists rocky but the router holds no client for it."""
+    fx = fleet
+
+    async def cands():
+        return [_cand("rocky")]
+    monkeypatch.setattr(fx.f, "host_candidates", cands)
+    del fx.f._router._orchs["rocky"]
+    monkeypatch.setattr(fx.f, "host_names", lambda: ["dobby", "rocky"])
+    with pytest.raises(sm.MoveError) as ei:
+        await _move(fx)
+    assert ei.value.code == sm.MOVE_TARGET_UNAVAILABLE
+    row = await _row()
+    assert (row.host, row.moving_to) == ("dobby", None)
+    assert "export" not in fx.dobby.calls
+
+
+def test_a_resting_status_with_no_live_card_is_movable():
+    """Item 10: a seeded waiting_question after a restart has no card behind it."""
+    assert _verdict(_subject(status="waiting_question")).ok
+    assert _verdict(_subject(status="waiting_input"),
+                    facts=sm.WorktreeFacts()).ok
+    v = _verdict(facts=sm.WorktreeFacts(pending_card=True))
+    assert v.code == sm.MOVE_AWAITING_ANSWER
+
+
+def test_preflight_is_human_only():
+    """Item 9: the dialog's preflight reveals dirty file names — same gate as move."""
+    from server.sessions.session_actions import SESSION_CONTROL_HUMAN_ONLY_CODE
+    with _app(object(), identity="assistant@viberpit", via="assistant") as c:
+        r = c.get(f"/api/sessions/{SID}/move/preflight?host=rocky")
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == SESSION_CONTROL_HUMAN_ONLY_CODE
+
+
+@pytest.mark.asyncio
+async def test_export_never_pushes_a_tree_dirtied_after_vetting(
+        monkeypatch, two_hosts, visibility):
+    """Item 1: clean when vetted, dirty by the time export runs (a background build),
+    public repo, consent requested anyway — nothing is pushed."""
+    h = two_hosts
+    visibility.answer = False
+    o = await _source(monkeypatch, h)
+    real_close = o._close_for_transfer
+
+    async def close_then_dirty(sid):
+        await real_close(sid)
+        (h.cwd / "build.log").write_text("TOKEN=late\n")
+    o._close_for_transfer = close_then_dirty
+    with pytest.raises(sm.MoveError) as ei:
+        await o.transfer_export(SID, target="rocky", carry_dirty=True)
+    assert ei.value.code == sm.MOVE_EXPORT_FAILED
+    assert _origin_refs(h.origin) == ""
+    assert o._records[SID].host == "dobby"
+
+
+@pytest.mark.asyncio
+async def test_a_lost_restore_claim_gives_the_record_to_the_lease_holder(
+        monkeypatch, two_hosts, visibility):
+    """Item 2 (daemon half): the local restore installed a record before its claim
+    lost to the target; the record must not stay stamped here."""
+    h = two_hosts
+    o = await _source(monkeypatch, h)
+    manifest = await o.transfer_export(SID, target="rocky")
+    assert await session_lease.acquire(SID, "rocky", ttl_s=120) is not None
+    o.ensure_driver = AsyncMock(side_effect=AssertionError("must not resume"))
+    with pytest.raises(sm.MoveError) as ei:
+        await o.transfer_import(SID, manifest, source="rocky", local=True)
+    assert ei.value.code == sm.MOVE_LEASE_HELD
+    assert o._records[SID].host == "rocky"
+    assert await o._claim_session(SID, why="resume") is False      # no twin here
+
+
+@pytest.mark.asyncio
+async def test_ensure_driver_unpacks_a_stray_transfer_wip(monkeypatch, two_hosts):
+    """Item 3 defence in depth: a session about to resume on its own transfer WIP
+    commit gets it unpacked first, so the agent's next push cannot publish it."""
+    h = two_hosts
+    o = _bare(monkeypatch, host="dobby", role="primary", root=h.a_root)
+    o._ensure_lock = asyncio.Lock()
+    base = _git("rev-parse", "HEAD", cwd=h.cwd)
+    (h.cwd / "wip.py").write_text("x\n")
+    wt.export(str(h.cwd), SID, carry_dirty=True, vetted=wt.inspect(str(h.cwd)))
+    assert _git("rev-parse", "HEAD", cwd=h.cwd) != base
+    o._records[SID] = _rec(SID, h.cwd, "dobby")
+    o._claim_session = AsyncMock(return_value=True)
+    o._ensure_session_cwd = AsyncMock(return_value=True)
+
+    class _Stop(Exception):
+        pass
+
+    async def stop(**kw):
+        raise _Stop
+    import server.sessions.orchestrator as mod
+    monkeypatch.setattr(mod, "disabled_for_session", stop)
+    with pytest.raises(_Stop):
+        await o.ensure_driver(SID)
+    assert _git("rev-parse", "HEAD", cwd=h.cwd) == base
+    assert (h.cwd / "wip.py").read_text() == "x\n"
+
+
+@pytest.mark.asyncio
+async def test_close_for_transfer_overrun_fails_the_export(monkeypatch, isolated_db, tmp_path):
+    """Item 6: a CLI that does not close in time may still be flushing the shared
+    transcript; the move must not go on."""
+    import server.sessions.orchestrator as mod
+    monkeypatch.setattr(mod, "DRIVER_RELEASE_WAIT_S", 0.05)
+    o = _bare(monkeypatch, host="dobby", role="primary", root=tmp_path)
+    del o._close_for_transfer                                   # the real one
+
+    class _Stuck:
+        async def aclose(self):
+            await asyncio.sleep(30)
+    o._teardown_driver_state = AsyncMock(return_value=_Stuck())
+    with pytest.raises(sm.MoveError) as ei:
+        await o._close_for_transfer(SID)
+    assert ei.value.code == sm.MOVE_EXPORT_FAILED
+
+
+@pytest.mark.asyncio
+async def test_a_session_being_closed_is_not_resurrected(monkeypatch, isolated_db, tmp_path):
+    """Item 7: close_session pops the record before persisting `ended`."""
+    o = _bare(monkeypatch, host="rocky", role="worker", root=tmp_path)
+    await _seed_row(tmp_path / "wt", "rocky")
+    o._closing = {SID}
+    assert await o._load_unrehydrated_row(SID) is None
+    assert SID not in o._records
+
+
+@pytest.mark.asyncio
+async def test_export_checks_the_live_card_not_the_resting_status(
+        monkeypatch, two_hosts, visibility):
+    """Item 10 (daemon half)."""
+    h = two_hosts
+    o = await _source(monkeypatch, h)
+    o._records[SID].status = "waiting_question"
+    o.orphaned_interaction = lambda sid: None
+    drv = _Driver()
+    drv.awaiting_user_input = True
+    o._drivers[SID] = drv
+    with pytest.raises(sm.MoveError) as ei:
+        await o.transfer_export(SID, target="rocky")
+    assert ei.value.code == sm.MOVE_AWAITING_ANSWER
+    drv.awaiting_user_input = False
+    manifest = await o.transfer_export(SID, target="rocky")
+    assert manifest["target"] == "rocky"

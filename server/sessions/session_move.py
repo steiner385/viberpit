@@ -64,6 +64,7 @@ MOVE_DIRTY_NEEDS_CONSENT = "MOVE_DIRTY_NEEDS_CONSENT"
 MOVE_DIRTY_PUBLIC_REPO = "MOVE_DIRTY_PUBLIC_REPO"
 MOVE_BACKGROUND_NEEDS_CONFIRM = "MOVE_BACKGROUND_NEEDS_CONFIRM"
 MOVE_SOURCE_UNREACHABLE = "MOVE_SOURCE_UNREACHABLE"
+MOVE_TARGET_UNAVAILABLE = "MOVE_TARGET_UNAVAILABLE"
 # Saga failures (something was touched; the outcome says where the session is).
 MOVE_EXPORT_FAILED = "MOVE_EXPORT_FAILED"
 MOVE_RESTAMP_FAILED = "MOVE_RESTAMP_FAILED"
@@ -100,7 +101,7 @@ BACKGROUND_LIST_CAP = 20
 
 _HTTP: dict[str, int] = {
     MOVE_NOT_FOUND: 404, MOVE_UNKNOWN_HOST: 400, MOVE_SAME_HOST: 400,
-    MOVE_SOURCE_UNREACHABLE: 503,
+    MOVE_SOURCE_UNREACHABLE: 503, MOVE_TARGET_UNAVAILABLE: 503,
 }
 
 
@@ -173,13 +174,17 @@ class WorktreeFacts:
     dirty_paths: tuple[str, ...] = ()
     repo_private: bool | None = None
     background_tasks: tuple[dict, ...] = ()
+    #: A live permission / question / plan card (or a re-offered orphaned one) — not
+    #: the resting status, which a restart seeds with no card behind it.
+    pending_card: bool = False
 
     @classmethod
     def from_preflight(cls, d: dict) -> "WorktreeFacts":
         return cls(dirty_count=int(d.get("dirtyCount") or 0),
                    dirty_paths=tuple(d.get("dirtyPaths") or ()),
                    repo_private=d.get("repoPrivate"),
-                   background_tasks=tuple(d.get("backgroundTasks") or ()))
+                   background_tasks=tuple(d.get("backgroundTasks") or ()),
+                   pending_card=bool(d.get("pendingCard")))
 
 
 @dataclass(frozen=True)
@@ -213,7 +218,7 @@ def movable(subject: MoveSubject, target: str, candidate: Any, *, caps: Any, ena
     """
     from server.sessions.display_policy import DISPLAY_NATIVE
     from server.sessions.fleet import engine_rejection, platform_rejection
-    from server.sessions.status import MID_TURN_STATUSES, STRUCTURED_HOLD_STATUSES
+    from server.sessions.status import MID_TURN_STATUSES
     from server.sessions.types import is_assistant_kind
     from server.db.models import INACTIVE_SESSION_STATUSES
 
@@ -238,9 +243,6 @@ def movable(subject: MoveSubject, target: str, candidate: Any, *, caps: Any, ena
         return _no(MOVE_NOT_STARTED, "This session has not started yet.")
     if subject.status in MID_TURN_STATUSES:
         return _no(MOVE_MID_TURN, "Wait for the turn to finish or Interrupt first.")
-    if subject.status in STRUCTURED_HOLD_STATUSES:
-        return _no(MOVE_AWAITING_ANSWER,
-                   "Answer the session's open question or permission request first.")
     if subject.live_children:
         return _no(MOVE_HAS_CHILDREN,
                    "This session is steering child sessions; they run on its host.",
@@ -271,6 +273,9 @@ def movable(subject: MoveSubject, target: str, candidate: Any, *, caps: Any, ena
             and candidate.active_sessions >= candidate.max_sessions):
         return _no(MOVE_TARGET_FULL, f"{target} is at capacity.")
     if facts is not None:
+        if facts.pending_card:
+            return _no(MOVE_AWAITING_ANSWER,
+                       "Answer the session's open question or permission request first.")
         if facts.dirty_count:
             dirty = {"dirtyCount": facts.dirty_count, "dirtyPaths": list(facts.dirty_paths)}
             if facts.repo_private is not True:
@@ -514,7 +519,34 @@ async def _release_claim(session_id: str) -> None:
     from server.db.models import Session as DbSession
     async with db_session() as db:
         await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
-                         .values(moving_to=None, move_started_at=None))
+                         .values(moving_to=None, move_started_at=None,
+                                 move_imported_by=None))
+        await db.commit()
+
+
+async def _abandon_claim(session_id: str) -> None:
+    """Keep the claim but mark it abandoned (no start time): the reconcile takes it on
+    its next pass instead of waiting out :data:`MOVE_STALE_S`."""
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                         .values(move_started_at=None))
+        await db.commit()
+
+
+async def mark_import_complete(session_id: str, host: str) -> None:
+    """The target's import-complete evidence (written by ``transfer_import`` once its
+    driver started on a verified transcript). The crash reconcile trusts this, never
+    the mere presence of a directory."""
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        await db.execute(sa_update(DbSession).where(
+            DbSession.id == session_id, DbSession.moving_to == host)
+            .values(move_imported_by=host))
         await db.commit()
 
 
@@ -592,9 +624,23 @@ async def move_session(sessions: Any, session_id: str, target: str, *, identity:
         name=f"session-move-{session_id}")
 
 
+def _orch(fleet: Any, host: str, code: str = MOVE_TARGET_UNAVAILABLE) -> Any:
+    """``fleet.orch_for_host`` with a coded refusal instead of a bare ``UnknownHost``
+    (a host the registry lists but this edge holds no client for)."""
+    from server.sessions.fleet_router import UnknownHost
+    try:
+        return fleet.orch_for_host(host)
+    except UnknownHost as exc:
+        raise MoveError(code, f"{host} is not reachable from this edge.") from exc
+
+
 async def _saga(fleet: Any, ctx: _Context, target: str, *, identity: str, via: str | None,
                 carry_dirty: bool, stop_background: bool) -> dict:
     sid, source = ctx.session_id, ctx.source
+    # Both clients before the claim: a host this edge cannot reach is a refusal that
+    # touched nothing.
+    src = _orch(fleet, source, MOVE_SOURCE_UNREACHABLE)
+    tgt = _orch(fleet, target)
     if not await _claim(sid, target):
         log.info("session.move_refused id=%s code=%s", sid, MOVE_IN_FLIGHT)
         raise MoveError(MOVE_IN_FLIGHT, "Another move of this session is in flight.")
@@ -603,8 +649,6 @@ async def _saga(fleet: Any, ctx: _Context, target: str, *, identity: str, via: s
     outcome, code = OUTCOME_FAILED, None
     finalize: dict | None = None
     try:
-        src = fleet.orch_for_host(source)
-        tgt = fleet.orch_for_host(target)
         manifest: dict | None = None
         try:
             manifest = await src.transfer_export(
@@ -647,12 +691,26 @@ async def _saga(fleet: Any, ctx: _Context, target: str, *, identity: str, via: s
                 "finalized": bool(finalize.get("removed")),
                 "recoveryRef": finalize.get("recoveryRef")}
     finally:
-        try:
-            await _release_claim(sid)
-        except Exception:
-            log.warning("session.move could not clear moving_to id=%s — the reconcile "
-                        "will", sid, exc_info=True)
         fleet.end_move(sid)
+        if outcome == OUTCOME_FAILED:
+            # Neither host took the session back: the source may still hold the WIP
+            # commit and the refs are still on GitHub. Leave the claim for the reconcile
+            # (marked abandoned, so it runs on the next pass, not in 10 min) and keep
+            # refusing driver builds until it has resolved where the session lives.
+            fleet.hold_move(sid, target)
+            try:
+                await _abandon_claim(sid)
+            except Exception:
+                log.warning("session.move could not mark the claim abandoned id=%s",
+                            sid, exc_info=True)
+            log.warning("session.move failed id=%s %s→%s code=%s — left to the reconcile",
+                        sid, source, target, code)
+        else:
+            try:
+                await _release_claim(sid)
+            except Exception:
+                log.warning("session.move could not clear moving_to id=%s — the reconcile "
+                            "will", sid, exc_info=True)
         await _audit(identity, via, {
             "sessionId": sid, "from": source, "to": target, "carryDirty": carry_dirty,
             "stopBackground": stop_background, "outcome": outcome, "code": code,
@@ -665,7 +723,8 @@ async def _restore(fleet: Any, sid: str, source: str, target: str, manifest: dic
                    ctx: _Context, *, restamped: bool) -> str:
     """Put the session back on *source* after a failure past export: restamp back, then
     the source's own reuse-path import (its worktree is still there). If the source
-    cannot take it back, the lease decides: a target that is driving it keeps it."""
+    cannot take it back, the lease decides: a target that is driving it keeps it, and
+    the source's copy is finalized so nothing there can resume it."""
     if restamped:
         try:
             await _restamp(sid, host=source, moved_from=ctx.moved_from, moved_at=ctx.moved_at)
@@ -673,7 +732,7 @@ async def _restore(fleet: Any, sid: str, source: str, target: str, manifest: dic
             log.warning("session.move restamp-back failed id=%s", sid, exc_info=True)
     fleet.note_host(sid, source)
     try:
-        await fleet.orch_for_host(source).transfer_import(
+        await _orch(fleet, source, MOVE_SOURCE_UNREACHABLE).transfer_import(
             sid, manifest, source=target, local=True)
         log.info("session.move restored id=%s on %s", sid, source)
         return OUTCOME_RESTORED
@@ -682,16 +741,19 @@ async def _restore(fleet: Any, sid: str, source: str, target: str, manifest: dic
     holder = await _fresh_lease_holder(sid)
     if holder == target:
         # The target answered too late for the edge but is driving it now: it is the
-        # target's session. Never restore over a live twin.
+        # target's session. Never restore over a live twin — and drop the source's
+        # copy, which the failed restore may have unpacked and re-recorded.
         try:
             await _restamp(sid, host=target, moved_from=source, moved_at=_NOW)
-            fleet.note_host(sid, target)
-            log.warning("session.move id=%s: restore failed but %s holds the lease — "
-                        "kept there", sid, target)
-            return OUTCOME_MOVED
         except Exception:
             log.warning("session.move restamp to lease holder failed id=%s", sid,
                         exc_info=True)
+            return OUTCOME_FAILED
+        fleet.note_host(sid, target)
+        log.warning("session.move id=%s: restore failed but %s holds the lease — kept "
+                    "there", sid, target)
+        await _finalize(fleet, sid, source, target, manifest)
+        return OUTCOME_MOVED
     return OUTCOME_FAILED
 
 
@@ -701,7 +763,7 @@ async def _finalize(fleet: Any, sid: str, source: str, target: str,
     failure is audited but does not change the outcome: the session is live on the
     target, and the leftover tree is stamped for another host so nothing resumes it."""
     try:
-        return await fleet.orch_for_host(source).transfer_finalize(
+        return await _orch(fleet, source, MOVE_SOURCE_UNREACHABLE).transfer_finalize(
             sid, manifest, owner=target) or {}
     except Exception as exc:
         log.warning("session.move finalize on %s failed id=%s — the source worktree "
@@ -713,9 +775,11 @@ async def _finalize(fleet: Any, sid: str, source: str, target: str,
 
 async def reconcile_stale_moves(sessions: Any, *, older_than_s: float = MOVE_STALE_S
                                 ) -> list[str]:
-    """Settle every claim older than *older_than_s* that no live saga in this process
-    owns. Returns the ids settled. Never raises."""
-    from sqlalchemy import or_, select as sa_select
+    """Settle every claim older than *older_than_s* (or abandoned: no start time) that no
+    live saga in this process owns. Every claim this edge is not running is also HELD —
+    driver builds answer SESSION_MOVING — until it is settled. Returns the ids settled.
+    Never raises."""
+    from sqlalchemy import select as sa_select
     from server.db import db_session
     from server.db.clock import naive_utc_now
     from server.db.models import Session as DbSession
@@ -724,9 +788,7 @@ async def reconcile_stale_moves(sessions: Any, *, older_than_s: float = MOVE_STA
     try:
         async with db_session() as db:
             rows = (await db.execute(sa_select(DbSession).where(
-                DbSession.moving_to.isnot(None),
-                or_(DbSession.move_started_at.is_(None),
-                    DbSession.move_started_at < cutoff)))).scalars().all()
+                DbSession.moving_to.isnot(None)))).scalars().all()
     except Exception:
         log.warning("session.move reconcile: claim scan failed", exc_info=True)
         return []
@@ -734,6 +796,9 @@ async def reconcile_stale_moves(sessions: Any, *, older_than_s: float = MOVE_STA
     for row in rows:
         if fleet.moving_target(row.id) is not None:
             continue   # a live saga in this edge
+        fleet.hold_move(row.id, row.moving_to)
+        if row.move_started_at is not None and row.move_started_at >= cutoff:
+            continue   # maybe a live saga in another edge: not stale yet
         try:
             if await _reconcile_one(fleet, row):
                 settled.append(row.id)
@@ -743,52 +808,69 @@ async def reconcile_stale_moves(sessions: Any, *, older_than_s: float = MOVE_STA
 
 
 async def _reconcile_one(fleet: Any, row) -> bool:
+    """Decide where the session lives and make it true, in D4 order: the winner resumes
+    (and is verified) FIRST; only then is the other side's copy dropped.
+
+    Winner: a host holding a fresh lease; else the target only with import-complete
+    evidence (``move_imported_by`` — written after its transcript check and driver
+    start, never just "a directory exists"); else the source. If the winner cannot
+    resume, fall back to the other side when it is eligible (the source always; the
+    target only with that evidence)."""
     sid, target = row.id, row.moving_to
     restamped = row.host == target
     source = (row.moved_from if restamped else row.host) or fleet.primary_name
     holder = await _fresh_lease_holder(sid)
-    target_has_tree = False
-    if restamped and holder not in (source, target):
-        try:
-            report = await fleet.orch_for_host(target).transfer_preflight(sid)
-            target_has_tree = bool((report or {}).get("present"))
-        except Exception:
-            log.info("session.move reconcile: %s unreachable id=%s — retrying later",
-                     target, sid)
-            return False
-    if holder in (source, target):
-        winner = holder
+    imported = getattr(row, "move_imported_by", None) == target
+    first: str
+    if holder is not None and holder in (source, target):
+        first = holder
     else:
-        winner = target if (restamped and target_has_tree) else source
-    loser = target if winner == source else source
-    log.warning("session.move_reconcile id=%s claim=%s→%s stamp=%s lease=%s winner=%s",
-                sid, source, target, row.host, holder, winner)
-    if winner == target:
-        await _restamp(sid, host=target, moved_from=source,
-                       moved_at=row.moved_at if restamped else _NOW)
-    elif restamped:
-        # The restamp to the target happened and is being undone; what the row said
-        # before it is not known any more, so the "last move" fields are cleared.
-        await _restamp(sid, host=source, moved_from=None, moved_at=None)
-    else:
-        await _restamp(sid, host=source, moved_from=row.moved_from, moved_at=row.moved_at)
-    fleet.note_host(sid, winner)
-    try:
-        await fleet.orch_for_host(loser).transfer_finalize(sid, None, owner=winner)
-    except Exception:
-        log.info("session.move reconcile: dropping %s's copy failed id=%s", loser, sid,
-                 exc_info=True)
-    if holder != winner:
+        first = target if imported else source
+    order: list[str] = [first]
+    other = source if first == target else target
+    if other == source or imported:
+        order.append(other)
+    log.warning("session.move_reconcile id=%s claim=%s→%s stamp=%s lease=%s imported=%s "
+                "order=%s", sid, source, target, row.host, holder, imported, order)
+    for cand in order:
+        loser = target if cand == source else source
+        if cand == target:
+            await _restamp(sid, host=target, moved_from=source,
+                           moved_at=row.moved_at if restamped else _NOW)
+        elif restamped:
+            # The restamp to the target is being undone; what the row said before it
+            # is not known any more, so the "last move" fields are cleared.
+            await _restamp(sid, host=source, moved_from=None, moved_at=None)
+        else:
+            await _restamp(sid, host=source, moved_from=row.moved_from, moved_at=row.moved_at)
+        fleet.note_host(sid, cand)
+        if cand != holder:
+            try:
+                await _orch(fleet, cand).transfer_import(sid, None, source=loser, local=True)
+            except Exception:
+                log.warning("session.move reconcile: %s could not resume id=%s", cand, sid,
+                            exc_info=True)
+                continue
         try:
-            await fleet.orch_for_host(winner).transfer_import(sid, None, source=loser,
-                                                              local=True)
+            await _orch(fleet, loser).transfer_finalize(sid, None, owner=cand)
         except Exception:
-            log.warning("session.move reconcile: %s could not resume id=%s — it stays "
-                        "stamped there, detached", winner, sid, exc_info=True)
-    await _release_claim(sid)
-    await _audit("system", None, {"sessionId": sid, "from": source, "to": target,
-                                  "outcome": f"reconciled:{winner}", "lease": holder})
-    return True
+            log.info("session.move reconcile: dropping %s's copy failed id=%s", loser, sid,
+                     exc_info=True)
+        await _release_claim(sid)
+        fleet.release_hold(sid)
+        await _audit("system", None, {"sessionId": sid, "from": source, "to": target,
+                                      "outcome": f"reconciled:{cand}", "lease": holder})
+        return True
+    # Nobody could resume it: back to the source's stamp (its tree was never removed),
+    # still claimed and held, for the next pass.
+    if order[-1] != source:
+        await _restamp(sid, host=source, moved_from=None if restamped else row.moved_from,
+                       moved_at=None if restamped else row.moved_at)
+        fleet.note_host(sid, source)
+    await _abandon_claim(sid)
+    log.warning("session.move reconcile: no host could resume id=%s — retrying next pass",
+                sid)
+    return False
 
 
 async def reconcile_loop(sessions: Any, interval_s: float = MOVE_RECONCILE_INTERVAL_S) -> None:

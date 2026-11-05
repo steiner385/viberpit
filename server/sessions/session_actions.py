@@ -140,6 +140,19 @@ async def move_session(orch, *, session_id: str, target: str, identity: str,
         raise ActionError(exc.code, exc.message, exc.http, extra=extra) from exc
 
 
+async def move_preflight(orch, *, session_id: str, target: str | None, identity: str,
+                         via: str | None) -> dict:
+    """The move dialog's preflight (D-17): same person-only gate as the move itself —
+    it reveals the worktree's dirty file names and the repo's visibility."""
+    from server.sessions import session_move
+    require_human(identity, via, action="move a session to another host",
+                  code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+    try:
+        return await session_move.preflight(orch, session_id, target)
+    except session_move.MoveError as exc:
+        raise ActionError(exc.code, exc.message, exc.http, extra=dict(exc.extra)) from exc
+
+
 RULE_HUMAN_ONLY_CODE = "RULES_HUMAN_ONLY"
 
 
