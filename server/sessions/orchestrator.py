@@ -22189,6 +22189,13 @@ class SessionOrchestrator:
             ),
         }
 
+    async def plugin_op(self, op: str, args: dict) -> dict:
+        """Run one Claude plugin/marketplace op on THIS host (D-16c, D2): the ``plugin_op``
+        RPC's body. ``server.library.plugin_cli.run_op`` is the single writer; it blocks
+        on a subprocess, so it runs in a worker thread."""
+        from server.library import plugin_cli
+        return await asyncio.to_thread(plugin_cli.run_op, op, args)
+
     async def codex_invalidate_credentials(self, account: str) -> dict:
         """Drop cached Codex credentials for *account* and stop its app-server.
 

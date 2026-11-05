@@ -1,10 +1,10 @@
 """Library API — plugins, skills, slash commands, MCP servers over the
 shared config base. Read routes are direct filesystem scans; mutations are
-atomic writes + audit events. No orchestrator/daemon involvement."""
+atomic writes + audit events, except plugin and marketplace mutations (D-16c),
+which run the ``claude plugin`` CLI on every host through the daemon RPC."""
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -24,8 +24,9 @@ from server.auth.middleware import current_identity
 from server.codex.capabilities import CODEX_CAPABILITIES, CODEX_LIBRARY_UNSUPPORTED_DETAIL
 from server.db import db_session, get_db
 from server.db.models import INACTIVE_SESSION_STATUSES, Session as SessionRow
-from server.library import mutate, scan
+from server.library import curated, mutate, plugin_cli, plugin_policy, scan
 from server.library.mutate import ConfigUnreadableError
+from server.library.snapshots import snapshot_before_mutation
 from server.library.names import (
     valid_command_path,
     valid_mcp_name,
@@ -110,8 +111,218 @@ def _bad(message: str) -> HTTPException:
 
 
 @router.get("/plugins")
-async def get_plugins(_identity: str = Depends(current_identity)) -> dict:
-    return scan.list_plugins()
+async def get_plugins(_identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
+    out = await asyncio.to_thread(scan.list_plugins)
+    picked = await curated.curated(db)
+    for m in out["marketplaces"]:
+        m["curated"] = m["name"] in picked
+    out["installEnabled"] = get_settings().plugin_install_enabled
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Plugin marketplace (D-16c). The CLI wrapper (server/library/plugin_cli.py) is the only
+# writer, fanned out to every host (orch.plugin_op_everywhere); plugin_policy decides
+# what may be added or installed. Every mutation is human-only and audited.
+# ---------------------------------------------------------------------------
+
+PLUGIN_INSTALL_DISABLED = "plugin_install_disabled"
+
+
+class ConfirmBody(BaseModel):
+    confirm: bool = False
+
+
+class MarketplaceAddBody(BaseModel):
+    source: str
+    confirm: bool = False
+
+
+def _install_off() -> JSONResponse | None:
+    """Kill switch: install, update and add routes answer 404 while it is off."""
+    if get_settings().plugin_install_enabled:
+        return None
+    return JSONResponse(status_code=404, content={"error": PLUGIN_INSTALL_DISABLED})
+
+
+def _plugin_human_gate(request: Request, identity: str) -> str | None:
+    """Only a person may change what code every session runs; returns ``via``."""
+    via = human_gate_via(request)
+    try:
+        require_human(identity, via, action="install, update, remove or toggle plugins",
+                      code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+    except ActionError as exc:
+        log.info("library.plugin_refused code=%s identity=%s via=%s", exc.code, identity, via)
+        raise HTTPException(status_code=exc.http,
+                            detail={"code": exc.code, "message": exc.message}) from None
+    return via
+
+
+def _policy_http(exc: plugin_policy.PolicyRefusal, subject: str) -> HTTPException:
+    log.info("library.plugin_refused code=%s subject=%s", exc.code, subject)
+    return HTTPException(status_code=exc.http, detail={"code": exc.code, "message": exc.message})
+
+
+def _require_confirm(confirm: bool, subject: str) -> None:
+    if not confirm:
+        raise _policy_http(plugin_policy.PolicyRefusal(
+            plugin_policy.CONFIRM_REQUIRED, "Confirm after reviewing what this runs.", 400), subject)
+
+
+def _valid_plugin_or_400(plugin_id: str) -> None:
+    if not valid_plugin_id(plugin_id):
+        raise _bad("invalid plugin id")
+
+
+def _valid_marketplace_or_400(name: str) -> None:
+    if not plugin_policy.valid_marketplace_name(name):
+        raise _bad("invalid marketplace name")
+
+
+async def _fan_out(request: Request, op: str, args: dict) -> dict:
+    """Snapshot, then run *op* on every host. ``ok`` is true only when every host
+    reported ``ok`` or ``noop``; a partial failure is reported, never rolled back."""
+    await asyncio.to_thread(snapshot_before_mutation)  # #604 pre-mutation safety net
+    # Capture lazily — FleetOrchestrator replaces app.state.sessions after router build.
+    orch = request.app.state.sessions
+    hosts = await orch.plugin_op_everywhere(op, args)
+    return {"op": op, "ok": all(h.get("outcome") in ("ok", "noop") for h in hosts),
+            "hosts": hosts}
+
+
+async def _check_install(db, plugin_id: str) -> None:
+    """``plugin_policy.check_install`` over the curated set and this host's catalogs. A
+    missing Directory cache is fetched once (TTL-gated) before judging a Directory id."""
+    picked = await curated.curated(db)
+    catalog = await asyncio.to_thread(scan.install_catalog, picked)
+    if catalog.directory is None and plugin_id.endswith("@" + plugin_policy.DIRECTORY_MARKETPLACE):
+        await asyncio.to_thread(plugin_cli.refresh_available)
+        catalog = await asyncio.to_thread(scan.install_catalog, picked)
+    try:
+        plugin_policy.check_install(plugin_id, picked, catalog)
+    except plugin_policy.PolicyRefusal as exc:
+        raise _policy_http(exc, plugin_id) from None
+
+
+@router.get("/plugins/browse")
+async def browse_plugins(
+    q: str | None = Query(default=None, max_length=200),
+    marketplace: str | None = Query(default=None, max_length=64),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=scan.BROWSE_LIMIT_MAX),
+    _identity: str = Depends(current_identity), db=Depends(get_db),
+) -> dict:
+    """Installable plugins: curated marketplaces' catalogs plus REVIEWED Directory
+    listings only (unreviewed ones never reach the client). Empty while the kill switch
+    is off."""
+    if not get_settings().plugin_install_enabled:
+        return {"plugins": [], "total": 0, "offset": offset, "limit": limit,
+                "installEnabled": False}
+    picked = await curated.curated(db)
+    if scan.directory_listings() is None:
+        await asyncio.to_thread(plugin_cli.refresh_available)
+    entries = await asyncio.to_thread(scan.browse_entries, picked)
+    page = scan.browse_page(entries, q=q, marketplace=marketplace, offset=offset, limit=limit)
+    return {**page, "installEnabled": True}
+
+
+@router.post("/plugins/{plugin_id}/install")
+async def install_plugin(plugin_id: str, body: ConfirmBody, request: Request,
+                         identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
+    if (off := _install_off()) is not None:
+        return off
+    via = _plugin_human_gate(request, identity)
+    _valid_plugin_or_400(plugin_id)
+    _require_confirm(body.confirm, plugin_id)
+    await _check_install(db, plugin_id)
+    out = await _fan_out(request, "install", {"plugin_id": plugin_id})
+    await record_audit(db=db, type="library_plugin_installed", identity=identity,
+                       detail={"pluginId": plugin_id, "hosts": out["hosts"]}, via=via)
+    return out
+
+
+@router.post("/plugins/{plugin_id}/update")
+async def update_plugin(plugin_id: str, body: ConfirmBody, request: Request,
+                        identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
+    if (off := _install_off()) is not None:
+        return off
+    via = _plugin_human_gate(request, identity)
+    _valid_plugin_or_400(plugin_id)
+    _require_confirm(body.confirm, plugin_id)
+    await _check_install(db, plugin_id)  # an update pulls new code: same gate
+    out = await _fan_out(request, "update", {"plugin_id": plugin_id})
+    await record_audit(db=db, type="library_plugin_updated", identity=identity,
+                       detail={"pluginId": plugin_id, "hosts": out["hosts"]}, via=via)
+    return out
+
+
+@router.delete("/plugins/{plugin_id}")
+async def uninstall_plugin(plugin_id: str, request: Request,
+                           identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
+    """Uninstall on every host, keeping the plugin's data (never pruned from the UI)."""
+    via = _plugin_human_gate(request, identity)
+    _valid_plugin_or_400(plugin_id)
+    out = await _fan_out(request, "uninstall", {"plugin_id": plugin_id})
+    await record_audit(db=db, type="library_plugin_uninstalled", identity=identity,
+                       detail={"pluginId": plugin_id, "hosts": out["hosts"]}, via=via)
+    return out
+
+
+@router.post("/marketplaces")
+async def add_marketplace(body: MarketplaceAddBody, request: Request,
+                          identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
+    """Add a marketplace on every host and curate it. The UI shows ``source`` verbatim
+    before the confirm; only a GitHub owner/repo or an https git URL is accepted."""
+    if (off := _install_off()) is not None:
+        return off
+    via = _plugin_human_gate(request, identity)
+    try:
+        source = plugin_policy.check_marketplace_source(body.source)
+    except plugin_policy.PolicyRefusal as exc:
+        raise _policy_http(exc, repr(body.source)[:120]) from None
+    _require_confirm(body.confirm, source)
+    out = await _fan_out(request, "marketplace_add", {"source": source})
+    names = sorted({h["marketplace"] for h in out["hosts"]
+                    if h.get("outcome") in ("ok", "noop") and isinstance(h.get("marketplace"), str)
+                    and plugin_policy.valid_marketplace_name(h["marketplace"])})
+    for name in names:
+        await curated.add(db, name)
+    out["marketplaces"] = names
+    await record_audit(db=db, type="library_marketplace_added", identity=identity,
+                       detail={"source": source, "marketplaces": names, "hosts": out["hosts"]},
+                       via=via)
+    return out
+
+
+@router.post("/marketplaces/{name}/update")
+async def update_marketplace(name: str, request: Request,
+                             identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
+    if (off := _install_off()) is not None:
+        return off
+    via = _plugin_human_gate(request, identity)
+    _valid_marketplace_or_400(name)
+    if name not in await curated.curated(db):
+        raise _policy_http(plugin_policy.PolicyRefusal(
+            plugin_policy.MARKETPLACE_NOT_CURATED,
+            f"Marketplace {name!r} was not added in Settings."), name)
+    out = await _fan_out(request, "marketplace_update", {"name": name})
+    await record_audit(db=db, type="library_marketplace_updated", identity=identity,
+                       detail={"name": name, "hosts": out["hosts"]}, via=via)
+    return out
+
+
+@router.delete("/marketplaces/{name}")
+async def remove_marketplace(name: str, request: Request,
+                             identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
+    """Remove on every host; it leaves the curated set whatever the hosts answer (the
+    safe direction)."""
+    via = _plugin_human_gate(request, identity)
+    _valid_marketplace_or_400(name)
+    out = await _fan_out(request, "marketplace_remove", {"name": name})
+    await curated.remove(db, name)
+    await record_audit(db=db, type="library_marketplace_removed", identity=identity,
+                       detail={"name": name, "hosts": out["hosts"]}, via=via)
+    return out
 
 
 @router.get("/plugins/{plugin_id}")
@@ -126,20 +337,21 @@ async def get_plugin(plugin_id: str, _identity: str = Depends(current_identity))
 
 @router.patch("/plugins/{plugin_id}")
 async def toggle_plugin(
-    plugin_id: str, body: ToggleBody,
+    plugin_id: str, body: ToggleBody, request: Request,
     identity: str = Depends(current_identity), db=Depends(get_db),
 ) -> Any:
-    if not valid_plugin_id(plugin_id):
-        raise _bad("invalid plugin id")
-    try:
-        found = await asyncio.to_thread(mutate.set_plugin_enabled, plugin_id, body.enabled)
-    except ConfigUnreadableError as err:
-        return JSONResponse(status_code=409, content={"error": "config_unreadable", "path": err.path.name})
-    if not found:
+    """Enable/disable on every host through the CLI (the single writer, D-16c). Stays
+    available while the install kill switch is off."""
+    via = _plugin_human_gate(request, identity)
+    _valid_plugin_or_400(plugin_id)
+    known = {p["id"] for p in (await asyncio.to_thread(scan.list_plugins))["plugins"]}
+    if plugin_id not in known:
         raise HTTPException(status_code=404, detail={"error": "unknown_plugin"})
+    out = await _fan_out(request, "enable" if body.enabled else "disable", {"plugin_id": plugin_id})
     await record_audit(db=db, type="library_plugin_toggled", identity=identity,
-                       detail={"plugin": plugin_id, "enabled": body.enabled})
-    return {"id": plugin_id, "enabled": body.enabled}
+                       detail={"pluginId": plugin_id, "enabled": body.enabled,
+                               "hosts": out["hosts"]}, via=via)
+    return {"id": plugin_id, "enabled": body.enabled, **out}
 
 
 @router.get("/skills")
@@ -626,31 +838,3 @@ async def draft_skill(
     name_match = re.search(r"^name:\s*(\S+)", content, re.MULTILINE)
     skill_name = name_match.group(1) if name_match else "generated-skill"
     return {"name": skill_name, "content": content}
-
-
-# ---------------------------------------------------------------------------
-# Plugin Marketplace (issue #596)
-# ---------------------------------------------------------------------------
-
-
-@router.get("/marketplace")
-async def list_marketplace(
-    _identity: str = Depends(current_identity),
-) -> dict:
-    """Return available plugins from the cached marketplace catalog.
-
-    Reads from the shared plugin-catalog-cache.json written by the Claude Code
-    plugin system. Returns an empty list if the cache does not exist yet.
-    """
-    from viberpit import paths as _paths
-    catalog_path = _paths.shared_base() / "plugins" / "plugin-catalog-cache.json"
-    if not catalog_path.exists():
-        return {"plugins": [], "lastUpdated": None}
-    try:
-        data = json.loads(catalog_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {"plugins": [], "lastUpdated": None}
-
-    plugins = data.get("plugins", data) if isinstance(data, dict) else data
-    last_updated = data.get("lastUpdated") if isinstance(data, dict) else None
-    return {"plugins": plugins or [], "lastUpdated": last_updated}

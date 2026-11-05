@@ -928,6 +928,25 @@ class FleetOrchestrator:
                           name, account, exc_info=exc)
         return {"invalidated": invalidated, "failed": failed}
 
+    async def plugin_op_everywhere(self, op: str, args: dict) -> list[dict]:
+        """Run one plugin op on EVERY registered host and name each outcome (D-16c, D2).
+
+        Not ``_MERGE_ALL_HOSTS``, for the same reason as ``codex_invalidate_credentials``:
+        that helper drops an unreachable worker, and an install that silently skipped a
+        host is the one outcome the owner must see. A host the registry already knows is
+        down is reported ``host_unreachable`` without being dialled; the rest run
+        concurrently. Nothing is rolled back — a retry is idempotent (a no-op is ``noop``).
+        """
+        from server.library.plugin_cli import host_outcome, unreachable
+        reachable = set(await self._fanout_names())
+
+        async def _one(name: str) -> dict:
+            if name not in reachable:
+                return unreachable(name)
+            return await host_outcome(name, self._router.get(name).plugin_op(op, args))
+
+        return list(await asyncio.gather(*(_one(n) for n in self._router.names())))
+
     async def push_credentials(self, lease_s: float = CREDS_LEASE_S) -> dict[str, dict[str, int]]:
         """Mint the primary's Claude envelopes and push them to every runner (#2629), carrying
         the shared MCP store's public view and purge keys with them (#3287).

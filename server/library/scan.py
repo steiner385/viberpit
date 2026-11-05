@@ -16,7 +16,8 @@ from typing import Any
 import yaml
 
 from viberpit import paths
-from server.library.names import resolve_under
+from server.library import plugin_policy
+from server.library.names import resolve_under, valid_plugin_id
 from viberpit.mcp_names import short_name
 
 _FM_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.S)
@@ -54,7 +55,7 @@ def _enabled_map() -> dict[str, bool]:
     return {k: bool(v) for k, v in enabled.items()} if isinstance(enabled, dict) else {}
 
 
-def _newest_install(entries: list[dict[str, Any]]) -> dict[str, Any]:
+def newest_install(entries: list[dict[str, Any]]) -> dict[str, Any]:
     return max(entries, key=lambda e: str(e.get("lastUpdated") or e.get("installedAt") or "")) if entries else {}
 
 
@@ -71,7 +72,7 @@ def enabled_plugin_paths() -> list[tuple[str, Path]]:
     for pid, entries in sorted(installed_registry().items()):
         if not enabled.get(pid):
             continue
-        install = _newest_install(entries).get("installPath")
+        install = newest_install(entries).get("installPath")
         if install and Path(install).is_dir():
             out.append((pid, Path(install)))
     return out
@@ -83,13 +84,21 @@ def enabled_plugin_names() -> frozenset[str]:
                      for pid, install in enabled_plugin_paths())
 
 
+def known_marketplaces() -> dict[str, dict[str, Any]]:
+    """``plugins/known_marketplaces.json`` on this host: ``{name: {source, installLocation,
+    lastUpdated, autoUpdate?}}``; malformed entries dropped."""
+    raw = read_json_safe(paths.shared_base() / "plugins" / "known_marketplaces.json") or {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
 def list_plugins() -> dict[str, Any]:
     enabled = _enabled_map()
     registry = installed_registry()
     catalog = _catalog()
+    markets = known_marketplaces()
     plugins: list[dict[str, Any]] = []
     for pid in sorted(set(registry) | set(enabled)):
-        newest = _newest_install(registry.get(pid, []))
+        newest = newest_install(registry.get(pid, []))
         cat = catalog.get(pid) or {}
         entry = cat.get("marketplace_entry") or {}
         components = cat.get("components") or {}
@@ -122,14 +131,150 @@ def list_plugins() -> dict[str, Any]:
                 for key in ("commands", "skills", "agents", "mcpServers", "hooks")
             },
             "tokenCost": token_cost,
+            # D3: the marketplace's source, and whether the CLI auto-updates it on startup.
+            "source": (markets.get(marketplace) or {}).get("source"),
+            "autoUpdate": plugin_policy.auto_updates(marketplace, markets.get(marketplace)),
         })
-    markets = read_json_safe(paths.shared_base() / "plugins" / "known_marketplaces.json") or {}
     marketplaces = [
-        {"name": name, "source": (m or {}).get("source"), "lastUpdated": (m or {}).get("lastUpdated")}
+        {"name": name, "source": m.get("source"), "lastUpdated": m.get("lastUpdated"),
+         "autoUpdate": plugin_policy.auto_updates(name, m)}
         for name, m in sorted(markets.items())
-        if isinstance(m, dict) or m is None
     ]
     return {"plugins": plugins, "marketplaces": marketplaces}
+
+
+# --------------------------------------------------------------------------- browse (D-16c)
+
+BROWSE_DESCRIPTION_CAP = 500
+BROWSE_LIMIT_MAX = 100
+_DIRECTORY_CACHE = "plugin-directory-cache-v2.json"
+# Parsed Directory cache keyed by the file's (mtime_ns, size): the file is 2.7 MB.
+_directory_memo: tuple[tuple[int, int], dict[str, dict[str, Any]]] | None = None
+
+
+def directory_cache_path() -> Path:
+    return paths.shared_base() / "plugins" / _DIRECTORY_CACHE
+
+
+def directory_listings() -> dict[str, dict[str, Any]] | None:
+    """The Anthropic Directory cache by entry name (the ``<name>`` of
+    ``<name>@anthropic-plugin-directory``), or ``None`` when the cache is missing or
+    unreadable — which every caller treats as "nothing is reviewed"."""
+    global _directory_memo
+    path = directory_cache_path()
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    key = (st.st_mtime_ns, st.st_size)
+    if _directory_memo is not None and _directory_memo[0] == key:
+        return _directory_memo[1]
+    data = read_json_safe(path)
+    if data is None:
+        return None
+    names = data.get("entryNames")
+    listings = data.get("listings")
+    if not isinstance(names, dict) or not isinstance(listings, list):
+        return None
+    out: dict[str, dict[str, Any]] = {}
+    for listing in listings:
+        if not isinstance(listing, dict):
+            continue
+        name = names.get(listing.get("id"))
+        if isinstance(name, str) and name and name not in out:
+            out[name] = listing
+    _directory_memo = (key, out)
+    return out
+
+
+def marketplace_catalog(name: str, config: dict[str, Any] | None = None) -> dict[str, dict[str, Any]] | None:
+    """A configured marketplace's own catalog — ``<installLocation>/.claude-plugin/
+    marketplace.json`` — as ``{plugin name: entry}``, or ``None`` when it cannot be read."""
+    cfg = config if config is not None else known_marketplaces().get(name)
+    location = (cfg or {}).get("installLocation")
+    if not isinstance(location, str) or not location:
+        return None
+    data = read_json_safe(Path(location) / ".claude-plugin" / "marketplace.json")
+    plugins = (data or {}).get("plugins")
+    if not isinstance(plugins, list):
+        return None
+    return {p["name"]: p for p in plugins
+            if isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]}
+
+
+def install_catalog(curated: frozenset[str] | set[str]) -> plugin_policy.InstallCatalog:
+    """What ``plugin_policy.check_install`` judges against: every curated marketplace's
+    catalog that reads, and the Directory cache."""
+    markets = known_marketplaces()
+    catalogs = {}
+    for name in sorted(curated):
+        if name in markets:
+            entries = marketplace_catalog(name, markets[name])
+            if entries is not None:
+                catalogs[name] = entries
+    return plugin_policy.InstallCatalog(marketplaces=catalogs, directory=directory_listings())
+
+
+def _cap(text: object) -> str | None:
+    return text[:BROWSE_DESCRIPTION_CAP] if isinstance(text, str) else None
+
+
+def _browse_components(cat: dict[str, Any] | None) -> dict[str, int] | None:
+    comps = (cat or {}).get("components")
+    if not isinstance(comps, dict):
+        return None  # unknown: the UI says "Contents unknown"
+    return {k: len(comps.get(k) or []) for k in ("hooks", "mcpServers", "lspServers", "agents", "skills")}
+
+
+def browse_entries(curated: frozenset[str] | set[str]) -> list[dict[str, Any]]:
+    """Every installable plugin: curated marketplaces' catalogs minus command-source
+    entries, plus REVIEWED Directory listings only. Unreviewed listings never leave here."""
+    installed = set(installed_registry())
+    catalog = _catalog()
+    markets = known_marketplaces()
+    out: list[dict[str, Any]] = []
+    for mkt in sorted(curated):
+        if mkt not in markets or mkt == plugin_policy.DIRECTORY_MARKETPLACE:
+            continue
+        for name, entry in sorted((marketplace_catalog(mkt, markets[mkt]) or {}).items()):
+            pid = f"{name}@{mkt}"
+            if not valid_plugin_id(pid) or plugin_policy.is_command_source(entry):
+                continue
+            out.append({
+                "pluginId": pid, "name": name, "description": _cap(entry.get("description")),
+                "marketplace": mkt, "version": entry.get("version") if isinstance(entry.get("version"), str) else None,
+                "reviewed": False, "components": _browse_components(catalog.get(pid)),
+                "installed": pid in installed,
+            })
+    for name, listing in sorted((directory_listings() or {}).items()):
+        pid = f"{name}@{plugin_policy.DIRECTORY_MARKETPLACE}"
+        if (not plugin_policy.is_reviewed(listing) or not valid_plugin_id(pid)
+                or plugin_policy.is_command_source(listing)):
+            continue
+        raw_release = listing.get("release")
+        release: dict[str, Any] = raw_release if isinstance(raw_release, dict) else {}
+        out.append({
+            "pluginId": pid,
+            "name": listing.get("name") if isinstance(listing.get("name"), str) else name,
+            "description": _cap(listing.get("summary")),
+            "marketplace": plugin_policy.DIRECTORY_MARKETPLACE,
+            "version": release.get("version") if isinstance(release.get("version"), str) else None,
+            "reviewed": True, "components": _browse_components(catalog.get(pid)),
+            "installed": pid in installed,
+        })
+    return out
+
+
+def browse_page(entries: list[dict[str, Any]], *, q: str | None, marketplace: str | None,
+                offset: int, limit: int) -> dict[str, Any]:
+    """Server-side search and pagination over :func:`browse_entries`."""
+    needle = (q or "").strip().lower()
+    rows = [e for e in entries
+            if (not marketplace or e["marketplace"] == marketplace)
+            and (not needle or needle in e["pluginId"].lower() or needle in str(e["name"]).lower()
+                 or needle in (e["description"] or "").lower())]
+    return {"plugins": rows[offset:offset + limit], "total": len(rows),
+            "offset": offset, "limit": limit}
 
 
 def _plugin_manifest_name(install: Path, registry_name: str) -> str:

@@ -53,6 +53,7 @@ _MANAGED: tuple[tuple[str, str, str], ...] = (
     ("rules_trust_local_host", "VIBERPIT_RULES_TRUST_LOCAL_HOST", "Requests from the edge host itself may write always-allow rules and profile patterns (agents on the host can too)"),
     ("mcp_status_enabled", "VIBERPIT_MCP_STATUS_ENABLED", "Sessions report MCP server connection status; Settings › MCP can test servers"),
     ("mcp_scope_enabled", "VIBERPIT_MCP_SCOPE_ENABLED", "Per-repo MCP server scope and live session toggles"),
+    ("plugin_install_enabled", "VIBERPIT_PLUGIN_INSTALL_ENABLED", "Settings › Plugins may add curated marketplaces and install or update plugins on every host"),
     ("mcp_oauth_refresh_enabled", "VIBERPIT_MCP_OAUTH_REFRESH_ENABLED", "ViberPit alone refreshes MCP OAuth tokens and publishes them to every account"),
     ("session_feedback_cap", "VIBERPIT_SESSION_FEEDBACK_CAP", "Feedback reports one session may file before further ones are capped"),
     ("error_sink_enabled", "VIBERPIT_ERROR_SINK_ENABLED", "Capture WARNING+ log records into error signatures for Error Triage"),

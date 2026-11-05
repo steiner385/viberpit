@@ -243,6 +243,13 @@ class InProcessOrchestratorAdapter:
     async def codex_account_status(self, *a, **k): return await _maybe_await(self._orch.codex_account_status(*a, **k))
     async def codex_validate_model(self, *a, **k): return await _maybe_await(self._orch.codex_validate_model(*a, **k))
     async def codex_invalidate_credentials(self, *a, **k): return await _maybe_await(self._orch.codex_invalidate_credentials(*a, **k))
+    # --- D-16c plugin ops: in-process mode has one host, this one ---
+    async def plugin_op(self, *a, **k): return await _maybe_await(self._orch.plugin_op(*a, **k))
+
+    async def plugin_op_everywhere(self, op: str, args: dict) -> list[dict]:
+        from server.hostname import self_host_name
+        from server.library.plugin_cli import host_outcome
+        return [await host_outcome(self_host_name(), self.plugin_op(op, args))]
     async def refine_prompt_codex(self, *a, **k): return await _maybe_await(self._orch.refine_prompt_codex(*a, **k))
     # --- pipeline / merge-queue methods (GET /api/pipeline/events and siblings) ---
     async def latest_queue_entries(self, *a, **k): return await _maybe_await(self._orch.latest_queue_entries(*a, **k))

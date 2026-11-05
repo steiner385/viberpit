@@ -393,6 +393,11 @@ try:
         mcp_status_enabled: bool = Field(default=True, alias="VIBERPIT_MCP_STATUS_ENABLED")
         # Per-repo MCP server scope + live session toggles (spec 2026-10-09 repo-scope).
         mcp_scope_enabled: bool = Field(default=True, alias="VIBERPIT_MCP_SCOPE_ENABLED")
+        # Plugin marketplace install/update/add (D-16c). Off = those routes 404
+        # ``plugin_install_disabled`` and browse is empty; enable/disable, uninstall and
+        # marketplace remove stay available.
+        plugin_install_enabled: bool = Field(
+            default=True, alias="VIBERPIT_PLUGIN_INSTALL_ENABLED")
         # The single MCP OAuth refresher (spec 2026-10-13). Off = no MCP grant is refreshed
         # and a token expires until the next login. Runs only on the refresh authority.
         mcp_oauth_refresh_enabled: bool = Field(
@@ -775,6 +780,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         mcp_scope_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_MCP_SCOPE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        plugin_install_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_PLUGIN_INSTALL_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         mcp_oauth_refresh_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_MCP_OAUTH_REFRESH_ENABLED", "true").lower() in ("1", "true", "yes", "on")

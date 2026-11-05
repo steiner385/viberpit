@@ -25,13 +25,29 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         yield c
 
 
-def test_plugins_list_and_toggle(client: TestClient):
+def test_plugins_list_and_toggle(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """The toggle runs ``claude plugin disable`` through the CLI wrapper (D-16c), the
+    single writer — faked at its subprocess seam here."""
+    from server.library import plugin_cli
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, *, env, cwd, timeout):
+        calls.append(argv)
+        line = {"command": "disable", "outcome": "ok", "pluginId": "a@m",
+                "nonce": env["CLAUDE_CODE_RESULT_NONCE"]}
+        return 0, json.dumps(line) + "\n"
+
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", fake_run)
     out = client.get("/api/library/plugins", headers=IDENTITY_HEADERS).json()
     assert out["plugins"][0]["id"] == "a@m"
     r = client.patch("/api/library/plugins/a@m", json={"enabled": False}, headers=IDENTITY_HEADERS)
-    assert r.status_code == 200 and r.json() == {"id": "a@m", "enabled": False}
-    out = client.get("/api/library/plugins", headers=IDENTITY_HEADERS).json()
-    assert out["plugins"][0]["enabled"] is False
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["id"], body["enabled"], body["op"], body["ok"]) == ("a@m", False, "disable", True)
+    assert [h["outcome"] for h in body["hosts"]] == ["ok"]
+    assert calls == [["/fake/claude", "plugin", "disable", "a@m", "--scope", "user", "--json"]]
     assert client.patch("/api/library/plugins/nope@m", json={"enabled": True},
                         headers=IDENTITY_HEADERS).status_code == 404
     assert client.patch("/api/library/plugins/Bad Id!", json={"enabled": True},
@@ -58,13 +74,12 @@ def test_library_mutations_run_off_the_event_loop(client: TestClient, monkeypatc
             return ret
         return _fn
 
-    for name, ret in [("set_plugin_enabled", True), ("write_skill", None), ("delete_skill", True),
+    for name, ret in [("write_skill", None), ("delete_skill", True),
                       ("write_command", None), ("delete_command", True),
                       ("put_mcp_server", None), ("delete_mcp_server", True)]:
         monkeypatch.setattr(mutate, name, _probe(name, ret))
 
     h = IDENTITY_HEADERS
-    assert client.patch("/api/library/plugins/a@m", json={"enabled": False}, headers=h).status_code == 200
     assert client.put("/api/library/skills/s", json={"content": "x"}, headers=h).status_code == 200
     assert client.delete("/api/library/skills/s", headers=h).status_code == 204
     assert client.put("/api/library/commands/c", json={"content": "x"}, headers=h).status_code == 200
@@ -150,30 +165,6 @@ def test_requires_identity(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     # identity header. A request with no header at all must still 401.
     r = client.get("/api/library/plugins")
     assert r.status_code == 401
-
-
-def test_toggle_plugin_corrupt_settings_returns_409(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    base = tmp_path / "shared"
-    base.mkdir()
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(base))
-    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
-    (tmp_path / "home" / "store").mkdir(parents=True)
-    # Write a corrupt settings.json — note: plugin must also appear in settings
-    # so it passes the "known" check; but corrupt parse fires before the key lookup.
-    (base / "settings.json").write_text("not json")
-    app = create_app()
-    with TestClient(app) as c:
-        r = c.patch(
-            "/api/library/plugins/a@m",
-            json={"enabled": False},
-            headers=IDENTITY_HEADERS,
-        )
-    assert r.status_code == 409
-    body = r.json()
-    assert body["error"] == "config_unreadable"
-    assert body["path"] == "settings.json"
 
 
 def test_put_mcp_corrupt_shared_returns_409(
