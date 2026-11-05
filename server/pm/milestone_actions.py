@@ -102,7 +102,7 @@ def _link(url: str | None) -> str | None:
     """An optional link, trimmed: blank is none; anything but an absolute http(s)
     URL is refused (it is rendered as an ``href``)."""
     link = _clean(url)
-    if link is not None and not is_absolute_http_url(link):
+    if link is not None and not is_absolute_http_url(link, max_len=MAX_URL_LEN):
         raise MilestoneActionError(400, "bad_url", {"max": MAX_URL_LEN})
     return link
 

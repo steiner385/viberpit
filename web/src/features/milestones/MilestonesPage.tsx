@@ -8,6 +8,7 @@
 import { useEffect, useId, useRef } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useProject } from '@/api/hooks'
+import { apiErrorCode } from '@/api/client'
 import { milestoneErrorText, useAdvanceMilestone, useMilestones, useRefreshMilestones } from '@/api/milestones'
 import type { RefreshMilestonesResult } from '@/api/milestones'
 import { automationPath } from '@/features/delivery/deliveryNavState'
@@ -50,7 +51,10 @@ export function MilestonesPage() {
   const milestones = useMilestones(productSlug)
   const { data: project } = useProject(productSlug, { poll: false })
   const refresh = useRefreshMilestones(productSlug)
-  const start = useAdvanceMilestone(productSlug)
+  // THE advance mutation for Start and every card's dialog, owned here so its
+  // error outlives the card: a 409 `stale_current` refetches, the card stops being
+  // current and its dialog unmounts.
+  const advance = useAdvanceMilestone(productSlug)
   const offId = useId()
 
   const productName = project?.name ?? productSlug
@@ -61,7 +65,10 @@ export function MilestonesPage() {
   // The rung an Advance enters: the lowest live upcoming one (the server's rule).
   const upcoming = view?.milestones.find((m) => m.state === 'upcoming') ?? null
   const canStart = !!view && view.ladder.currentKey === null && !view.milestones.some((m) => m.state === 'done') && upcoming !== null
-  const startError = milestoneErrorText(start.error)
+  // The strip says what Start's failure was, and a stale advance from anywhere; a
+  // dialog's other refusals stay in the dialog.
+  const stale = apiErrorCode(advance.error) === 'stale_current'
+  const advanceError = stale || advance.variables?.expectedCurrent === null ? milestoneErrorText(advance.error) : null
   const asksOpen = ladder?.asksOpen ?? 0
   const outcome = refreshOutcome(refresh.data)
 
@@ -169,11 +176,11 @@ export function MilestonesPage() {
                   <p className="font-medium text-warning">{asksOpen} {asksOpen === 1 ? 'ask needs' : 'asks need'} you</p>
                 )}
                 {canStart && (
-                  <Button size="sm" onClick={() => start.mutate({ expectedCurrent: null })} loading={start.isPending}>
+                  <Button size="sm" onClick={() => advance.mutate({ expectedCurrent: null })} loading={advance.isPending}>
                     Start
                   </Button>
                 )}
-                {startError && <p role="alert" className="text-danger">{startError}</p>}
+                {advanceError && <p role="alert" className="text-danger">{advanceError}</p>}
                 <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
                   <p className="text-ink-muted">
                     {isValidTimestamp(ladder.updatedAt) ? `Updated ${relTime(ladder.updatedAt)}` : 'Not measured yet'}
@@ -201,7 +208,7 @@ export function MilestonesPage() {
                   className="grid gap-3"
                 >
                   {view.milestones.map((m) => (
-                    <MilestoneCard key={m.key} milestone={m} slug={productSlug} next={upcoming} />
+                    <MilestoneCard key={m.key} milestone={m} slug={productSlug} next={upcoming} advance={advance} />
                   ))}
                 </ol>
                 {/* Spec §9 order, kept when it stacks under the ladder below 2xl. */}

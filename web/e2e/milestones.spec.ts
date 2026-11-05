@@ -224,6 +224,39 @@ test.describe('Milestones — manage', () => {
   })
 })
 
+test.describe('Milestones — a concurrent advance', () => {
+  test.use({ viewport: { width: 1440, height: 900 } })
+
+  test('a 409 stale_current refetches the ladder and the page says someone else advanced it', async ({ page }) => {
+    const moved = after((v) => {
+      v.ladder.currentKey = 'friendly'
+      Object.assign(v.milestones[0], { state: 'done', exitedAt: ago(5) })
+      v.milestones[1].state = 'current'
+    })
+    await interceptApi(page, LADDER, [
+      { method: 'POST', path: '/api/pm/projects/kindash/milestones/advance', status: 409,
+        json: { detail: { error: 'stale_current', current: 'friendly' } } },
+    ])
+    // Registered last, so it wins for the GET: the first read is the old ladder,
+    // every later one (the refetch) the ladder someone else moved.
+    let reads = 0
+    await page.route('**/api/pm/projects/kindash/milestones', (route) => {
+      if (route.request().method() !== 'GET') return route.fallback()
+      reads += 1
+      return route.fulfill({ json: reads === 1 ? LADDER : moved })
+    })
+    await page.goto('/roadmap/kindash/milestones')
+    await page.getByRole('button', { name: 'Advance with override…' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Advance with override' })
+    await dialog.getByLabel(/Reason/).fill('owner accepted the nightly risk')
+    await dialog.getByRole('button', { name: 'Advance with override' }).click()
+    await expect(page.getByRole('listitem', { name: /Phase 1/ })).toHaveAttribute('aria-current', 'step')
+    await expect(dialog).toBeHidden()
+    await expect(page.getByRole('region', { name: 'Where we are' }).getByRole('alert'))
+      .toHaveText('Someone else advanced this ladder')
+  })
+})
+
 test.describe('Milestones — manage on a phone', () => {
   test.use({ viewport: { width: 390, height: 844 } })
 

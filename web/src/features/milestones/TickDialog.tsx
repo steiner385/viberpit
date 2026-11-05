@@ -38,7 +38,8 @@ export function TickDialog({ open, onClose, slug, scope, condition: c }: {
   const [met, setMet] = useState<Met | null>(() => storedMet(c))
   const [value, setValue] = useState(() => storedNumber(c))
   const [evidence, setEvidence] = useState(c.manualEvidence ?? '')
-  const [url, setUrl] = useState('')
+  // The stored link, so an Update that only edits the evidence keeps it.
+  const [url, setUrl] = useState(c.manualUrl ?? '')
 
   const number = value.trim() === '' ? NaN : Number(value)
   const reading = isNumber ? Number.isFinite(number) : met !== null

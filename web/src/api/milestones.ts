@@ -302,3 +302,6 @@ export const useSetStatusNote = (slug: string) => useMilestoneWrite(slug, setSta
 export const useAddNote = (slug: string) => useMilestoneWrite(slug, addNote)
 export const useUpdateNote = (slug: string) => useMilestoneWrite(slug, updateNote)
 export const useAdvanceMilestone = (slug: string) => useMilestoneWrite(slug, advanceMilestone)
+/** The page owns the one advance mutation, so its error (a 409 `stale_current`
+ *  above all) outlives the card whose dialog sent it. */
+export type AdvanceMutation = ReturnType<typeof useAdvanceMilestone>

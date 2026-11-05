@@ -16,7 +16,13 @@ def test_rejects_everything_else(url):
     assert not is_absolute_http_url(url)
 
 
-def test_caps_length():
+def test_caps_length_only_when_asked():
     head = "https://e.x/"
-    assert is_absolute_http_url(head + "a" * (MAX_URL_LEN - len(head)))
-    assert not is_absolute_http_url(head + "a" * (MAX_URL_LEN - len(head) + 1))
+    at_cap = head + "a" * (MAX_URL_LEN - len(head))
+    assert is_absolute_http_url(at_cap, max_len=MAX_URL_LEN)
+    assert not is_absolute_http_url(at_cap + "a", max_len=MAX_URL_LEN)
+
+
+def test_long_url_passes_with_no_max_len():
+    # A long presigned URL (share_artifact) is fine: no cap unless the caller asks.
+    assert is_absolute_http_url("https://bucket.example/obj?X-Amz-Signature=" + "a" * 5000)

@@ -2,18 +2,17 @@ import { describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { MilestoneCard } from './MilestoneCard'
 import { FRIENDLY, HOUSEHOLD } from './__fixtures__/ladder'
-import type { Milestone } from '@/api/milestones'
+import type { AdvanceMutation, Milestone } from '@/api/milestones'
 
 const { idle } = vi.hoisted(() => ({ idle: () => ({ mutate: () => {}, reset: () => {}, isPending: false, error: null }) }))
 vi.mock('@/api/milestones', async (orig) => ({
   ...(await orig<typeof import('@/api/milestones')>()),
-  useAdvanceMilestone: idle,
   useSetStatusNote: idle,
   useTickCondition: idle,
 }))
 
 const mount = (m: Milestone, next: Milestone | null = FRIENDLY) =>
-  render(<ol><MilestoneCard milestone={m} slug="kindash" next={next} /></ol>)
+  render(<ol><MilestoneCard milestone={m} slug="kindash" next={next} advance={idle() as unknown as AdvanceMutation} /></ol>)
 
 describe('MilestoneCard', () => {
   it('marks the current milestone as the current step with its status line', () => {

@@ -4,7 +4,7 @@
 // card edits its status line and advances; a card not yet done ticks its manual
 // conditions; a done card is a record and offers nothing.
 import { useId, useState } from 'react'
-import type { Milestone, MilestoneLeaf } from '@/api/milestones'
+import type { AdvanceMutation, Milestone, MilestoneLeaf } from '@/api/milestones'
 import { Banner } from '@/ui/Banner'
 import { Button } from '@/ui/Button'
 import { Card } from '@/ui/Card'
@@ -35,9 +35,11 @@ function LeafRow({ leaf }: { leaf: MilestoneLeaf }) {
   )
 }
 
-export function MilestoneCard({ milestone: m, slug, next }: {
+export function MilestoneCard({ milestone: m, slug, next, advance }: {
   milestone: Milestone
   slug: string
+  /** The page's advance mutation (its error must outlive this card). */
+  advance: AdvanceMutation
   /** The rung an Advance moves to (null: it completes the ladder). Read only on the current card. */
   next: Milestone | null
 }) {
@@ -119,7 +121,7 @@ export function MilestoneCard({ milestone: m, slug, next }: {
             onClick={() => setAdvancing(true)}>
             {m.gateSummary.ready ? 'Advance' : 'Advance with override…'}
           </Button>
-          {advancing && <AdvanceDialog open onClose={() => setAdvancing(false)} slug={slug} milestone={m} next={next} />}
+          {advancing && <AdvanceDialog open onClose={() => setAdvancing(false)} advance={advance} milestone={m} next={next} />}
         </div>
       )}
     </Card>

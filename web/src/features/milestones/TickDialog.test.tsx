@@ -47,6 +47,7 @@ describe('TickDialog', () => {
       condition={{ ...setup, value: { met: true }, manualBy: 'tony', manualEvidence: 'old' }} />)
     expect(screen.getByLabelText(/Reading/)).toHaveValue('met')
     expect(screen.getByLabelText(/Evidence/)).toHaveValue('old')
+    expect(screen.getByLabelText(/Link/)).toHaveValue('')
     fireEvent.change(screen.getByLabelText(/Reading/), { target: { value: 'unmet' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save tick' }))
     expect(q.tick.mutate).toHaveBeenCalledWith(
@@ -69,5 +70,15 @@ describe('TickDialog', () => {
     q.tick.error = new ApiRequestError(403, { detail: { error: 'owner_required', tickedBy: 'sam' } })
     render(<TickDialog open onClose={() => {}} slug="kindash" scope="friendly" condition={setup} />)
     expect(screen.getByRole('alert')).toHaveTextContent('Only the owner can change what someone else recorded')
+  })
+
+  it('Update keeps the stored link when only the evidence changes', () => {
+    render(<TickDialog open onClose={() => {}} slug="kindash" scope="friendly"
+      condition={{ ...setup, value: { met: true }, manualBy: 'tony', manualEvidence: 'old', manualUrl: 'https://e.x/proof' }} />)
+    expect(screen.getByLabelText(/Link/)).toHaveValue('https://e.x/proof')
+    fireEvent.change(screen.getByLabelText(/Evidence/), { target: { value: 'newer notes' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save tick' }))
+    expect(q.tick.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ met: true, evidence: 'newer notes', url: 'https://e.x/proof' }), expect.anything())
   })
 })

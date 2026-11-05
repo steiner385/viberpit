@@ -4,15 +4,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { ApiRequestError } from '@/api/client'
+import type { AdvanceMutation } from '@/api/milestones'
 import { AdvanceDialog } from './AdvanceDialog'
 import { FRIENDLY, HOUSEHOLD } from './__fixtures__/ladder'
 
 const q = vi.hoisted(() => ({
   advance: { mutate: vi.fn(), reset: vi.fn(), isPending: false, error: null as unknown },
-}))
-vi.mock('@/api/milestones', async (orig) => ({
-  ...(await orig<typeof import('@/api/milestones')>()),
-  useAdvanceMilestone: () => q.advance,
 }))
 
 beforeEach(() => {
@@ -20,7 +17,8 @@ beforeEach(() => {
 })
 
 const mount = (over = {}) => render(
-  <AdvanceDialog open onClose={() => {}} slug="kindash" milestone={HOUSEHOLD} next={FRIENDLY} {...over} />)
+  <AdvanceDialog open onClose={() => {}} advance={q.advance as unknown as AdvanceMutation}
+    milestone={HOUSEHOLD} next={FRIENDLY} {...over} />)
 
 describe('AdvanceDialog', () => {
   it('with an unmet gate: lists the unmet and unknown conditions and needs a 10-character reason', () => {

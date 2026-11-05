@@ -2,26 +2,27 @@
 // advances on a confirm. An unmet one is an owner override: the dialog lists what
 // is unmet or unknown (the server snapshots the same list onto the exited card)
 // and needs a reason. The server owns both rules; this only mirrors the minimum
-// length so the button says when it can be pressed.
+// length so the button says when it can be pressed. The mutation is the page's
+// (`MilestonesPage`): a 409 `stale_current` refetches the view, the card stops
+// being current and this dialog unmounts, so the page says what happened.
 import { useId, useState } from 'react'
-import type { Milestone } from '@/api/milestones'
-import { OVERRIDE_REASON_MIN, milestoneErrorText, useAdvanceMilestone } from '@/api/milestones'
+import type { AdvanceMutation, Milestone } from '@/api/milestones'
+import { OVERRIDE_REASON_MIN, milestoneErrorText } from '@/api/milestones'
 import { Button } from '@/ui/Button'
 import { Dialog } from '@/ui/Dialog'
 import { Field } from '@/ui/Field'
 import { Textarea } from '@/ui/Textarea'
 import { STATUS_META, conditionValue, milestoneTitle } from './format'
 
-export function AdvanceDialog({ open, onClose, slug, milestone: m, next }: {
+export function AdvanceDialog({ open, onClose, advance, milestone: m, next }: {
   open: boolean
   onClose: () => void
-  slug: string
+  advance: AdvanceMutation
   /** The current milestone. */
   milestone: Milestone
   /** The rung it advances to, or null when this completes the ladder. */
   next: Milestone | null
 }) {
-  const advance = useAdvanceMilestone(slug)
   const reasonId = useId()
   const [reason, setReason] = useState('')
   const override = !m.gateSummary.ready
