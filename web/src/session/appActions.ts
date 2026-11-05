@@ -43,6 +43,7 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   list_products: 'Listed products',
   get_product: 'Got product',
   get_product_deps: 'Checked product dependencies',
+  get_milestones: 'Read milestones',
   get_priority_queue: 'Checked priority queue',
   list_triage: 'Listed triage proposals',
   list_decisions: 'Listed pending decisions',

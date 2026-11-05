@@ -1041,6 +1041,7 @@ async def test_get_product_deps_asks_for_the_summary_by_default():
     ("get_product_deps", {"slug": "kindash"}, "GET", "/api/pm/projects/kindash/deps"),
     ("get_onboarding_status", {"slug": "kindash"}, "GET",
      "/api/pm/projects/kindash/onboarding"),
+    ("get_milestones", {"slug": "kindash"}, "GET", "/api/pm/projects/kindash/milestones"),
     ("list_triage", {}, "GET", "/api/pm/triage"),
     ("request_product_sync", {"slug": "kindash"}, "POST", "/api/pm/projects/kindash/sync"),
 ])
@@ -1074,7 +1075,7 @@ async def test_list_triage_asks_for_pending_only():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name", ["get_product", "get_product_deps", "get_onboarding_status",
-                                  "request_product_sync"])
+                                  "get_milestones", "request_product_sync"])
 async def test_product_tools_reject_a_bad_slug_locally(name):
     calls: list[str] = []
 
