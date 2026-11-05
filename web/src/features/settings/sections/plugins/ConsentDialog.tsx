@@ -28,8 +28,11 @@ export function ConsentDialog({ target, onClose }: { target: ConsentTarget; onCl
   const verb = target.mode === 'install' ? 'Install' : 'Update'
   // Zero hosts answering is not done: nothing changed, so the action stays offered.
   const done = op.record !== null && (op.record.result.hosts ?? []).length > 0
+  // While the op is in flight the card is the only place its per-host outcome lands:
+  // closing it (Cancel, Escape, backdrop) would lose the result, and couldn't stop the op.
+  const close = () => { if (!op.pending) onClose() }
   return (
-    <Dialog open onClose={onClose} title={`${verb} plugin`} size="lg">
+    <Dialog open onClose={close} dismissable={!op.pending} title={`${verb} plugin`} size="lg">
       <div className="space-y-3 text-sm min-w-0">
         <div className="min-w-0">
           <div className="font-medium break-all"><bdi>{clip(target.name, 120)}</bdi></div>
@@ -54,7 +57,7 @@ export function ConsentDialog({ target, onClose }: { target: ConsentTarget; onCl
         {op.error && <p role="alert" className="text-xs text-danger break-words">{op.error}</p>}
         {op.record && <HostOutcomes record={op.record} retrying={op.pending} />}
         <div className="flex justify-end gap-2 flex-wrap">
-          <Button variant="secondary" size="lg" onClick={onClose}>{done ? 'Close' : 'Cancel'}</Button>
+          <Button variant="secondary" size="lg" disabled={op.pending} onClick={close}>{done ? 'Close' : 'Cancel'}</Button>
           {!done && (
             <Button
               size="lg"

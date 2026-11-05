@@ -28,8 +28,8 @@ export function useLibraryPluginDetail(id: string, enabled: boolean) {
  *  detail cache, and the skills/commands/servers plugins contribute. */
 function invalidatePluginViews(qc: QueryClient) {
   void qc.invalidateQueries({ queryKey: QK.libraryPlugins })
-  void qc.invalidateQueries({ queryKey: ['library', 'plugin'] })
-  void qc.invalidateQueries({ queryKey: ['library', 'browse'] })
+  void qc.invalidateQueries({ queryKey: QK.libraryPluginAll })
+  void qc.invalidateQueries({ queryKey: QK.libraryPluginBrowseAll })
   void qc.invalidateQueries({ queryKey: QK.librarySkills })
   void qc.invalidateQueries({ queryKey: QK.libraryCommands })
   void qc.invalidateQueries({ queryKey: QK.libraryMcp })

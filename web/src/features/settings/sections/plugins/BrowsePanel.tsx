@@ -21,15 +21,22 @@ export function BrowsePanel({ marketplaces, onInstall }: {
   const [q, setQ] = useState('')
   const [marketplace, setMarketplace] = useState('')
   const [offset, setOffset] = useState(0)
-  const debouncedQ = useDebouncedValue(q.trim().slice(0, 200), 300)
-  const browse = usePluginBrowse({ q: debouncedQ, marketplace, offset, limit: PAGE })
-  const data = browse.data
-  const entries = data?.plugins ?? []
-  const total = data?.total ?? 0
   const filterNames = [
     ...marketplaces.filter((m) => m.curation === 'confirmed').map((m) => m.name),
     DIRECTORY_MARKETPLACE,
   ].filter((n, i, all) => all.indexOf(n) === i)
+  // A filtered marketplace that was removed or lost its confirmation (source changed) is
+  // no longer an option: fall back to "All marketplaces" from the first page, and drop
+  // the stale choice so it doesn't come back if the marketplace is re-confirmed.
+  const stale = marketplace !== '' && !filterNames.includes(marketplace)
+  if (stale) { setMarketplace(''); setOffset(0) }
+  const debouncedQ = useDebouncedValue(q.trim().slice(0, 200), 300)
+  const browse = usePluginBrowse({
+    q: debouncedQ, marketplace: stale ? '' : marketplace, offset: stale ? 0 : offset, limit: PAGE,
+  })
+  const data = browse.data
+  const entries = data?.plugins ?? []
+  const total = data?.total ?? 0
   const byName = new Map(marketplaces.map((m) => [m.name, m]))
 
   return (
@@ -50,7 +57,7 @@ export function BrowsePanel({ marketplaces, onInstall }: {
         />
         <Select
           aria-label="Marketplace"
-          value={marketplace}
+          value={stale ? '' : marketplace}
           onChange={(e) => { setMarketplace(e.target.value); setOffset(0) }}
           className="w-auto max-w-full"
         >
@@ -71,7 +78,7 @@ export function BrowsePanel({ marketplaces, onInstall }: {
               name: e.name,
               version: e.version,
               marketplace: e.marketplace,
-              source: marketplaceSourceText(byName.get(e.marketplace)),
+              source: e.source ?? marketplaceSourceText(byName.get(e.marketplace)),
               runs: runnableSummary(e.components),
               reviewed: e.reviewed,
             })}

@@ -64,6 +64,7 @@ MARKETPLACE_NOT_CURATED = "PLUGIN_MARKETPLACE_NOT_CURATED"
 PLUGIN_NOT_FOUND = "PLUGIN_NOT_FOUND"
 PLUGIN_UNREVIEWED = "PLUGIN_UNREVIEWED"
 COMMAND_SOURCE_REFUSED = "PLUGIN_COMMAND_SOURCE_REFUSED"
+ENTRY_SOURCE_REFUSED = "PLUGIN_ENTRY_SOURCE_REFUSED"
 
 #: ``MARKETPLACE_NOT_CURATED`` reasons — the UI tells "confirm it" from "it changed".
 REASON_NOT_CONFIRMED = "not_confirmed"
@@ -80,6 +81,15 @@ _NUMERIC_LABEL_RE = re.compile(r"(?:0[xX][0-9A-Fa-f]*|[0-9]+)")
 _MAX_SOURCE = 300
 MARKETPLACE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _CGNAT = ipaddress.ip_network("100.64.0.0/10")  # the tailnet's range
+#: Name suffixes that only resolve inside a private network (the tailnet's MagicDNS
+#: ``*.ts.net``, mDNS, RFC 8375 and the conventional internal TLDs). Refused without DNS,
+#: so the no-resolve plugin-entry check still stops a tailnet host.
+_INTERNAL_SUFFIXES = (".ts.net", ".local", ".internal", ".intranet", ".lan", ".home.arpa",
+                      ".corp", ".private")
+#: A plugin-entry string the CLI could fetch from: a colon before any slash, which is
+#: both a scheme URL (``https:``, ``file:``, ``git+ssh:``) and git's scp-like ssh form
+#: (``[user@]host:path``). Relative paths and ``owner/repo`` carry neither.
+_FETCH_TARGET_RE = re.compile(r"[^/]*:")
 
 
 class PolicyRefusal(Exception):
@@ -205,6 +215,7 @@ def _internal(addr: str) -> bool:
 def _check_host(host: str, *, resolve: bool) -> str | None:
     """Why *host* is refused, else ``None``. Refuses every IP-literal spelling
     (``127.1``, ``0x7f.1``, ``017700000001`` …), ``localhost`` and ``*.localhost``, and —
+    a private-network suffix (``*.ts.net``, ``*.local`` … ``_INTERNAL_SUFFIXES``), and —
     when *resolve* — a name that resolves to a private, loopback, link-local, CGNAT
     (``100.64/10``, the tailnet), multicast, unspecified or reserved address, or does not
     resolve at all.
@@ -217,6 +228,8 @@ def _check_host(host: str, *, resolve: bool) -> str | None:
     lowered = host.lower().rstrip(".")
     if lowered == "localhost" or lowered.endswith(".localhost"):
         return "localhost"
+    if lowered.endswith(_INTERNAL_SUFFIXES):
+        return "a private-network name"
     if all(_NUMERIC_LABEL_RE.fullmatch(label) for label in lowered.split(".")):
         return "an IP address"
     try:
@@ -345,6 +358,53 @@ def is_command_source(entry: object) -> bool:
     return False
 
 
+def _fetch_target_refusal(value: str) -> str | None:
+    """Why the CLI must not fetch from *value*, else ``None``; a string that is not a fetch
+    target (``./plugins/x``, ``owner/repo``, a package name) is ``None``."""
+    if not _FETCH_TARGET_RE.match(value):
+        return None
+    if not value.isascii() or not value.startswith("https://"):
+        return "not an https:// URL"
+    try:
+        parts = urlsplit(value)
+        parts.port  # noqa: B018 — raises on a malformed port
+    except ValueError:
+        return "an unreadable URL"
+    host = parts.hostname or ""
+    if parts.username or parts.password or "@" in parts.netloc or not _HOST_RE.fullmatch(host):
+        return "an unsupported https URL"
+    why = _check_host(host, resolve=False)
+    return f"a URL naming {why}" if why else None
+
+
+def _strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        return [s for v in value.values() for s in _strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v)]
+    return []
+
+
+def entry_source_refusal(entry: object) -> str | None:
+    """THE SSRF rule for one catalog entry: why its ``source`` would make the CLI fetch
+    from somewhere the add policy refuses, else ``None``. The marketplace add check covers
+    the marketplace's own URL, but a confirmed marketplace's catalog may still list a plugin
+    whose ``url``/``git``/registry source names an internal, ``http://``, ssh or tailnet
+    address, which every host's CLI would fetch at install. Every string anywhere in
+    ``source`` that looks like a fetch target must be a public-looking ``https://`` URL —
+    the add rules without DNS (:func:`_check_host` with ``resolve=False``), so it is cheap
+    enough for browse and the per-host re-check. Relative paths inside the marketplace and
+    GitHub ``owner/repo`` shorthands pass."""
+    src = entry.get("source") if isinstance(entry, Mapping) else None
+    for value in _strings(src):
+        why = _fetch_target_refusal(value.strip())
+        if why:
+            return why
+    return None
+
+
 def review_state(listing: Mapping[str, Any] | None) -> str | None:
     checks = listing.get("checks") if isinstance(listing, Mapping) else None
     review = checks.get("review") if isinstance(checks, Mapping) else None
@@ -381,7 +441,8 @@ def check_install(plugin_id: str, curated: Mapping[str, str], catalog: InstallCa
 
     * ``<name>@anthropic-plugin-directory`` whose Directory listing is reviewed (``done``);
     * ``<name>@<mkt>`` where *mkt* is curated (:func:`check_curated`: confirmed, and its
-      source unchanged) and its catalog lists *name* with a source that runs no command.
+      source unchanged) and its catalog lists *name* with a source that runs no command
+      and fetches from nowhere the add policy refuses (:func:`entry_source_refusal`).
 
     Anything else raises :class:`PolicyRefusal`, including a missing/unreadable catalog."""
     name, sep, marketplace = plugin_id.partition("@")
@@ -406,6 +467,11 @@ def check_install(plugin_id: str, curated: Mapping[str, str], catalog: InstallCa
                             f"{name!r} is not listed by marketplace {marketplace!r}.", 404)
     if is_command_source(entry):
         raise _command_refusal(plugin_id)
+    why = entry_source_refusal(entry)
+    if why:
+        raise PolicyRefusal(ENTRY_SOURCE_REFUSED,
+                            f"{plugin_id} would be fetched from {why}. ViberPit installs plugins "
+                            "only from public https sources.")
 
 
 def _command_refusal(plugin_id: str) -> PolicyRefusal:

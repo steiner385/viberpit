@@ -29,6 +29,7 @@ import logging
 import os
 import secrets
 import subprocess
+import threading
 import time
 from collections.abc import Awaitable
 from pathlib import Path
@@ -42,10 +43,16 @@ log = logging.getLogger(__name__)
 
 #: One CLI run: a marketplace add/update clones a git repo.
 CLI_TIMEOUT_S = 180.0
-#: The edge's deadline for one host's ``plugin_op`` RPC: the CLI's own, plus transport.
-RPC_TIMEOUT_S = CLI_TIMEOUT_S + 20.0
-#: ``plugin list --available`` refreshes the Directory cache at most this often (≥ 1 h).
+#: Transport slack on top of the CLI runs a ``plugin_op`` RPC waits for.
+_RPC_SLACK_S = 20.0
+#: The edge's deadline for one host's single-run ``plugin_op``: the CLI's own, plus
+#: transport. :func:`rpc_timeout_s` is the per-op deadline.
+RPC_TIMEOUT_S = CLI_TIMEOUT_S + _RPC_SLACK_S
+#: ``plugin list --available`` refreshes the Directory cache at most this often (≥ 1 h)...
 AVAILABLE_REFRESH_TTL_S = 3600.0
+#: ...but a refresh that failed is retried after this much (a timeout must not lock the
+#: review state to a stale or missing cache for a whole TTL).
+AVAILABLE_REFRESH_RETRY_S = 60.0
 
 FORBIDDEN_FLAGS = frozenset({"-y", "--yes", "--accept-command", "--sparse", "--claudeai",
                              "--marketplace", "--prune"})
@@ -229,6 +236,18 @@ def parse_result(op: str, rc: int, stdout: str, nonce: str) -> dict[str, Any]:
     return _outcome("failed", code or "op_failed", message)
 
 
+def rpc_timeout_s(op: str, args: dict[str, Any]) -> float:
+    """The edge's deadline for one host's ``plugin_op``. A Directory install/update can run
+    the CLI twice on the host — :func:`refresh_available` in :func:`host_policy`, then the
+    install — each bounded by ``CLI_TIMEOUT_S``, so it gets two runs' worth; anything else
+    runs the CLI once. Shorter, and a slow refresh reported ``host_timeout`` while the host
+    went on to install."""
+    pid = args.get("plugin_id") if isinstance(args, dict) else None
+    directory = isinstance(pid, str) and pid.partition("@")[2] == plugin_policy.DIRECTORY_MARKETPLACE
+    runs = 2 if op in ("install", "update") and directory else 1
+    return runs * CLI_TIMEOUT_S + _RPC_SLACK_S
+
+
 def _installed_version(plugin_id: str) -> str | None:
     from server.library.scan import installed_registry, newest_install
     version = newest_install(installed_registry().get(plugin_id, [])).get("version")
@@ -305,24 +324,40 @@ def run_op(op: str, args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+#: monotonic time of the last refresh that exited 0 / that failed (0.0 = never).
 _last_available_refresh = 0.0
+_last_failed_refresh = 0.0
+_refresh_lock = threading.Lock()
 
 
 def refresh_available(*, force: bool = False) -> bool:
     """Run ``plugin list --json --available`` on this host so the CLI (re)fetches the
     Directory cache (``plugin-directory-cache-v2.json``). Its ~7 MB stdout is discarded:
     browse reads the cache file. Callers ask before EVERY read of the review state, so it
-    runs on a miss AND whenever ``AVAILABLE_REFRESH_TTL_S`` has passed since the last run
-    (not only when the file is missing); between runs it is a no-op unless *force*.
+    runs on a miss AND whenever ``AVAILABLE_REFRESH_TTL_S`` has passed since the last
+    SUCCESSFUL run (not only when the file is missing); a failed run is retried after
+    ``AVAILABLE_REFRESH_RETRY_S``. Between runs it is a no-op unless *force*. Both stamps
+    are taken when the run ends, under a lock, so concurrent callers share one run.
 
     Residual: the cache lives in the shared config dir, which any session on this host can
     write, so a session could mark a listing reviewed until the next refresh (≤ one TTL,
     and only if the CLI then re-fetches). Returns whether a run happened and exited 0."""
-    global _last_available_refresh
-    now = time.monotonic()
-    if not force and _last_available_refresh and now - _last_available_refresh < AVAILABLE_REFRESH_TTL_S:
-        return False
-    _last_available_refresh = now
+    global _last_available_refresh, _last_failed_refresh
+    with _refresh_lock:
+        now = time.monotonic()
+        if not force and (
+                (_last_available_refresh and now - _last_available_refresh < AVAILABLE_REFRESH_TTL_S)
+                or (_last_failed_refresh and now - _last_failed_refresh < AVAILABLE_REFRESH_RETRY_S)):
+            return False
+        ok = _run_available_refresh()
+        if ok:
+            _last_available_refresh, _last_failed_refresh = time.monotonic(), 0.0
+        else:
+            _last_failed_refresh = time.monotonic()
+        return ok
+
+
+def _run_available_refresh() -> bool:
     binary = _claude_bin()
     if binary is None:
         return False
@@ -332,6 +367,8 @@ def refresh_available(*, force: bool = False) -> bool:
     except (subprocess.TimeoutExpired, OSError) as exc:
         log.info("plugin_cli.available_refresh_failed error=%s", exc)
         return False
+    if rc != 0:
+        log.info("plugin_cli.available_refresh_failed exit=%s", rc)
     return rc == 0
 
 

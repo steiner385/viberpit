@@ -935,7 +935,9 @@ def test_browse_lists_curated_and_reviewed_only(env) -> None:
     assert good["components"] is None and good["version"] == "1.0.0"
     assert reviewed == {"pluginId": f"reviewed@{DIR}", "name": "Reviewed", "description": "s",
                         "marketplace": DIR, "version": "2.0", "reviewed": True,
-                        "components": None, "installed": False}
+                        "components": None, "installed": False,
+                        "source": "https://github.com/a/b"}
+    assert good["source"] is None  # the UI shows the marketplace's own normalizedSource
     assert "unreviewed" not in json.dumps(body)
 
 
@@ -1157,3 +1159,141 @@ def test_cli_env_routes_the_config_dir_through_helper_env(shared: Path, monkeypa
     assert env["CLAUDE_CONFIG_DIR"] == str(shared)
     assert seen == [(str(shared), "", True)]
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+
+# =========================================================================== #3312 follow-ups
+
+@pytest.mark.parametrize("source", [
+    {"source": "url", "url": "http://plugins.example.com/p.git"},
+    {"source": "git", "url": "https://10.0.0.5/p.git"},
+    {"source": "git", "url": "https://127.1/p.git"},
+    {"source": "url", "url": "https://box.tail1234.ts.net/p.git"},
+    {"source": "url", "url": "https://git.corp.local/p.git"},
+    {"source": "url", "url": "https://localhost/p.git"},
+    {"source": "url", "url": "https://intranet/p.git"},
+    {"source": "url", "url": "https://user:pw@github.com/o/p.git"},
+    {"source": "git", "url": "git@internal-git:o/p.git"},
+    {"source": "git", "url": "internal-git:o/p.git"},
+    {"source": "git", "url": "ssh://git@github.com/o/p.git"},
+    "file:///etc/p",
+    "http://plugins.example.com/p.git",
+    {"source": "npm", "package": "p", "registry": "http://npm.internal:4873"},
+    {"source": "url", "url": "https://github.com/o/p", "mirrors": ["https://192.168.1.4/p"]},
+])
+def test_plugin_entry_sources_follow_the_ssrf_rules(source: object) -> None:
+    """#3312: a confirmed marketplace's catalog listing a plugin whose own source names an
+    internal, http:// or tailnet address is refused on install, without DNS."""
+    entry = {"name": "p", "source": source}
+    assert plugin_policy.entry_source_refusal(entry)
+    catalog = InstallCatalog(marketplaces={"mine": {"p": entry}}, sources={"mine": MINE})
+    with pytest.raises(PolicyRefusal) as exc:
+        plugin_policy.check_install("p@mine", CURATED, catalog)
+    assert exc.value.code == plugin_policy.ENTRY_SOURCE_REFUSED
+
+
+@pytest.mark.parametrize("source", [
+    "./plugins/p", "plugins/p", {"source": "github", "repo": "o/p"},
+    {"source": "url", "url": "https://github.com/o/p.git"},
+    {"source": "git-subdir", "url": "https://gitlab.com/g/p", "path": "sub/dir"},
+    {"source": "npm", "package": "@scope/p", "version": "^1.2.0"},
+])
+def test_plugin_entry_sources_that_fetch_from_public_https_pass(source: object) -> None:
+    entry = {"name": "p", "source": source}
+    assert plugin_policy.entry_source_refusal(entry) is None
+    catalog = InstallCatalog(marketplaces={"mine": {"p": entry}}, sources={"mine": MINE})
+    plugin_policy.check_install("p@mine", CURATED, catalog)
+
+
+def test_entry_ssrf_check_never_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(plugin_policy, "_resolve", lambda host: pytest.fail("resolved"))
+    assert plugin_policy.entry_source_refusal(
+        {"source": {"source": "url", "url": "https://plugins.example.com/p.git"}}) is None
+
+
+def test_tailnet_names_are_refused_as_marketplace_sources_too() -> None:
+    with pytest.raises(PolicyRefusal) as exc:
+        plugin_policy.check_marketplace_source("https://box.tail1234.ts.net/m.git")
+    assert exc.value.code == plugin_policy.MARKETPLACE_SOURCE_REFUSED
+
+
+def test_browse_hides_and_host_refuses_an_internal_entry_source(
+        shared: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_marketplace(shared, "mine", [
+        {"name": "good", "source": "./good"},
+        {"name": "ssrf", "source": {"source": "url", "url": "http://169.254.169.254/p.git"}},
+    ])
+    assert [e["pluginId"] for e in scan.browse_entries(CURATED)] == ["good@mine"]
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", lambda *a, **k: pytest.fail("the CLI ran"))
+    out = plugin_cli.run_op("install", {"plugin_id": "ssrf@mine", "expected_source": MINE})
+    assert (out["outcome"], out["failureCode"]) == ("failed", plugin_policy.ENTRY_SOURCE_REFUSED)
+
+
+@pytest.mark.parametrize("op,pid,runs", [
+    ("install", f"x@{DIR}", 2), ("update", f"x@{DIR}", 2),
+    ("install", "x@mine", 1), ("enable", f"x@{DIR}", 1), ("uninstall", f"x@{DIR}", 1),
+])
+def test_rpc_deadline_covers_every_cli_run_the_host_may_make(op: str, pid: str, runs: int) -> None:
+    """#3312: a Directory install refreshes the cache (≤ CLI_TIMEOUT_S) and then installs
+    (≤ CLI_TIMEOUT_S); one CLI run's deadline reported host_timeout while it still ran."""
+    deadline = plugin_cli.rpc_timeout_s(op, {"plugin_id": pid})
+    assert deadline > runs * plugin_cli.CLI_TIMEOUT_S
+    assert deadline < (runs + 1) * plugin_cli.CLI_TIMEOUT_S
+    assert plugin_cli.rpc_timeout_s("marketplace_update", {"name": "m"}) == plugin_cli.RPC_TIMEOUT_S
+
+
+def test_remote_plugin_op_uses_the_per_op_deadline() -> None:
+    from server.sessions.remote import RemoteOrchestrator
+    seen: list[float] = []
+
+    class _Client:
+        async def call(self, method: str, **params: Any) -> Any:
+            seen.append(params["timeout"])
+            return {"outcome": "ok"}
+
+    remote = RemoteOrchestrator.__new__(RemoteOrchestrator)
+    remote._client = _Client()
+    asyncio.run(remote.plugin_op("install", {"plugin_id": f"x@{DIR}"}))
+    assert seen == [plugin_cli.rpc_timeout_s("install", {"plugin_id": f"x@{DIR}"})]
+
+
+def test_failed_directory_refresh_is_retried_soon_not_after_the_ttl(
+        shared: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#3312: the stamp was taken BEFORE the run, so a failed refresh was not retried for
+    a whole TTL. Now success stamps the TTL, failure only the short retry window."""
+    rcs = [1, 0, 0]
+    calls: list[float] = []
+    clock = {"now": 10_000.0}
+
+    def fake_run(argv: list[str], **_k: Any) -> tuple[int, str]:
+        calls.append(clock["now"])
+        clock["now"] += 30  # the run itself takes time; stamps are taken when it ends
+        return rcs.pop(0), ""
+
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", fake_run)
+    monkeypatch.setattr(plugin_cli, "_last_available_refresh", 0.0)
+    monkeypatch.setattr(plugin_cli, "_last_failed_refresh", 0.0)
+    monkeypatch.setattr(plugin_cli.time, "monotonic", lambda: clock["now"])
+    assert plugin_cli.refresh_available() is False  # ran and failed
+    clock["now"] += plugin_cli.AVAILABLE_REFRESH_RETRY_S - 1
+    assert plugin_cli.refresh_available() is False and len(calls) == 1  # inside the retry window
+    clock["now"] += 2
+    assert plugin_cli.refresh_available() is True and len(calls) == 2  # retried, long before the TTL
+    clock["now"] += plugin_cli.AVAILABLE_REFRESH_TTL_S - 1
+    assert plugin_cli.refresh_available() is False and len(calls) == 2  # TTL counts from the run's END
+    clock["now"] += 2
+    assert plugin_cli.refresh_available() is True and len(calls) == 3
+
+
+def test_directory_browse_source_is_the_reviewed_repository(shared: Path) -> None:
+    sha = "8ca22dba9a94f28898bbce59f2537ff4d87c747d"
+    _write_directory(shared, {
+        "pinned": {**_listing("done"), "source": {"type": "directory", "repository": {
+            "url": "https://github.com/obra/superpowers", "reviewed_commit": sha}}},
+        "bare": _listing("done"),
+        "odd": {**_listing("done"), "source": {"type": "directory", "repository": {"url": 7}}},
+    })
+    by_id = {e["pluginId"]: e["source"] for e in scan.browse_entries({})}
+    assert by_id == {f"pinned@{DIR}": f"https://github.com/obra/superpowers @ {sha[:12]}",
+                     f"bare@{DIR}": "https://github.com/a/b", f"odd@{DIR}": None}

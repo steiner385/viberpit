@@ -107,7 +107,8 @@ function AddMarketplace() {
             >
               Confirm and add
             </Button>
-            <Button variant="ghost" onClick={() => setReviewed(null)}>Cancel</Button>
+            {/* An add in flight can't be called back; Cancel would only hide what it is adding. */}
+            <Button variant="ghost" disabled={op.pending} onClick={() => setReviewed(null)}>Cancel</Button>
           </div>
         </div>
       )}

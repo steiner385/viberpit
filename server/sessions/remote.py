@@ -1554,11 +1554,11 @@ class RemoteOrchestrator:
 
     async def plugin_op(self, op: str, args: dict) -> dict:
         """One Claude plugin/marketplace op on this daemon's host (D-16c). The deadline is
-        the CLI's own plus transport, enforced by httpx (never cancelled from outside). An
+        ``plugin_cli.rpc_timeout_s`` (every CLI run the op may make, plus transport), enforced by httpx (never cancelled from outside). An
         old daemon answers UnknownMethod, which ``plugin_cli.host_outcome`` reports as
         ``daemon_outdated``."""
-        from server.library.plugin_cli import RPC_TIMEOUT_S
-        return await self._client.call("plugin_op", op=op, args=args, timeout=RPC_TIMEOUT_S)
+        from server.library.plugin_cli import rpc_timeout_s
+        return await self._client.call("plugin_op", op=op, args=args, timeout=rpc_timeout_s(op, args))
 
     async def plugin_op_everywhere(self, op: str, args: dict) -> list[dict]:
         """Remote mode without a fleet: the one daemon is this host's."""

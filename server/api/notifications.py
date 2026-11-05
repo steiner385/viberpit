@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from server.auth.middleware import current_identity
-from server.db import get_db
+from server.db import get_db, get_or_create_app_settings
 from server.db.models import AppSettings, NotificationChannel, NotificationRule
 from server.sessions.notify_rules import (
     EVENT_CLASSES,
@@ -60,17 +60,6 @@ def _rule_dict(r: NotificationRule) -> dict:
         "expiresAt": r.expires_at.isoformat() if r.expires_at else None,
         "createdAt": r.created_at.isoformat() if r.created_at else None,
     }
-
-
-async def _get_or_create_settings(db) -> AppSettings:
-    row = (
-        await db.execute(select(AppSettings).where(AppSettings.id == "singleton"))
-    ).scalar_one_or_none()
-    if row is None:
-        row = AppSettings(id="singleton")
-        db.add(row)
-        await db.flush()
-    return row
 
 
 def _valid_hhmm(value: str | None) -> bool:
@@ -387,7 +376,7 @@ def _quiet_hours_dict(row: AppSettings) -> dict:
 async def get_quiet_hours(
     _identity: str = Depends(current_identity), db=Depends(get_db)
 ) -> dict:
-    row = await _get_or_create_settings(db)
+    row = await get_or_create_app_settings(db)
     await db.commit()
     return _quiet_hours_dict(row)
 
@@ -400,7 +389,7 @@ async def put_quiet_hours(
         raise HTTPException(422, "start/end must be 'HH:MM' or null")
     if not _valid_timezone(body.timezone):
         raise HTTPException(422, "timezone must be a valid IANA zone name or null")
-    row = await _get_or_create_settings(db)
+    row = await get_or_create_app_settings(db)
     row.quiet_hours_start = body.start
     row.quiet_hours_end = body.end
     row.quiet_hours_timezone = body.timezone
@@ -454,7 +443,7 @@ async def test_routing(
     channels = {c.id: c for c in (
         await db.execute(select(NotificationChannel))).scalars().all()}
     rules = [rule_view_from_row(r, watch=is_watch_rule(r, channels)) for r in rule_rows]
-    settings = await _get_or_create_settings(db)
+    settings = await get_or_create_app_settings(db)
     await db.commit()
     now_local = localize_now(datetime.now(timezone.utc), settings.quiet_hours_timezone)
     decision = plan(
