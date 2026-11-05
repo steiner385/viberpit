@@ -125,17 +125,22 @@ class _WSAdapter:
             pass
 
 
+async def _no_daemon(_session_id: str):
+    return None
+
+
 def build_vnc_ws_router(
     get_x11,
-    get_daemon_endpoint=lambda: None,
-    get_daemon_ssl=lambda: None,
+    get_daemon_route=_no_daemon,
     get_local_x11=lambda session_id: None,
 ) -> APIRouter:
     """Return an APIRouter with /ws/vnc.
 
-    Remote mode (get_daemon_endpoint() truthy): proxy the browser WS to the daemon's
-    /vnc via daemon_ws_connect (unix or wss), propagating a 4xxx daemon close code.
-    In-process mode (default): relay straight to the local x11vnc.
+    Remote mode (``await get_daemon_route(session_id)`` is ``(endpoint, ssl)``): proxy
+    the browser WS to THAT daemon's /vnc via daemon_ws_connect (unix or wss),
+    propagating a 4xxx daemon close code. The route is per session: the daemon of the
+    fleet host that owns the session, which is where its Xvfb runs.
+    In-process mode (``None``): relay straight to the local x11vnc.
 
     ``get_local_x11(session_id)`` lets the caller pin specific sessions to a display
     on *this* host even in remote mode, by returning an X11Manager for them (None
@@ -152,14 +157,16 @@ def build_vnc_ws_router(
         session_id = websocket.query_params.get("session", "")
         # A session pinned to a local display never proxies, daemon or not.
         local_x11 = get_local_x11(session_id)
-        endpoint = None if local_x11 is not None else get_daemon_endpoint()
-        if endpoint:
+        route = None if local_x11 is not None else await get_daemon_route(session_id)
+        if route is not None:
+            from urllib.parse import quote
             from websockets.exceptions import ConnectionClosed
+            endpoint, ssl_ctx = route
             await websocket.accept()
             close_code = 1000
             try:
-                path = f"/vnc?session={session_id}"
-                async with daemon_ws_connect(endpoint, path, get_daemon_ssl()) as dws:
+                path = f"/vnc?session={quote(session_id, safe='')}"
+                async with daemon_ws_connect(endpoint, path, ssl_ctx) as dws:
                     await _relay(websocket, _WSAdapter(dws))
                     # 4404 (no display) and other daemon close codes reach us here via the
                     # closed daemon connection; _WSAdapter.read swallowed the ConnectionClosed.

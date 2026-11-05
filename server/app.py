@@ -21,6 +21,7 @@ from server.obs.jsonlog import configure_logging
 from server.obs.middleware import RequestContextMiddleware
 from server.auth.identity import TransportPeerMiddleware
 from server.auth.middleware import IdentityMiddleware, current_identity
+from server.auth.origin import OriginGuardMiddleware
 from server.bridge.ws import build_ws_router
 from server.stt.engine import WhisperEngine, is_available as stt_available
 from server.stt.ws import build_stt_ws_router
@@ -860,14 +861,9 @@ def create_app(
     if orchestrator is None and endpoint is not None:
         from server.ipc.client import DaemonClient
         from server.sessions.remote import RemoteOrchestrator
-        client_ssl = None
-        if endpoint.is_tcp:
-            from server.ipc.tls import client_ssl_context, client_tls_files
-            client_ssl = client_ssl_context(client_tls_files())
         app.state.remote_mode = True
         app.state.daemon_endpoint = endpoint
         app.state.daemon_socket = endpoint.path if endpoint.is_unix else None
-        app.state.daemon_client_ssl = client_ssl
         app.state.orchestrator = None
         # Save the primary orchestrator; the lifespan will wrap it in a FleetOrchestrator
         # once ensure_default_host has resolved the primary host name.
@@ -879,7 +875,6 @@ def create_app(
         app.state.remote_mode = False
         app.state.daemon_endpoint = None
         app.state.daemon_socket = None
-        app.state.daemon_client_ssl = None
         app.state.orchestrator = orchestrator
         app.state.sessions = InProcessOrchestratorAdapter(orchestrator)
 
@@ -954,9 +949,12 @@ def create_app(
     # wraps RequestContextMiddleware wraps IdentityMiddleware wraps the routes, so
     # request_id is set before identity. TransportPeerMiddleware records the socket peer
     # before it applies X-Forwarded-For (the unit runs uvicorn --no-proxy-headers), so a
-    # human-only gate can attest the real one (#2980).
+    # human-only gate can attest the real one (#2980). OriginGuardMiddleware sits just
+    # inside it: a pure ASGI layer, so it refuses a cross-origin WebSocket upgrade (any
+    # route) or state-changing request before identity or any route runs.
     app.add_middleware(IdentityMiddleware)
     app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(OriginGuardMiddleware)
     app.add_middleware(TransportPeerMiddleware)
 
     # In remote mode an unreachable daemon surfaces as DaemonUnavailable from any
@@ -1173,10 +1171,18 @@ def create_app(
             return getattr(app.state, "reauth_x11", None)
         return None
 
+    async def _vnc_daemon_route(session_id: str):
+        """(endpoint, ssl) of the daemon that owns *session_id*'s display, else None
+        (in-process). Routed by the session's host like every per-session RPC: a worker
+        session's Xvfb runs on the worker, not the primary. ``app.state.sessions`` is
+        read per call — the lifespan swaps in the FleetOrchestrator after routers exist."""
+        if not getattr(app.state, "remote_mode", False):
+            return None
+        return await app.state.sessions.daemon_route_for_session(session_id)
+
     app.include_router(build_vnc_ws_router(
         lambda: getattr(app.state, "x11", None),
-        lambda: getattr(app.state, "daemon_endpoint", None),
-        lambda: getattr(app.state, "daemon_client_ssl", None),
+        _vnc_daemon_route,
         _local_vnc_x11,
     ))
 
@@ -1239,7 +1245,8 @@ def create_app(
             payload["startup"] = None
         return payload
 
-    from fastapi import Body, HTTPException  # noqa: PLC0415 — local import avoids top-level churn
+    from fastapi import Body, HTTPException, Request  # noqa: PLC0415 — local import avoids top-level churn
+    _browser_log = logging.getLogger("server.browser")
 
     # Shared by both branches of open_browser() below — the daemon RPC and the
     # in-process orchestrator call return the same {"ok", "reason"} shape (Task 6),
@@ -1254,13 +1261,33 @@ def create_app(
     @app.post("/api/sessions/{session_id}/browser/open")
     async def open_browser(
         session_id: str,
+        request: Request,
         payload: dict = Body(default={}),
-        _identity: str = Depends(current_identity),
+        identity: str = Depends(current_identity),
     ) -> dict:
+        from server.auth.identity import human_gate_via  # noqa: PLC0415
+        from server.sessions.session_actions import (  # noqa: PLC0415
+            SESSION_CONTROL_HUMAN_ONLY_CODE, ActionError, require_human)
+        from server.sessions.x11manager import is_browser_url  # noqa: PLC0415
+        # A browser launched here runs on the session's host: only a person may start one.
+        via = human_gate_via(request)
+        try:
+            require_human(identity, via, action="open a browser for a session",
+                          code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+        except ActionError as exc:
+            _browser_log.info("browser.open_refused code=%s identity=%s via=%s", exc.code, identity, via)
+            raise HTTPException(status_code=exc.http,
+                                detail={"code": exc.code, "message": exc.message}) from None
+        url = payload.get("url") or None
+        if url is not None and not is_browser_url(url):
+            # The URL becomes a Chromium argument: never let one be read as a --switch.
+            _browser_log.info("browser.open_refused code=INVALID_URL session=%s", session_id)
+            raise HTTPException(status_code=400, detail={
+                "code": "INVALID_URL", "message": "url must be an absolute http(s) URL"})
         if getattr(app.state, "remote_mode", False):
-            res = await app.state.sessions.x11_open_browser(session_id, payload.get("url"))
+            res = await app.state.sessions.x11_open_browser(session_id, url)
         else:
-            res = await app.state.sessions.open_browser(session_id, payload.get("url"))
+            res = await app.state.sessions.open_browser(session_id, url)
         if not res.get("ok"):
             raise HTTPException(status_code=409, detail=_OPEN_BROWSER_DETAIL.get(
                 res.get("reason"), "browser cap reached"))

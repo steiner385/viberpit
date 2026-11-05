@@ -24,5 +24,5 @@ def test_create_app_remote_mode_with_https_endpoint(mtls_certs, monkeypatch):
         app = create_app()
         assert app.state.remote_mode is True
         assert app.state.daemon_endpoint == Endpoint("https", host="127.0.0.1", port=9443)
-        assert app.state.daemon_client_ssl is not None
+        assert app.state.remote_primary._client.ssl_context is not None
         assert app.state.daemon_socket is None

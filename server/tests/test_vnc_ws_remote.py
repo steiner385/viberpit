@@ -57,11 +57,10 @@ def _edge_router(get_sock):
     from server.auth.middleware import require_ws_identity
     app = FastAPI()
     app.dependency_overrides[require_ws_identity] = lambda: "test@example.com"
-    app.include_router(build_vnc_ws_router(
-        lambda: None,
-        get_daemon_endpoint=lambda: Endpoint("unix", path=get_sock()),
-        get_daemon_ssl=lambda: None,
-    ))
+    async def _route(_session_id):
+        return Endpoint("unix", path=get_sock()), None
+
+    app.include_router(build_vnc_ws_router(lambda: None, get_daemon_route=_route))
     return app
 
 

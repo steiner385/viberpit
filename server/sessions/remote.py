@@ -1659,6 +1659,13 @@ class RemoteOrchestrator:
     async def x11_open_browser(self, session_id: str, url: str | None = None) -> dict:
         return await self._client.call("x11_open_browser", session_id=session_id, url=url)
 
+    async def daemon_route_for_session(self, session_id: str) -> tuple:
+        """``(endpoint, ssl_ctx)`` of THIS daemon, for a WS the edge proxies to it
+        (``/ws/vnc``). The fleet routes the call per session (``_PER_SESSION``), so it
+        lands on the RemoteOrchestrator of the host that owns *session_id*."""
+        del session_id  # routing happened one layer up
+        return self._client.endpoint, self._client.ssl_context
+
     # --- pm onboarding seams (phase 2, 2026-08-31) ---
     async def pm_onboarding_counts(self, project_id: str) -> "ProjectOnboardingView":
         """Build the onboarding engine's view for a project, via the daemon.

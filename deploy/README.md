@@ -72,6 +72,15 @@ value disables one-tap and logs an error (the daemon reads the same env file, so
 startup). Unset, one-tap
 is off and every MCP server signs in by paste-back; `GET /api/config` reports
 `oneTapEnabled`. The origin is never taken from request headers. `VIBERPIT_` spelling only.
+
+**Origin allowlist (edge).** Identity is the Tailscale header, so the edge refuses any WebSocket
+upgrade (close 1008) and any POST/PUT/PATCH/DELETE (403 `ORIGIN_FORBIDDEN`) whose `Origin` is not
+allowed: otherwise any page in a tailnet browser could drive sessions. Allowed: `VIBERPIT_PUBLIC_ORIGIN`;
+a same-origin request (Origin = the `Host`/`X-Forwarded-Host` it arrived with) on the public
+origin's hostname or loopback, which covers `tailscale serve` on `:8443`; Vite under `VIBERPIT_DEV=1`;
+and `VIBERPIT_ALLOWED_ORIGINS` (comma-separated `scheme://host[:port]`). No `Origin` (CLI,
+`viberpit ask`, the assistant) passes. Without `VIBERPIT_PUBLIC_ORIGIN`, a browser on the tailnet
+hostname is refused: set one of the two. Refusals log `origin.refused` at INFO.
 First live use: the first tap per provider registers ViberPit as an OAuth client with that provider.
 
 ## Install

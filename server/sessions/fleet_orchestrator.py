@@ -241,6 +241,9 @@ _PER_SESSION: frozenset[str] = frozenset({
     # at create_session).
     "request_pr_fix", "prs_for", "ring_covers", "ring_tail", "unarchive",
     "x11_open_browser", "resolve_model_approval", "resume_interrupted",
+    # The /ws/vnc stream must reach the daemon whose Xvfb draws the session, i.e. its
+    # host's, exactly like x11_open_browser (a worker session's display is on the worker).
+    "daemon_route_for_session",
     # The primary's chained ingest certifies a harvested one-shot session via its
     # edge; the status change must land where the record and driver are.
     "certify_harvested_complete",

@@ -581,3 +581,36 @@ async def test_start_display_warns_once_when_retry_also_fails(tmp_path, caplog):
         assert await mgr.start_display("f") is None
     assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
     assert mgr._allocator.in_use() == 0
+
+
+# --- URL argv hardening (D-18 spike §A.3): the URL can never be read as a --switch ---
+
+@pytest.mark.asyncio
+async def test_launch_browser_puts_double_dash_before_the_url(tmp_path):
+    spawned = []
+    async def fake_spawn(*argv, **kw):
+        spawned.append(argv)
+        return FakeProc()
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn,
+                     ready_check=lambda d, xa: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    assert await mgr.launch_browser("S", "http://127.0.0.1:5173/") is True
+    chromium_argv = next(a for a in spawned if a[0] == "chromium")
+    assert chromium_argv[-2:] == ("--", "http://127.0.0.1:5173/")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", ["--remote-debugging-port=9222", "file:///etc/passwd",
+                                 "javascript:alert(1)", "http://x --flag", "//host/x"])
+async def test_launch_browser_refuses_a_non_http_url(tmp_path, url):
+    spawned = []
+    async def fake_spawn(*argv, **kw):
+        spawned.append(argv)
+        return FakeProc()
+    mgr = X11Manager(DisplayAllocator(100, 2, 6100), resolution="800x600x24",
+                     max_browsers=2, spawn=fake_spawn,
+                     ready_check=lambda d, xa: True, vnc_ready_check=lambda p: True, run_dir=str(tmp_path))
+    await mgr.start_display("S")
+    assert await mgr.launch_browser("S", url) is False
+    assert not any(a[0] == "chromium" for a in spawned)
