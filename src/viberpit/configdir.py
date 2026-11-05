@@ -26,8 +26,10 @@ CLAUDE_JSON_NAME = ".claude.json"
 # `CLAUDE.md` (D-13) is the user memory file: the CLI reads it from
 # $CLAUDE_CONFIG_DIR/CLAUDE.md, never from HOME, so without the link no account loads the
 # operator's instructions as user memory (D-13 verification spike §1/§2).
+# `output-styles` (D-16a) holds the user's custom output styles; the CLI reads them from
+# $CLAUDE_CONFIG_DIR/output-styles, so without the link a style reaches one account only.
 SHARE_ALLOWLIST = {"plugins", "commands", "settings.json", "settings.local.json", "projects",
-                   "file-history", "CLAUDE.md"}
+                   "file-history", "CLAUDE.md", "output-styles"}
 
 # Allowlisted DIRECTORIES the CLI creates on demand and that must be shared from an
 # account's first spawn: created in shared_base() when missing, and an account's real
@@ -42,6 +44,11 @@ SHARED_STATE_DIRS = {"file-history"}
 # server/tests/test_memory_cli_contract.py), so a shared file created later reaches every
 # account with no recompose, and nothing ever invents an empty shared file.
 SHARED_USER_FILES = {"CLAUDE.md"}
+
+# Allowlisted user-authored DIRECTORIES. Linked only once the shared dir exists (nothing
+# invents it); an account's real copy is user content — kept private, never deleted, never
+# merged — exactly like a private SHARED_USER_FILES entry.
+SHARED_USER_DIRS = {"output-styles"}
 
 
 _AT_FDCWD = -100
@@ -181,7 +188,7 @@ def reconcile_links(name: str) -> None:
                      name, entry_name, current, source)
             link.unlink(missing_ok=True)
         elif link.exists():
-            if entry_name in SHARED_USER_FILES:
+            if entry_name in SHARED_USER_FILES or entry_name in SHARED_USER_DIRS:
                 log.info("configdir.share_kept_private account=%s entry=%s "
                          "reason=private_file", name, entry_name)
                 continue
@@ -218,7 +225,8 @@ def reconcile_links(name: str) -> None:
         try:
             link.symlink_to(source)
         except FileExistsError:
-            if entry_name not in SHARED_STATE_DIRS and entry_name not in SHARED_USER_FILES:
+            if (entry_name not in SHARED_STATE_DIRS and entry_name not in SHARED_USER_FILES
+                    and entry_name not in SHARED_USER_DIRS):
                 raise
             # The CLI (or another composer) recreated the entry after the merge emptied
             # it, or wrote a private CLAUDE.md since the check: never fail the spawn over

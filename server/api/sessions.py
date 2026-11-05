@@ -22,12 +22,12 @@ from typing import Any, Literal, NoReturn, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictStr
 
 from viberpit import accounts as _accounts
 from viberpit import gitrepos
 from server.sessions import diff_patch
-from server.auth.identity import human_gate_via
+from server.auth.identity import human_gate_via, human_sender
 from server.auth.middleware import current_client_node, current_identity
 from server.library.names import valid_mcp_name
 from server.mcp_scope.servers import configured_server_keys
@@ -62,6 +62,9 @@ from server.sessions import memory_files
 from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
+from server.sessions.commands.catalog import (APP_COMMAND, APP_COMMAND_REFUSED,
+                                             COMMAND_ORIGIN_REST, app_command_refusal,
+                                             app_only_command)
 from server.sessions.engine import (
     EFFORT_UNCHANGED, AgentEngine, AgentEngineUnavailable, parse_agent_engine)
 from server.sessions.model_policy import quota_model
@@ -340,6 +343,11 @@ def _record_to_dict(
         "fastModeDisabledReason": getattr(record, "fast_mode_disabled_reason", None),
         "fastModeAvailable": flag_settings.fast_mode_available(
             getattr(record, "fast_mode_models", None), getattr(record, "model", None)),
+        # Output style (D-16a): the style the session runs (the CLI's live reading, else
+        # the stored choice; null = not known yet) and the styles its CLI listed — [] for
+        # an engine or kind without styles, the kill switch off, or no list reported.
+        "outputStyle": flag_settings.effective_output_style(record),
+        "availableOutputStyles": flag_settings.available_output_styles(record),
         # The effort levels the current model accepts (CLI `supportedEffortLevels`): the
         # picker offers exactly these; [] hides it, null = not reported yet.
         "supportedEffortLevels": (record.effort_levels_now()
@@ -1019,6 +1027,11 @@ async def create_session(
         _toggle_kwargs["autopilot_paused"] = True
     if body.autoArchive is False:
         _toggle_kwargs["auto_archive_opt_out_reason"] = AUTO_ARCHIVE_OPT_OUT_CREATE
+    # A person typed an app command (`/plan`, `/fast` …) as the initial prompt: only then
+    # may it run (D-16a S1). Sent only when True, like the toggles above; an Assistant /
+    # agent token (`via` set) or an unattested local process is not a person.
+    if app_only_command(body.initialPrompt) is not None and human_sender(request):
+        _toggle_kwargs["initial_prompt_human"] = True
 
     try:
         record = await orch.create_session(
@@ -1985,17 +1998,31 @@ def _resume_failed_detail(record: object) -> dict:
 
 
 async def resume_and_send_prompt(orch: Any, session_id: str, text: str, identity: str, *,
-                                 interrupt: bool = False) -> tuple[Any, str]:
+                                 interrupt: bool = False,
+                                 human: bool = False) -> tuple[Any, str]:
     """The one HTTP-side "deliver a prompt to a session" path: look it up (404),
     resume it if detached (409 when it can't be brought live), send. Returns the
     record and ``send_prompt``'s delivery result. Shared by the quick-resume route
-    and any API that hands a session text on the operator's behalf (#2936)."""
+    and any API that hands a session text on the operator's behalf (#2936).
+
+    *human* says a person sent *text* (D-16a S1): only then may an ``APP_ONLY``
+    command in it run, attributed to *identity*. Default False: refused."""
     record = await orch.get_session(session_id)
     if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
         )
+    # An app command bound for a daemon older than the APP_ONLY gate (D-16a) would reach
+    # the CLI there, so it is refused here, before any wake — the same answer as a
+    # daemon-side refusal.
+    app_cmd = app_only_command(text)
+    if (app_cmd is not None
+            and not await session_actions.daemon_has_app_command_gate(orch, session_id)
+            and app_command_refusal(app_cmd.name, human=human, daemon_gate=False)):
+        log.info("prompt: app command refused, daemon predates the gate session=%s "
+                 "name=%s", session_id, app_cmd.name)
+        return record, APP_COMMAND_REFUSED
     # Resume the session if it has no live driver (detached). ensure_driver is
     # idempotent for already-live sessions and returns None only if the session
     # can't be brought live.
@@ -2005,7 +2032,10 @@ async def resume_and_send_prompt(orch: Any, session_id: str, text: str, identity
             status_code=status.HTTP_409_CONFLICT,
             detail=_resume_failed_detail(record),
         )
-    return record, await orch.send_prompt(session_id, text, interrupt=interrupt)
+    # Only for an app command, so every ordinary prompt's call is unchanged.
+    extra = ({"command_origin": COMMAND_ORIGIN_REST, "identity": identity}
+             if human and app_cmd is not None else {})
+    return record, await orch.send_prompt(session_id, text, interrupt=interrupt, **extra)
 
 
 @router.post("/{session_id}/prompt")
@@ -2022,9 +2052,21 @@ async def send_session_prompt(
     path the WebSocket prompt flow uses — so one tap from the list gets a stalled
     session moving. 404 if unknown; 409 if the session exists but can't be resumed."""
     orch = _get_orchestrator(request)
+    # Is a person behind this app command (D-16a S1)? human_sender — the one check the
+    # WS composer and command frame use too — reads /proc, so only for an app command.
+    human = app_only_command(body.text) is not None and human_sender(request)
     record, delivery = await resume_and_send_prompt(orch, session_id, body.text, identity,
-                                                    interrupt=body.interrupt)
-    if delivery not in ("sent", "draining"):
+                                                    interrupt=body.interrupt, human=human)
+    if delivery == APP_COMMAND_REFUSED:
+        # An app command this sender may not run, or one sent with more text: nothing
+        # ran and nothing reached the CLI (D-16a). The notice went to attached clients.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "code": "app_command_refused",
+            "message": "slash commands like /plan or /fast run only when a person sends "
+                       "them on their own; nothing was sent"})
+    # APP_COMMAND (D-16a): the text was an app command (`/output-style …`) and ran as
+    # one — the orchestrator's send_prompt never hands those to the CLI.
+    if delivery not in ("sent", "draining", APP_COMMAND):
         log.warning("quick-resume prompt not delivered session=%s result=%s",
                     session_id, delivery)
     if delivery == "sent":
@@ -2563,6 +2605,39 @@ async def set_session_fast_mode(
         _raise_daemon_outdated_or_reraise(exc, "toggle fast mode")
     await record_audit(db=db, type="session.fast_mode", identity=identity,
                        detail={"session_id": session_id, "enabled": body.enabled})
+    return result
+
+
+class OutputStyleRequest(BaseModel):
+    # Required, nullable: null resets the session to the app default.
+    style: StrictStr | None = Field(...)
+
+
+@router.post("/{session_id}/output-style")
+async def set_session_output_style(
+    session_id: str,
+    body: OutputStyleRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Set the session's output style (D-16a), live on the daemon that owns it and
+    persisted for every later spawn; ``null`` resets it to the app default. 200
+    ``{style}``. Unknown session 404; 409 ``OUTPUT_STYLE_UNKNOWN`` for a name the
+    session's CLI did not list (nothing is sent), ``OUTPUT_STYLE_UNAVAILABLE`` for an
+    engine or session without styles, another ``SETTINGS_CODES`` code when the CLI
+    refused or never answered, or ``daemon_outdated`` from an old daemon."""
+    try:
+        result = await session_actions.set_output_style(
+            _get_orchestrator(request), db, session_id=session_id, style=body.style,
+            identity=identity, via=getattr(request.state, "via", None))
+    except flag_settings.SettingsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail={"code": exc.code, "message": str(exc)}) from exc
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "set the output style")
     return result
 
 

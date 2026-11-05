@@ -175,6 +175,7 @@ export interface TranscriptState {
   condense: { active: boolean; expectedMs: number } | null
   pendingSent: { id: string; text: string }[]  // sent-but-unconfirmed-on-disk prompts (FIFO); survives replayReset
   pendingSentSeq: number                        // monotonic counter for stable synthetic ids
+  returnedPrompt: { text: string } | null       // the last prompt acked `failed` (not delivered, never retried): the composer refills an empty box with it (D-16a); a fresh object per return
   hadReset: boolean                             // true after a replayReset; guards re-assert on replayComplete
   orphanToolResults: Record<string /* toolId */, OrphanToolResult>  // toolResults with no matching block yet (main thread or any sub-thread); cleared on replayReset
   // Double-buffer: the previously-rendered transcript, captured on a replayReset of a
@@ -210,6 +211,7 @@ export const initialTranscript: TranscriptState = {
   condense: null,
   pendingSent: [],
   pendingSentSeq: 0,
+  returnedPrompt: null,
   hadReset: false,
   orphanToolResults: {},
   staleTurns: [],
@@ -893,8 +895,11 @@ export function transcriptReducer(
       // appending a duplicate bubble. Adoption is display-only — it deliberately
       // does NOT consume pendingSent (only the replaying=true path above proves
       // durability), so the buffer still re-asserts if the next replay lacks it.
+      //
+      // Never a `failed` bubble (D-16a): that prompt was not delivered, so an echo of the
+      // same text is the user's re-send, whose own pending bubble must take it.
       const pendIdx = state.turns.findIndex(
-        (t) => t.role === 'user' && t.id.startsWith(PENDING_ID_PREFIX)
+        (t) => t.role === 'user' && t.id.startsWith(PENDING_ID_PREFIX) && t.pending !== 'failed'
           && t.blocks.some((b) => b.kind === 'text' && b.text === text),
       )
       if (pendIdx !== -1) {
@@ -1667,7 +1672,21 @@ export function transcriptReducer(
       const idx = state.turns.findIndex((t) => isPendingTurn(t) && t.pending !== undefined
         && advancesStage(t.pending, ev.stage))
       if (idx === -1) return state
-      return { ...state, turns: replaceTurn(state.turns, idx, (t) => ({ ...t, pending: ev.stage })) }
+      const turns = replaceTurn(state.turns, idx, (t) => ({ ...t, pending: ev.stage }))
+      if (ev.stage !== 'failed') return { ...state, turns }
+      // `failed` is terminal — not delivered, never retried (a refused app command, a
+      // session that could not be woken) — so hand the text back to the composer.
+      // It also leaves the re-assert buffer: it is not on its way, so neither a replay
+      // drain nor `replayComplete` may match or resurrect it (a re-send of the same text
+      // is a new entry).
+      const failedId = state.turns[idx].id
+      const sent = state.pendingSent.find((p) => p.id === failedId)
+      if (!sent) return { ...state, turns }
+      return {
+        ...state, turns,
+        pendingSent: state.pendingSent.filter((p) => p.id !== failedId),
+        returnedPrompt: { text: sent.text },
+      }
     }
 
     case '_promptStalled': {

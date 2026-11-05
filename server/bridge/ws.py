@@ -61,7 +61,7 @@ from server.automations.ownership import StaleOwnership
 from server.api.ratelimit import TokenBucketRateLimiter
 from server.assistant.context import validate_context
 from server.audit import record_audit, redact_event
-from server.auth.identity import human_gate_via, verify_identity
+from server.auth.identity import human_gate_via, human_sender, verify_identity
 from server.quick_replies import observe_reply
 from server.auth.middleware import require_ws_identity
 from server.config import get_settings
@@ -73,7 +73,10 @@ from server.obs.context import bind_session, log_event
 from server.obs.logdedupe import LogThrottle, log_throttled
 from server.obs.metrics import assistant_mentions_total, assistant_prompts_total
 from server.obs.tasks import supervise
-from server.sessions.commands.catalog import APP_ONLY, parse_command_line
+from server.sessions.commands.catalog import (APP_ONLY, APP_COMMAND, APP_COMMAND_REFUSED,
+                                             COMMAND_ORIGIN_COMPOSER, COMMAND_ORIGIN_CREATE,
+                                             app_command_refusal, app_only_command,
+                                             parse_command_line)
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.facade import call_with_deadline
 from server.sessions.orchestrator import DriverStartTimeout, ENSURE_DRIVER_WORST_CASE_S
@@ -283,7 +286,7 @@ class _TeardownMarks:
 
 
 async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str, *,
-                        on_commands_changed=None) -> None:
+                        on_commands_changed=None, on_command_result=None) -> None:
     """Forward a driver stream's live events into *out_q* as wire dicts.
 
     *stream* is a ``DriverStream``/``RemoteDriverStream`` opened by
@@ -308,9 +311,15 @@ async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str, *
 
     ``commandsChanged`` (D-14) is consumed here, never forwarded: it calls
     *on_commands_changed(session_id)* — the attach path's own top-level catalog push —
-    so a model switch refreshes the palette through the one push there is. Its source
-    seq is invisible to the client, so the next forwarded frame carries ``srcSeqSkip`` (the
-    count of consumed seqs just before it) and the client's tracker treats that as contiguous.
+    so a model switch refreshes the palette through the one push there is.
+
+    ``commandResult`` (D-16a: an app command typed as a prompt, run by the orchestrator's
+    ``send_prompt``) is consumed the same way: *on_command_result(session_id, wire)* sends
+    it as the top-level frame the client's ``commandResult`` handler reads.
+
+    A consumed frame's source seq is invisible to the client, so the next forwarded frame
+    carries ``srcSeqSkip`` (the count of consumed seqs just before it) and the client's
+    tracker treats that as contiguous (#3283).
     """
     with bind_session(session_id):
         seq = 0
@@ -325,15 +334,18 @@ async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str, *
                     log.exception("ws.to_wire session=%s", session_id)
                     seq += 1  # consume a seq so the client sees a gap and re-attaches
                     continue
-                if wire.get("type") == "commandsChanged":
+                if wire.get("type") in ("commandsChanged", "commandResult"):
                     src = getattr(e, "src_seq", None)
                     if src is not None:
                         prev_src = src     # consumed, not lost: no srcSeq-gap warning
                         # The client keeps its own srcSeq tracker and never saw this seq:
                         # tell it via ``srcSeqSkip`` on the next forwarded frame.
                         consumed_src += 1
-                    if on_commands_changed is not None:
-                        await on_commands_changed(session_id)
+                    if wire["type"] == "commandsChanged":
+                        if on_commands_changed is not None:
+                            await on_commands_changed(session_id)
+                    elif on_command_result is not None:
+                        await on_command_result(session_id, wire)
                     continue
                 if wire.get("type") == proto.GAP:
                     # A daemon replay-gap sentinel (issue #185): events were evicted from
@@ -1059,6 +1071,27 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             except Exception:
                 log.warning("ws.attach: command_catalog failed for %s", session_id, exc_info=True)
 
+        async def _emit_command_result(session_id: str, wire: dict) -> None:
+            """Send an orchestrator-run app command's result (``ev.CommandResult``) as
+            the top-level ``commandResult`` frame — direct, like the catalog, since the
+            client reads it top-level only."""
+            await _send(redact_event({**wire, "sessionId": session_id}))
+
+        async def _refuse_for_older_daemon(session_id: str, name: str) -> bool:
+            """Answer an ``APP_ONLY`` command bound for a daemon without the gate
+            (``session_actions.daemon_has_app_command_gate``) with
+            ``app_command_refusal``'s notice, and return True; False when the daemon has
+            the gate (it then decides, exactly as before). Never forwards the command."""
+            if await session_actions.daemon_has_app_command_gate(orchestrator, session_id):
+                return False
+            refused = app_command_refusal(name, human=False, daemon_gate=False)
+            if refused is None:
+                return False
+            log.info("ws: app command refused, daemon predates the gate session=%s "
+                     "name=%s", session_id, name)
+            await _emit_command_result(session_id, {"type": "commandResult", **refused})
+            return True
+
         async def _run_command_and_reply(session_id: str, name: str, args: str) -> bool:
             """Dispatch a slash command and emit its commandResult frame, exactly
             as the interactive `command` frame does. Returns True if the command
@@ -1073,7 +1106,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             except KeyError:
                 return False
             except Exception:
-                log.warning("ws.command failed session=%s name=%s", session_id, name, exc_info=True)
+                # INFO: a command that fails is answered (ok:false below), not an incident
+                # — a WARNING here auto-files an issue per failed /model or /account.
+                log.info("ws.command failed session=%s name=%s", session_id, name, exc_info=True)
                 await _send(redact_event({"type": "commandResult", "sessionId": session_id,
                              "name": name, "ok": False, "error": "command failed"}))
                 return True
@@ -1250,6 +1285,21 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # runCommandFromText.
                 handled = False
                 parsed = parse_command_line(pending_prompt)
+                app_cmd = app_only_command(pending_prompt)
+                if app_cmd is not None:
+                    # An app command (`/plan`, `/fast` …) parked at create (D-16a S1):
+                    # the orchestrator runs it only on its own record that a person typed
+                    # it, as that person — never as whoever attached. A daemon older than
+                    # that gate would hand it to the CLI, so the edge refuses it (and the
+                    # parked text is dropped: a refused command is never replayed).
+                    if await _refuse_for_older_daemon(session_id, app_cmd.name):
+                        return
+                    status = await orchestrator.send_prompt(
+                        session_id, pending_prompt, command_origin=COMMAND_ORIGIN_CREATE)
+                    if status in ("no_driver", "recovering"):
+                        await orchestrator.repark_pending_initial_prompt(
+                            session_id, pending_prompt)
+                    return
                 if parsed is not None:
                     handled = await _run_command_and_reply(session_id, parsed[0], parsed[1])
                 if not handled:
@@ -1324,7 +1374,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             task = supervise(
                 asyncio.create_task(
                     _forward_live(stream, out_q, session_id,
-                                  on_commands_changed=_emit_command_catalog),
+                                  on_commands_changed=_emit_command_catalog,
+                                  on_command_result=_emit_command_result),
                     name=f"ws-live-{session_id}"),
                 name=f"ws-live-{session_id}", on_failure=_on_forward_task_failed)
             live_tasks[session_id] = task
@@ -1904,6 +1955,15 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             queued, so it still lands in milliseconds (see the dispatch site).
             """
             started = time.monotonic()
+            # An app command bound for a daemon that predates the APP_ONLY gate (D-16a)
+            # is refused here, before any wake: that daemon would hand it to the CLI.
+            # The same terminal "failed" ack as a daemon-side refusal below.
+            app_cmd = app_only_command(msg.get("text", ""))
+            if (app_cmd is not None
+                    and await _refuse_for_older_daemon(session_id, app_cmd.name)):
+                await _send({"type": "promptAck", "sessionId": session_id,
+                             "stage": "failed"})
+                return
             # Only the mutator is locked: _ensure_live can start a live forwarding
             # task, so it must not interleave with an auto re-attach for the SAME
             # session. The lock is per session, so nothing here can delay another
@@ -1941,21 +2001,19 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             ensured = time.monotonic()
             text = msg.get("text", "")
             attachment_ids = msg.get("attachmentIds")
-            # `/fast` / `/effort` typed as a prompt (D-14) — e.g. while gated off, when
-            # the palette does not list them — never reach the CLI, whose own toggles
-            # change the process behind the session's record. They run as commands,
-            # which answer a gated one with a notice.
-            parsed = parse_command_line(text.strip()) if isinstance(text, str) else None
-            if parsed is not None and parsed[0] in APP_ONLY and not attachment_ids:
-                await _run_command_and_reply(session_id, parsed[0], parsed[1])
-                await _send({"type": "promptAck", "sessionId": session_id,
-                             "stage": "delivered"})
-                return
             # "Interrupt and post": stop the in-flight turn and run this
             # prompt next instead of queueing it behind the turn. Only
             # forwarded when set so the plain contract is untouched.
             interrupt = msg.get("interrupt") is True
-            extra: dict[str, bool | dict] = {"interrupt": True} if interrupt else {}
+            extra: dict[str, bool | dict | str] = {"interrupt": True} if interrupt else {}
+            # The APP_ONLY gate (D-16a S1): a person at the composer may run `/plan`,
+            # `/fast` … by typing them, attributed to this socket's identity. A `ccas2:`
+            # token socket (via="cli": `viberpit ask`, an agent) or an unattested local
+            # process is not a person — human_sender, the same check REST uses. Only
+            # asked for an app command, so every ordinary prompt's call is unchanged.
+            if app_only_command(text) is not None and human_sender(websocket):
+                extra["command_origin"] = COMMAND_ORIGIN_COMPOSER
+                extra["identity"] = identity
             # The context chip (spec §4.5) and the per-identity prompt rate
             # limit (spec §4.6) both apply only to an assistant-kind session,
             # so both need the record's kind up front — a coding session
@@ -2070,6 +2128,20 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                       session_id=session_id, status=status,
                       ensure_ms=round((ensured - started) * 1000, 1),
                       send_ms=round((time.monotonic() - ensured) * 1000, 1))
+            if status == APP_COMMAND:
+                # An app command typed as a prompt (D-16a: `/fast`, `/effort`,
+                # `/output-style`, `/plan`): the orchestrator ran it instead of
+                # sending it to the CLI, and its commandResult rides the live stream.
+                await _send({"type": "promptAck", "sessionId": session_id,
+                             "stage": "delivered"})
+            elif status == APP_COMMAND_REFUSED:
+                # Refused, not delivered (D-16a): nothing ran and nothing was sent — the
+                # notice saying why rides the live stream. "failed" is terminal, so the
+                # browser keeps the text in its bubble and never auto-retries it (a
+                # promptRejected would re-send the same refused text on a backoff).
+                log.info("ws.prompt app command refused session=%s", session_id)
+                await _send({"type": "promptAck", "sessionId": session_id,
+                             "stage": "failed"})
             if status == "sent":
                 # The driver has the text: a turn starts next, or it queues
                 # behind a live one (the driver emits its own queue/status
@@ -2200,7 +2272,23 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             elif msg_type == "command":
                 name = msg.get("name", "")
                 args = msg.get("args", "")
-                if not await _run_command_and_reply(session_id, name, args):
+                # The APP_ONLY sender gate (D-16a S1), the same one the prompt path uses:
+                # `/plan`, `/fast`, `/effort`, `/output-style` change permissions, billing
+                # or model settings, so a non-person socket (a `ccas2:` agent, an
+                # unattested local process) is refused — and so is any of them bound for
+                # a daemon older than the gate, which would hand it to the CLI. Every
+                # other command is unchanged.
+                refused = (app_command_refusal(
+                    name, human=human_sender(websocket),
+                    daemon_gate=await session_actions.daemon_has_app_command_gate(
+                        orchestrator, session_id))
+                    if str(name).lstrip("/") in APP_ONLY else None)
+                if refused is not None:
+                    log.info("ws.command app command refused session=%s name=%s",
+                             session_id, name)
+                    await _send(redact_event({"type": "commandResult",
+                                              "sessionId": session_id, **refused}))
+                elif not await _run_command_and_reply(session_id, name, args):
                     await _send(redact_event({"type": "commandResult", "sessionId": session_id,
                                  "name": name, "ok": False, "error": "unknown command"}))
 

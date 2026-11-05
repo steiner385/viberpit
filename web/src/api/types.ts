@@ -403,6 +403,13 @@ export interface Session {
   fastModeState?: 'on' | 'off' | 'cooldown' | null
   /** Why the CLI disabled fast mode (`out_of_credits`, `org_level_disabled` …), or null. */
   fastModeDisabledReason?: string | null
+  /** Output style (D-16a): the effective name — the CLI's live reading, else the stored
+   *  choice — or null while not known yet. `POST /sessions/{id}/output-style {style}`. */
+  outputStyle?: string | null
+  /** The styles this session's CLI lists, in its order (built-ins, user, project and
+   *  `plugin:Name`). `[]` = none to offer (Codex, the assistant drawer, not reported
+   *  yet): the `+` menu's Style submenu is hidden. */
+  availableOutputStyles?: string[]
   /** The effort levels the session's current model accepts (the CLI's
    *  `supportedEffortLevels`). `[]` = the model has none (picker hidden); null/absent =
    *  not reported yet. */
@@ -1028,6 +1035,24 @@ export interface UserMemory {
   text: string
   etag: string
   exists: boolean
+}
+
+/** One style `GET /settings/output-styles` offers as the Settings default (D-16a): the
+ *  five built-ins first, then the shared `~/.claude/output-styles/*.md` files. Plugin
+ *  styles are never listed here — a session can still pick one from its own list. */
+export interface OutputStyleInfo {
+  name: string
+  source: 'builtin' | 'user'
+  description: string | null
+  /** A user style's file name (e.g. `terse.md`), for the read-only viewer. */
+  path?: string
+}
+
+/** A user style's file, `GET /settings/output-styles/{path}` (read-only, D-16a). */
+export interface OutputStyleFile {
+  name: string
+  path: string
+  content: string
 }
 
 /** `PUT /settings/memory`: the new etag, and a note on how long other hosts take to see it. */

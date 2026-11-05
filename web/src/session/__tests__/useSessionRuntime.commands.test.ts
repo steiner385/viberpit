@@ -120,6 +120,27 @@ describe('runtime commands', () => {
     expect(result.current.commandResult).toMatchObject({ render: 'help' })
   })
 
+  it("a refused app command shows the server's own notice as-is (D-16a)", () => {
+    const { result } = renderHook(() => useSessionRuntime('s1'), { wrapper })
+    act(() => emit('commandResult', {
+      type: 'commandResult', sessionId: 's1', name: 'plan', ok: false, render: 'notice',
+      error: 'app command refused', data: { text: 'Slash commands from automation are not run: /plan' },
+    }))
+    expect(result.current.state.turns.at(-1)!.blocks[0])
+      .toMatchObject({ kind: 'notice', text: 'Slash commands from automation are not run: /plan' })
+    // A failure with no notice of its own keeps the generic wording.
+    act(() => emit('commandResult', { type: 'commandResult', sessionId: 's1', name: 'x', ok: false, error: 'command failed' }))
+    expect(result.current.state.turns.at(-1)!.blocks[0]).toMatchObject({ kind: 'notice', text: 'Command failed: command failed' })
+  })
+
+  it('a failed prompt ack hands the prompt back for the composer (D-16a)', () => {
+    const { result } = renderHook(() => useSessionRuntime('s1'), { wrapper })
+    act(() => result.current.onPrompt('/plan on\nand then this', []))
+    expect(result.current.state.returnedPrompt).toBeNull()
+    act(() => emit('promptAck', { type: 'promptAck', sessionId: 's1', stage: 'failed' }))
+    expect(result.current.state.returnedPrompt).toEqual({ text: '/plan on\nand then this' })
+  })
+
   it('mcp result opens the MCP panel with its servers', () => {
     const { result } = renderHook(() => useSessionRuntime('s1'), { wrapper })
     const data = { servers: [{ name: 'aws', status: 'needs-auth', error: null, toolCount: null, scope: 'user', auth: 'oauth' }] }

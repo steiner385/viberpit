@@ -414,6 +414,9 @@ export interface AppSettings {
   // product automation policy.
   // null = server env default (VIBERPIT_ASSISTANT_OPERATOR_TOOLS), which is OFF.
   assistantOperatorTools?: boolean | null
+  /** The output style new sessions start with (D-16a); null = the CLI's `default`. Must
+   *  be a built-in or a shared user style (`GET /settings/output-styles`), else 422. */
+  defaultOutputStyle?: string | null
   /** The modes PUT accepts, in display order. The client's PERMISSION_MODES must equal this set. */
   acceptedPermissionModes: string[]
   effectiveDefaults: EffectiveDefaults
@@ -621,6 +624,22 @@ export function useSetFastMode() {
   return useMutation<{ enabled: boolean }, ApiRequestError, { id: string; enabled: boolean }>({
     mutationFn: ({ id, enabled }) => api.post<{ enabled: boolean }>(`/sessions/${id}/fast`, { enabled }),
     onSuccess: ({ enabled }, { id }) => patchSessionInCache(qc, id, { fastMode: enabled }),
+  })
+}
+
+/** POST /sessions/{id}/output-style (D-16a): the `+` menu's Style submenu. `null`
+ *  resets to the Settings default. A 409 (`OUTPUT_STYLE_UNKNOWN`,
+ *  `OUTPUT_STYLE_UNAVAILABLE`, a settings code, `daemon_outdated`) reaches the global
+ *  toast. The answer echoes the stored choice, so a reset re-reads the effective name. */
+export function useSetOutputStyle() {
+  const qc = useQueryClient()
+  return useMutation<{ style: string | null }, ApiRequestError, { id: string; style: string | null }>({
+    mutationFn: ({ id, style }) =>
+      api.post<{ style: string | null }>(`/sessions/${encodeURIComponent(id)}/output-style`, { style }),
+    onSuccess: ({ style }, { id }) => {
+      if (style !== null) patchSessionInCache(qc, id, { outputStyle: style })
+      else qc.invalidateQueries({ queryKey: QK.sessions })
+    },
   })
 }
 

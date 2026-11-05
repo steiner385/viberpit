@@ -65,9 +65,80 @@ CODING_ONLY = frozenset({"btw"})
 # would change the running process behind the session's persisted record (D-14) — and
 # fast mode bills usage credits at a higher rate — so both only ever change through
 # ViberPit's gated, recorded path.
-APP_ONLY = frozenset({"fast", "effort"})
+#
+# `/output-style` (D-16a) is the CLI's style switch, and its own copy writes
+# `.claude/settings.local.json` INTO the session worktree; `/plan` is not in the SDK list
+# today, but a future headless `/plan` must not bypass the mode picker's overlay either.
+APP_ONLY = frozenset({"fast", "effort", "output-style", "plan"})
+#: ``SessionOrchestrator.send_prompt``'s answer when the prompt's first line was an
+#: ``APP_ONLY`` command: it ran as that app command and nothing reached the engine.
+#: Every prompt path (ws, ``POST /prompt``, automations, a spawn's initial prompt)
+#: sends through that one choke point, so none can forward an APP_ONLY name.
+APP_COMMAND = "app_command"
+#: ``send_prompt``'s answer when the prompt's first line was an ``APP_ONLY`` command
+#: that was NOT run: a non-human sender (automation, autopilot, the Assistant, a
+#: session's own tool), or text the command cannot take whole (more lines, or
+#: attachments). Nothing ran and nothing reached the engine; it is never a delivery.
+APP_COMMAND_REFUSED = "app_command_refused"
+
+def app_command_refusal(name: str, *, human: bool,
+                        daemon_gate: bool = True) -> dict | None:
+    """THE APP_ONLY sender gate (D-16a S1), shared by the prompt path
+    (``SessionOrchestrator.send_prompt``), the WS ``command`` frame and the edge's
+    rolling-upgrade guard: the ``ok: false`` commandResult for an ``APP_ONLY`` command a
+    non-person sent, or one bound for a daemon without the gate (*daemon_gate* False —
+    it would hand the text to the CLI), else None (allowed — including every command
+    outside ``APP_ONLY``, which keeps its own rules)."""
+    bare = str(name).lstrip("/")
+    if bare not in APP_ONLY:
+        return None
+    if not daemon_gate:
+        return {"name": bare, "ok": False, "render": "notice",
+                "error": "app command refused",
+                "data": {"text": f"/{bare} wasn't run and nothing was sent: this "
+                                 f"session's host is still on an older ViberPit. Try "
+                                 f"again once it has updated."}}
+    if human:
+        return None
+    return {"name": bare, "ok": False, "render": "notice",
+            "error": "app command refused",
+            "data": {"text": f"Slash commands from automation are not run: /{bare}"}}
+
+
+#: Who is sending a prompt, for the APP_ONLY gate (D-16a, security review S1). Only a
+#: person may run `/plan off` (a privilege change) or `/fast on` (billing) by typing it:
+#: the WS composer, ``POST /sessions/{id}/prompt`` from a Tailscale user, and the
+#: initial prompt of a session a user created. Every other sender — and a call that
+#: names none — is refused (fail closed).
+COMMAND_ORIGIN_COMPOSER = "composer"
+COMMAND_ORIGIN_REST = "rest"
+COMMAND_ORIGIN_CREATE = "create"
+HUMAN_COMMAND_ORIGINS = frozenset({COMMAND_ORIGIN_COMPOSER, COMMAND_ORIGIN_REST,
+                                   COMMAND_ORIGIN_CREATE})
+
+
+@dataclass(frozen=True)
+class AppOnlyPrompt:
+    """A prompt whose first line is an ``APP_ONLY`` command. ``extra_lines`` is True
+    when more text follows it — decided by ``parse_command_line`` itself, the ONE
+    "multi-line is prose" rule, so the gate and the parser cannot disagree."""
+    name: str
+    args: str
+    extra_lines: bool
+
+
+def app_only_command(text: object) -> AppOnlyPrompt | None:
+    """The ``APP_ONLY`` command at the head of *text*, or None. Leading and trailing
+    blank lines are ignored; any other line makes ``extra_lines`` True."""
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    head = parse_command_line(stripped.split("\n", 1)[0].strip())
+    if head is None or head[0] not in APP_ONLY:
+        return None
+    return AppOnlyPrompt(head[0], head[1], parse_command_line(stripped) is None)
 # Commands executed via a dedicated SDK method (not raw passthrough).
-CONTROL = {"model", "clear", "effort"}
+CONTROL = {"model", "clear", "effort", "output-style", "plan"}
 # Interactive-only / auth / config commands that make no sense in this web UI.
 # Tunable; see docs/superpowers/spikes/2026-06-22-slash-commands-verdicts.md.
 EXCLUDED = {
@@ -206,6 +277,22 @@ APP_COMMANDS: tuple[AppCommand, ...] = (
         Command(name="effort", description="Set this session's effort level (default clears it)",
                 argument_hint="<level|default>", kind="control", source=APP),
         gate=flag_settings_supported,
+    ),
+    # `/output-style [style]` (D-16a) sets the session's output style through the same
+    # `set_output_style` action as `POST /sessions/{id}/output-style` and the + menu's
+    # Style submenu; bare, it lists the styles as a notice. Claude with live flag
+    # settings only (the orchestrator also refuses it for the Assistant drawer).
+    AppCommand(
+        Command(name="output-style", description="Set this session's output style",
+                argument_hint="[style]", kind="control", source=APP),
+        gate=flag_settings_supported,
+    ),
+    # `/plan [on|off]` (D-16a) toggles plan mode through `set_permission_mode`, the
+    # ModePicker's path (`default` returns to the pre-plan mode). Every engine has it.
+    AppCommand(
+        Command(name="plan", description="Turn plan mode on or off (bare: toggle)",
+                argument_hint="[on|off]", kind="control", source=APP),
+        gate=_always,
     ),
 )
 

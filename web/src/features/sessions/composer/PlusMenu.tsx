@@ -22,6 +22,8 @@ import { Menu, type MenuItem } from '@/ui/Menu'
 export interface PlusMenuEntry {
   id: string
   label: string
+  /** Hover tooltip on the entry (`MenuItem.title`). */
+  title?: string
   /** Runs once the menu has closed. */
   run?: () => void
   /** Or opens a second menu of these items in place of the first. */
@@ -70,7 +72,7 @@ export function PlusMenu({ entries, label = 'Add' }: { entries: readonly PlusMen
         anchorRef={anchorRef}
         label={label}
         align="end"
-        items={entries.map((e) => ({ id: e.id, label: e.submenu ? `${e.label} ›` : e.label }))}
+        items={entries.map((e) => ({ id: e.id, label: e.submenu ? `${e.label} ›` : e.label, title: e.title }))}
         onSelect={(id) => {
           const entry = entries.find((e) => e.id === id)
           if (entry?.submenu) setOpen(id)

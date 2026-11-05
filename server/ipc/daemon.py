@@ -477,7 +477,9 @@ def create_daemon_app() -> FastAPI:
             configured_platforms(get_settings().host_platforms)))
         return {"sha": running_git_sha(), "checkoutSha": checkout_git_sha(),
                 "protocol": proto.PROTOCOL_VERSION, ENGINES_INFO_KEY: engines,
-                PLATFORMS_INFO_KEY: platforms, "epoch": _app_epoch, **_capacity_snapshot(active)}
+                PLATFORMS_INFO_KEY: platforms,
+                proto.CAPABILITIES_INFO_KEY: list(proto.DAEMON_CAPABILITIES),
+                "epoch": _app_epoch, **_capacity_snapshot(active)}
 
     @app.get("/healthz")
     async def healthz() -> dict:

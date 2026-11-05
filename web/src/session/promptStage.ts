@@ -26,9 +26,10 @@ export type PromptStage =
   | 'delivered'
   /** No ack inside PROMPT_ACK_TIMEOUT_MS. We cannot say it landed. */
   | 'stalled'
-  /** The edge received it but could not wake the session — the prompt was NOT
-   *  delivered and will not be retried. Terminal, like `stalled`; the `error`
-   *  frame that precedes it carries the reason. */
+  /** The edge received it but did not deliver it and will not retry: the session
+   *  could not be woken (the `error` frame that precedes it carries the reason), or
+   *  the server refused an app command (D-16a: its notice says why). Terminal, like
+   *  `stalled`; the composer gets the text back. */
   | 'failed'
 
 /**
@@ -62,7 +63,7 @@ export const STAGE_LABEL: Record<PromptStage, string> = {
   resuming: 'Received — waking session…',
   delivered: 'Delivered — starting…',
   stalled: 'No response from the server',
-  failed: 'Not delivered — the session could not be woken',
+  failed: 'Not delivered',
 }
 
 /** Compact form for the session-list pill, where there is no room for a sentence. */

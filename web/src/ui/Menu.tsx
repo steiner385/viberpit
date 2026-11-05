@@ -12,6 +12,8 @@ export interface MenuItem {
   icon?: React.ReactNode
   disabled?: boolean
   selected?: boolean
+  /** Hover tooltip (the `title` attribute) — a note on what choosing it does. */
+  title?: string
   /** Id of the `MenuProps.groups` entry this item belongs to. */
   group?: string
 }
@@ -232,6 +234,7 @@ export function Menu({ open, onClose, anchorRef, items, onSelect, label, align =
         tabIndex={i === active ? 0 : -1}
         aria-disabled={it.disabled || undefined}
         aria-checked={role === 'menuitemradio' ? it.selected : undefined}
+        title={it.title}
         onClick={() => pick(i)}
         onMouseEnter={() => !it.disabled && setActive(i)}
         className={cn(

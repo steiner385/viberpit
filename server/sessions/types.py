@@ -228,6 +228,15 @@ class SessionRecord:
     # it; None until one has. ``fast_mode`` stays the stored choice.
     fast_mode_state: str | None = None
     fast_mode_disabled_reason: str | None = None
+    # Output style (D-16a): the session's choice (persisted, re-applied at every spawn;
+    # None = the app default), the styles the CLI's last ``initialize`` listed
+    # (``flag_settings.output_styles``; None until a Claude driver has started), and the
+    # style the CLI is running now — its ``initialize.output_style``, then each live
+    # change. The list and the live name are in memory only; all three ride to_dict so
+    # the edge serves ``availableOutputStyles`` / ``outputStyle``.
+    output_style: str | None = None
+    output_styles: list[str] | None = None
+    output_style_live: str | None = None
     # The CLI's last ``initialize`` model rows (``flag_settings.model_options``), so a
     # detached session can still check an effort against its model's levels. Daemon-
     # local ONLY — not in to_dict, never a column: ``set_model_for_session`` runs on the
@@ -382,6 +391,9 @@ class SessionRecord:
             "fastModeModels": self.fast_mode_models,
             "fastModeState": self.fast_mode_state,
             "fastModeDisabledReason": self.fast_mode_disabled_reason,
+            "outputStyle": self.output_style,
+            "outputStyles": self.output_styles,
+            "outputStyleLive": self.output_style_live,
             "supportedEffortLevels": self.effort_levels_now(),
             # Carried over RPC so a fleet mirror of an assistant session is still
             # recognised by is_assistant() on the edge (list filtering, sweeps).
@@ -457,6 +469,9 @@ class SessionRecord:
             fast_mode_models=d.get("fastModeModels"),
             fast_mode_state=d.get("fastModeState"),
             fast_mode_disabled_reason=d.get("fastModeDisabledReason"),
+            output_style=d.get("outputStyle"),
+            output_styles=d.get("outputStyles"),
+            output_style_live=d.get("outputStyleLive"),
             supported_effort_levels=d.get("supportedEffortLevels"),
             kind=d.get("kind"),
             owner_identity=d.get("ownerIdentity"),

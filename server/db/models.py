@@ -332,6 +332,15 @@ class Session(Base):
     # cleared when the session moves to a model without fast mode. Nullable so
     # init_db's reconcile adds it on both dialects.
     fast_mode: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    # Output style (D-16a): the session's chosen CLI output style, applied at spawn
+    # through the ``--settings`` JSON and live through ``apply_flag_settings``. NULL =
+    # use ``AppSettings.default_output_style``. Nullable so reconcile adds it.
+    output_style: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # The person who typed an app command (`/plan`, `/fast` …) as this session's initial
+    # prompt (D-16a): the proof a rehydrate needs to re-park it, and who it runs as. NULL
+    # = no such command, or a non-human creator (it is never run). Nullable for reconcile.
+    initial_command_identity: Mapped[str | None] = mapped_column(String, nullable=True,
+                                                                 default=None)
     # Session kind. "assistant" = the AI-drawer meta-assistant (spec
     # docs/superpowers/specs/2026-09-04-ai-assistant-design.md §4.1): hidden from the
     # session list, capacity-exempt, tool-restricted. NULL = a normal coding session.
@@ -554,6 +563,9 @@ class AppSettings(Base):
     # Operator-tier assistant tools (v2 spec §5/§7, decision B1). NULL = fall through to
     # VIBERPIT_ASSISTANT_OPERATOR_TOOLS, which defaults false. Nullable for backfill.
     assistant_operator_tools: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    # The output style a coding session spawns with when it has none of its own (D-16a).
+    # NULL = the CLI's own ``default``. Nullable for backfill.
+    default_output_style: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class SessionQueue(Base):

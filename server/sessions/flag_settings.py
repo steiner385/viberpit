@@ -37,8 +37,15 @@ SETTINGS_INVALID = "SETTINGS_INVALID"
 SETTINGS_FAILED = "SETTINGS_FAILED"
 #: Fast mode was asked for on an engine or model that does not support it.
 FAST_UNAVAILABLE = "FAST_UNAVAILABLE"
+#: An output style (D-16a) the session's CLI did not list. The CLI accepts ANY name
+#: silently, so ViberPit refuses it before anything is sent.
+OUTPUT_STYLE_UNKNOWN = "OUTPUT_STYLE_UNKNOWN"
+#: Output styles were asked for on an engine without them (Codex), a kind that never
+#: takes one (the Assistant drawer), or a session whose CLI has not listed them yet.
+OUTPUT_STYLE_UNAVAILABLE = "OUTPUT_STYLE_UNAVAILABLE"
 SETTINGS_CODES = frozenset({SETTINGS_UNAVAILABLE, SETTINGS_REFUSED, SETTINGS_INVALID,
-                            SETTINGS_FAILED, FAST_UNAVAILABLE})
+                            SETTINGS_FAILED, FAST_UNAVAILABLE, OUTPUT_STYLE_UNKNOWN,
+                            OUTPUT_STYLE_UNAVAILABLE})
 
 #: Seconds to wait for one ``apply_flag_settings`` reply. It is a local settings write,
 #: answered in milliseconds; the SDK's 60 s default would hold a route for a minute.
@@ -47,6 +54,16 @@ SETTINGS_CONTROL_TIMEOUT_S = 15.0
 #: The flag-layer keys ViberPit writes. Nothing else is ever sent.
 FAST_MODE_KEY = "fastMode"
 EFFORT_KEY = "effortLevel"
+OUTPUT_STYLE_KEY = "outputStyle"
+
+#: The CLI's own style name for "no style" (D-16 spike §3.1). A spawn never passes it.
+DEFAULT_OUTPUT_STYLE = "default"
+#: The CLI's built-in styles, in its ``initialize.available_output_styles`` order (D-16
+#: spike §3.1, probe 1). The Settings default is chosen from these plus the shared user
+#: dir, since the edge has no live session to ask; a live session's own list is the
+#: authority for that session.
+BUILTIN_OUTPUT_STYLES: tuple[str, ...] = (
+    DEFAULT_OUTPUT_STYLE, "Proactive", "Concise", "Explanatory", "Learning")
 
 
 class SettingsError(Exception):
@@ -113,6 +130,57 @@ def live_fast_mode(source: Mapping[str, Any] | None) -> tuple[str | None, str | 
         return None, None
     reason = source.get("fast_mode_disabled_reason")
     return state, (reason if isinstance(reason, str) and reason else None)
+
+
+def output_styles(server_info: Mapping[str, Any] | None) -> list[str] | None:
+    """The style names the CLI's ``initialize`` lists (``available_output_styles``: the
+    built-ins, user and project styles, ``<plugin>:<name>`` plugin styles), or None when
+    the reply does not carry a list. The per-session cache ``SessionRecord.output_styles``
+    holds this, and every name ViberPit sends is checked against it."""
+    styles = server_info.get("available_output_styles") if isinstance(
+        server_info, Mapping) else None
+    if not isinstance(styles, list):
+        return None
+    return [s for s in styles if isinstance(s, str) and s]
+
+
+def live_output_style(server_info: Mapping[str, Any] | None) -> str | None:
+    """The style the CLI started with (``initialize.output_style``), or None."""
+    style = server_info.get("output_style") if isinstance(server_info, Mapping) else None
+    return style if isinstance(style, str) and style else None
+
+
+def takes_output_style(record: Any) -> bool:
+    """Can *record*'s session carry an output style at all: a Claude coding session with
+    the ``VIBERPIT_FLAG_SETTINGS_ENABLED`` kill switch on. Codex has no styles, and the
+    Assistant drawer's prompt is ViberPit's own. Shared by the orchestrator gate (which
+    also checks the engine capability) and the session payload."""
+    from server.sessions.engine import AgentEngine, flag_settings_enabled
+    from server.sessions.types import is_assistant
+    return (getattr(record, "engine", None) is AgentEngine.CLAUDE_CODE
+            and not is_assistant(record) and flag_settings_enabled())
+
+
+def available_output_styles(record: Any) -> list[str]:
+    """The styles *record*'s session can switch to: its CLI's cached list when it takes
+    styles at all (``takes_output_style``), else []. [] also when no list is known."""
+    if not takes_output_style(record):
+        return []
+    return list(getattr(record, "output_styles", None) or [])
+
+
+def effective_output_style(record: Any) -> str | None:
+    """The style *record*'s session runs, as the payload's ``outputStyle`` serves it:
+    the CLI's live reading, else the stored choice — ``default`` when the CLI's list is
+    known and lacks it — else None (not known yet)."""
+    live = getattr(record, "output_style_live", None)
+    if live:
+        return live
+    stored = getattr(record, "output_style", None)
+    if not stored:
+        return None
+    known = getattr(record, "output_styles", None)
+    return stored if known is None or stored in known else DEFAULT_OUTPUT_STYLE
 
 
 def supports_fast_mode(fast_models: Iterable[str] | None, model: str | None) -> bool:

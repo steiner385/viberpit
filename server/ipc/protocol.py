@@ -8,6 +8,17 @@ SUBSCRIBE = "subscribe"
 UNSUBSCRIBE = "unsubscribe"
 GAP = "gap"
 
+#: The ``/info`` key listing what this daemon can do that an older one cannot — additive
+#: behaviour the edge must not assume during a rolling upgrade. Absent on a daemon that
+#: predates the key: the edge reads that as "none".
+CAPABILITIES_INFO_KEY = "capabilities"
+#: D-16a: the daemon's ``send_prompt`` intercepts ``APP_ONLY`` commands (``/fast``,
+#: ``/effort``, ``/output-style``, ``/plan``) and runs them only for a human sender. A
+#: daemon without it hands the text to the CLI, so the edge refuses those itself.
+CAP_APP_COMMAND_GATE = "app_command_gate"
+#: Everything THIS build's daemon advertises.
+DAEMON_CAPABILITIES: tuple[str, ...] = (CAP_APP_COMMAND_GATE,)
+
 
 def rpc_response_ok(req_id: str, result: dict) -> dict:
     return {"id": req_id, "result": result}

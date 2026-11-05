@@ -277,6 +277,55 @@ def read_command(path: str, plugin: str | None = None) -> dict[str, Any] | None:
     return {"path": path, "content": file.read_text(), "readonly": plugin is not None}
 
 
+def _output_styles_dir() -> Path:
+    """The shared user output-styles dir (D-16a): ``~/.claude/output-styles``, linked
+    into every account (``SHARE_ALLOWLIST``), which the CLI reads as
+    ``<CLAUDE_CONFIG_DIR>/output-styles/*.md``."""
+    return paths.shared_base() / "output-styles"
+
+
+def _user_output_style(md: Path) -> dict[str, Any]:
+    try:
+        meta, _err = parse_frontmatter(md.read_text())
+    except OSError:
+        meta = {}
+    name = meta.get("name")
+    desc = meta.get("description")
+    return {
+        # The CLI names a style by its frontmatter `name`, else the filename stem.
+        "name": name if isinstance(name, str) and name.strip() else md.stem,
+        "source": "user",
+        "description": desc if isinstance(desc, str) else None,
+        "path": md.name,
+    }
+
+
+def list_output_styles() -> list[dict[str, Any]]:
+    """The styles the Settings default may name (D-16a): the CLI's five built-ins, then
+    the ``.md`` files in the shared user dir sorted by name. Plugin styles
+    (``<plugin>:<name>``) are only ever picked per session, from its CLI's own list."""
+    from server.sessions.flag_settings import BUILTIN_OUTPUT_STYLES
+    out: list[dict[str, Any]] = [
+        {"name": n, "source": "builtin", "description": None} for n in BUILTIN_OUTPUT_STYLES]
+    root = _output_styles_dir()
+    if root.is_dir():
+        users = [_user_output_style(md) for md in root.glob("*.md") if md.is_file()]
+        out.extend(sorted(users, key=lambda s: (s["name"].lower(), s["path"])))
+    return out
+
+
+def read_output_style(path: str) -> dict[str, Any] | None:
+    """One shared user style file, read-only: ``{name, path, content}``, or None when
+    *path* is not a ``.md`` file directly inside the shared dir."""
+    if "/" in path or not path.endswith(".md"):
+        return None
+    file = resolve_under(_output_styles_dir(), path)
+    if file is None or not file.is_file():
+        return None
+    style = _user_output_style(file)
+    return {"name": style["name"], "path": file.name, "content": file.read_text()}
+
+
 def list_mcp_servers(status_rows: list[dict] | None = None) -> dict[str, Any]:
     """Configured MCP servers, each with its live ``status`` rows (mcp_server_status table)."""
     by_short: dict[str, list[dict]] = {}

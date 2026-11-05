@@ -114,3 +114,82 @@ describe('transcriptReducer — pending prompt stage transitions', () => {
     expect(s.turns.map((t) => t.pending)).toEqual(['sent', 'buffered'])
   })
 })
+
+/**
+ * D-16a: a `failed` ack is terminal — the server refused an app command sent with more
+ * text or attachments, or could not wake the session — so the prompt goes back to the
+ * composer. No other stage returns it.
+ */
+describe('transcriptReducer — a failed prompt is handed back', () => {
+  it('a failed ack records the failed bubble\'s text as returnedPrompt', () => {
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: '/plan on\nmore' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'failed' })
+    expect(s.turns[0].pending).toBe('failed')
+    expect(s.returnedPrompt).toEqual({ text: '/plan on\nmore' })
+  })
+
+  it('the ack goes to the oldest pending bubble, and its text is the one returned', () => {
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'first' })
+    s = transcriptReducer(s, { type: '_trackSentPrompt', text: 'second' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'failed' })
+    expect(s.returnedPrompt).toEqual({ text: 'first' })
+  })
+
+  it('a delivered or received ack returns nothing', () => {
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'hi' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'received' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'delivered' })
+    expect(s.returnedPrompt).toBeNull()
+  })
+
+  it('each return is a fresh object, so the same text twice refills twice', () => {
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: '/fast on\nx' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'failed' })
+    const first = s.returnedPrompt
+    s = transcriptReducer(s, { type: '_trackSentPrompt', text: '/fast on\nx' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'failed' })
+    expect(s.returnedPrompt).toEqual(first)
+    expect(s.returnedPrompt).not.toBe(first)
+  })
+})
+
+/**
+ * D-16a review: a failed prompt that is re-sent. The failed bubble is not on its
+ * way, so the echo of the re-send must adopt the RE-SEND's bubble, and a reconnect
+ * must not resurrect the failed one as a phantom duplicate.
+ */
+describe('transcriptReducer — re-sending a failed prompt', () => {
+  function failedThenResent() {
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'hello' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'failed' })
+    s = transcriptReducer(s, { type: '_trackSentPrompt', text: 'hello' })
+    return transcriptReducer(s, { type: '_promptStage', stage: 'delivered' })
+  }
+
+  it('a failed prompt leaves the re-assert buffer', () => {
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'hello' })
+    s = transcriptReducer(s, { type: '_promptStage', stage: 'failed' })
+    expect(s.pendingSent).toEqual([])
+  })
+
+  it('the live echo adopts the re-send, and the failed bubble stays failed', () => {
+    let s = failedThenResent()
+    expect(s.turns.map((t) => t.pending)).toEqual(['failed', 'delivered'])
+    s = transcriptReducer({ ...s, replaying: false }, { type: 'user', turnId: 'real-1', text: 'hello' })
+    expect(s.turns).toHaveLength(2)
+    expect(s.turns[0]).toMatchObject({ id: 'pending:0', pending: 'failed' })
+    expect(s.turns[1].id).toBe('real-1')
+    expect(s.turns[1].pending).toBeUndefined()
+  })
+
+  it('a reconnect replay plus replayComplete shows the delivered prompt once, no phantom', () => {
+    let s = failedThenResent()
+    s = transcriptReducer(s, { type: 'replayReset' })
+    s = transcriptReducer(s, { type: 'user', turnId: 'real-1', text: 'hello' })
+    s = transcriptReducer(s, { type: 'replayComplete' })
+    expect(s.pendingSent).toEqual([])
+    const hellos = s.turns.filter((t) => t.role === 'user'
+      && t.blocks.some((b) => b.kind === 'text' && b.text === 'hello'))
+    expect(hellos.map((t) => t.id)).toEqual(['real-1'])
+  })
+})

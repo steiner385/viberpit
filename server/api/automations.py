@@ -471,7 +471,15 @@ async def attach_inbox_cluster(automation_id: str, body: AttachClusterBody, requ
         raise HTTPException(status_code=409, detail="that session is not live — pick another")
     evidence = await _inbox(request, automation_id, "evidence", {"ids": body.ids})
     from server.api.sessions import resume_and_send_prompt
+    from server.sessions.commands.catalog import APP_COMMAND, APP_COMMAND_REFUSED
     _, delivery = await resume_and_send_prompt(orch, session_id, str(evidence["text"]), identity)
+    if delivery in (APP_COMMAND, APP_COMMAND_REFUSED):
+        # The evidence text began with an app command (`/plan`, `/fast` …). Automation
+        # is not a person, so send_prompt refuses it (D-16a S1) — and either way it was
+        # not handed to the session as the reports.
+        return {"status": "failed", "level": "error",
+                "message": "The reports start with a slash command, which automation "
+                           "does not run — nothing changed"}
     if delivery != "sent":
         return {"status": "failed", "level": "error",
                 "message": f"The session did not take the reports ({delivery}) — nothing changed"}

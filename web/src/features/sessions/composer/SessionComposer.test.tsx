@@ -3,13 +3,15 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SessionComposer } from './SessionComposer'
+import { QK } from '@/api/hooks'
 import type { MentionSource } from './MentionMenu'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 
 // SessionComposer now owns the on-demand suggestion mutation (useGenerateSuggestions),
 // so it needs a QueryClient in context.
-function renderComposer(rt: SessionRuntime, mentionSource?: MentionSource[], hideSessionControls?: boolean) {
+function renderComposer(rt: SessionRuntime, mentionSource?: MentionSource[], hideSessionControls?: boolean, sessions?: unknown[]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  if (sessions) qc.setQueryData(QK.sessions, sessions)
   return render(
     <QueryClientProvider client={qc}>
       <SessionComposer rt={rt} mentionSource={mentionSource} hideSessionControls={hideSessionControls} />
@@ -108,5 +110,33 @@ describe('SessionComposer prompt row (D-1)', () => {
     renderComposer(fakeRuntime(), undefined, true)
     expect(screen.queryByTestId('prompt-row')).toBeNull()
     expect(screen.queryByRole('button', { name: /^Mode:/ })).toBeNull()
+  })
+})
+
+describe('SessionComposer output style wiring (D-16a)', () => {
+  const STYLED = [{ id: 's1', engine: 'claude_code', outputStyle: 'default', availableOutputStyles: ['default', 'Learning'] }]
+
+  it('offers Style › in the session composer', async () => {
+    renderComposer(fakeRuntime(), undefined, false, STYLED)
+    await userEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(screen.getByRole('menuitem', { name: /Style ›/ })).toBeInTheDocument()
+  })
+
+  it('never in the assistant drawer (hideSessionControls)', async () => {
+    renderComposer(fakeRuntime(), undefined, true, STYLED)
+    await userEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(screen.queryByRole('menuitem', { name: /Style/ })).toBeNull()
+  })
+
+  it("refills the box from the runtime's returned prompt", () => {
+    const rt = fakeRuntime()
+    const { rerender } = renderComposer(rt)
+    const next = { ...rt, state: { ...rt.state, returnedPrompt: { text: '/plan on\nmore' } } } as unknown as SessionRuntime
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <SessionComposer rt={next} />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByLabelText('Message')).toHaveValue('/plan on\nmore')
   })
 })

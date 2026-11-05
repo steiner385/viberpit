@@ -35,6 +35,8 @@ async def test_x11_open_browser_proxies():
 
 @pytest.mark.asyncio
 async def test_create_session_retries_without_display_kwargs_on_old_daemon(caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="server.sessions.remote")
     from server.ipc.client import DaemonError
     class _Old:
         def __init__(self): self.calls = []
@@ -57,6 +59,8 @@ async def test_retry_reconstructs_all_accounts_busy_from_old_daemon(caplog):
     """The retried call (post-strip) goes through the SAME AllAccountsBusy/
     CloneError/GhError reconstruction as the original — a genuine error from
     an old daemon's retry response must not propagate as a raw DaemonError."""
+    import logging
+    caplog.set_level(logging.INFO, logger="server.sessions.remote")
     from datetime import datetime, timezone
     from viberpit.selector import AllAccountsBusy
     from server.ipc.client import DaemonError

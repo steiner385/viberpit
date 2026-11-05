@@ -119,6 +119,9 @@ class InProcessOrchestratorAdapter:
     # catch-up cursor with. None here means ws.py's epoch gate never matches → full replay,
     # which is moot anyway since ring_covers is a constant False (#497).
     def daemon_epoch(self): return None
+    # In-process, the orchestrator IS the daemon and its send_prompt always intercepts
+    # APP_ONLY commands (D-16a); only a remote daemon can predate that.
+    async def has_app_command_gate(self, session_id): return True
     def daemon_sha(self): return None
     # In-process mode makes no HTTP calls to a daemon, so there is no RPC pool that could
     # wedge. None (not an empty snapshot) so the health surface says "not applicable"
@@ -209,6 +212,7 @@ class InProcessOrchestratorAdapter:
     async def rewind_session(self, *a, **k): return await _maybe_await(self._orch.rewind_session(*a, **k))
     async def undo_rewind(self, *a, **k): return await _maybe_await(self._orch.undo_rewind(*a, **k))
     async def set_fast_mode(self, *a, **k): return await _maybe_await(self._orch.set_fast_mode(*a, **k))
+    async def set_output_style(self, *a, **k): return await _maybe_await(self._orch.set_output_style(*a, **k))
     async def mcp_reconnect(self, *a, **k): return await _maybe_await(self._orch.mcp_reconnect(*a, **k))
     async def mcp_toggle(self, *a, **k): return await _maybe_await(self._orch.mcp_toggle(*a, **k))
     async def reconnect_mcp_everywhere(self, *a, **k): return await _maybe_await(self._orch.reconnect_mcp_everywhere(*a, **k))

@@ -248,6 +248,8 @@ async def test_remote_create_retries_without_toggles_on_old_daemon_then_pauses(c
     """A daemon predating the toggles rejects the kwargs at call binding. The edge
     retries without them so the session still starts, then applies the autopilot
     half through `set_autopilot_paused` — an RPC every daemon already has."""
+    import logging
+    caplog.set_level(logging.INFO, logger="server.sessions.remote")
     from server.ipc.client import DaemonError
 
     class _Old:

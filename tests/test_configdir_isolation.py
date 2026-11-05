@@ -2,8 +2,8 @@
 
 Verifies:
   - Allowlisted entries from shared_base (plugins, commands, settings.json,
-    settings.local.json, projects, file-history, CLAUDE.md) are symlinked into the cfg dir;
-    a private CLAUDE.md or file-history is never deleted.
+    settings.local.json, projects, file-history, CLAUDE.md, output-styles) are symlinked into the cfg dir;
+    a private CLAUDE.md, output-styles or file-history is never deleted.
   - .credentials.json and .claude.json are NEVER symlinked (must be real files).
   - Non-allowlisted entries (e.g. sessions/, agents/, tasks/) are NOT symlinked.
   - Behavior is idempotent (calling twice raises no error, symlinks stable).
@@ -444,6 +444,54 @@ class TestReconcileLinks(unittest.TestCase):
                 configdir.compose("alpha")
             self.assertFalse((cfg_dir / "CLAUDE.md").is_symlink())
             self.assertEqual((cfg_dir / "CLAUDE.md").read_text(), "private\n")
+
+    # -------------------------------------------------------------------------
+    # output-styles (D-16a): the user style dir is shared, a private one is kept
+    # -------------------------------------------------------------------------
+    def test_user_output_styles_are_shared(self):
+        """The CLI reads user styles from $CLAUDE_CONFIG_DIR/output-styles, so a style in
+        ~/.claude/output-styles reaches every account (D-16 spike §3.1)."""
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            (base / "output-styles").mkdir()
+            (base / "output-styles" / "terse.md").write_text("---\nname: Terse\n---\n")
+            self._seed_slot("alpha")
+            cfg_dir = configdir.compose("alpha")
+            self.assertIn("output-styles", configdir.SHARE_ALLOWLIST)
+            self.assertTrue((cfg_dir / "output-styles").is_symlink())
+            self.assertEqual(Path(os.readlink(cfg_dir / "output-styles")),
+                             base / "output-styles")
+            self.assertTrue((cfg_dir / "output-styles" / "terse.md").is_file())
+
+    def test_output_styles_are_not_linked_or_invented_while_the_shared_dir_is_missing(self):
+        with temp_env():
+            from viberpit import configdir, paths
+            self._seed_slot("alpha")
+            cfg_dir = configdir.compose("alpha")
+            self.assertFalse((paths.shared_base() / "output-styles").exists())
+            self.assertFalse(os.path.lexists(cfg_dir / "output-styles"))
+
+    def test_a_private_output_styles_dir_is_kept_not_deleted_and_logged(self):
+        """An account's real output-styles dir is user content: never deleted, never
+        merged, never replaced by the link (the D-13 CLAUDE.md rule)."""
+        with temp_env():
+            from viberpit import configdir, paths
+            base = paths.shared_base()
+            (base / "output-styles").mkdir()
+            (base / "output-styles" / "shared.md").write_text("shared\n")
+            self._seed_slot("alpha")
+            cfg_dir = paths.account_cfg_dir("alpha")
+            (cfg_dir / "output-styles").mkdir(parents=True)
+            (cfg_dir / "output-styles" / "mine.md").write_text("private\n")
+            with self.assertLogs("viberpit.configdir", level="INFO") as logs:
+                configdir.compose("alpha")
+            self.assertFalse((cfg_dir / "output-styles").is_symlink())
+            self.assertEqual((cfg_dir / "output-styles" / "mine.md").read_text(), "private\n")
+            self.assertFalse((base / "output-styles" / "mine.md").exists())
+            msgs = [r.getMessage() for r in logs.records if r.levelname == "INFO"]
+            self.assertTrue(any("share_kept_private" in m and "alpha" in m
+                                and "output-styles" in m for m in msgs), msgs)
 
     def test_a_wrong_claude_md_link_is_repointed_at_the_shared_file(self):
         with temp_env():
