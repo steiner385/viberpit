@@ -165,14 +165,27 @@ export function buildPaletteEntries(host: PaletteHost, data: PaletteData): Palet
         : { key, section: 'repos', label: r.nameWithOwner, drill: `repo:${r.nameWithOwner}` })
     }
     // Archived rows carry no branch, so the live sessions are the whole domain.
-    // No list filter narrows to a branch, so a branch always drills.
-    const branches = new Set<string>()
+    // No list filter narrows to a branch, so a branch always drills. Each branch a
+    // session has on a repo also offers a new session there (D-19): the dispatch bar
+    // opens with that repo and branch chosen — nothing is created until it is sent.
+    const branches = new Map<string, Set<string>>()
     for (const { session } of host.live) {
       const b = session.branch?.trim()
-      if (b) branches.add(b)
+      if (!b) continue
+      const repos = branches.get(b) ?? new Set<string>()
+      const r = session.repo?.trim()
+      if (r) repos.add(r)
+      branches.set(b, repos)
     }
-    for (const b of branches) {
+    for (const [b, repos] of branches) {
       out.push({ key: `branch:${b}`, section: 'branches', label: b, drill: `branch:${b}` })
+      if (!c.interactive) continue
+      for (const r of repos) {
+        out.push({
+          key: `branch-new:${r}@${b}`, section: 'branches', label: `New session on ${r}@${b}`,
+          keywords: ['new session', r, b], run: () => host.startOnBranch(r, b),
+        })
+      }
     }
   }
   return out

@@ -9,9 +9,12 @@ import { toast } from 'sonner'
 import { api, ApiRequestError } from '@/api/client'
 import type { RewindResult } from '@/api/hooks'
 import type { Turn } from '@/session/reducer'
-import { SessionGestureProvider } from '@/shell/sessionGestures'
+import type { ErrorKind } from '@/session/events'
+import { SessionGestureProvider, usePromptRowMenusRegistration } from '@/shell/sessionGestures'
 import { RewindProvider } from '@/features/sessions/rewind/RewindProvider'
+import { effortStep } from '@/features/sessions/composer/effortChoices'
 import { ErrorCard } from './ErrorCard'
+import { ErrorRecoveryContext, type ErrorRecovery } from './errorRecoveryContext'
 
 describe('ErrorCard', () => {
   it('renders the error message inline as an alert', () => {
@@ -219,5 +222,136 @@ describe('ErrorCard — Rewind & retry', () => {
     expect(post).toHaveBeenCalledTimes(1)
     expect(send).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: RETRY })).not.toBeDisabled()
+  })
+})
+
+// ── Recovery actions by error kind (D-19) ────────────────────────────────────
+
+describe('ErrorCard recovery actions', () => {
+  const openModel = vi.fn()
+  const openEffort = vi.fn()
+  const onSetModel = vi.fn()
+  const onPlainPrompt = vi.fn()
+  const LEVELS = ['low', 'medium', 'high']
+
+  /** Registers a prompt row's menus the way the dock composer does. */
+  function Menus({ children }: { children: ReactNode }) {
+    const ref = usePromptRowMenusRegistration()
+    if (ref) ref.current = { openMode: vi.fn(), openModel, openEffort }
+    return <>{children}</>
+  }
+
+  function recovery(over: { effort?: string | null; levels?: string[]; busy?: boolean; compact?: boolean } = {}): ErrorRecovery {
+    const { effort = 'high', levels = LEVELS, busy = false, compact = true } = over
+    return {
+      rt: { model: 'opus', onSetModel, onPlainPrompt, commands: compact ? [{ name: 'compact', description: '' }] as never : [] },
+      busy,
+      session: { id: 's1', engine: 'claude_code', accountName: 'a' } as never,
+      effortStep: () => effortStep(levels, effort),
+    }
+  }
+
+  function renderKind(kind: ErrorKind | undefined, value: ErrorRecovery | null = recovery(), status = 'idle') {
+    vi.spyOn(api, 'get').mockResolvedValue([])
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={qc}>
+        <SessionGestureProvider>
+          <Menus>
+            <RewindProvider sessionId="s1" enabled status={status} send={send} appliedRewindId="r1">
+              <ErrorRecoveryContext.Provider value={value}>
+                <ErrorCard code="api_429" message="slow down" errorKind={kind} prompt={prompt} />
+              </ErrorRecoveryContext.Provider>
+            </RewindProvider>
+          </Menus>
+        </SessionGestureProvider>
+      </QueryClientProvider>,
+    )
+  }
+
+  const actions = () => screen.queryAllByRole('button').map((b) => b.textContent?.trim())
+
+  beforeEach(() => { openModel.mockReset(); openEffort.mockReset(); onSetModel.mockReset(); onPlainPrompt.mockReset() })
+
+  it('a rate limit offers Switch model, Lower effort and Rewind & retry', async () => {
+    renderKind('rate_limit')
+    await screen.findByRole('button', { name: 'Switch model' })
+    expect(actions()).toEqual(['Switch model', 'Lower effort', RETRY])
+  })
+
+  it('an overload offers the same three', async () => {
+    renderKind('overloaded')
+    await screen.findByRole('button', { name: 'Lower effort' })
+    expect(actions()).toEqual(['Switch model', 'Lower effort', RETRY])
+  })
+
+  it('Switch model opens the prompt row model picker and picks nothing itself', async () => {
+    renderKind('rate_limit')
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch model' }))
+    expect(openModel).toHaveBeenCalledTimes(1)
+    expect(onSetModel).not.toHaveBeenCalled()
+  })
+
+  it('Lower effort steps one level down through the model switch, now when idle', async () => {
+    renderKind('rate_limit')
+    await userEvent.click(await screen.findByRole('button', { name: 'Lower effort' }))
+    expect(onSetModel).toHaveBeenCalledWith('opus', 'now', 'medium')
+  })
+
+  it('Lower effort lands after the turn while the session is busy', async () => {
+    renderKind('rate_limit', recovery({ busy: true }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Lower effort' }))
+    expect(onSetModel).toHaveBeenCalledWith('opus', 'after_turn', 'medium')
+  })
+
+  it('with the level unknown (a default Claude session) "Lower effort…" opens the effort picker, picking nothing', async () => {
+    renderKind('rate_limit', recovery({ effort: null }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Lower effort…' }))
+    expect(openEffort).toHaveBeenCalledTimes(1)
+    expect(onSetModel).not.toHaveBeenCalled()
+    expect(actions()).toEqual(['Switch model', 'Lower effort…', RETRY])
+  })
+
+  it('Lower effort is hidden at the lowest level and with no levels', async () => {
+    for (const over of [{ effort: 'low' }, { levels: [] }, { levels: [], effort: null }]) {
+      const { unmount } = renderKind('rate_limit', recovery(over))
+      await screen.findByRole('button', { name: 'Switch model' })
+      expect(screen.queryByRole('button', { name: /Lower effort/ })).toBeNull()
+      unmount()
+    }
+  })
+
+  it('a missing model offers Switch model only — resending to it would fail the same way', async () => {
+    renderKind('model_unavailable')
+    await screen.findByRole('button', { name: 'Switch model' })
+    expect(actions()).toEqual(['Switch model'])
+  })
+
+  it('a context overflow offers Rewind & retry and Compact, which sends /compact', async () => {
+    renderKind('context_too_long')
+    await userEvent.click(await screen.findByRole('button', { name: 'Compact' }))
+    expect(onPlainPrompt).toHaveBeenCalledWith('/compact', [])
+    expect(actions()).toEqual(['Compact', RETRY])
+  })
+
+  it('a context overflow offers no Compact where the command does not exist', async () => {
+    renderKind('context_too_long', recovery({ compact: false }))
+    await screen.findByRole('button', { name: RETRY })
+    expect(actions()).toEqual([RETRY])
+  })
+
+  it('any other error, or one with no kind, offers Rewind & retry alone', async () => {
+    for (const kind of ['other', undefined] as const) {
+      const { unmount } = renderKind(kind)
+      await screen.findByRole('button', { name: RETRY })
+      expect(actions()).toEqual([RETRY])
+      unmount()
+    }
+  })
+
+  it('outside a live session (no provider) a rate limit offers no recovery actions', async () => {
+    renderKind('rate_limit', null)
+    await screen.findByRole('button', { name: RETRY })
+    expect(actions()).toEqual([RETRY])
   })
 })

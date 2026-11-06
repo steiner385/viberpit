@@ -154,10 +154,10 @@ describe('DispatchBar + menu', () => {
   })
 
   it('a preset requested from outside (⌘K) sets the chip, and is acknowledged', async () => {
-    const onPresetRequestHandled = vi.fn()
-    mount({ presets: [preset()], presetRequest: { id: 'p1' }, onPresetRequestHandled })
+    const onDispatchRequestHandled = vi.fn()
+    mount({ presets: [preset()], dispatchRequest: { kind: 'preset', id: 'p1' }, onDispatchRequestHandled })
     expect(await screen.findByText('Preset: Bug bash')).toBeInTheDocument()
-    expect(onPresetRequestHandled).toHaveBeenCalledTimes(1)
+    expect(onDispatchRequestHandled).toHaveBeenCalledTimes(1)
   })
 
   it("leaves a preset's account and model alone when the bar does not offer them, and says so", async () => {

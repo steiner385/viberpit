@@ -79,6 +79,26 @@ The rail switches on the session pane's own width (64rem, a container query), no
     **Edit in Settings**.
   - **Environment**: host, account, worktree path and branch, with actions open PR / discard worktree /
     repair `[A-D16]`, plus sandbox state and the PR auto-fix toggle `[A-D16]`.
+    Of those three actions, D-19 shipped two, **Discard and Repair**; "open PR" is the D-15 **PR tab** (the
+    card itself only lists the session's PRs). Discard and Repair work for managed worktrees, in a human session only (hidden on a 403 or a
+    failed preflight); `GET /sessions/{id}/worktree/preflight`, `POST .../worktree/discard {confirm: true}`,
+    `POST .../worktree/repair`, per session through the RPC, remote, fleet and facade layers.
+    - **Discard** means end the session and remove its worktree. It runs for an **idle** session only (a running
+      turn refuses), for a **person** (never automation), after an explicit **confirm** in the dialog. The audit
+      row (`session.worktree_discard`, success or failure) is written **on the daemon**, so it survives an edge
+      that never sees the result. Work is never destroyed unrecoverably: a dirty tree or unpushed commits always
+      get a **recovery ref** first, and when git cannot say whether commits would be lost the discard **fails
+      closed** (409 `WORKTREE_DISCARD_UNSAFE`, nothing touched). Only a **session-prefixed** branch
+      (`brand.is_session_branch`) is deleted; a user branch is kept. **Gitignored files (`.env`, build output)
+      are not preserved**, and the dialog says so. The session is **archived**. The success toast lists every ref
+      and the restore command.
+    - **Repair** recreates a **missing or empty** tree only, through the existing `_ensure_session_cwd`; it never
+      touches a present tree.
+    - **Race guard:** the removal and recreate paths (discard, repair, `_reassign`, D-17's `_close_for_transfer`)
+      re-check `_record_still_live` first, so a queue drain or attach that races a discard cannot recreate the
+      tree it just removed. `remove_worktree` is fail-closed for the janitor, close and transfer too.
+    - **Follow-ups:** showing a discarded session's recovery refs on the archived session (needs server and
+      transcript work); pin / star sessions, which has no decision yet.
   - **Tasks**: background tasks and sub-agents.
 
   The rail **replaces `session.meta`** (the dense strip under the header). Its contents move into the rail or the
@@ -130,7 +150,7 @@ The rail switches on the session pane's own width (64rem, a container query), no
 | `@` | One menu with two groups. **Files** come from the session's worktree (fuzzy; inserted as `@path`, which the CLI resolves natively). **Sessions** are other sessions (a ViberPit reference). | `[A-D2]` |
 | Mode ▾ (Alt+Shift+M) | Changeable mid-session through the driver's live permission-mode switch; see §3.1. The in-session Plan toggle is removed. | `[A-D10]` |
 | Model ▾ (Alt+Shift+I) | Moves here from `session.meta`. The gated-model approval flow is unchanged. | `[A-D14]` |
-| Effort ▾ (Alt+Shift+E) | low / medium / high / max, changeable mid-session; only where the model supports it. **As built (D-14):** Claude effort is now live. The existing `POST /sessions/{id}/model {effort}` applies `apply_flag_settings({effortLevel})` to the running CLI; there is no second effort route. The picker shows for Claude when the engine reports `flagSettings` and offers the CLI's levels (`low/medium/high/xhigh/max`). The server checks a pick against the model's `supportedEffortLevels` and refuses one the model lacks. A per-model list in the UI is #3260. | `[A-D14]` |
+| Effort ▾ (Alt+Shift+E) | low / medium / high / max, changeable mid-session; only where the model supports it. **As built (D-14):** Claude effort is now live. The existing `POST /sessions/{id}/model {effort}` applies `apply_flag_settings({effortLevel})` to the running CLI; there is no second effort route. The picker shows for Claude when the engine reports `flagSettings` and offers the CLI's levels (`low/medium/high/xhigh/max`). The server checks a pick against the model's `supportedEffortLevels` and refuses one the model lacks. Per-model levels in the UI shipped in #3269: the picker offers the current model's `supportedEffortLevels` (Claude) or the catalog's levels (Codex). | `[A-D14]` |
 | ⚡ Fast | Toggle; shown only where the model and engine support it. **As built (D-14):** shown only when the payload's `fastModeAvailable` is true. That means the CLI's `initialize` model list marks the current model `supportsFastMode`; Copilot accounts never qualify. The tooltip, and a one-time inline note the first time fast mode is on in a browser, read: "Fast mode — faster output on the same model. Bills usage credits at a higher rate, outside your plan." (owner decision: a toggle with a cost note, off by default). `POST /sessions/{id}/fast {enabled}`; ⚡ is disabled while the POST is in flight. **Money rules:** the session record (`sessions.fast_mode`) is authoritative. Every model switch re-syncs the CLI to the record, and a switch to a model without fast mode (or with an unknown model list) clears it. A failed or unanswered enable is compensated and kept off; a failed disable never reads as off. ⚡ shows the stored choice; the CLI's live `fast_mode_state` / `fast_mode_disabled_reason` (read from `initialize` and each `system/init`, since the SDK's typed `ResultMessage` drops the copy on `result` frames) ride the payload as `fastModeState` / `fastModeDisabledReason`, and the tooltip leads with a cooldown or the disabled reason (#3254). | `[A-D14]` |
 | ◔ Usage ring | Wires the existing `ui/UsageRing.tsx` (context plus plan usage). Tap opens the Context card. | `[A-D14]` |
 | Send / Queue / Send now / Stop | Unchanged. | — |
@@ -301,6 +321,19 @@ Rewind and edit are disabled during a running turn and on engines without the ca
   plan step, and are sent back as one structured message.
 - **Error cards** `[A-D17]`: in addition to auto-resend and rotation, **Switch model**, **Lower effort** and
   **Rewind & retry** (the latter where the capability exists). **Rewind & retry shipped (D-9)**; see §5.
+  **Switch model and Lower effort shipped (D-19).** Every `error` event carries a `kind`
+  (`failure.ERROR_KINDS`, derived from `code` plus the raw text; records written earlier compute it on decode;
+  a missing `kind` reads as `other`). The card offers actions by kind:
+  - `rate_limit` and `overloaded`: **Switch model** and **Lower effort**, plus **Rewind & retry**.
+  - `context_too_long`: **Compact** (when the command catalog lists `compact`, the check the Context card makes),
+    plus **Rewind & retry**.
+  - `model_unavailable`: **Switch model** only; Rewind & retry is hidden (a resend fails the same way).
+  - `other` (including auth, `max_turns`, `execution_error`): Rewind & retry only.
+  Recovery actions show in a live session only; auto-resend and rotation are unchanged.
+  **Switch model** opens the model picker and never picks one. **Lower effort** steps one level down from the
+  level in force, using the one reading the prompt row's picker uses (`effortChoices`); when levels exist but
+  the level in force is unknown (a default Claude session) it opens the effort picker ("Lower effort…") and
+  never guesses, and it is hidden at the floor or with no levels.
 
 ## 7. Sidebar and navigation
 
@@ -336,7 +369,10 @@ Rewind and edit are disabled during a running turn and on engines without the ca
     filter and reveals the list; any other repo, and every branch, rewrites the palette query to the
     `repo:<owner/name>` or `branch:<name>` facet, which matches that exact value (case-insensitively), leaving
     that repo's or branch's sessions to pick from. Facets combine with each other and with free text. Branches
-    are not checked out or started from the palette.
+    are not checked out from the palette. **Start-on-branch shipped (D-19):** each branch a live session has on
+    a repo also offers **New session on <repo>@<branch>** in the Branches section, which opens the dispatch bar
+    with that repo and branch chosen; nothing is created until it is sent (a `branch_switch_failed` 409 shows
+    inline and keeps the draft). Kiosk offers no such entry.
   - **Opening a live session from the palette clears list filters or search that would hide it,** so the list
     beside the open session shows it. Pre-spawn sessions (queued, awaiting approval) are the exception; they are
     left as they are.
@@ -435,6 +471,7 @@ audit. Ordered by points closed per unit of risk, with dependencies first.
 | D-16 | Plugins marketplace; MCP per-tool toggles; output styles; remaining app slash commands. **Sliced:** **D-16a — done**: output styles (§8), `/plan`, `/output-style` and the human-only gate on app commands. **D-16b — done**: MCP per-tool toggles (§8; D4: live after `initialize`, overridable by the session, so a per-tool deny is live and the session can re-enable). **D-16c — done**: plugin marketplace (§8; D1: curated marketplaces plus the reviewed Directory only, `command` sources and `headersHelper` refused; D2: install fans out to every host daemon with per-host outcomes; D3: the CLI's own auto-update default is kept, and the UI shows the version and "auto-updates"). **D-16 is complete** (D-16a, D-16b and D-16c are all done). Follow-up built (#3314): an opt-in live `reload_plugins` push to running sessions (§8). Controller rulings for D-16a: D5 the default style lives in `AppSettings` via the flag layer; D6 `/plan [on\|off]` only | plugins, MCP, output styles, slash commands |
 | D-17 | Move session to host — **done** (§8): idle Claude sessions move between fleet hosts through a claim / export / restamp / import / finalize / restore saga with a marker-only trust rule and crash and edge-restart reconcile. Owner decisions: D1 (revised) WIP commit to a hidden GitHub ref with consent, private repos only; D4 source worktree removed only after the target started and a recovery snapshot exists. Rulings: D2 no Codex, D3 idle only plus a background-task confirm, D5 refuse a live steering parent or child, D6 manual only. Follow-ups: Drain host, #949 dead-host adoption, Codex as a new thread, a manual clear for a claim stuck on a host removed for good, org rulesets on private repos (`cairnea/KinDash`) | move session |
 | D-18 | Dev-server detection + preview — **done** (§8): the Browser tab lists a session's dev servers and opens one per click as a local link, a tailnet-IP link, or on a virtual display over VNC, chosen from the viewer's verified tailnet node. Owner decision: per-click routing. No proxy, no element select. Follow-ups: proxied preview with isolated origins, element select via Chrome's picker over CDP, Docker-published ports, a guard on in-flight scans, #3325. **Sub-spec D is complete.** | preview |
+| D-19 | Parity leftovers — **done** (§5, §6): error-card recovery actions by error kind (Switch model, Lower effort, Compact), worktree Discard and Repair with recovery refs, ⌘K start-on-branch; per-model effort levels landed earlier (#3269). Follow-ups: recovery refs on the archived session; pin / star sessions (no decision). | |
 
 ## 12. Success criteria
 

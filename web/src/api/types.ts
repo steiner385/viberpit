@@ -1309,6 +1309,47 @@ export interface MoveBackgroundTask {
   replayable?: boolean
 }
 
+/** `GET /sessions/{id}/worktree/preflight` (D-19): what Discard and Repair would do.
+ *  `dirty` is a file count, `unpushed` a commit count against `origin`; null = git
+ *  could not say. `sessionBranch`: Discard deletes `branch` (a session branch) —
+ *  false keeps it. `restoreHint` is the restore command with a placeholder ref, set
+ *  when there is anything the discard will save. */
+export interface WorktreePreflight {
+  sessionId: string
+  path: string | null
+  managed: boolean
+  present: boolean
+  state: 'present' | 'missing' | 'empty' | 'not_a_worktree' | 'none'
+  branch: string | null
+  sessionBranch: boolean
+  dirty: number | null
+  unpushed: number | null
+  recoveryRefs: string[]
+  restoreHint: string | null
+  busy: boolean
+  canDiscard: boolean
+  canRepair: boolean
+}
+
+/** `POST /sessions/{id}/worktree/discard` — the session is archived. `recoveryRefs`
+ *  is every ref kept for it (this discard's first); `restoreCommand` restores the first. */
+export interface WorktreeDiscardResult {
+  discarded: true
+  recoveryRefs: string[]
+  restoreCommand: string | null
+  path: string | null
+  branch: string | null
+  branchDeleted: boolean
+}
+
+/** `POST /sessions/{id}/worktree/repair`. */
+export interface WorktreeRepairResult {
+  repaired: true
+  path: string | null
+  branch: string | null
+  recoveryRefs: string[]
+}
+
 export interface MovePreflight {
   sessionId: string
   source: string

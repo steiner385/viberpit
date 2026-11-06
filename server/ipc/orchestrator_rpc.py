@@ -346,6 +346,10 @@ def register_orchestrator_rpc(app, orch) -> None:
         # preview open on this daemon's virtual display ({ok, port, url}). A refusal
         # raises DevServerError, whose error_data carries the code.
         "dev_servers", "open_dev_server",
+        # D-19 worktree controls: the preflight facts, Discard and Repair, run on the
+        # daemon that owns the session's worktree. A refusal raises WorktreeControlError,
+        # whose error_data carries the code (and, after a snapshot, the recovery refs).
+        "worktree_preflight", "discard_worktree", "repair_worktree",
         # D-8 Fork from here: {sessionId, prefill}, created on the daemon that owns
         # the source (its transcript, turn anchors and worktree). A refusal raises
         # ForkError / ForkWorktreeError, whose error_data carries the code.

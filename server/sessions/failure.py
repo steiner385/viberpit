@@ -229,3 +229,72 @@ def classify(code: str | None, message: str = "", *, retry_after: float | None =
     if is_overload:
         return TurnFailure(kind="overloaded")
     return TurnFailure(kind="other")
+
+
+# ── The error card's recovery kind (D-19) ────────────────────────────────────────
+
+#: `codexErrorInfo` categories the orchestrator can actually recover from, and the
+#: ``classify`` kind each maps to. Anything else surfaces as a plain error: inventing
+#: a recovery kind for an unknown category would send the orchestrator rotating
+#: accounts over a bad request. Read by the Codex driver's recovery signal and by
+#: ``error_kind`` below — one map for both.
+CODEX_RECOVERABLE_KINDS: dict[str, str] = {
+    "unauthorized": "auth_401",
+    "rateLimitExceeded": "rate_limit",
+    "usageLimitExceeded": "rate_limit",
+    "sessionBudgetExceeded": "rate_limit",
+}
+
+#: Codex categories whose card kind is not a recovery: nothing here may join
+#: ``CODEX_RECOVERABLE_KINDS`` (no rotation fixes a full context window).
+_CODEX_CARD_KINDS: dict[str, str] = {
+    "contextWindowExceeded": "context_too_long",
+    "serverOverloaded": "overloaded",
+}
+
+#: What the ``error`` event's ``kind`` may be — the error card keys its recovery
+#: actions off it (``rate_limit``/``overloaded``: switch model, lower effort, rewind;
+#: ``context_too_long``: rewind; ``model_unavailable``: switch model; ``other``: rewind).
+ERROR_KINDS: tuple[str, ...] = ("rate_limit", "overloaded", "context_too_long",
+                                "model_unavailable", "other")
+
+# ``context_too_long`` uses the CLI's own test (2.1.318, byte-grepped):
+# ``e.toLowerCase().includes("prompt is too long") || …includes("input is too long
+# for requested model")``, anywhere in the text, so a wrapped envelope ("API Error: 400
+# {…"message":"prompt is too long: N tokens > M maximum"…}") qualifies too. Only on the
+# codes an API refusal arrives with: a 400 or a 413 ("either status", per the CLI's
+# error table) or an error result with no status. ``execution_error`` is not one: the
+# CLI writes ``error_during_execution`` for startup failures and interrupts.
+_CONTEXT_PHRASES = ("prompt is too long", "input is too long for requested model")
+_CONTEXT_CODES = frozenset({"api_400", "api_413", "agent_error"})
+
+# ``model_unavailable``: a 404, or the CLI's sentence for a model the account cannot
+# use: "There's an issue with the selected model (<id>). It may not exist or you may
+# not have access to it."
+_MODEL_MISSING_SENTENCE = re.compile(
+    r"issue with the selected model \([^)]*\)\. it may not exist or you may not have "
+    r"access to it", re.IGNORECASE)
+
+
+def _is_context_too_long(code: str, text: str) -> bool:
+    low = text.lower()
+    return code in _CONTEXT_CODES and any(p in low for p in _CONTEXT_PHRASES)
+
+
+def error_kind(code: str | None, message: str = "") -> str:
+    """The error card's recovery kind for an ``error`` event (one of ``ERROR_KINDS``).
+
+    Rate limit and overload reuse ``classify`` (a Codex category goes through
+    ``CODEX_RECOVERABLE_KINDS`` first, its own spelling of the same verdict). The two
+    card-only kinds are checked BEFORE ``classify``: its content inference reads a
+    bare "429" as a rate limit, and "204291 tokens > 200000" carries one."""
+    code = code or ""
+    text = message or ""
+    if code in _CODEX_CARD_KINDS:
+        return _CODEX_CARD_KINDS[code]
+    if _is_context_too_long(code, text):
+        return "context_too_long"
+    if code == "api_404" or _MODEL_MISSING_SENTENCE.search(text) is not None:
+        return "model_unavailable"
+    kind = CODEX_RECOVERABLE_KINDS.get(code) or classify(code, text).kind
+    return kind if kind in ("rate_limit", "overloaded") else "other"

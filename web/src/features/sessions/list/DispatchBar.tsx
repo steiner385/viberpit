@@ -24,6 +24,10 @@ import { DispatchError } from './dispatchError'
 import { useRepoSuggestion, type UseRepoSuggestionOptions } from './useRepoSuggestion'
 import { Checkbox } from '@/ui/Checkbox'
 
+/** What the shell asks the bar to set up from outside (⌘K): a preset to select
+ *  (D-14), or a repo and branch to start on (D-19). A fresh object per request. */
+export type DispatchRequest = { kind: 'preset'; id: string } | { kind: 'branch'; repo: string; branch: string }
+
 export interface DispatchBarProps {
   repos: GithubRepo[]
   reposLoading: boolean
@@ -55,6 +59,9 @@ export interface DispatchBarProps {
   onDispatch: (input: {
     initialPrompt: string
     repo: string | null
+    /** The branch chosen for `repo` (⌘K "New session on repo@branch", D-19); null =
+     *  none chosen, so the caller starts on the repo's default branch. */
+    branch: string | null
     account: string | null
     model: string | null
     host: string | null
@@ -132,10 +139,10 @@ export interface DispatchBarProps {
   /** Render a template on the server (`POST /templates/{id}/render`); without it
    *  there is no Templates › entry — the server is the one renderer. */
   renderTemplate?: (id: string, variables: Record<string, string>) => Promise<string>
-  /** A preset to select from outside the bar (⌘K "New session from preset"). A
-   *  fresh object per request; acknowledged through `onPresetRequestHandled`. */
-  presetRequest?: { id: string } | null
-  onPresetRequestHandled?: () => void
+  /** A preset or branch to set up from outside the bar (⌘K). Acknowledged through
+   *  `onDispatchRequestHandled`. */
+  dispatchRequest?: DispatchRequest | null
+  onDispatchRequestHandled?: () => void
 }
 
 export function DispatchBar({
@@ -165,8 +172,8 @@ export function DispatchBar({
   presets = [],
   templates = [],
   renderTemplate,
-  presetRequest = null,
-  onPresetRequestHandled,
+  dispatchRequest = null,
+  onDispatchRequestHandled,
 }: DispatchBarProps) {
   // The unsent prompt survives navigation/refresh via the same per-session draft
   // store the Composer uses, under a fixed key. Text only: attachments are
@@ -214,6 +221,9 @@ export function DispatchBar({
   const [preset, setPreset] = useState<SessionPreset | null>(null)
   // What of the preset the bar could not apply (shown on the chip).
   const [presetNotes, setPresetNotes] = useState<string[]>([])
+  // ⌘K's branch (D-19): a removable chip, sent only while its repo is the one chosen.
+  const [branchPick, setBranchPick] = useState<Extract<DispatchRequest, { kind: 'branch' }> | null>(null)
+  const branch = branchPick && branchPick.repo === repo ? branchPick.branch : null
   // Where an inserted template's caret goes once React has written the new text.
   const caretRef = useRef<number | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -326,20 +336,26 @@ export function DispatchBar({
     if (p.initialPrompt && text.trim() === '') setText(p.initialPrompt)
   }
 
-  // ⌘K's "New session from preset: <name>": taken while rendering, once per request
-  // object, as soon as the list holds it (an empty list may still be loading); the
-  // effect only tells the shell it can drop the request.
-  const [takenRequest, setTakenRequest] = useState<{ id: string } | null>(null)
-  if (presetRequest && presetRequest !== takenRequest) {
-    const p = presets.find((x) => x.id === presetRequest.id)
-    if (p || presets.length > 0) {
-      setTakenRequest(presetRequest)
-      if (p) applyPreset(p)
+  // ⌘K's requests, taken while rendering, once per request object: a branch at once;
+  // "New session from preset: <name>" as soon as the list holds it (an empty list may
+  // still be loading). The effect only tells the shell it can drop the request.
+  const [takenRequest, setTakenRequest] = useState<DispatchRequest | null>(null)
+  if (dispatchRequest && dispatchRequest !== takenRequest) {
+    if (dispatchRequest.kind === 'branch') {
+      setTakenRequest(dispatchRequest)
+      setRepo(dispatchRequest.repo)
+      setBranchPick(dispatchRequest)
+    } else {
+      const p = presets.find((x) => x.id === dispatchRequest.id)
+      if (p || presets.length > 0) {
+        setTakenRequest(dispatchRequest)
+        if (p) applyPreset(p)
+      }
     }
   }
   useEffect(() => {
-    if (takenRequest) onPresetRequestHandled?.()
-  }, [takenRequest, onPresetRequestHandled])
+    if (takenRequest) onDispatchRequestHandled?.()
+  }, [takenRequest, onDispatchRequestHandled])
 
   /** Insert a template's server-rendered text at the caret, replacing any selection.
    *  Variables take their declared defaults; an unset one stays as `{{name}}`. */
@@ -431,6 +447,7 @@ export function DispatchBar({
       await onDispatch({
         initialPrompt: trimmed,
         repo: targetRepo || null,
+        branch: branchPick && branchPick.repo === targetRepo ? branchPick.branch : null,
         account: account || null,
         // "default" ⇒ omit so the backend leaves the account's model as-is.
         model: model && model !== 'default' ? model : null,
@@ -447,6 +464,7 @@ export function DispatchBar({
       })
       setText('')
       setPreset(null)
+      setBranchPick(null)
       setRefinedPrompt(null)
       att.clear()
       if (textareaRef.current) {
@@ -925,22 +943,21 @@ export function DispatchBar({
 
       <AttachmentChips attachments={att.attachments} onRemove={att.remove} />
 
-      {preset && (
-        <div className="flex">
-          <span className="inline-flex items-center gap-1 rounded-pill border border-accent bg-accent-wash px-2 py-0.5 text-xs text-ink">
-            <span>Preset: {preset.name}</span>
-            {presetNotes.map((n) => (
-              <span key={n} className="text-warning"><span aria-hidden="true">· </span>{n}</span>
-            ))}
-            <button
-              type="button"
-              aria-label={`Remove preset ${preset.name}`}
-              onClick={() => setPreset(null)}
-              className="rounded-sm text-ink-muted hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            >
-              <X size={12} aria-hidden="true" />
-            </button>
-          </span>
+      {(preset || branch) && (
+        <div className="flex flex-wrap gap-1">
+          {preset && (
+            <Chip remove={`Remove preset ${preset.name}`} onRemove={() => setPreset(null)}>
+              <span>Preset: {preset.name}</span>
+              {presetNotes.map((n) => (
+                <span key={n} className="text-warning"><span aria-hidden="true">· </span>{n}</span>
+              ))}
+            </Chip>
+          )}
+          {branch && (
+            <Chip remove={`Remove branch ${branch}`} onRemove={() => setBranchPick(null)}>
+              <span className="break-all">Branch: {branch}</span>
+            </Chip>
+          )}
         </div>
       )}
 
@@ -1141,5 +1158,22 @@ export function DispatchBar({
         </div>
       )}
     </div>
+  )
+}
+
+/** A removable chip above the prompt: the + menu's preset, ⌘K's branch. */
+function Chip({ remove, onRemove, children }: { remove: string; onRemove: () => void; children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-pill border border-accent bg-accent-wash px-2 py-0.5 text-xs text-ink">
+      {children}
+      <button
+        type="button"
+        aria-label={remove}
+        onClick={onRemove}
+        className="rounded-sm text-ink-muted hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        <X size={12} aria-hidden="true" />
+      </button>
+    </span>
   )
 }

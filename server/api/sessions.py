@@ -2384,6 +2384,89 @@ async def open_session_dev_server(
         _raise_daemon_outdated_or_reraise(exc, "open dev servers")
 
 
+@router.get("/{session_id}/worktree/preflight")
+async def session_worktree_preflight(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+) -> Any:
+    """The Environment card's Discard / Repair facts (D-19), read on the daemon that owns
+    the session: ``{sessionId, path, managed, present, state, branch, sessionBranch,
+    dirty, unpushed, recoveryRefs, restoreHint, busy, canDiscard, canRepair}``. ``state``
+    is ``present`` | ``missing`` | ``empty`` | ``not_a_worktree`` | ``none``;
+    ``dirty``/``unpushed`` are counts (null when the tree could not be read).
+    Person-only (403 ``SESSION_CONTROL_HUMAN_ONLY``); 404 unknown session; 409
+    ``daemon_outdated``."""
+    try:
+        return await session_actions.worktree_preflight(
+            _get_orchestrator(request), session_id=session_id, identity=identity,
+            via=human_gate_via(request))
+    except ActionError as exc:
+        return _action_error_response(exc)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "inspect worktrees")
+
+
+class DiscardWorktreeRequest(BaseModel):
+    """``POST /{id}/worktree/discard`` body (D-19): ``confirm`` must be ``true``."""
+    confirm: bool = False
+
+
+@router.post("/{session_id}/worktree/discard")
+async def discard_session_worktree(
+    session_id: str,
+    body: DiscardWorktreeRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+) -> Any:
+    """End the session and remove its worktree (D-19 Discard), after its dirty tree and
+    unpushed commits are kept as recovery refs. 200 ``{discarded, recoveryRefs,
+    restoreCommand, path, branch, branchDeleted}``. Person-only (403
+    ``SESSION_CONTROL_HUMAN_ONLY``); 400 ``WORKTREE_CONFIRM_REQUIRED``; 409
+    ``WORKTREE_SESSION_BUSY`` / ``WORKTREE_NOT_MANAGED`` / ``WORKTREE_MISSING`` /
+    ``WORKTREE_SHARED`` / ``SESSION_MOVING``; 500 ``WORKTREE_SNAPSHOT_FAILED`` (nothing
+    touched), ``WORKTREE_DISCARD_FAILED`` / ``WORKTREE_REMOVE_FAILED`` (``recoveryRefs``
+    and ``restoreCommand`` in the detail); 404 unknown session; 409 ``daemon_outdated``.
+    Audited ``session.worktree_discard`` by the owning daemon."""
+    try:
+        return await session_actions.discard_worktree(
+            _get_orchestrator(request), session_id=session_id, confirm=body.confirm,
+            identity=identity, via=human_gate_via(request))
+    except ActionError as exc:
+        return _action_error_response(exc)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "discard worktrees")
+
+
+@router.post("/{session_id}/worktree/repair")
+async def repair_session_worktree(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+) -> Any:
+    """Recreate a missing or empty managed worktree from the session's branch (D-19
+    Repair); a present tree is never touched. 200 ``{repaired, path, branch,
+    recoveryRefs}``. Person-only (403 ``SESSION_CONTROL_HUMAN_ONLY``); 409
+    ``WORKTREE_SESSION_BUSY`` / ``WORKTREE_NOT_MANAGED`` / ``WORKTREE_PRESENT`` /
+    ``WORKTREE_NOT_EMPTY`` / ``WORKTREE_REPAIR_FAILED`` / ``SESSION_MOVING``; 404 unknown
+    session; 409 ``daemon_outdated``. Audited ``session.worktree_repair`` by the owning
+    daemon."""
+    try:
+        return await session_actions.repair_worktree(
+            _get_orchestrator(request), session_id=session_id, identity=identity,
+            via=human_gate_via(request))
+    except ActionError as exc:
+        return _action_error_response(exc)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "repair worktrees")
+
+
 class ForkRequest(BaseModel):
     """``POST /{id}/fork`` body (D-8). ``reply``: ``atTurnId`` is the reply's turn.
     ``message``: ``atTurnId`` is the previous reply's turn, or null for the first

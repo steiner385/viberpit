@@ -133,7 +133,7 @@ export function MainPaneSession({ sessionId, onClosed, onDetach }: MainPaneSessi
         onMoved={() => rt.reattach()}
       />
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-surface">
-        <SessionBody rt={rt} />
+        <SessionBody rt={rt} onClosed={() => leave(onClosed)} />
       </div>
       <CommandResultOverlay
         result={rt.commandResult}

@@ -191,6 +191,57 @@ async def open_dev_server(orch, db, *, session_id: str, port: int, identity: str
     return res
 
 
+async def worktree_preflight(orch, *, session_id: str, identity: str,
+                             via: str | None) -> dict:
+    """The Discard / Repair dialog's facts (D-19), from the daemon that owns the
+    session. Person-only, as the actions it prepares are."""
+    require_human(identity, via, action="discard or repair a session's worktree",
+                  code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+    return await orch.worktree_preflight(session_id)
+
+
+def _worktree_action_error(exc) -> ActionError:
+    from server.sessions import worktree_controls as wc
+    return ActionError(exc.code, wc.MESSAGES.get(exc.code, exc.code),
+                       wc.http_status(exc.code), extra=dict(exc.extra) or None)
+
+
+async def discard_worktree(orch, *, session_id: str, confirm: bool, identity: str,
+                           via: str | None) -> dict:
+    """End the session and remove its worktree (D-19 Discard), on the daemon that owns
+    it, after its dirty tree and unpushed commits are kept as recovery refs. Person-only
+    and confirmed. The owning daemon writes ``session.worktree_discard`` (it alone sees
+    an outcome whose edge went away mid-call), so *identity*/*via* travel with the
+    call and nothing is audited here. A refusal is logged at INFO by the daemon and
+    becomes an ActionError carrying its code."""
+    from server.sessions import worktree_controls as wc
+    require_human(identity, via, action="discard a session's worktree",
+                  code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+    if confirm is not True:
+        log.info("session.worktree_discard_refused session=%s code=%s",
+                 session_id, wc.WORKTREE_CONFIRM_REQUIRED)
+        raise ActionError(wc.WORKTREE_CONFIRM_REQUIRED,
+                          wc.MESSAGES[wc.WORKTREE_CONFIRM_REQUIRED], 400)
+    try:
+        return await orch.discard_worktree(session_id, identity=identity, via=via)
+    except wc.WorktreeControlError as exc:
+        raise _worktree_action_error(exc) from exc
+
+
+async def repair_worktree(orch, *, session_id: str, identity: str,
+                          via: str | None) -> dict:
+    """Recreate a missing or empty managed worktree from its branch (D-19 Repair), on
+    the daemon that owns the session. Person-only; the daemon writes
+    ``session.worktree_repair`` (and its own ``session.worktree_recreated``)."""
+    from server.sessions import worktree_controls as wc
+    require_human(identity, via, action="repair a session's worktree",
+                  code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+    try:
+        return await orch.repair_worktree(session_id, identity=identity, via=via)
+    except wc.WorktreeControlError as exc:
+        raise _worktree_action_error(exc) from exc
+
+
 RULE_HUMAN_ONLY_CODE = "RULES_HUMAN_ONLY"
 
 

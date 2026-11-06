@@ -21,11 +21,12 @@ from server.sessions.engine import (
     _EffortUnchanged,
     parse_agent_engine,
 )
-from server.sessions.orchestrator import DRIVER_SWAP_TIMEOUT_S, ModelBlockedError
+from server.sessions.orchestrator import (DRIVER_RELEASE_WAIT_S, DRIVER_SWAP_TIMEOUT_S,
+                                          ModelBlockedError)
 from server.sessions.rewind import REWIND_CODES, REWIND_CONTROL_TIMEOUT_S, RewindError
 from server.sessions.flag_settings import SETTINGS_CODES, SettingsError
 from server.sessions import worktree_files
-from server.sessions import dev_servers, memory_files
+from server.sessions import dev_servers, memory_files, worktree_controls
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
@@ -65,6 +66,13 @@ WORKTREE_RPC_TIMEOUT = 90.0
 # D-18 detection on the owning daemon: one /proc pass and a round of 1 s probes, polled
 # while the Browser tab is open — well under the 30s client default.
 DEV_SERVERS_RPC_TIMEOUT = 10.0
+
+# D-19 worktree controls on the owning daemon. Discard: a swap waited out
+# (DRIVER_SWAP_TIMEOUT_S), the recovery snapshot's git calls (each bounded at 60 s by
+# viberpit.worktrees; ~8 on the worst path), the driver close (DRIVER_RELEASE_WAIT_S)
+# and the removal, plus a margin. Repair: a swap plus a `git worktree add`. Discard runs
+# to completion on the daemon either way; this only keeps the edge waiting for its answer.
+WORKTREE_CONTROL_RPC_TIMEOUT = DRIVER_SWAP_TIMEOUT_S + DRIVER_RELEASE_WAIT_S + 8 * 60.0 + 120.0
 
 # PR mutations on the owning daemon (D-15): ``merge_pr`` = a 15s live label read + a 60s
 # ``gh pr merge``; ``ready_merge`` = that read + two 60s ``gh`` calls. Over the 30s client
@@ -1116,6 +1124,47 @@ class RemoteOrchestrator:
             if exc.err_type == "DevServerError" and code in dev_servers.DEV_SERVER_CODES:
                 raise dev_servers.DevServerError(code) from exc
             raise
+
+    async def worktree_preflight(self, session_id) -> dict:
+        """Proxy worktree_preflight (D-19) to the daemon that owns the session's worktree.
+        An unknown session is re-raised as KeyError; an old daemon's UnknownMethod stays
+        a DaemonError, which the route maps."""
+        try:
+            return await self._client.call("worktree_preflight", timeout=WORKTREE_RPC_TIMEOUT,
+                                           session_id=session_id)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            raise
+
+    async def _worktree_control(self, method: str, session_id, **kwargs) -> dict:
+        """Discard / Repair (D-19) on the owning daemon. An unknown session is re-raised
+        as KeyError and a refusal as WorktreeControlError with the envelope's code and
+        extras (known codes only); anything else stays a DaemonError."""
+        try:
+            return await self._client.call(method, timeout=WORKTREE_CONTROL_RPC_TIMEOUT,
+                                           session_id=session_id, **kwargs)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            data = dict(exc.data or {})
+            code = data.pop("code", None)
+            if (exc.err_type == "WorktreeControlError"
+                    and code in worktree_controls.WORKTREE_CONTROL_CODES):
+                raise worktree_controls.WorktreeControlError(code, data) from exc
+            raise
+
+    async def discard_worktree(self, session_id, *, identity: str = SYSTEM_IDENTITY,
+                               via: str | None = None) -> dict:
+        """The verified caller travels with the call: the owning daemon writes the audit
+        row, because a discard it finishes after this edge is gone has no other writer."""
+        return await self._worktree_control("discard_worktree", session_id,
+                                            identity=identity, via=via)
+
+    async def repair_worktree(self, session_id, *, identity: str = SYSTEM_IDENTITY,
+                              via: str | None = None) -> dict:
+        return await self._worktree_control("repair_worktree", session_id,
+                                            identity=identity, via=via)
 
     async def fork_session(self, session_id, *, at_turn_id: str | None, mode: str,
                            request_id: str, prefill: str | None = None,

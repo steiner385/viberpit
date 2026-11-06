@@ -234,3 +234,248 @@ def test_recreate_never_touches_a_non_empty_path(wt, repo):
     marker.write_text("mine\n")
     assert not worktrees.recreate_worktree(str(repo), wt.path, "feature")
     assert marker.read_text() == "mine\n"
+
+
+# ---------------------------------------------------------------------------
+# snapshot_before_discard (D-19 Discard)
+# ---------------------------------------------------------------------------
+
+S5 = "aaaa0005-1111-2222-3333-444455556666"
+
+
+def _child_session_worktree(repo: Path, tmp_path: Path, sid: str) -> worktrees.WorktreeInfo:
+    _git("branch", "feature", cwd=repo)
+    _git("checkout", "feature", cwd=repo)       # busy → create_worktree makes a child
+    info = worktrees.create_worktree(str(repo), "feature", sid, str(tmp_path))
+    assert info.is_child
+    return info
+
+
+def _commit(path: Path, name: str = "work.txt") -> str:
+    (path / name).write_text("committed but never pushed\n")
+    _git("add", "-A", cwd=path)
+    _git("-c", "user.name=t", "-c", "user.email=t@e", "commit", "-m", "work", cwd=path)
+    return _git("rev-parse", "HEAD", cwd=path)
+
+
+def test_discard_is_an_allowed_recovery_reason(wt, repo):
+    _dirty(Path(wt.path))
+    ref = worktrees.snapshot_recovery_ref(wt.path, S5, reason=worktrees.RECOVERY_DISCARD)
+    assert ref is not None and ref.endswith("-discard")
+
+
+def test_discard_refs_are_never_pruned(wt, repo):
+    path = Path(wt.path)
+    _dirty(path)
+    discard = worktrees.snapshot_recovery_ref(wt.path, S5, reason="discard")
+    for i in range(worktrees.RECOVERY_KEEP + 2):
+        (path / "tracked.txt").write_text(f"edit {i}\n")
+        worktrees.snapshot_recovery_ref(wt.path, S5, reason="drain")
+    assert discard in worktrees.recovery_refs(str(repo), S5)
+
+
+def test_snapshot_before_discard_keeps_a_dirty_tree(wt, repo):
+    _dirty(Path(wt.path))
+    refs = worktrees.snapshot_before_discard(wt.path, S5)
+    assert refs is not None and len(refs) == 1 and refs[0].endswith("-discard")
+    files = _ls_tree(repo, refs[0])
+    assert files["untracked.txt"] == "untracked" and files["staged.txt"] == "staged"
+
+
+def test_snapshot_before_discard_keeps_unpushed_session_branch_commits(repo, tmp_path):
+    info = _child_session_worktree(repo, tmp_path, S5)
+    tip = _commit(Path(info.path))
+    refs = worktrees.snapshot_before_discard(info.path, S5)
+    assert refs is not None and len(refs) == 1 and refs[0].endswith("-branch")
+    assert _git("rev-parse", refs[0], cwd=repo) == tip
+
+
+def test_snapshot_before_discard_keeps_dirty_first_then_branch(repo, tmp_path):
+    info = _child_session_worktree(repo, tmp_path, S5)
+    tip = _commit(Path(info.path))
+    _dirty(Path(info.path))
+    refs = worktrees.snapshot_before_discard(info.path, S5)
+    assert refs is not None and [r.rsplit("-", 1)[-1] for r in refs] == ["discard", "branch"]
+    assert _git("rev-parse", refs[1], cwd=repo) == tip
+
+
+def test_snapshot_before_discard_of_a_clean_pushed_tree_writes_nothing(repo, tmp_path):
+    info = _child_session_worktree(repo, tmp_path, S5)
+    assert worktrees.snapshot_before_discard(info.path, S5) == []
+    assert worktrees.recovery_refs(str(repo), S5) == []
+
+
+def test_snapshot_before_discard_keeps_detached_head_commits(repo, tmp_path):
+    """A detached worktree's own commits sit on no branch: removing the tree would leave
+    them unreferenced, so the HEAD commit is kept."""
+    info = worktrees.create_worktree(str(repo), None, S5, str(tmp_path))
+    tip = _commit(Path(info.path))
+    refs = worktrees.snapshot_before_discard(info.path, S5)
+    assert refs is not None and len(refs) == 1 and refs[0].endswith("-discard")
+    assert _git("rev-parse", refs[0], cwd=repo) == tip
+
+
+def test_snapshot_before_discard_leaves_a_user_branch_alone(wt, repo):
+    """`feature` is the user's branch: removal never deletes it, so its commits are not
+    at risk and no branch ref is written."""
+    _commit(Path(wt.path))
+    assert worktrees.snapshot_before_discard(wt.path, S5) == []
+
+
+def test_snapshot_before_discard_fails_closed_off_a_worktree(tmp_path):
+    (tmp_path / "plain").mkdir()
+    assert worktrees.snapshot_before_discard(str(tmp_path / "plain"), S5) is None
+
+
+def test_snapshot_before_discard_fails_closed_when_the_dirty_snapshot_fails(
+        wt, monkeypatch):
+    _dirty(Path(wt.path))
+    monkeypatch.setattr(worktrees, "snapshot_recovery_ref", lambda *a, **k: None)
+    assert worktrees.snapshot_before_discard(wt.path, S5) is None
+
+
+def test_discard_then_force_remove_loses_nothing(repo, tmp_path):
+    """The whole Discard sequence at the git layer: every byte of dirty work and every
+    unpushed commit is reachable from a recovery ref after the tree and the session
+    branch are gone."""
+    info = _child_session_worktree(repo, tmp_path, S5)
+    tip = _commit(Path(info.path))
+    _dirty(Path(info.path))
+    refs = worktrees.snapshot_before_discard(info.path, S5)
+    assert worktrees.remove_worktree(info.path, force=True, session_id=S5)
+    assert not Path(info.path).exists()
+    gone = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
+                           f"refs/heads/{info.branch}"], capture_output=True)
+    assert gone.returncode != 0
+    assert _git("rev-parse", "feature", cwd=repo), "the user's branch survives"
+    kept = worktrees.recovery_refs(str(repo), S5)
+    assert set(refs or []) <= set(kept)
+    files = _ls_tree(repo, refs[0])
+    assert files["untracked.txt"] == "untracked" and files["work.txt"]
+    assert _git("merge-base", "--is-ancestor", tip, refs[1], cwd=repo) == ""
+
+
+# ---------------------------------------------------------------------------
+# fail-closed removal (D-19 fix round 1)
+# ---------------------------------------------------------------------------
+
+S6 = "aaaa0006-1111-2222-3333-444455556666"
+
+
+def _fail_unpushed_check(monkeypatch):
+    real = worktrees._run
+
+    def run(args, *a, **k):
+        if "rev-list" in args and any(str(x).startswith("--exclude=") for x in args):
+            return subprocess.CompletedProcess(args, 128, "", "fatal: simulated")
+        return real(args, *a, **k)
+    monkeypatch.setattr(worktrees, "_run", run)
+
+
+def test_unpushed_check_is_unknown_when_rev_list_fails(repo, tmp_path, monkeypatch):
+    info = _child_session_worktree(repo, tmp_path, S6)
+    _fail_unpushed_check(monkeypatch)
+    assert worktrees._branch_has_unpushed_commits(str(repo), info.branch) is None
+
+
+def test_an_unknown_unpushed_state_keeps_the_branch_on_removal(repo, tmp_path,
+                                                               monkeypatch):
+    """It used to read as "nothing unpushed" and `branch -D` ran anyway."""
+    info = _child_session_worktree(repo, tmp_path, S6)
+    tip = _commit(Path(info.path))
+    _fail_unpushed_check(monkeypatch)
+    assert worktrees.remove_worktree(info.path, session_id=S6)
+    assert _git("rev-parse", f"refs/heads/{info.branch}", cwd=repo) == tip
+
+
+def test_an_unknown_unpushed_state_raises_before_discard(repo, tmp_path, monkeypatch):
+    info = _child_session_worktree(repo, tmp_path, S6)
+    _commit(Path(info.path))
+    _fail_unpushed_check(monkeypatch)
+    with pytest.raises(worktrees.RecoveryUnknown):
+        worktrees.snapshot_before_discard(info.path, S6)
+    assert worktrees.recovery_refs(str(repo), S6) == []
+
+
+def test_a_failed_branch_snapshot_keeps_the_branch(repo, tmp_path, monkeypatch):
+    info = _child_session_worktree(repo, tmp_path, S6)
+    tip = _commit(Path(info.path))
+    monkeypatch.setattr(worktrees, "snapshot_branch_tip", lambda *a, **k: None)
+    assert worktrees.remove_worktree(info.path, session_id=S6)
+    assert _git("rev-parse", f"refs/heads/{info.branch}", cwd=repo) == tip
+
+
+def test_a_failed_forced_snapshot_stops_the_removal(wt, monkeypatch):
+    _dirty(Path(wt.path))
+    monkeypatch.setattr(worktrees, "snapshot_recovery_ref", lambda *a, **k: None)
+    assert worktrees.remove_worktree(wt.path, force=True, session_id=S6) is False
+    assert (Path(wt.path) / "untracked.txt").read_text() == "untracked\n"
+
+
+def test_keep_branch_warning_has_a_path_free_message(repo, tmp_path, monkeypatch, caplog):
+    """The path rides in structured fields, so the error fingerprint is one per cause."""
+    import logging
+    info = _child_session_worktree(repo, tmp_path, S6)
+    _commit(Path(info.path))
+    monkeypatch.setattr(worktrees, "snapshot_branch_tip", lambda *a, **k: None)
+    with caplog.at_level(logging.WARNING):
+        assert worktrees.remove_worktree(info.path, session_id=S6)
+    rec = next(r for r in caplog.records if r.getMessage() == "worktree.keep_branch")
+    assert rec.levelno == logging.WARNING
+    assert rec.fields["reason"] == "snapshot_failed"  # type: ignore[attr-defined]
+    assert rec.fields["branch"] == info.branch  # type: ignore[attr-defined]
+    assert str(tmp_path) not in rec.getMessage()
+
+
+def test_recreate_failed_is_info_for_a_person(repo, tmp_path, caplog):
+    import logging
+    import shutil
+    _git("branch", "feature", cwd=repo)
+    info = worktrees.create_worktree(str(repo), "feature", S6, str(tmp_path))
+    shutil.rmtree(info.path)
+    with caplog.at_level(logging.INFO):
+        # `main` is checked out in the clone: `git worktree add` refuses it.
+        assert not worktrees.recreate_worktree(str(repo), info.path, "main",
+                                               person_initiated=True)
+        assert not worktrees.recreate_worktree(str(repo), info.path, "main")
+    levels = [r.levelno for r in caplog.records
+              if r.getMessage() == "worktree.recreate_failed"]
+    assert levels == [logging.INFO, logging.WARNING]
+
+
+def _fail_status(monkeypatch):
+    """Make remove_worktree's own `git status --porcelain` exit non-zero."""
+    real = worktrees._run
+
+    def run(args, *a, **k):
+        if "status" in args and "--porcelain" in args:
+            return subprocess.CompletedProcess(args, 128, "", "fatal: simulated")
+        return real(args, *a, **k)
+    monkeypatch.setattr(worktrees, "_run", run)
+
+
+def test_a_status_failure_is_not_clean_for_a_forced_removal(wt, repo, monkeypatch):
+    """D-19 final review, minor 5: a failed `git status` read as clean, so a forced
+    removal (janitor eviction, transfer finalize) skipped its snapshot. It is now
+    treated as dirty: the snapshot is taken, and the removal proceeds only with it."""
+    _dirty(Path(wt.path))
+    _fail_status(monkeypatch)
+    assert worktrees.remove_worktree(wt.path, force=True, session_id=S6) is True
+    refs = worktrees.recovery_refs(str(repo), S6)
+    assert len(refs) == 1 and refs[0].endswith("-forced")
+    assert _ls_tree(repo, refs[0])["untracked.txt"] == "untracked"
+
+
+def test_a_status_failure_with_no_snapshot_keeps_the_tree(wt, monkeypatch):
+    _dirty(Path(wt.path))
+    _fail_status(monkeypatch)
+    monkeypatch.setattr(worktrees, "snapshot_recovery_ref", lambda *a, **k: None)
+    assert worktrees.remove_worktree(wt.path, force=True, session_id=S6) is False
+    assert (Path(wt.path) / "untracked.txt").read_text() == "untracked\n"
+
+
+def test_a_status_failure_keeps_the_tree_for_a_normal_removal(wt, monkeypatch):
+    """Unforced callers never remove a tree whose state they could not read."""
+    _fail_status(monkeypatch)
+    assert worktrees.remove_worktree(wt.path, session_id=S6) is False
+    assert Path(wt.path).is_dir()

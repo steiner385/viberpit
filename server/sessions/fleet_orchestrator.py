@@ -217,6 +217,9 @@ _PER_SESSION: frozenset[str] = frozenset({
     # D-18: a session's dev servers are its host's processes, and the preview opens on
     # its host's virtual display.
     "dev_servers", "open_dev_server",
+    # D-19: a session's worktree is its host's — the Discard / Repair preflight and both
+    # actions.
+    "worktree_preflight", "discard_worktree", "repair_worktree",
     # A fork (D-8) is made from the source's transcript and worktree, on its host.
     "fork_session",
     # So is a rewind (D-9): the live client, transcript, worktree and undo backups.
@@ -271,6 +274,8 @@ _MOVE_BLOCKED: frozenset[str] = frozenset({
     # the source's record (a worker forgets it) or race the target's import.
     "rename_session", "set_pr_autofix_paused", "set_auto_archive_opt_out",
     "dismiss_suspected_complete", "interrupt", "stop_subagent",
+    # D-19: removing or recreating the worktree a move is carrying.
+    "discard_worktree", "repair_worktree",
 })
 # Stopping a turn is refused only while a saga is LIVE (``_moving``): the session is
 # idle then, so there is nothing to stop, and the stop would race the export. A HELD

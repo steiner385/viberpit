@@ -401,8 +401,22 @@ class ErrorEvent:
     code: str; message: str; resets_at: str | None = None; turn_id: str | None = None
     ts: float | None = field(default_factory=_now_ms)
     raw_message: str | None = None  # pre-humanize diagnostic text; internal, not wired
+    # The error card's recovery kind (``failure.ERROR_KINDS``, D-19). Derived once, here,
+    # from the code and the raw text when not given; a replayed event (Codex turn
+    # history) carries the persisted value, and a record written before the field
+    # existed derives it from its persisted code on decode.
+    kind: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind is None:
+            # Lazy: this module's runtime imports stay free of server.* (failure.py
+            # itself is stdlib-only).
+            from server.sessions.failure import error_kind
+            self.kind = error_kind(self.code, self.raw_message or self.message)
+
     def to_wire(self): return {"type": "error", "code": self.code, "message": self.message,
-                               "resetsAt": self.resets_at, "turnId": self.turn_id, "ts": self.ts}
+                               "resetsAt": self.resets_at, "turnId": self.turn_id, "ts": self.ts,
+                               "kind": self.kind}
 
 @dataclass
 class Recovering:

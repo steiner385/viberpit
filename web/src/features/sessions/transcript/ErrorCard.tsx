@@ -1,12 +1,20 @@
+import { lazy, Suspense } from 'react'
 import { cn } from '@/lib/utils'
+import type { ErrorKind } from '@/session/events'
 import type { Turn } from '@/session/reducer'
 import { retryablePrompt } from '@/session/rewindTarget'
 import { useRewindActions } from '@/features/sessions/rewind/rewindContext'
+import { ERROR_ACTION_CLASS, useErrorRecovery } from './errorRecoveryContext'
+
+/** Switch model / Lower effort / Compact (D-19): only a failed turn loads them. */
+const ErrorRecoveryActions = lazy(() => import('./ErrorRecoveryActions'))
 
 interface Props {
   code: string
   message: string
   resetsAt?: string | null
+  /** The server's classification (D-19); absent = `other`. */
+  errorKind?: ErrorKind
   /** The user prompt whose turn failed (`failedPrompts`) — what Rewind & retry rewinds to. */
   prompt?: Turn | null
 }
@@ -20,10 +28,18 @@ interface Props {
  * session that can rewind, while the server would not refuse (`busy`), and when the
  * prompt can be resent as typed (`retryablePrompt`) — confirm, rewind to that prompt,
  * then send it again (`RewindActions.retry`). Disabled while any rewind is in hand.
+ * Not for `model_unavailable`: resending to the same missing model fails the same way.
+ *
+ * The rest by `errorKind` (D-19, `ErrorRecoveryActions`), in a live session only
+ * (`ErrorRecoveryContext`): Switch model and Lower effort for a rate limit or an
+ * overload, Switch model alone for a missing model, Compact for a context overflow.
  */
-export function ErrorCard({ code, message, resetsAt, prompt }: Props) {
+export function ErrorCard({ code, message, resetsAt, errorKind = 'other', prompt }: Props) {
   const rewind = useRewindActions()
-  const canRetry = rewind !== null && !rewind.busy && prompt != null && retryablePrompt(prompt)
+  const recovery = useErrorRecovery()
+  const canRetry = errorKind !== 'model_unavailable'
+    && rewind !== null && !rewind.busy && prompt != null && retryablePrompt(prompt)
+  const more = recovery !== null && errorKind !== 'other'
   return (
     <div
       role="alert"
@@ -41,20 +57,23 @@ export function ErrorCard({ code, message, resetsAt, prompt }: Props) {
           Resets at {new Date(resetsAt).toLocaleTimeString()}
         </div>
       )}
-      {canRetry && (
-        <div className="mt-1.5 flex justify-end">
-          <button
-            type="button"
-            disabled={rewind.open}
-            onClick={() => { void rewind.retry(prompt) }}
-            className={cn(
-              'rounded px-1.5 py-0.5 text-xs font-medium text-danger',
-              'hover:bg-danger/10 disabled:opacity-50',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-            )}
-          >
-            Rewind &amp; retry
-          </button>
+      {(canRetry || more) && (
+        <div className="mt-1.5 flex flex-wrap justify-end gap-1">
+          {more && (
+            <Suspense fallback={null}>
+              <ErrorRecoveryActions kind={errorKind} recovery={recovery} className={ERROR_ACTION_CLASS} />
+            </Suspense>
+          )}
+          {canRetry && (
+            <button
+              type="button"
+              disabled={rewind.open}
+              onClick={() => { void rewind.retry(prompt) }}
+              className={ERROR_ACTION_CLASS}
+            >
+              Rewind &amp; retry
+            </button>
+          )}
         </div>
       )}
     </div>

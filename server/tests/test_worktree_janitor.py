@@ -854,3 +854,31 @@ class TestOrphanedWorktrees:
                 counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
         assert counts["orphaned"] == 0
         assert counts["removed"] == 1
+
+
+def test_a_failed_forced_snapshot_keeps_the_tree_as_evict_failed(tmp_path, monkeypatch):
+    """D-19 fix round 2: the max-age forced eviction of a dirty tree whose stash AND
+    recovery snapshot both fail removes nothing — it counts ``evict_failed``."""
+    from viberpit import worktrees
+    import viberpit.worktrees_janitor as jan
+
+    def git(*args, cwd):
+        subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
+
+    repo = tmp_path / "KinDash"
+    subprocess.run(["git", "init", str(repo), "-b", "main"], check=True, capture_output=True)
+    git("config", "user.email", "t@example.com", cwd=repo)
+    git("config", "user.name", "Test", cwd=repo)
+    (repo / "README.md").write_text("hi\n")
+    git("add", "-A", cwd=repo)
+    git("commit", "-m", "init", cwd=repo)
+    git("branch", "feature", cwd=repo)
+    info = worktrees.create_worktree(str(repo), "feature", "abcd1234-0000", str(tmp_path))
+    wt = Path(info.path)
+    (wt / "precious.txt").write_text("unsaved\n")
+    _age(wt, VERY_OLD, NOW)
+    monkeypatch.setattr(jan, "_git_stash", lambda _wt: None)
+    monkeypatch.setattr(worktrees, "snapshot_recovery_ref", lambda *a, **k: None)
+    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+    assert counts["evict_failed"] == 1 and counts["removed"] == 0, counts
+    assert (wt / "precious.txt").read_text() == "unsaved\n"

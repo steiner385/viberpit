@@ -26,6 +26,8 @@ export interface PaletteHost {
   newSession: () => void
   /** New session with this preset selected in the dispatch bar (D-14). */
   newSessionFromPreset: (presetId: string) => void
+  /** New session with this repo and branch chosen in the dispatch bar (D-19). */
+  startOnBranch: (repo: string, branch: string) => void
   navigate: (path: string) => void
   /** Whether the Active list's Project filter offers `nameWithOwner` — only
    *  then can it show exactly that repo's sessions. */

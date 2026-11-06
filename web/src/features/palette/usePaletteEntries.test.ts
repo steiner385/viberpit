@@ -34,7 +34,7 @@ const repo = (nameWithOwner: string): GithubRepo => ({
 function host(over: Partial<PaletteHost> = {}): PaletteHost {
   return {
     context: ctx(), actions: {}, live: [],
-    openSession: vi.fn(), openArchived: vi.fn(), newSession: vi.fn(), newSessionFromPreset: vi.fn(), navigate: vi.fn(),
+    openSession: vi.fn(), openArchived: vi.fn(), newSession: vi.fn(), newSessionFromPreset: vi.fn(), startOnBranch: vi.fn(), navigate: vi.fn(),
     canFilterRepo: () => false, filterRepo: vi.fn(), close: vi.fn(),
     ...over,
   }
@@ -153,6 +153,35 @@ describe('buildPaletteEntries', () => {
     expect(branches.map((e) => e.label)).toEqual(['feat/x', 'main'])
     expect(branches.map((e) => e.drill)).toEqual(['branch:feat/x', 'branch:main'])
     expect(h.filterRepo).toHaveBeenCalledTimes(1)
+  })
+
+  it('each branch a session has on a repo offers "New session on repo@branch", which opens the bar on it (D-19)', () => {
+    const h = host({
+      live: [
+        { session: live('a', { repo: 'o/app', branch: 'feat/x' }), scope: 'live' },
+        { session: live('b', { repo: 'o/app', branch: 'feat/x' }), scope: 'live' },
+        { session: live('c', { repo: 'o/lib', branch: 'feat/x' }), scope: 'background' },
+        { session: live('d', { branch: 'scratch' }), scope: 'live' },
+      ],
+    })
+    const branches = inSection(buildPaletteEntries(h, NO_DATA), 'branches')
+    expect(branches.map((e) => e.label)).toEqual([
+      'feat/x', 'New session on o/app@feat/x', 'New session on o/lib@feat/x', 'scratch',
+    ])
+    branches[2].run!()
+    expect(h.startOnBranch).toHaveBeenCalledWith('o/lib', 'feat/x')
+    // Found by the branch, the repo, or "new session".
+    const prepared = preparePalette(buildPaletteEntries(h, NO_DATA))
+    const found = (q: string) => paletteSections(prepared, q).find((s) => s.id === 'branches')?.entries.map((e) => e.label)
+    expect(found('new session o/lib')).toEqual(['New session on o/lib@feat/x'])
+  })
+
+  it('kiosk offers no start-on-branch action', () => {
+    const h = host({
+      context: ctx({ interactive: false }),
+      live: [{ session: live('a', { repo: 'o/app', branch: 'feat/x' }), scope: 'live' }],
+    })
+    expect(buildPaletteEntries(h, NO_DATA).some((e) => e.key.startsWith('branch-new:'))).toBe(false)
   })
 
   it('a drill-down’s Sessions are EXACTLY the sessions on that repo or branch — background and archived included', () => {

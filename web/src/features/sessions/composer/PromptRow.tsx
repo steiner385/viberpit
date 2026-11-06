@@ -9,11 +9,11 @@ import { useImperativeHandle, useState, type Ref } from 'react'
 import type { AgentCapabilities, ModelOption, Session } from '@/api/types'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { SESSION_MODE_OPTIONS } from '@/session/permissionModes'
-import { canUseEngine } from '@/session/engineCapabilities'
 import { statusTier } from '@/session/statusTier'
 import { ModePicker } from './ModePicker'
 import { ModelPicker } from './ModelPicker'
 import { EffortPicker } from './EffortPicker'
+import { effortChoices } from './effortChoices'
 import { UsageRing } from '@/ui/UsageRing'
 import { contextSeverity, contextUsedLabel } from '@/lib/contextWindow'
 import FastToggle from './FastToggle'
@@ -45,7 +45,6 @@ export interface PromptRowProps {
 }
 
 const NO_MODELS: readonly ModelOption[] = []
-const NO_EFFORTS: readonly string[] = []
 
 // `caps` gates nothing for the mode picker: no engine restricts permission modes
 // (AgentCapabilities has no mode field and Codex maps all seven).
@@ -53,21 +52,9 @@ export function PromptRow({ rt, session, caps, models = NO_MODELS, menuRef, onTo
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null)
   const menuOpener = (menu: OpenMenu) => (next: boolean) => setOpenMenu(next ? menu : null)
 
-  // The chosen model's catalog row: its efforts drive the effort picker. A null
-  // choice is the account default, which the catalog flags (Codex) when it knows it.
-  const chosenModel = models.find((m) => m.id === rt.model)
-    ?? (rt.model == null ? models.find((m) => m.default) : undefined)
-  // The catalog row's own efforts (Codex) win. Otherwise a Claude session whose
-  // engine REPORTS live flag settings gets the levels the CLI listed for its current
-  // model (`supportedEffortLevels` on the payload) — reported, not assumed: `canUseEngine`
-  // treats an unknown capability as present, which is right for a control the catalog
-  // vouches for and wrong for this one. No list yet (or an empty one) = no picker.
-  const catalogEfforts = canUseEngine(caps, 'reasoningEffort') ? chosenModel?.reasoningEfforts ?? [] : []
-  const efforts = catalogEfforts.length > 0
-    ? catalogEfforts
-    : caps?.flagSettings === true ? session?.supportedEffortLevels ?? NO_EFFORTS : NO_EFFORTS
+  // The one effort reading, shared with the error card's "Lower effort" (D-19).
+  const { efforts, effort } = effortChoices(rt.model, session, caps, models)
   const showEffort = efforts.length > 0
-  const effort = session?.reasoningEffort ?? chosenModel?.defaultReasoningEffort ?? null
   const busy = statusTier(rt.state.status.state) === 'busy'
   const fastOn = session?.fastMode === true
   // Also while the stored choice is ON, so a model switch that dropped availability

@@ -706,14 +706,15 @@ def test_isolation_survives_reattach_and_rotation(tmp_path):
 
     # Every driver-building site must call the engine-specific config helper,
     # not re-derive the setup sequence.
-    for name in ("_spawn_session", "ensure_driver", "_reassign_locked", "adopt_session"):
+    for name in ("_spawn_session", "_resume_detached_driver", "_reassign_locked", "adopt_session"):
         src_text = inspect.getsource(getattr(SessionOrchestrator, name))
         assert "_driver_config_dir(" in src_text, name
 
     # The three general rebuild sites also share the suggester decision. Adoption
     # is deliberately a normal coding session and therefore has no kind branch.
-    # (`_reassign` validates and delegates; `_reassign_locked` builds the driver.)
-    for name in ("_spawn_session", "ensure_driver", "_reassign_locked"):
+    # (`_reassign` validates and delegates; `_reassign_locked` builds the driver;
+    # `ensure_driver` waits and delegates; `_resume_detached_driver` builds it.)
+    for name in ("_spawn_session", "_resume_detached_driver", "_reassign_locked"):
         src_text = inspect.getsource(getattr(SessionOrchestrator, name))
         assert "_suggester_for(" in src_text, name
         assert "suggester=self._suggester," not in src_text, name
