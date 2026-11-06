@@ -49,19 +49,14 @@ interface Props {
   onRotate?: () => void
   /**
    * Surface a "Move to host…" menu item that calls this (D-17) — the host owns the
-   * dialog, like `onRename`. Omitted → no item (single-host fleet, or an engine that
-   * cannot move and has nothing to explain).
+   * dialog, like `onRename`. Omitted → no item (single-host fleet, or an engine
+   * without `crossHostTransfer`).
    */
   onMoveHost?: () => void
-  /**
-   * Show "Move to host…" DISABLED with this explanation instead (e.g. "Codex history
-   * stays on its host"). Ignored when `onMoveHost` is given.
-   */
-  moveHostDisabledReason?: string
 }
 
 export function SessionActions({
-  sessionId, sessionName, onDone, variant = 'dark', onRename, onReload, onRotate, onMoveHost, moveHostDisabledReason,
+  sessionId, sessionName, onDone, variant = 'dark', onRename, onReload, onRotate, onMoveHost,
 }: Props) {
   const closeSession = useCloseSession()
   const permanentDelete = usePermanentDeleteSession()
@@ -247,24 +242,20 @@ export function SessionActions({
                 Next best account
               </button>
             )}
-            {/* One item, two states: live, or inert with the reason it cannot move (D2). */}
-            {(onMoveHost || moveHostDisabledReason) && (
+            {onMoveHost && (
               <button
                 type="button"
                 role="menuitem"
-                aria-disabled={onMoveHost ? undefined : true}
-                onClick={() => { if (onMoveHost) { setMenuOpen(false); onMoveHost() } }}
+                onClick={() => { setMenuOpen(false); onMoveHost() }}
                 className={cn(
-                  'flex w-full items-start gap-2 px-3 py-2 text-sm text-left',
-                  onMoveHost ? 'text-ink hover:bg-surface-raised' : 'text-ink-muted cursor-not-allowed',
+                  'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
+                  'text-ink',
+                  'hover:bg-surface-raised',
                   'focus-visible:outline-none focus-visible:bg-surface-raised',
                 )}
               >
-                <ArrowRightLeft size={16} aria-hidden="true" className="mt-0.5 flex-shrink-0" />
-                <span className="min-w-0">
-                  Move to host…
-                  {!onMoveHost && <span className="block text-xs">{moveHostDisabledReason}</span>}
-                </span>
+                <ArrowRightLeft size={16} aria-hidden="true" />
+                Move to host…
               </button>
             )}
             <button

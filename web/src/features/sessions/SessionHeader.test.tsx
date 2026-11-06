@@ -549,16 +549,26 @@ describe('SessionHeader — Move to host (D-17)', () => {
     expect(screen.queryByRole('menuitem', { name: /move to host/i })).toBeNull()
   })
 
-  it('Codex: not movable, and the menu says why', async () => {
+  it('offers it for a Codex session whose engine declares crossHostTransfer (#3347)', async () => {
+    // The server carries the Codex thread alongside the worktree, so Codex is
+    // gated by the same capability as Claude — no engine-specific refusal copy.
+    renderHeader({
+      hosts: ['dobby', 'rocky'],
+      sessions: [session({ id: 'sess-1', engine: 'codex', host: 'dobby' })],
+      engines: [offer('codex', caps({ crossHostTransfer: true }))],
+    })
+    await openActions()
+    expect(screen.getByRole('menuitem', { name: 'Move to host…' })).toBeEnabled()
+  })
+
+  it('hides it (not disabled) for a Codex session without crossHostTransfer', async () => {
     renderHeader({
       hosts: ['dobby', 'rocky'],
       sessions: [session({ id: 'sess-1', engine: 'codex' })],
       engines: [offer('codex', caps({ crossHostTransfer: false }))],
     })
     await openActions()
-    const item = screen.getByRole('menuitem', { name: /move to host/i })
-    expect(item).toHaveAttribute('aria-disabled', 'true')
-    expect(item).toHaveTextContent('Codex history stays on its host')
+    expect(screen.queryByRole('menuitem', { name: /move to host/i })).toBeNull()
   })
 
   it('hides it for a Claude session when the server turned moves off (crossHostTransfer false)', async () => {

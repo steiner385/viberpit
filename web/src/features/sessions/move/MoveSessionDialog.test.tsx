@@ -92,7 +92,8 @@ describe('MoveSessionDialog — target select', () => {
 describe('MoveSessionDialog — refusals in plain language (Review Focus 4)', () => {
   it.each([
     ['MOVE_MID_TURN', /Wait for the turn to finish or Interrupt first/],
-    ['MOVE_ENGINE_UNSUPPORTED', /Codex history stays on its host/],
+    ['MOVE_ENGINE_UNSUPPORTED', /This session's agent cannot move between hosts/],
+    ['MOVE_HISTORY_TOO_LARGE', /Codex history is too large to move \(over 128 MB\)/],
     ['MOVE_HAS_CHILDREN', /steering live child sessions/],
     ['MOVE_IS_CHILD', /steered by a live parent/],
     ['MOVE_AWAITING_ANSWER', /open question, permission or plan card/],

@@ -8,9 +8,6 @@ import { apiErrorCode } from './client'
  *  the session is being moved (HTTP 409, WS error frame). */
 export const SESSION_MOVING = 'SESSION_MOVING'
 
-/** D2: the menu's explanation for an engine that cannot move (Codex). */
-export const CODEX_STAYS_COPY = 'Codex history stays on its host'
-
 /** THE "Moving to <host>…" sentence — the chip, the composer and every refused action
  *  say the same thing (the WS attach frame's message is the server's copy of it). */
 export function movingLabel(host: string): string {
