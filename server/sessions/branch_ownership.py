@@ -560,8 +560,9 @@ async def _backfill(repo_root_fallback: str) -> int:
         await db.execute(dialect_insert(DataBackfill).values(
             name=marker, applied_at=datetime.now(timezone.utc),
         ).on_conflict_do_nothing(index_elements=["name"]))
-    log_event(log, logging.INFO, "session_branch.backfilled", host=host,
-              recorded=len(resolved), skipped=len(candidates) - len(resolved))
+    if candidates:  # a fresh or empty DB has nothing to say: no line at every first start
+        log_event(log, logging.INFO, "session_branch.backfilled", host=host,
+                  recorded=len(resolved), skipped=len(candidates) - len(resolved))
     return len(resolved)
 
 

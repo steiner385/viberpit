@@ -543,6 +543,17 @@ async def test_backfill_failure_never_breaks_startup(isolated_db, tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_an_empty_backfill_logs_nothing(isolated_db, tmp_path, monkeypatch, caplog):
+    """A fresh DB (every test's init_db, every first start) has nothing to backfill and
+    must stay silent: a stray INFO line leaked into other tests' captured logs."""
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
+    await _unmark()
+    with caplog.at_level(logging.INFO, logger=bo.log.name):
+        assert await bo.backfill_session_branches(repo_root_fallback=str(tmp_path)) == 0
+    assert not [r for r in caplog.records if r.name == bo.log.name]
+
+
+@pytest.mark.asyncio
 async def test_init_db_runs_the_backfill(tmp_path, monkeypatch):
     """Wired into startup: a fresh init_db leaves this host's marker behind."""
     from server.db import dispose_db, init_db
