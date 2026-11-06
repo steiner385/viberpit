@@ -65,12 +65,12 @@ Full inventories, with an evidence tag on every item:
 | 4 Commands & config | 15 / 15 | 100% |
 | 5 Settings | 5.5 / 8 | 69% |
 | 6 User feedback | 19 / 19 | 100% |
-| 7 Lifecycle & branching | 24 / 25 | 96% |
+| 7 Lifecycle & branching | 24.5 / 25 | 98% |
 | 8 Code review & dev | 9.5 / 12 | 79% |
 | 9 Shortcuts & a11y | 8 / 8 | 100% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **151 / 161** | **94%** |
-| **Target completion** (excl. rejected rows) | **148.5 / 150.5** | **99%** |
+| **Overall (weighted)** | **151.5 / 161** | **94%** |
+| **Target completion** (excl. rejected rows) | **149 / 150.5** | **99%** |
 
 ### 1 Shell & IA
 
@@ -140,12 +140,12 @@ Full inventories, with an evidence tag on every item:
 | Desktop capability | Weight | ViberPit | Notes |
 |---|:-:|:-:|---|
 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 1 | ✅ | per-session PR auto-fix switch in the Environment card (D-14) + auto-archive + autopilot; branch prefix shown read-only (fixed viberpit/) |
-| Worktree location / policy | 1 | ◐ | repo/worktree root editable in Settings › Sessions (D-14); branch prefix deferred — it is the guard on automatic branch deletion, so a configurable prefix needs a validated history first |
+| Worktree location / policy | 1 | ◐ | repo/worktree root editable in Settings › Sessions (D-14); configurable branch prefix adopted (2026-11-06, D22b) behind a recorded-ownership guard on automatic deletion — not built yet |
 | Default transcript view | 1 | ✅ |  |
 | Notification levels per event type | 1 | ◐ | quiet hours, channels, routing rules · *rejected for target* |
 | Appearance: theme, font + transcript size | 1 | ◐ | theme + widths · *rejected for target* |
 | Presets / environments selectable at new session | 2 | ✅ | dispatch bar + menu (removable chip) and ⌘K "New session from preset"; no chord — every digit family is taken (D-14) |
-| Sandbox settings | 1 | ❌ | deferred by the owner (2026-11-04): fails open on hosts without socat, auto-allows Bash past permission cards, and blocks the sockets gh/push need |
+| Sandbox settings | 1 | ❌ | adopted (2026-11-06, D22a): opt-in, fail-closed — offered only where the host preflight passes, Bash auto-allow off so permission cards still show, gh/git sockets and GitHub hosts allowed; spike first, not built yet |
 
 ### 6 User feedback
 
@@ -175,7 +175,7 @@ Full inventories, with an evidence tag on every item:
 | Spin off parallel / child sessions | 1 | ✅ |  |
 | Archive / unarchive / auto-archive | 2 | ✅ |  |
 | Rename + AI titles | 1 | ✅ |  |
-| Move session to cloud / other host | 1 | ◐ | other fleet host, idle Claude sessions (D-17); no cloud, no Codex |
+| Move session to cloud / other host | 1 | ✅ | other fleet host, idle Claude sessions (D-17); the self-hosted fleet stands in for Desktop's cloud (owner, 2026-11-06, D22c); moving Codex sessions tracked in #3347 |
 | Scheduled tasks / routines | 1 | ◐ | Delivery automations · *rejected for target* |
 
 ### 8 Code review & dev
@@ -222,9 +222,8 @@ Full inventories, with an evidence tag on every item:
 | 7 | Worktree location / policy | 5 Settings | 0.5 |
 | 8 | Notification levels per event type | 5 Settings | 0.5 |
 | 9 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
-| 10 | Move session to cloud / other host | 7 Lifecycle & branching | 0.5 |
-| 11 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
-| 12 | Files pane: edit | 8 Code review & dev | 0.5 |
+| 10 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 11 | Files pane: edit | 8 Code review & dev | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 
@@ -287,3 +286,14 @@ the rejected half counts against overall parity but not the target.
 | D19 | Dev surfaces (#37–41) | **Adopt all:** move a session between fleet hosts; inline tool diffs rendered by the Changes-pane renderer (one renderer); a PR tab (checks, threads, merge/auto-merge, from Pipeline data); dev-server detection offered in the Browser tab or a proxied preview. |
 | D20 | Keyboard (#42–44, #47) | **Adopt:** ⌘⇧M/I/E menus (each verified against browser-reserved chords); previous/next session and 1–9 jump on non-reserved chords; jump between prompts. **Reject:** Ctrl+R prompt search. |
 | D21 | Leftovers (#45, #49–51) | **Reject all:** pop-out window, per-event notification levels, font/transcript size, routines in the session UI. |
+
+### Follow-up decisions (owner review, 2026-11-06)
+
+The three target rows left open after D-21, reviewed one at a time.
+
+| # | Gap | Decision |
+|---|---|---|
+| D22a | Sandbox settings (#48) | **Adopt, opt-in and fail-closed, spike first.** The toggle is offered only on a host whose preflight passes (bubblewrap and socat present); elsewhere it is disabled with the reason. The CLI's Bash auto-allow is turned off so permission cards still appear. GitHub hosts and the gh/git sockets are allowed explicitly. Off by default, with a per-session toggle in the Environment card. Supersedes the 2026-11-04 deferral. |
+| D22b | Branch prefix (#31) | **Adopt with recorded ownership.** The prefix is configurable in Settings › Sessions, and every branch ViberPit creates is recorded in the DB. Automatic deletion requires that record, not just a matching name. The built-in `viberpit/` and legacy `ccswitch/` prefixes keep matching older branches. A prefix that clashes with an existing branch namespace is refused. |
+| D22c | Move session to cloud (#50) | **The fleet move counts.** The self-hosted fleet (rocky or any onboarded runner) stands in for Desktop's cloud, so D-17's move between hosts closes the row. Moving Codex sessions is tracked in #3347. |
+
