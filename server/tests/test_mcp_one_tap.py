@@ -503,8 +503,14 @@ def test_assistant_tokens_cannot_reach_one_tap_routes(path: str) -> None:
 
 def test_start_is_post_only() -> None:
     """start mints state and audits, so a cross-site GET (<img>) must not reach it (#3325)."""
+    from fastapi.routing import APIRoute
+
     from server.api.mcp_oauth import router
-    methods = {m for r in router.routes if r.path.endswith("/start") for m in r.methods}
+    methods = {
+        m for r in router.routes
+        if isinstance(r, APIRoute) and r.path.endswith("/start")
+        for m in r.methods or ()
+    }
     assert methods == {"POST"}
 
 
