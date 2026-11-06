@@ -8,6 +8,8 @@ Never touches GitHub: visibility is stubbed and every origin is a local bare rep
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import subprocess
 from datetime import timedelta
@@ -22,6 +24,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, update
 
 from viberpit import gitrepos, worktree_transfer as wt, worktrees
+from server.codex import thread_move
 from server.codex.capabilities import CODEX_CAPABILITIES
 from server.db import db_session
 from server.db.clock import naive_utc_now
@@ -32,11 +35,15 @@ from server.sessions.engine import AgentEngine, capabilities_to_wire
 from server.sessions.fleet import HostCandidate
 from server.sessions.fleet_orchestrator import FleetOrchestrator
 from server.sessions.fleet_router import FleetRouter
+from server.sessions.host_engines import parse_engines_info
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.types import SessionRecord
 
 SID = "5e55a0aa-1111-2222-3333-444455556666"
 BOTH = frozenset({"dobby", "rocky"})
+#: A Codex thread id and its rollout's relative path under CODEX_HOME (#3347).
+TID = "01a0b4b5-3615-7591-847f-ecbd85121328"
+TID_REL = f"sessions/2026/11/06/rollout-2026-11-06T10-00-00-{TID}.jsonl"
 
 
 # ═════════════════════════════════════════════════════════════════════════════════════
@@ -50,11 +57,20 @@ def _subject(**kw) -> sm.MoveSubject:
     return sm.MoveSubject(**base)
 
 
+#: A runner's ``/info.engines`` with Codex up (the shape ``parse_engines_info`` reads).
+CODEX_UP = {"claude_code": {"available": True},
+            "codex": {"available": True, "cliVersion": "codex-cli 0.153.2"}}
+
+
 def _cand(name="rocky", **kw) -> HostCandidate:
     base = dict(name=name, enabled=True, healthy=True, weight=100, active_sessions=1,
                 max_sessions=6, load_avg=0.5, mem_available_mb=8000)
     base.update(kw)
     return HostCandidate(**base)
+
+
+def _codex_cand(**kw) -> HostCandidate:
+    return _cand(engines=parse_engines_info(CODEX_UP), **kw)
 
 
 def _verdict(subject=None, target="rocky", cand="default", **kw) -> sm.MoveVerdict:
@@ -88,10 +104,49 @@ def test_session_level_refusals(subject_kw, code):
     assert not v.ok and v.code == code and v.message
 
 
-def test_a_codex_session_is_refused_with_the_history_explanation():
-    v = _verdict(_subject(engine=AgentEngine.CODEX), caps=CODEX_CAPABILITIES)
+def test_a_codex_session_is_movable():
+    """#3347: the rollout travels in the manifest, so an idle Codex session moves — to
+    a host that advertises Codex."""
+    subject = _subject(engine=AgentEngine.CODEX)
+    assert _verdict(subject, cand=_codex_cand(), caps=CODEX_CAPABILITIES).ok
+    v = _verdict(subject, caps=CODEX_CAPABILITIES)        # a Claude-only host
+    assert v.code == sm.MOVE_TARGET_ENGINE
+
+
+def test_a_codex_history_over_the_cap_is_refused():
+    facts = sm.WorktreeFacts.from_preflight({"historyBytes": sm.HISTORY_MAX_BYTES + 1})
+    assert facts.history_bytes == sm.HISTORY_MAX_BYTES + 1
+    subject = _subject(engine=AgentEngine.CODEX)
+    v = _verdict(subject, cand=_codex_cand(), caps=CODEX_CAPABILITIES, facts=facts)
+    assert v.code == sm.MOVE_HISTORY_TOO_LARGE
+    assert "128 MB" in v.message
+    assert v.extra["historyBytes"] == sm.HISTORY_MAX_BYTES + 1
+    at_cap = sm.WorktreeFacts(history_bytes=sm.HISTORY_MAX_BYTES)
+    assert _verdict(subject, cand=_codex_cand(), caps=CODEX_CAPABILITIES, facts=at_cap).ok
+
+
+def test_the_engine_refusal_names_no_engine():
+    v = _verdict(_subject(engine=AgentEngine.CODEX), caps=None)
     assert v.code == sm.MOVE_ENGINE_UNSUPPORTED
-    assert "Codex history stays on its host" in v.message
+    assert v.message == "This session's engine cannot move between hosts."
+    assert "Codex" not in v.message
+
+
+def test_storable_manifest_drops_the_thread_bytes():
+    bundle = thread_move.ThreadBundle(
+        thread_id=TID, rel_path=TID_REL, size=3, sha256="a" * 64, data="eHl6",
+        sidecars=(thread_move.Sidecar(name=f"{TID}.jsonl", size=1, sha256="b" * 64,
+                                      data="eA=="),))
+    manifest = {"sessionId": SID, "bundle": {"x": 1}, "codexThread": bundle.to_dict()}
+    stored = sm.storable_manifest(manifest)
+    assert stored is not None
+    assert stored["codexThread"]["data"] is None
+    assert stored["codexThread"]["sidecars"][0]["data"] is None
+    assert stored["codexThread"]["sha256"] == "a" * 64 and stored["bundle"] == {"x": 1}
+    assert manifest["codexThread"]["data"] == "eHl6"          # the input is not mutated
+    assert sm.storable_manifest({"sessionId": SID, "codexThread": None}) == {
+        "sessionId": SID, "codexThread": None}
+    assert sm.storable_manifest(None) is None
 
 
 def test_the_kill_switch_refuses_everything():
@@ -114,13 +169,14 @@ def test_a_platform_session_needs_a_host_advertising_it():
     assert v.code == sm.MOVE_TARGET_PLATFORM
 
 
-def test_claude_declares_cross_host_transfer_and_codex_does_not(monkeypatch):
+def test_claude_and_codex_both_declare_cross_host_transfer(monkeypatch):
     assert ClaudeAgentDriver.capabilities.cross_host_transfer is True
-    assert CODEX_CAPABILITIES.cross_host_transfer is False
+    assert CODEX_CAPABILITIES.cross_host_transfer is True
     assert capabilities_to_wire(ClaudeAgentDriver.capabilities)["crossHostTransfer"] is True
-    assert capabilities_to_wire(CODEX_CAPABILITIES)["crossHostTransfer"] is False
+    assert capabilities_to_wire(CODEX_CAPABILITIES)["crossHostTransfer"] is True
     monkeypatch.setenv("VIBERPIT_SESSION_MOVE_ENABLED", "false")
     assert capabilities_to_wire(ClaudeAgentDriver.capabilities)["crossHostTransfer"] is False
+    assert capabilities_to_wire(CODEX_CAPABILITIES)["crossHostTransfer"] is False
 
 
 # Revised D1 (owner, 2026-11-05): a dirty tree on a public repo never travels.
@@ -713,6 +769,52 @@ async def test_preflight_reports_targets_dirty_files_and_tasks(fleet):
 
 
 @pytest.mark.asyncio
+async def test_preflight_refuses_a_codex_history_over_the_cap(fleet):
+    """The source's ``historyBytes`` reaches the predicate through the edge (#3347)."""
+    fx = fleet
+    fx.dobby.records[SID].engine = AgentEngine.CODEX
+    async with db_session() as db:
+        await db.execute(update(DbSession).where(DbSession.id == SID).values(engine="codex"))
+        await db.execute(update(Host).where(Host.name == "rocky").values(engines=CODEX_UP))
+        await db.commit()
+    fx.dobby.preflight = {"historyBytes": sm.HISTORY_MAX_BYTES + 1}
+    out = await sm.preflight(fx.f, SID, "rocky")
+    assert out["verdict"]["reason"] == sm.MOVE_HISTORY_TOO_LARGE
+    assert out["verdict"]["historyBytes"] == sm.HISTORY_MAX_BYTES + 1
+    with pytest.raises(sm.MoveError) as ei:
+        await _move(fx)
+    assert ei.value.code == sm.MOVE_HISTORY_TOO_LARGE
+    assert fx.dobby.calls == ["preflight", "preflight"]       # never exported
+
+
+@pytest.mark.asyncio
+async def test_saga_stores_the_stripped_thread_bundle(fleet):
+    """``move_manifest`` keeps the descriptor the reconcile verifies a holder against,
+    never the base64 bytes (#3347)."""
+    fx = fleet
+    bundle = thread_move.ThreadBundle(
+        thread_id=TID, rel_path=TID_REL, size=3, sha256="a" * 64, data="eHl6",
+        sidecars=(thread_move.Sidecar(name=f"{TID}.jsonl", size=1, sha256="b" * 64,
+                                      data="eA=="),))
+    real_export = fx.dobby.transfer_export
+
+    async def export(sid, **kw):
+        return {**(await real_export(sid, **kw)), "codexThread": bundle.to_dict()}
+    fx.dobby.transfer_export = export
+    fx.rocky.gate = asyncio.Event()
+    caller = asyncio.create_task(_move(fx))
+    while "import" not in fx.rocky.calls:
+        await asyncio.sleep(0.01)
+    row = await _row()                                   # mid-saga: the claim's manifest
+    stored = row.move_manifest["codexThread"]
+    assert stored["sha256"] == "a" * 64 and stored["relPath"] == TID_REL
+    assert stored["data"] is None and stored["sidecars"][0]["data"] is None
+    fx.rocky.gate.set()
+    res = await caller
+    assert res["outcome"] == sm.OUTCOME_MOVED
+
+
+@pytest.mark.asyncio
 async def test_live_steering_children_refuse_but_forks_do_not(fleet):
     fx = fleet
     async with db_session() as db:
@@ -950,7 +1052,8 @@ def _rec(sid, cwd, host, status="done") -> SessionRecord:
 
 async def _seed_row(cwd, host, **kw) -> None:
     async with db_session() as db:
-        db.add(DbSession(id=SID, name="s", account_name="acct", engine_session_id="c-1",
+        db.add(DbSession(id=SID, name="s", account_name="acct",
+                         engine_session_id=kw.pop("engine_session_id", "c-1"),
                          status=kw.pop("status", "done"), cwd=str(cwd), host=host,
                          repo="acme/myrepo", **kw))
         await db.commit()
@@ -1305,6 +1408,316 @@ async def test_finalize_snapshots_then_removes_the_source_tree(
     assert ref and ref in worktrees.recovery_refs(str(h.a_clone), SID)
     assert _git("show", f"{ref}:wip.py", cwd=h.a_clone) == "precious"
     assert o._records[SID].host == "rocky"
+
+
+# ═════════════════════════════════════════════════════════════════════════════════════
+# Codex (#3347): the thread's rollout and sidecars travel in the manifest
+# ═════════════════════════════════════════════════════════════════════════════════════
+
+_ROLLOUT = b"".join(json.dumps(line, separators=(",", ":")).encode() + b"\n" for line in (
+    {"timestamp": "2026-11-06T10:00:00.000Z", "type": "session_meta",
+     "payload": {"id": TID, "cwd": "/wt", "originator": "codex_cli_rs",
+                 "cli_version": "0.153.2"}},
+    {"timestamp": "2026-11-06T10:00:05.000Z", "type": "response_item",
+     "payload": {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "hello"}]}},
+))
+_SIDECAR = b'{"item_id":"i1","ts":1.0}\n'
+
+
+@pytest.fixture
+def codex_hosts(two_hosts):
+    """``two_hosts`` plus a private CODEX_HOME and sidecar root per host; the source's
+    hold the thread's rollout and its item-times sidecar."""
+    h = two_hosts
+    h.a_home, h.b_home = h.a_root / "codex" / "acct", h.b_root / "codex" / "acct"
+    h.a_sidecars, h.b_sidecars = h.a_root / "codex-item-times", h.b_root / "codex-item-times"
+    h.rollout = h.a_home / TID_REL
+    h.rollout.parent.mkdir(parents=True)
+    h.rollout.write_bytes(_ROLLOUT)
+    h.a_sidecars.mkdir()
+    (h.a_sidecars / f"{TID}.jsonl").write_bytes(_SIDECAR)
+    return h
+
+
+def _codex_rec(sid, cwd, host, status="done") -> SessionRecord:
+    return SessionRecord(id=sid, name="s", account="acct", engine=AgentEngine.CODEX,
+                         engine_session_id=TID, cols=80, rows=24, cwd=str(cwd),
+                         detached=False, status=status, host=host, repo="acme/myrepo")
+
+
+def _wire_codex(o, home: Path, sidecars: Path) -> None:
+    """What the daemon's Codex manager and sidecar derivation answer on this host."""
+    o._codex = SimpleNamespace(resolve_home=lambda account: home)
+    o._codex_item_times_root = lambda account: sidecars
+
+
+async def _codex_source(monkeypatch, h, *, role="primary"):
+    o = _bare(monkeypatch, host="dobby", role=role, root=h.a_root)
+    _wire_codex(o, h.a_home, h.a_sidecars)
+    o._records[SID] = _codex_rec(SID, h.cwd, "dobby")
+    o._drivers[SID] = _Driver()
+    o.orphaned_interaction = lambda sid: None
+    await _seed_row(h.cwd, "dobby", engine="codex", engine_session_id=TID)
+    assert await o._claim_session(SID, why="test") is True
+    return o
+
+
+async def _codex_target(monkeypatch, h, *, role="worker"):
+    o = _bare(monkeypatch, host="rocky", role=role, root=h.b_root)
+    _wire_codex(o, h.b_home, h.b_sidecars)
+    o._clone_for_move = AsyncMock(return_value=str(h.b_clone))
+
+    async def ensure(sid, *a, **k):
+        assert o._records[sid].host == "rocky"
+        assert await o._claim_session(sid, why="resume")
+        return o._drivers.setdefault(sid, _Driver())
+    o.ensure_driver = ensure
+    await _seed_row(h.b_cwd, "rocky", moving_to="rocky", engine="codex", engine_session_id=TID)
+    return o
+
+
+def _codex_manifest(h) -> dict:
+    b = wt.export(str(h.cwd), SID, carry_dirty=False, vetted=wt.inspect(str(h.cwd)))
+    bundle = thread_move.export_thread(h.a_home, h.a_sidecars, TID)
+    return {"sessionId": SID, "bundle": b.to_dict(), "originUrl": str(h.origin),
+            "transcript": None, "codexThread": bundle.to_dict(), "preambles": [],
+            "cwd": str(h.b_cwd)}
+
+
+@pytest.mark.asyncio
+async def test_codex_preflight_reports_the_history_size(monkeypatch, codex_hosts, visibility):
+    h = codex_hosts
+    o = await _codex_source(monkeypatch, h)
+    report = await o.transfer_preflight(SID)
+    assert report["historyBytes"] == len(_ROLLOUT) + len(_SIDECAR)
+    assert sm.WorktreeFacts.from_preflight(report).history_bytes == len(_ROLLOUT) + len(_SIDECAR)
+    h.rollout.unlink()                                        # no rollout yet: 0, no error
+    assert (await o.transfer_preflight(SID))["historyBytes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_claude_preflight_reports_no_history(monkeypatch, two_hosts, visibility):
+    o = await _source(monkeypatch, two_hosts)
+    o.orphaned_interaction = lambda sid: None
+    assert (await o.transfer_preflight(SID))["historyBytes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_codex_export_carries_the_thread_after_closing(
+        monkeypatch, codex_hosts, visibility):
+    h = codex_hosts
+    o = await _codex_source(monkeypatch, h)
+    manifest = await o.transfer_export(SID, target="rocky")
+    assert o.closed == [SID]
+    thread = manifest["codexThread"]
+    assert thread["threadId"] == TID and thread["relPath"] == TID_REL
+    assert thread["size"] == len(_ROLLOUT)
+    assert thread["sha256"] == hashlib.sha256(_ROLLOUT).hexdigest()
+    assert base64.b64decode(thread["data"]) == _ROLLOUT
+    [sidecar] = thread["sidecars"]
+    assert sidecar["name"] == f"{TID}.jsonl" and base64.b64decode(sidecar["data"]) == _SIDECAR
+    assert manifest["transcript"] is None                     # a .jsonl transcript is Claude's
+    assert h.rollout.read_bytes() == _ROLLOUT                 # export only reads
+    assert o._records[SID].host == "rocky"
+
+
+@pytest.mark.asyncio
+async def test_claude_export_carries_no_thread(monkeypatch, two_hosts, visibility):
+    o = await _source(monkeypatch, two_hosts)
+    manifest = await o.transfer_export(SID, target="rocky")
+    assert manifest["codexThread"] is None and manifest["transcript"] is not None
+
+
+@pytest.mark.asyncio
+async def test_codex_export_refuses_an_over_cap_thread_before_closing(
+        monkeypatch, codex_hosts, visibility):
+    h = codex_hosts
+    o = await _codex_source(monkeypatch, h)
+    monkeypatch.setattr(sm, "HISTORY_MAX_BYTES", len(_ROLLOUT))     # the sidecar tips it
+    with pytest.raises(sm.MoveError) as ei:
+        await o.transfer_export(SID, target="rocky")
+    assert ei.value.code == sm.MOVE_HISTORY_TOO_LARGE
+    assert ei.value.extra == {"historyBytes": len(_ROLLOUT) + len(_SIDECAR)}
+    assert SID in o._drivers and o.closed == []                # nothing touched
+    assert o._records[SID].host == "dobby" and _origin_refs(h.origin) == ""
+
+
+@pytest.mark.asyncio
+async def test_codex_export_without_a_rollout_fails_and_the_local_restore_recovers(
+        monkeypatch, codex_hosts, visibility):
+    h = codex_hosts
+    o = await _codex_source(monkeypatch, h)
+    h.rollout.unlink()
+    with pytest.raises(sm.MoveError) as ei:
+        await o.transfer_export(SID, target="rocky")
+    assert ei.value.code == sm.MOVE_EXPORT_FAILED
+    assert ei.value.extra == {"historyCode": "not_found"}
+    assert o.closed == [SID] and o._records[SID].host == "dobby"   # closed, never retargeted
+    assert _origin_refs(h.origin) == ""                             # the tree was never pushed
+    o.ensure_driver = AsyncMock(side_effect=lambda sid: o._drivers.setdefault(sid, _Driver()))
+    out = await o.transfer_import(SID, None, source="rocky", local=True)
+    assert out["host"] == "dobby" and SID in o._drivers
+
+
+@pytest.mark.asyncio
+async def test_codex_import_writes_the_thread_verifies_and_resumes(monkeypatch, codex_hosts):
+    h = codex_hosts
+    manifest = _codex_manifest(h)
+    o = await _codex_target(monkeypatch, h)
+    out = await o.transfer_import(SID, manifest, source="dobby")
+    assert out == {"sessionId": SID, "host": "rocky", "driver": True}
+    assert (h.b_home / TID_REL).read_bytes() == _ROLLOUT      # same relPath, same bytes
+    assert (h.b_sidecars / f"{TID}.jsonl").read_bytes() == _SIDECAR
+    assert thread_move.find_rollout(h.b_home, TID) == h.b_home / TID_REL
+    assert h.b_cwd.is_dir() and SID in o._drivers
+    assert o._records[SID].host == "rocky" and await _lease_holder() == "rocky"
+    assert o._pending_prompt_preambles[SID] == [
+        "This session moved from dobby to rocky; the worktree, uncommitted changes and "
+        "Codex thread came with it."]
+
+
+@pytest.mark.asyncio
+async def test_codex_import_refuses_an_existing_rollout_and_writes_nothing(
+        monkeypatch, codex_hosts):
+    h = codex_hosts
+    manifest = _codex_manifest(h)
+    o = await _codex_target(monkeypatch, h)
+    other_rel = f"sessions/2026/11/01/rollout-2026-11-01T09-00-00-{TID}.jsonl"
+    (h.b_home / other_rel).parent.mkdir(parents=True)
+    (h.b_home / other_rel).write_bytes(b"older copy\n")
+    resumed = []
+    o.ensure_driver = AsyncMock(side_effect=lambda sid: resumed.append(sid))
+    with pytest.raises(sm.MoveError) as ei:
+        await o.transfer_import(SID, manifest, source="dobby")
+    assert ei.value.code == sm.MOVE_HISTORY_EXISTS
+    assert ei.value.extra == {"historyCode": "exists"}
+    assert resumed == [] and not h.b_cwd.exists()             # the imported tree is gone
+    assert (h.b_home / other_rel).read_bytes() == b"older copy\n"   # never overwritten
+    assert not (h.b_home / TID_REL).exists() and not h.b_sidecars.exists()
+    assert SID not in o._records and await _lease_holder() is None
+
+
+@pytest.mark.asyncio
+async def test_codex_import_that_does_not_verify_is_stale_and_removes_the_thread(
+        monkeypatch, codex_hosts):
+    """The bytes landed but what is on disk is not what the source sent (a truncated
+    write): never resumed, and the written files are removed with the tree."""
+    h = codex_hosts
+    manifest = _codex_manifest(h)
+    o = await _codex_target(monkeypatch, h)
+    real_import = thread_move.import_thread
+
+    def truncating_import(home, sidecar_root, bundle):
+        written = real_import(home, sidecar_root, bundle)
+        written[0].write_bytes(_ROLLOUT[:-10])
+        return written
+    monkeypatch.setattr(thread_move, "import_thread", truncating_import)
+    resumed = []
+    o.ensure_driver = AsyncMock(side_effect=lambda sid: resumed.append(sid))
+    with pytest.raises(sm.MoveError) as ei:
+        await o.transfer_import(SID, manifest, source="dobby")
+    assert ei.value.code == sm.MOVE_TRANSCRIPT_STALE
+    assert "Codex thread" in ei.value.message
+    assert resumed == [] and not h.b_cwd.exists()
+    assert not (h.b_home / TID_REL).exists()
+    assert not (h.b_sidecars / f"{TID}.jsonl").exists()
+    assert await _lease_holder() is None
+
+
+@pytest.mark.asyncio
+async def test_codex_import_resume_failure_removes_only_what_it_wrote(
+        monkeypatch, codex_hosts):
+    h = codex_hosts
+    manifest = _codex_manifest(h)
+    o = await _codex_target(monkeypatch, h, role="primary")
+    h.b_sidecars.mkdir()
+    (h.b_sidecars / f"{TID}.jsonl").write_bytes(b"already here\n")   # the shared store
+    o.ensure_driver = AsyncMock(return_value=None)
+    with pytest.raises(sm.MoveError) as ei:
+        await o.transfer_import(SID, manifest, source="dobby")
+    assert ei.value.code == sm.MOVE_RESUME_FAILED
+    assert not h.b_cwd.exists() and not (h.b_home / TID_REL).exists()
+    assert (h.b_sidecars / f"{TID}.jsonl").read_bytes() == b"already here\n"
+    assert o._records[SID].host == "dobby"
+
+
+@pytest.mark.asyncio
+async def test_codex_import_rejects_a_malformed_bundle(monkeypatch, codex_hosts):
+    h = codex_hosts
+    manifest = _codex_manifest(h)
+    manifest["codexThread"]["relPath"] = "../../etc/rollout.jsonl"
+    o = await _codex_target(monkeypatch, h)
+    with pytest.raises(sm.MoveError) as ei:
+        await o.transfer_import(SID, manifest, source="dobby")
+    assert ei.value.code == sm.MOVE_IMPORT_FAILED
+    assert ei.value.extra == {"historyCode": "bad_bundle"}
+    assert not h.b_cwd.exists() and not h.b_home.exists()
+
+
+@pytest.mark.asyncio
+async def test_codex_local_restore_verifies_against_the_stripped_bundle(
+        monkeypatch, codex_hosts, visibility):
+    """A reconcile hands the source only the stored (stripped) descriptor; the source's
+    own rollout satisfies it. With the rollout gone the restore is refused."""
+    h = codex_hosts
+    o = await _codex_source(monkeypatch, h)
+    manifest = sm.storable_manifest(await o.transfer_export(SID, target="rocky"))
+    assert manifest is not None and manifest["codexThread"]["data"] is None
+    o.ensure_driver = AsyncMock(side_effect=lambda sid: o._drivers.setdefault(sid, _Driver()))
+    await o.transfer_import(SID, manifest, source="rocky", local=True)
+    assert SID in o._drivers and o._records[SID].host == "dobby"
+    o._drivers.pop(SID)
+    await _release(SID, "dobby")
+    h.rollout.write_bytes(_ROLLOUT[:-10])
+    with pytest.raises(sm.MoveError) as ei:
+        await o.transfer_import(SID, manifest, source="rocky", local=True)
+    assert ei.value.code == sm.MOVE_TRANSCRIPT_STALE
+
+
+@pytest.mark.asyncio
+async def test_codex_finalize_retires_the_source_rollout(monkeypatch, codex_hosts, visibility):
+    h = codex_hosts
+    o = await _codex_source(monkeypatch, h)
+    manifest = await o.transfer_export(SID, target="rocky")
+    async with db_session() as db:
+        await db.execute(update(DbSession).where(DbSession.id == SID).values(host="rocky"))
+        await db.commit()
+    out = await o.transfer_finalize(SID, manifest, owner="rocky")
+    assert out["removed"] is True and not h.cwd.exists()
+    retired = Path(out["historyRetired"])
+    assert retired == h.rollout.with_name(h.rollout.name + ".moved-to-rocky")
+    assert retired.read_bytes() == _ROLLOUT                   # retired, never deleted
+    assert not h.rollout.exists()
+    assert thread_move.find_rollout(h.a_home, TID) is None    # nothing here can resume it
+    assert (h.a_sidecars / f"{TID}.jsonl").read_bytes() == _SIDECAR   # sidecars stay
+
+
+@pytest.mark.asyncio
+async def test_codex_finalize_on_a_worker_reads_the_thread_from_the_row(
+        monkeypatch, codex_hosts, visibility):
+    h = codex_hosts
+    o = await _codex_source(monkeypatch, h, role="worker")
+    manifest = await o.transfer_export(SID, target="rocky")
+    assert SID not in o._records
+    async with db_session() as db:
+        await db.execute(update(DbSession).where(DbSession.id == SID).values(host="rocky"))
+        await db.commit()
+    out = await o.transfer_finalize(SID, manifest, owner="rocky")
+    assert out["historyRetired"].endswith(".moved-to-rocky")
+    assert thread_move.find_rollout(h.a_home, TID) is None
+
+
+@pytest.mark.asyncio
+async def test_claude_finalize_retires_no_history(monkeypatch, two_hosts, visibility):
+    h = two_hosts
+    o = await _source(monkeypatch, h)
+    manifest = await o.transfer_export(SID, target="rocky")
+    async with db_session() as db:
+        await db.execute(update(DbSession).where(DbSession.id == SID).values(host="rocky"))
+        await db.commit()
+    out = await o.transfer_finalize(SID, manifest, owner="rocky")
+    assert out["removed"] is True and out["historyRetired"] is None
 
 
 # ═════════════════════════════════════════════════════════════════════════════════════

@@ -639,6 +639,12 @@ class CodexRunnerManager:
             self._home_base, account, mounts=self._mounts
         )
 
+    def resolve_home(self, account: str) -> Path:
+        """The account's ``CODEX_HOME`` on this host, created (and its permissions
+        tightened) if absent — for the fleet move's export/import of a thread's rollout
+        (``server/codex/thread_move.py``, #3347). No runner is started."""
+        return self._resolve_home(account)
+
     async def _login(self, account: str, client: CodexAppServerClient) -> None:
         """Hand the account's short-lived token to the app-server over stdin only."""
         params = await asyncio.wait_for(

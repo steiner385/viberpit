@@ -180,6 +180,14 @@ CODEX_CAPABILITIES: Final[AgentCapabilities] = AgentCapabilities(
     # its own effort path (thread settings, `reasoning_effort`) and has no verified fast
     # mode (`model/list` serviceTiers is unconsumed), so no fast-mode control shows.
     flag_settings=False,
+    # Move to host (D-17, #3347): a thread's whole history is ONE rollout file under a
+    # host-local CODEX_HOME, and copying it to the same relative path under another
+    # host's CODEX_HOME lets `thread/resume {threadId, cwd}` pick it up with no replay
+    # (verified on codex-cli 0.153.2, docs/superpowers/specs/2026-11-06-codex-session-
+    # move-verification.md). `server/codex/thread_move.py` carries the rollout plus
+    # ViberPit's sidecars in the move manifest; the kill switch gates it at
+    # `engine.move_supported`, not here.
+    cross_host_transfer=True,
 )
 
 #: Human-readable reason the Library surface (`GET /api/library/engines`)
