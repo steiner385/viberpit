@@ -37,6 +37,8 @@ import { FileRefContext, type FileRefActions } from '@/features/sessions/transcr
 import { useComposerAttach } from '@/shell/sessionGestures'
 import { ForkProvider } from '@/features/sessions/fork/ForkProvider'
 import { RewindProvider } from '@/features/sessions/rewind/RewindProvider'
+import { ErrorRecoveryContext, type ErrorRecovery } from '@/features/sessions/transcript/errorRecoveryContext'
+import { effortChoices, lowerEffort } from '@/features/sessions/composer/effortChoices'
 import { useAutoMarkViewed } from './useAutoMarkViewed'
 
 /** The Changes pane is off the entry path (D-4): only the header chip ships eagerly. */
@@ -54,7 +56,9 @@ const can = canUseEngine
 /** The pane width (rem) from which the rail is a column, not the Details tab. */
 const RAIL_MIN_REM = 64
 
-export function SessionBody({ rt }: { rt: SessionRuntime }) {
+/** `onClosed`: the session ended from inside the body (the rail's worktree Discard,
+ *  D-19) — the host detaches and moves on, as after an archive. */
+export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: () => void }) {
   const runningSubAgents = selectRunningSubAgentCount(rt.state.turns, rt.state.subAgents)
   const { data: accounts = [] } = useAccounts()
   const { data: sessions = [] } = useSessions()
@@ -156,6 +160,15 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
     }
   }, [])
 
+  // An error card's Switch model / Lower effort / Compact (D-19).
+  const recovery: ErrorRecovery = {
+    rt, busy, session: sessionRecord,
+    lowerEffort: (models) => {
+      const { efforts, effort } = effortChoices(rt.model, sessionRecord, caps, models)
+      return lowerEffort(efforts, effort)
+    },
+  }
+
   const rail = (
     <Suspense fallback={null}>
       <SessionRail
@@ -184,6 +197,8 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           displayFallbackReason: sessionRecord?.displayFallbackReason,
           branch: sessionRecord?.branch,
           cwd: sessionRecord?.cwd,
+          // Offered by the card only beside a worktree path (`cwd`).
+          worktree: { sessionId: rt.sessionId, busy, onDiscarded: onClosed },
           prs: sessionRecord?.prs,
           prAutofix: {
             enabled: sessionRecord?.prAutofixPaused !== true,
@@ -273,6 +288,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                                      status={rt.state.status.state} send={rt.onPlainPrompt}
                                      appliedRewindId={rt.state.rewind?.rewindId ?? null}
                                      onExpired={rt.dismissRewind}>
+                     <ErrorRecoveryContext.Provider value={recovery}>
                       <TranscriptView
                         sessionId={rt.sessionId}
                         turns={rt.state.turns}
@@ -307,6 +323,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                           onOpenChanges: hasChanges ? () => setView('changes') : undefined,
                         }}
                       />
+                     </ErrorRecoveryContext.Provider>
                      </RewindProvider>
                     </ForkProvider>
                   </FileRefContext.Provider>

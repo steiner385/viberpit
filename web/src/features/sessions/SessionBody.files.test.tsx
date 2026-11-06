@@ -37,6 +37,8 @@ vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: toastError }) 
 
 // Dev-server presence (D-18) lists the Browser tab; none here.
 vi.mock('@/api/devServers', () => ({ useSessionDevServers: () => ({ servers: null, refetch: () => {} }) }))
+// The rail's worktree Discard / Repair (D-19) read a preflight; no worktree controls here.
+vi.mock('@/api/worktreeHooks', () => ({ useWorktreePreflight: () => ({ data: undefined }), useRepairWorktree: () => ({ mutate: () => {}, isPending: false }), useDiscardWorktree: () => ({ mutate: () => {}, isPending: false }) }))
 
 vi.mock('@/api/hooks', () => ({
   useSessionMcp: vi.fn(() => ({ data: undefined })),

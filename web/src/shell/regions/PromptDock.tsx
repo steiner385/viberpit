@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
-import { DispatchBar } from '@/features/sessions/list/DispatchBar'
+import { DispatchBar, type DispatchRequest } from '@/features/sessions/list/DispatchBar'
 import { DispatchError } from '@/features/sessions/list/dispatchError'
 import { SessionComposer } from '@/features/sessions/composer/SessionComposer'
 import { useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
@@ -57,10 +57,11 @@ export interface PromptDockProps {
    * Default true (the shell passes it explicitly; see `AppShell.tsx`).
    */
   drivesList?: boolean
-  /** A preset the shell asks the bar to select (⌘K, D-14); a fresh object each time. */
-  presetRequest?: { id: string } | null
-  /** The bar took `presetRequest` — the shell clears it so a remount never re-applies it. */
-  onPresetRequestHandled?: () => void
+  /** A preset to select or a branch to start on, asked by the shell (⌘K, D-14 / D-19);
+   *  a fresh object each time. */
+  dispatchRequest?: DispatchRequest | null
+  /** The bar took `dispatchRequest` — the shell clears it so a remount never re-applies it. */
+  onDispatchRequestHandled?: () => void
 }
 
 /**
@@ -168,8 +169,8 @@ function NewSessionBar({
   onAllLimited,
   autoFocusKey,
   drivesList,
-  presetRequest,
-  onPresetRequestHandled,
+  dispatchRequest,
+  onDispatchRequestHandled,
 }: PromptDockProps) {
   const navigate = useNavigate()
   const reposQuery = useGithubRepos()
@@ -222,11 +223,12 @@ function NewSessionBar({
   }
 
   function handleDispatch({
-    initialPrompt, repo, account, model, host, attachmentIds, engine, reasoningEffort,
+    initialPrompt, repo, branch, account, model, host, attachmentIds, engine, reasoningEffort,
     autopilot, autoArchive, permissionMode, permissionProfileId,
   }: {
     initialPrompt: string
     repo: string | null
+    branch: string | null
     account: string | null
     model: string | null
     host: string | null
@@ -244,7 +246,8 @@ function NewSessionBar({
         {
           initialPrompt,
           repo: repo ?? undefined,
-          branch: repoInfo?.defaultBranch ?? undefined,
+          // The branch chosen in the bar (⌘K, D-19); else the repo's default.
+          branch: branch ?? repoInfo?.defaultBranch ?? undefined,
           account: account ?? undefined,
           model: model ?? undefined,
           host: host ?? undefined,
@@ -342,8 +345,8 @@ function NewSessionBar({
       presets={presets}
       templates={templates}
       renderTemplate={renderTemplate}
-      presetRequest={presetRequest}
-      onPresetRequestHandled={onPresetRequestHandled}
+      dispatchRequest={dispatchRequest}
+      onDispatchRequestHandled={onDispatchRequestHandled}
     />
   )
 }

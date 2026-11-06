@@ -177,7 +177,7 @@ export const Turn = memo(function Turn({
               </BlockRow>
             )
           case 'error':
-            return <BlockRow key={block.id} ts={rowTs}><ErrorCard code={block.code} message={block.message} resetsAt={block.resetsAt} prompt={failedPrompt} /></BlockRow>
+            return <BlockRow key={block.id} ts={rowTs}><ErrorCard code={block.code} message={block.message} resetsAt={block.resetsAt} errorKind={block.errorKind} prompt={failedPrompt} /></BlockRow>
           case 'recovering':
             return <BlockRow key={block.id} ts={rowTs}><RecoveringCard message={block.message} /></BlockRow>
           case 'noticeCard':

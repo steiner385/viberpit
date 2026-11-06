@@ -544,6 +544,16 @@ describe('transcriptReducer', () => {
     expect(s.error?.code).toBe('execution_error')
   })
 
+  it("keeps the server's error kind on the inline block as errorKind (D-19)", () => {
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'error', code: 'api_429', message: 'rate limited', turnId: 't1', kind: 'rate_limit' },
+      { type: 'error', code: 'driver_error', message: 'boom', turnId: 't1' },
+    ])
+    const errors = s.turns.find((t) => t.id === 't1')!.blocks.filter((b) => b.kind === 'error')
+    expect(errors.map((b) => b.kind === 'error' && b.errorKind)).toEqual(['rate_limit', undefined])
+  })
+
   it('error with turnId for an unseen turn creates the turn with the error block', () => {
     const s = transcriptReducer(initialTranscript, { type: 'error', code: 'agent_error', message: 'oops', turnId: 'tX' })
     const turn = s.turns.find((t) => t.id === 'tX')!

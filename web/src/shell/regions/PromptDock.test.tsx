@@ -148,6 +148,7 @@ import { ApiRequestError } from '@/api/client'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
 import { PageHost } from './PageHost'
 import { PromptDock } from './PromptDock'
+import type { DispatchRequest } from '@/features/sessions/list/DispatchBar'
 
 // ── harness ──────────────────────────────────────────────────────────────────
 
@@ -157,6 +158,7 @@ interface HarnessOpts {
   onEnterList?: () => void
   onShowHelp?: () => void
   onAllLimited?: (earliestReset: string | null) => void
+  dispatchRequest?: DispatchRequest | null
 }
 
 /** Mounts the dock the way `AppShell` will: through `PageHost`'s `dock` slot,
@@ -181,6 +183,7 @@ function Layout(opts: HarnessOpts) {
             onEnterList={opts.onEnterList ?? noop}
             onShowHelp={opts.onShowHelp ?? noop}
             onAllLimited={opts.onAllLimited ?? noop}
+            dispatchRequest={opts.dispatchRequest}
           />
         }
       />
@@ -505,6 +508,39 @@ describe('PromptDock — dispatch', () => {
 
     await waitFor(() => expect(posted).toHaveLength(1))
     expect(posted[0].body).toMatchObject({ repo: 'acme/api', branch: 'trunk' })
+  })
+
+  it('carries the branch chosen from ⌘K instead of the default (D-19)', async () => {
+    const user = userEvent.setup()
+    REPOS = [repo({ nameWithOwner: 'acme/api', defaultBranch: 'trunk' })]
+    renderAt('/sessions', { dispatchRequest: { kind: 'branch', repo: 'acme/api', branch: 'feat/login' } })
+
+    await screen.findByText('Branch: feat/login')
+    await user.type(screen.getByLabelText('New session prompt'), 'go')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0].body).toMatchObject({ repo: 'acme/api', branch: 'feat/login' })
+  })
+
+  it('says inline why a chosen branch could not be checked out (409 branch_switch_failed)', async () => {
+    const user = userEvent.setup()
+    REPOS = [repo({ nameWithOwner: 'acme/api', defaultBranch: 'trunk' })]
+    POST_SESSIONS = async () => {
+      throw new ApiRequestError(409, {
+        error: { code: 'branch_switch_failed', message: "branch 'feat/login' is already checked out" },
+      })
+    }
+    renderAt('/sessions', { dispatchRequest: { kind: 'branch', repo: 'acme/api', branch: 'feat/login' } })
+
+    await screen.findByText('Branch: feat/login')
+    await user.type(screen.getByLabelText('New session prompt'), 'go')
+    await user.keyboard('{Enter}')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent("branch 'feat/login' is already checked out")
+    // The draft and the chip stay for a retry or another pick.
+    expect(screen.getByLabelText('New session prompt')).toHaveValue('go')
+    expect(screen.getByText('Branch: feat/login')).toBeInTheDocument()
   })
 
   it('hands a 409 "all accounts limited" reset time to the shell banner', async () => {

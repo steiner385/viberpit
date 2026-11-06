@@ -14,6 +14,7 @@ import {
 import { useAssistantNoticeToasts } from '@/api/assistant'
 import { RenameDialog } from '@/features/sessions/RenameDialog'
 import { PermanentDeleteDialog } from '@/features/sessions/list/PermanentDeleteDialog'
+import type { DispatchRequest } from '@/features/sessions/list/DispatchBar'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
 import type { SessionListColumnProps } from '@/features/sessions/SessionListColumn'
 import { useRoadmapWorkspace } from '@/features/roadmap/useRoadmapWorkspace'
@@ -461,6 +462,7 @@ function AppShellInner() {
       openArchived: (id) => paletteFx.current.workspace.openArchived(id),
       newSession: () => paletteFx.current.workspace.newSession(),
       newSessionFromPreset: (id) => paletteFx.current.workspace.newSessionFromPreset(id),
+      startOnBranch: (repo, branch) => paletteFx.current.workspace.startOnBranch(repo, branch),
       navigate,
       canFilterRepo: (repo) => offered.has(repo),
       filterRepo: (repo) => {
@@ -565,8 +567,9 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
 
   const [listMode, setListMode] = React.useState(false)
   const [promptFocusKey, setPromptFocusKey] = React.useState(0)
-  // ⌘K's "New session from preset" (D-14): parked here until the dock's bar takes it.
-  const [presetRequest, setPresetRequest] = React.useState<{ id: string } | null>(null)
+  // ⌘K's "New session from preset" (D-14) / "New session on repo@branch" (D-19):
+  // parked here until the dock's bar takes it.
+  const [dispatchRequest, setDispatchRequest] = React.useState<DispatchRequest | null>(null)
   const [renameTarget, setRenameTarget] = React.useState<{ id: string; name: string } | null>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<{ id: string; name: string } | null>(null)
   // `undefined` = no banner; `null` = limited with no known reset time.
@@ -691,11 +694,13 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   )
   const openArchived = (id: string) => navigate(archivedSessionPath(id))
   const newSession = () => navigate(SESSIONS_PATH)
-  /** New session, with the dispatch bar's preset chip already set. */
-  const newSessionFromPreset = (id: string) => {
-    setPresetRequest({ id })
+  /** New session, with the dispatch bar's preset or branch chip already set. */
+  const newSessionWith = (request: DispatchRequest) => {
+    setDispatchRequest(request)
     navigate(SESSIONS_PATH)
   }
+  const newSessionFromPreset = (id: string) => newSessionWith({ kind: 'preset', id })
+  const startOnBranch = (repo: string, branch: string) => newSessionWith({ kind: 'branch', repo, branch })
   /**
    * The list's Project filter, for a repo it offers (DEC-8) — the palette only
    * routes here when it does, and drills in its own query otherwise. From
@@ -775,8 +780,8 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     onShowHelp: () => openDrawer('help'),
     onAllLimited: (earliestReset: string | null) => setAllLimitedReset(earliestReset),
     autoFocusKey: promptFocusKey,
-    presetRequest,
-    onPresetRequestHandled: () => setPresetRequest(null),
+    dispatchRequest,
+    onDispatchRequestHandled: () => setDispatchRequest(null),
     // Only the Active scope's list is the one `list.nav` walks: Archived renders
     // `ArchivedScopeBody`, and Background has its own pipeline the shell does
     // not hold — the dock must not pretend it owns `#session-listbox` in either.
@@ -820,7 +825,7 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   return {
     banners, list: listProps, dock: dockProps, dialogs, navigateList: list.nav.navigate,
     orderedIds, openFromList, stepSession, jumpToSession,
-    openArchived, newSession, newSessionFromPreset, filterRepo, openFromPalette, paletteLive,
+    openArchived, newSession, newSessionFromPreset, startOnBranch, filterRepo, openFromPalette, paletteLive,
     repoFilterOptions: list.filterOptions.project,
   }
 }

@@ -1,6 +1,6 @@
 import type {
   SessionEvent, ToolKind, EvUser, EvTurnStart, EvTextDelta, EvThinkingDelta, EvToolCall, EvToolResult, QueuedItem,
-  PromptContext, PromptOrigin, RuleSuggestion, MemoryFile,
+  PromptContext, PromptOrigin, RuleSuggestion, MemoryFile, ErrorKind,
 } from './events'
 import type { McpServerState } from '@/api/types'
 import type { ContextUsageExact } from '@/lib/contextWindow'
@@ -36,7 +36,8 @@ export type Block =
   | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; items?: string[] | null; ruleSuggestions?: RuleSuggestion[]; sessionGrantEffective?: boolean; ts?: number }
   | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; orphaned?: boolean; answered?: string[]; ts?: number }
   | { kind: 'notice';     id: string; text: string; ts?: number }
-  | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null; ts?: number }
+  // `errorKind` (not `kind`, the block discriminant) is the event's `kind` (D-19).
+  | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null; errorKind?: ErrorKind; ts?: number }
   | { kind: 'recovering'; id: string; message: string; ts?: number }
   // A proactive watch notice (see EvNotice) — distinct from the plain-text 'notice'
   // banner above, which is a client-local transient (e.g. "Model → sonnet"). Named
@@ -1453,7 +1454,7 @@ export function transcriptReducer(
       const turn = withTurn[idx]
       const errBlock: Block = {
         kind: 'error', id: `${ev.turnId}:err:${turn.blocks.length}`,
-        code: ev.code, message: ev.message, resetsAt: ev.resetsAt, ts: ev.ts,
+        code: ev.code, message: ev.message, resetsAt: ev.resetsAt, errorKind: ev.kind, ts: ev.ts,
       }
       const turns = replaceTurn(withTurn, idx, (t) => ({ ...t, blocks: [...t.blocks, errBlock] }))
       return { ...restored, turns, error: banner }
