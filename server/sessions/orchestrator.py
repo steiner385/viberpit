@@ -22537,7 +22537,6 @@ class SessionOrchestrator:
                 raise _dev_servers.DevServerError(_dev_servers.PREVIEW_SESSION_NOT_LIVE)
             url = _dev_servers.server_url(server)
             await x11.stop_preview(session_id)
-            x11.prune_browsers(session_id)  # the per-session cap counts live browsers only
             res = await self.open_browser(session_id, url, force_virtual=True)
             if not res.get("ok"):
                 spec = x11.display_for(session_id)

@@ -73,6 +73,9 @@ CACHE_TTL_S = 3.0
 EXPOSED_NOTE = "Also reachable from your network"
 #: The /proc pass takes ~20 ms; anything near this is a blocked read, not a slow host.
 SCAN_TIMEOUT_S = 5.0
+#: While a scan is stuck, polls answer with the last good list; past this age it is
+#: dropped, so dead servers cannot stay listed (their Open would only refuse).
+LAST_GOOD_MAX_AGE_S = 30.0
 _SCAN_THREAD = "dev-servers-scan"
 
 DEV_SERVER_NOT_DETECTED = "DEV_SERVER_NOT_DETECTED"
@@ -570,7 +573,7 @@ class DevServerDetector:
         self._clock = clock
         self._ttl = ttl
         self._cache: dict[str, tuple[float, list[dict]]] = {}
-        self._last_good: dict[str, list[dict]] = {}
+        self._last_good: dict[str, tuple[float, list[dict]]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._scan_lock = asyncio.Lock()
         self._scan_future: asyncio.Future[list[Candidate]] | None = None
@@ -660,9 +663,15 @@ class DevServerDetector:
                                    daemon_pid=self._daemon_pid, managed_worktrees=managed)
         cands = await self._scan(session_id, scan)
         if cands is None:
-            return [] if fresh else [dict(s) for s in self._last_good.get(session_id, [])]
+            if fresh:
+                return []
+            at, good = self._last_good.get(session_id, (0.0, []))
+            if self._clock() - at > LAST_GOOD_MAX_AGE_S:
+                self._last_good.pop(session_id, None)
+                return []
+            return [dict(s) for s in good]
         out = await self._entries(cands, bg_commands)
-        self._last_good[session_id] = out
+        self._last_good[session_id] = (self._clock(), out)
         return out
 
     async def _entries(self, cands: list[Candidate],
