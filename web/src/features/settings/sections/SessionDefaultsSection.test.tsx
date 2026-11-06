@@ -205,15 +205,27 @@ describe('SessionDefaultsSection', () => {
       vi.mocked(hooks.useUpdateSettings).mockReturnValue(mutationResult({ mutateAsync, error: err }))
       const { container } = mount()
       const field = screen.getByRole('textbox', { name: 'Branch prefix' })
+      expect(field).not.toHaveAttribute('aria-invalid')
       await userEvent.type(field, 'agent/')
       await userEvent.click(screen.getByRole('button', { name: 'Save' }))
       const alert = await screen.findByRole('alert')
       expect(alert).toHaveTextContent(reason)
+      expect(field).toHaveAttribute('aria-invalid', 'true')
       expect(field).toHaveAccessibleDescription(expect.stringContaining(reason))
       expect(screen.queryByText('Not saved')).toBeNull()
       expect(await axe(container)).toHaveNoViolations()
       await userEvent.type(field, 'x')
       expect(screen.queryByText(reason)).toBeNull()
+      expect(field).not.toHaveAttribute('aria-invalid')
+    })
+
+    it("takes the placeholder from the server's effectiveDefaults, not a client constant", () => {
+      const base = appSettings()
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({
+        effectiveDefaults: { ...base.effectiveDefaults, branchPrefix: 'built-in/' },
+      })))
+      mount()
+      expect(screen.getByRole('textbox', { name: 'Branch prefix' })).toHaveAttribute('placeholder', 'built-in/')
     })
 
     it('any other save failure still shows in the section banner', async () => {

@@ -66,31 +66,40 @@ _BACKFILL_MARKER = "session_branches:{host}"
 _UNIQUE = ["host", "clone", "branch"]
 
 
-def clone_top(path: str) -> str | None:
+#: Bound on clone_top's one git call: a wedged repo (a stuck lock, an unresponsive
+#: network mount) must not hang a caller — removal, a predicate, the prefix check.
+CLONE_TOP_TIMEOUT_S = 10.0
+
+
+def clone_top(path: str, *, timeout: float = CLONE_TOP_TIMEOUT_S) -> str | None:
     """Blocking: the common git dir's parent for *path* (a linked worktree, a clone, or
-    anywhere inside either), or None when *path* is not in a git repo.
+    anywhere inside either), or None when *path* is not in a git work tree — or git
+    did not answer within *timeout*, or could not run at all (unknown is "no clone").
 
-    Combines the is-git-repo probe and the rev-parse into a single blocking call so
-    callers can offload both to asyncio.to_thread in one step — git subprocess startup
-    is non-trivial under load, and simultaneous archive of many sessions was blocking
-    the event loop long enough to trip the health-check watchdog.
+    One bounded git call (``--is-inside-work-tree`` and ``--git-common-dir``
+    together), so callers can offload it to asyncio.to_thread in one step — git
+    subprocess startup is non-trivial under load, and simultaneous archive of many
+    sessions was blocking the event loop long enough to trip the health-check watchdog.
     """
-    if not worktrees.is_git_repo(path):
+    try:
+        r = subprocess.run(
+            ["git", "-C", path, "rev-parse", "--is-inside-work-tree",
+             "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
         return None
-    r = subprocess.run(
-        ["git", "-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
+    lines = r.stdout.strip().splitlines()
+    if r.returncode != 0 or len(lines) != 2 or lines[0].strip() != "true":
         return None
-    return os.path.dirname(r.stdout.strip().rstrip("/"))
+    return os.path.dirname(lines[1].strip().rstrip("/"))
 
 
-def clone_key(path: str) -> str | None:
+def clone_key(path: str, *, timeout: float = CLONE_TOP_TIMEOUT_S) -> str | None:
     """Blocking: THE ``clone`` of a record for *path* — the realpath of
     :func:`clone_top` — or None when *path* is not in a git repo. Never ``--show-toplevel``:
     for a linked worktree that is the worktree, not the clone its branches live in."""
-    top = clone_top(path)
+    top = clone_top(path, timeout=timeout)
     return os.path.realpath(top) if top is not None else None
 
 

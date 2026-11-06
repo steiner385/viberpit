@@ -833,9 +833,13 @@ def fork_branch_name(source_session_id: str, n: int,
 def _next_fork_branch(repo_top: str, source_session_id: str,
                       prefix: str = brand.BRANCH_PREFIX) -> str:
     """The first ``fork_branch_name(source, n, prefix)`` (n ≥ 1) whose ``n`` no fork of
-    this source has under *prefix* OR any built-in prefix — so a prefix change never
-    reuses an ``n`` an older fork still holds. One ``for-each-ref``. Call under
-    ``clone_lock(repo_top)``."""
+    this source holds under the built-in prefixes or the current *prefix*. One
+    ``for-each-ref``. Call under ``clone_lock(repo_top)``.
+
+    Exactly that, no more: an ``n`` held only under an EARLIER custom prefix is not
+    seen, so after a change between two custom prefixes an ``n`` may repeat. Harmless —
+    the names still differ by prefix, so git keeps both, and deletion goes through
+    each branch's own record, never the name."""
     stems = ["refs/heads/" + fork_branch_name(source_session_id, 0, p)[:-1]
              for p in dict.fromkeys((prefix, *brand.BRANCH_PREFIXES))]
     out = run_git(repo_top, *NO_SUBMODULE_RECURSE, "for-each-ref", "--format=%(refname)",

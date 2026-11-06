@@ -428,7 +428,7 @@ export interface EffectiveDefaults {
   modelApprovalAction: string
   modelApprovalDenylist: string
   globalCap: GlobalCapDefaults
-  /** The prefix a NEW session branch gets (D-22): the stored one, else the built-in. */
+  /** What a null `branchPrefix` falls back to (D-22): the built-in session-branch prefix. */
   branchPrefix: string
 }
 

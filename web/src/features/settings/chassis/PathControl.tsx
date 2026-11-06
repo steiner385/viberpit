@@ -8,12 +8,14 @@ import { Button } from '@/ui/Button'
  * a bare wrapping `<span>` would swallow it — leaving the input undescribed and
  * the description announced on nothing.
  */
-export function PathControl({ id, value, placeholder, resetLabel, onChange, ...aria }: {
+export function PathControl({ id, value, placeholder, resetLabel, onChange, invalid = false, ...aria }: {
   id: string
   value: string
   placeholder: string
   resetLabel: string
   onChange: (next: string) => void
+  /** The row shows an error for this value: the input is marked `aria-invalid`. */
+  invalid?: boolean
   'aria-describedby'?: string
 }) {
   return (
@@ -22,6 +24,7 @@ export function PathControl({ id, value, placeholder, resetLabel, onChange, ...a
         id={id}
         value={value}
         placeholder={placeholder}
+        invalid={invalid}
         aria-describedby={aria['aria-describedby']}
         onChange={(e) => onChange(e.target.value)}
       />

@@ -66,7 +66,7 @@ _MANAGED: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _server_blocks(cap: GlobalCap, branch_prefix: str | None) -> dict[str, object]:
+def _server_blocks(cap: GlobalCap) -> dict[str, object]:
     cfg = get_settings()
     # Route through the app's identity sources of truth rather than re-reading env
     # here: server.hostname.self_host_name is what the deploy controller and
@@ -81,8 +81,8 @@ def _server_blocks(cap: GlobalCap, branch_prefix: str | None) -> dict[str, objec
             "modelApprovalAction": cfg.model_approval_action,
             "modelApprovalDenylist": cfg.model_approval_denylist,
             "globalCap": cap.to_wire(),
-            # What a new session branch actually starts with (D-22).
-            "branchPrefix": branch_prefix or brand.BRANCH_PREFIX,
+            # What a NULL branch_prefix falls back to (D-22): the built-in prefix.
+            "branchPrefix": brand.BRANCH_PREFIX,
         },
         "managed": [
             {"key": env, "value": getattr(cfg, attr), "description": desc}
@@ -180,7 +180,7 @@ def _to_dict(s: AppSettings, cap: GlobalCap) -> dict:
         "assistantOperatorTools": s.assistant_operator_tools,
         "defaultOutputStyle": s.default_output_style,
         "branchPrefix": s.branch_prefix,
-        **_server_blocks(cap, s.branch_prefix),
+        **_server_blocks(cap),
     }
 
 

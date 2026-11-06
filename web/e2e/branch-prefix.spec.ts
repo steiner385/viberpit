@@ -18,7 +18,7 @@ function settings(branchPrefix: string | null) {
     effectiveDefaults: {
       repoRoot: '/home/user/GitHub', archiveHome: null, modelApprovalAction: 'require_approval',
       modelApprovalDenylist: 'fable', globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] },
-      branchPrefix: branchPrefix ?? 'viberpit/',
+      branchPrefix: 'viberpit/',
     },
     managed: [], about: { gitSha: null, hostName: 'edge' },
   }
@@ -63,6 +63,7 @@ for (const width of [1440, 390]) {
     await save.click()
     const reason = page.getByRole('alert').filter({ hasText: REFUSED })
     await expect(reason).toBeVisible()
+    await expect(field).toHaveAttribute('aria-invalid', 'true')
     await expect(field).toHaveAccessibleDescription(new RegExp(REFUSED.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')))
     await expect(page.getByText('Not saved')).toHaveCount(0)
     await noSidewaysScroll(page)
@@ -70,6 +71,7 @@ for (const width of [1440, 390]) {
     // Fixed and saved: the refusal goes away with the edit.
     await field.fill('agent/')
     await expect(reason).toHaveCount(0)
+    await expect(field).not.toHaveAttribute('aria-invalid')
     await save.click()
     await expect.poll(() => puts.at(-1)?.branchPrefix).toBe('agent/')
     await expect(field).toHaveValue('agent/')

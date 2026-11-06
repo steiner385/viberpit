@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import time
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -32,6 +33,19 @@ RESERVED_PREFIXES: frozenset[str] = frozenset({
     "feature/", "feat/", "fix/", "bugfix/", "hotfix/", "release/", "dependabot/",
     "renovate/", "main/", "master/", "pm/", "gh-pages/",
 })
+
+#: Leading path segments that make a branch name ambiguous with git's own ref
+#: namespaces or a remote: ``heads/x`` is ``refs/heads/heads/x``, which
+#: ``rev-parse --abbrev-ref`` (how a worktree's branch is read at cleanup) may print
+#: differently from the name the record holds — so cleanup could never match the
+#: record, and the branch would leak. A different concern from RESERVED_PREFIXES (a
+#: team convention), so a different list. Matched on the FIRST segment, any case.
+AMBIGUOUS_REF_NAMESPACES: frozenset[str] = frozenset({
+    "refs/", "heads/", "tags/", "remotes/", "head/", "origin/", "upstream/",
+})
+
+#: Wall-clock bound on the whole clash scan, so a PUT never hangs on a slow host.
+SCAN_DEADLINE_S = 10.0
 
 MIN_LEN = 2
 MAX_LEN = 40
@@ -56,6 +70,10 @@ def format_problem(prefix: str) -> str | None:
         return f"The prefix must be {MIN_LEN}–{MAX_LEN} characters long."
     if prefix.lower() in RESERVED_PREFIXES:
         return f"{prefix} is a common branch namespace; pick one of your own."
+    first = prefix.split("/", 1)[0] + "/"
+    if first.lower() in AMBIGUOUS_REF_NAMESPACES:
+        return (f"{first} is one of git's own ref namespaces; a branch under it would be "
+                "ambiguous. Pick another prefix.")
     try:
         r = subprocess.run(["git", "check-ref-format", "--branch", f"{prefix}x"],
                            capture_output=True, text=True, timeout=10)
@@ -66,45 +84,87 @@ def format_problem(prefix: str) -> str | None:
     return None
 
 
-def _clones(repo_root: str) -> list[Path]:
+class _Deadline:
+    def __init__(self, seconds: float) -> None:
+        self.end = time.monotonic() + seconds
+
+    def left(self) -> float:
+        """Seconds left; refuses (fail closed) once none are."""
+        left = self.end - time.monotonic()
+        if left <= 0:
+            raise BranchPrefixInvalid(
+                "Checking existing branches took too long; try again.")
+        return left
+
+
+def _clones(repo_root: str, deadline: _Deadline) -> list[Path]:
     """This host's clones under *repo_root*: every managed clone
     (``<clones base>/<owner>/<name>``, both namespace spellings) and every checkout
-    directly in the root."""
+    directly in the root. A directory that cannot be read refuses (fail closed)."""
     found: list[Path] = []
-    for base in gitrepos.clones_bases(repo_root):
-        if base.is_dir():
-            found += [c for owner in base.iterdir() if owner.is_dir()
-                      for c in owner.iterdir() if (c / ".git").is_dir()]
-    root = Path(repo_root)
-    if root.is_dir():
-        found += [c for c in root.iterdir() if (c / ".git").is_dir()]
+    try:
+        for base in gitrepos.clones_bases(repo_root):
+            if base.is_dir():
+                for owner in base.iterdir():
+                    deadline.left()
+                    if owner.is_dir():
+                        found += [c for c in owner.iterdir() if (c / ".git").is_dir()]
+        root = Path(repo_root)
+        if root.is_dir():
+            found += [c for c in root.iterdir() if (c / ".git").is_dir()]
+    except OSError as exc:
+        raise BranchPrefixInvalid(
+            f"Couldn't check existing branches under {repo_root}: "
+            f"{exc.strerror or type(exc).__name__}.") from exc
     return found
 
 
-def _local_branches(clone: Path) -> list[str]:
+def _local_branches(clone: Path, deadline: _Deadline) -> list[str]:
+    """Every local branch of *clone*; refuses (fail closed) when git cannot list them
+    in time — an unlisted clone could hold the very branch the prefix clashes with."""
     try:
         r = subprocess.run(["git", "-C", str(clone), "for-each-ref",
                             "--format=%(refname:short)", "refs/heads/"],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=deadline.left())
     except (OSError, subprocess.TimeoutExpired):
-        return []
-    return r.stdout.split() if r.returncode == 0 else []
+        r = None
+    if r is None or r.returncode != 0:
+        raise BranchPrefixInvalid(f"Couldn't check existing branches in {clone.name}.")
+    return r.stdout.split()
+
+
+def _parent_dirs(prefix: str) -> list[str]:
+    """Every folder the prefix nests in, as a branch name git would refuse to nest
+    under: ``team/agent/`` → ``team``, ``team/agent``."""
+    parts = prefix[:-1].split("/")
+    return ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
 
 
 def clashing_branches(prefix: str, repo_root: str,
-                      recorded: dict[str, frozenset[str]]) -> list[str]:
-    """Blocking: local branches in this host's clones the prefix would claim but no
-    record vouches for — a branch under it, or one named like the prefix itself
-    (``foo`` blocks ``foo/…`` in git). *recorded* maps a clone key to its recorded
-    branch names. Returns ``<clone name>:<branch>`` entries, sorted."""
+                      recorded: dict[str, frozenset[str]], *,
+                      deadline_s: float = SCAN_DEADLINE_S) -> list[str]:
+    """Blocking: local branches in this host's clones that clash with *prefix*:
+
+    * a branch under it that no record vouches for (*recorded* maps a clone key to its
+      recorded branch names); and
+    * a branch named like any folder of the prefix (``team`` or ``team/agent`` for
+      ``team/agent/``) — recorded or not, since git refuses ``team/agent/x`` next to
+      a branch ``team`` either way.
+
+    Bounded by *deadline_s* overall and fail closed: a clone it cannot list, or a scan
+    past the deadline, raises :class:`BranchPrefixInvalid`. Returns
+    ``<clone name>:<branch>`` entries, sorted."""
     from server.sessions.branch_ownership import clone_key
-    stem = prefix[:-1]
+    deadline = _Deadline(deadline_s)
+    parents = set(_parent_dirs(prefix))
     hits: list[str] = []
-    for clone in _clones(repo_root):
-        key = clone_key(str(clone))
-        mine = recorded.get(key or "", frozenset())
-        hits += [f"{clone.name}:{b}" for b in _local_branches(clone)
-                 if (b.startswith(prefix) or b == stem) and b not in mine]
+    for clone in _clones(repo_root, deadline):
+        key = clone_key(str(clone), timeout=deadline.left())
+        if key is None:
+            raise BranchPrefixInvalid(f"Couldn't check existing branches in {clone.name}.")
+        mine = recorded.get(key, frozenset())
+        hits += [f"{clone.name}:{b}" for b in _local_branches(clone, deadline)
+                 if b in parents or (b.startswith(prefix) and b not in mine)]
     return sorted(set(hits))
 
 

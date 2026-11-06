@@ -118,6 +118,97 @@ def test_a_built_in_prefix_is_always_accepted(tmp_path):
     bp.validate(brand.BRANCH_PREFIX, str(tmp_path), {})
 
 
+# ── round 2: parent folders, ref namespaces, fail closed and bounded ──────────
+
+@pytest.mark.parametrize("prefix", ["refs/", "heads/", "Tags/", "remotes/", "HEAD/",
+                                    "origin/", "upstream/", "heads/bots/"])
+def test_ambiguous_ref_namespaces_are_refused(prefix):
+    problem = bp.format_problem(prefix)
+    assert problem is not None and "ref namespaces" in problem
+
+
+def test_the_ambiguous_list_is_separate_from_the_team_reserved_list():
+    assert not bp.AMBIGUOUS_REF_NAMESPACES & bp.RESERVED_PREFIXES
+
+
+@pytest.mark.parametrize("existing", ["team", "team/agent"])
+def test_a_branch_named_like_any_parent_folder_is_a_clash_even_if_recorded(
+        tmp_path, existing):
+    """git refuses team/agent/x next to a branch `team` (or `team/agent`), recorded or
+    not — so a record never exempts a parent-folder branch."""
+    clone = _clone(tmp_path, "acme/one", existing)
+    recorded = {bo.clone_key(str(clone)) or "": frozenset({existing})}
+    with pytest.raises(bp.BranchPrefixInvalid) as ei:
+        bp.validate("team/agent/", str(tmp_path), recorded)
+    assert f"one:{existing}" in ei.value.reason
+
+
+def test_a_clone_that_cannot_be_listed_refuses(tmp_path, monkeypatch):
+    _clone(tmp_path, "acme/one")
+    real = subprocess.run
+
+    def timing_out(args, *a, **k):
+        if "for-each-ref" in args:
+            raise subprocess.TimeoutExpired(args, k.get("timeout"))
+        return real(args, *a, **k)
+    monkeypatch.setattr(bp.subprocess, "run", timing_out)
+    with pytest.raises(bp.BranchPrefixInvalid) as ei:
+        bp.clashing_branches("agent/", str(tmp_path), {})
+    assert "Couldn't check existing branches in one" in ei.value.reason
+
+
+def test_a_failing_listing_refuses(tmp_path, monkeypatch):
+    _clone(tmp_path, "acme/one")
+    real = subprocess.run
+
+    def failing(args, *a, **k):
+        if "for-each-ref" in args:
+            return subprocess.CompletedProcess(args, 128, "", "fatal: bad repo")
+        return real(args, *a, **k)
+    monkeypatch.setattr(bp.subprocess, "run", failing)
+    with pytest.raises(bp.BranchPrefixInvalid):
+        bp.clashing_branches("agent/", str(tmp_path), {})
+
+
+def test_the_whole_scan_has_a_deadline(tmp_path):
+    _clone(tmp_path, "acme/one")
+    with pytest.raises(bp.BranchPrefixInvalid) as ei:
+        bp.clashing_branches("agent/", str(tmp_path), {}, deadline_s=0)
+    assert "took too long" in ei.value.reason
+
+
+def test_an_unreadable_repo_root_refuses_instead_of_raising(tmp_path):
+    clones = _clone(tmp_path, "acme/one").parent.parent      # <clones base>
+    os.chmod(clones, 0)
+    try:
+        with pytest.raises(bp.BranchPrefixInvalid) as ei:
+            bp.validate("agent/", str(tmp_path), {})
+    finally:
+        os.chmod(clones, 0o755)
+    assert "Couldn't check existing branches" in ei.value.reason
+
+
+def test_clone_top_is_bounded_and_a_timeout_is_no_clone(tmp_path, monkeypatch):
+    seen = {}
+
+    def hung(args, *a, **k):
+        seen["timeout"] = k.get("timeout")
+        raise subprocess.TimeoutExpired(args, k.get("timeout"))
+    monkeypatch.setattr(bo.subprocess, "run", hung)
+    assert bo.clone_top(str(tmp_path)) is None
+    assert seen["timeout"] == bo.CLONE_TOP_TIMEOUT_S
+
+
+def test_n_may_repeat_across_two_custom_prefixes_and_that_is_harmless(tmp_path):
+    """The fork-number guarantee is exactly the built-ins plus the current prefix."""
+    clone = _clone(tmp_path, "acme/one")
+    sid = "abcd1234-0000-0000-0000-000000000000"
+    _git(clone, "branch", worktrees.fork_branch_name(sid, 1, "old/"))
+    assert worktrees._next_fork_branch(str(clone), sid, "new/") == "new/fork-abcd1234-1"
+    _git(clone, "branch", worktrees.fork_branch_name(sid, 1))
+    assert worktrees._next_fork_branch(str(clone), sid, "new/") == "new/fork-abcd1234-2"
+
+
 # ── the settings API ───────────────────────────────────────────────────────────
 
 @contextmanager
@@ -148,7 +239,8 @@ def test_put_get_and_reset_round_trip(tmp_path):
         r = put({"branchPrefix": " agent/ "})
         assert r.status_code == 200
         assert r.json()["branchPrefix"] == "agent/"
-        assert r.json()["effectiveDefaults"]["branchPrefix"] == "agent/"
+        # effectiveDefaults is what a NULL setting falls back to — never the stored value.
+        assert r.json()["effectiveDefaults"]["branchPrefix"] == brand.BRANCH_PREFIX
         assert put({"thinkingCollapsed": False}).json()["branchPrefix"] == "agent/"
         r = put({"branchPrefix": None})                        # Reset
         assert r.json()["branchPrefix"] is None
@@ -165,6 +257,18 @@ def test_an_invalid_prefix_is_a_400_with_a_reason_and_changes_nothing(tmp_path, 
         detail = r.json()["detail"]
         assert detail["code"] == "BRANCH_PREFIX_INVALID" and detail["reason"]
         assert client.get("/api/settings", headers=IDENTITY).json()["branchPrefix"] is None
+
+
+def test_an_unreadable_root_is_a_400_not_a_500(tmp_path):
+    clones = _clone(tmp_path, "acme/one").parent.parent
+    with _client(tmp_path) as client:
+        os.chmod(clones, 0)
+        try:
+            r = client.put("/api/settings", json={"branchPrefix": "agent/"}, headers=IDENTITY)
+        finally:
+            os.chmod(clones, 0o755)
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "BRANCH_PREFIX_INVALID"
 
 
 def test_a_clashing_prefix_is_a_400_naming_the_branch(tmp_path):

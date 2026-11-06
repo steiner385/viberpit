@@ -14,7 +14,6 @@ import { SettingsGroup } from '../chassis/SettingsGroup'
 import { SettingRow } from '../chassis/SettingRow'
 import { SaveBar } from '../chassis/SaveBar'
 import { PathControl } from '../chassis/PathControl'
-import { BRANCH_PREFIX } from '@/brand'
 import { branchPrefixReason, useSettingsForm } from '../useSettingsForm'
 
 /** '' is the draft's "server default" — the payload turns it back into null. */
@@ -298,7 +297,9 @@ export function SessionDefaultsSection() {
           <PathControl
             id="defaults-branch-prefix"
             value={draft.branchPrefix}
-            placeholder={BRANCH_PREFIX}
+            // The server's own answer (D-22): the built-in prefix it falls back to.
+            placeholder={eff.branchPrefix}
+            invalid={prefixError !== null}
             resetLabel="Reset branch prefix to default"
             onChange={(v) => set('branchPrefix', v)}
           />
