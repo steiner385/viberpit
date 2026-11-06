@@ -1342,6 +1342,15 @@ export interface WorktreeDiscardResult {
   branchDeleted: boolean
 }
 
+/** `GET /sessions/{id}/recovery-refs` — the refs a discard kept, from its audit row. */
+export interface SessionRecoveryRefs {
+  recoveryRefs: string[]
+  restoreCommand: string | null
+  branch: string | null
+  path: string | null
+  at: string | null
+}
+
 /** `POST /sessions/{id}/worktree/repair`. */
 export interface WorktreeRepairResult {
   repaired: true

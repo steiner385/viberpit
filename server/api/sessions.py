@@ -24,9 +24,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi import Path as FastApiPath
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, StrictStr
+from sqlalchemy import select
 
 from viberpit import accounts as _accounts
 from viberpit import gitrepos
+from viberpit import worktrees
 from server.sessions import diff_patch
 from server.auth.identity import client_node_name, human_gate_via, human_sender
 from server.auth.middleware import current_client_node, current_identity
@@ -48,6 +50,7 @@ from server.sessions.usage_stall import is_usage_stalled
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import db_session, get_db
+from server.db.models import AuditEvent
 from server.sessions.orchestrator import (
     ArchiveMissingError,
     ArchiveOwnedElsewhereError,
@@ -2530,7 +2533,6 @@ async def fork_session(
     ``model blocked by policy`` and the account 409s exactly as on create, or
     ``daemon_outdated`` from an old daemon. ``requestId`` (a uuid per click) makes a
     retry return the same child."""
-    from viberpit import worktrees
     from server.sessions import fork as fk
     try:
         result = await _get_orchestrator(request).fork_session(
@@ -3120,6 +3122,35 @@ async def permanent_delete_session(
         identity=identity,
         detail={"session_id": session_id},
     )
+
+
+_RECOVERY_AUDIT_SCAN = 500   # newest discard rows read; the JSON `sessionId` is matched in Python
+
+
+@router.get("/{session_id}/recovery-refs")
+async def get_session_recovery_refs(
+    session_id: str,
+    identity: str = Depends(current_identity),
+) -> dict:
+    """Where a discarded session's work went (D-19 follow-up): the newest
+    ``session.worktree_discard`` audit row for *session_id* that kept refs, as
+    ``{recoveryRefs, restoreCommand, branch, path, at}`` (``recoveryRefs`` empty and the
+    rest null when there is none). The audit row is the durable copy, so the archived
+    reader can show it after the discard toast is gone. Read at the edge from the DB the
+    daemon wrote it to: no git read, no daemon RPC."""
+    del identity   # any authenticated caller, as the transcript is
+    async with db_session() as db:
+        rows = (await db.execute(
+            select(AuditEvent).where(AuditEvent.type == "session.worktree_discard")
+            .order_by(AuditEvent.at.desc()).limit(_RECOVERY_AUDIT_SCAN))).scalars().all()
+    for row in rows:
+        detail = row.detail or {}
+        refs = [r for r in detail.get("recoveryRefs") or [] if isinstance(r, str)]
+        if detail.get("sessionId") == session_id and refs:
+            return {"recoveryRefs": refs, "restoreCommand": worktrees.restore_command(refs[0]),
+                    "branch": detail.get("branch"), "path": detail.get("path"),
+                    "at": row.at.isoformat()}
+    return {"recoveryRefs": [], "restoreCommand": None, "branch": None, "path": None, "at": None}
 
 
 @router.get("/{session_id}/transcript")

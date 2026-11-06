@@ -4,7 +4,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type ApiRequestError } from './client'
 import { QK } from './hooks'
-import type { WorktreeDiscardResult, WorktreePreflight, WorktreeRepairResult } from './types'
+import type { SessionRecoveryRefs, WorktreeDiscardResult, WorktreePreflight, WorktreeRepairResult } from './types'
 
 // Not under `['sessions']`: every sessions invalidation would re-run the git reads.
 export const worktreePreflightKey = (sessionId: string) => ['worktree-preflight', sessionId] as const
@@ -52,3 +52,18 @@ export const useDiscardWorktree = () => useWorktreeMutation<WorktreeDiscardResul
 
 /** Recreate a missing or empty managed worktree from its branch. */
 export const useRepairWorktree = () => useWorktreeMutation<WorktreeRepairResult>('repair')
+
+/**
+ * Where a discarded session's work went, for the archived reader: read from the
+ * discard's audit row, so it outlives the toast and the page. `recoveryRefs` is empty
+ * for a session that was never discarded (or had nothing to save).
+ */
+export function useSessionRecoveryRefs(sessionId: string) {
+  return useQuery<SessionRecoveryRefs, ApiRequestError>({
+    queryKey: ['session-recovery-refs', sessionId],
+    queryFn: () => api.get<SessionRecoveryRefs>(`/sessions/${encodeURIComponent(sessionId)}/recovery-refs`),
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: 60_000,
+  })
+}

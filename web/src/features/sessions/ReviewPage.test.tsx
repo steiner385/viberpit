@@ -178,3 +178,29 @@ describe('ArchivedReviewPage', () => {
     expect(btn).toHaveTextContent('Restoring…')
   })
 })
+
+describe('ArchivedReviewPage — recovery refs (#3333)', () => {
+  it('shows a discarded session\'s refs and restore command from the audit row', async () => {
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult(ARCHIVED) as never)
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue(queryResult({ events: [] }) as never)
+    const { api } = await import('@/api/client')
+    const get = vi.spyOn(api, 'get').mockResolvedValue({
+      recoveryRefs: ['refs/viberpit/recovery/arc-99/1-discard'],
+      restoreCommand: 'git restore --source=X', branch: 'viberpit/x', path: '/w', at: '2026-06-02T10:00:00',
+    })
+    renderPage()
+    expect(await screen.findByTestId('archived-recovery')).toHaveTextContent('refs/viberpit/recovery/arc-99/1-discard')
+    expect(screen.getByTestId('restore-command')).toHaveTextContent('git restore --source=X')
+    get.mockRestore()
+  })
+
+  it('shows nothing for a session with no kept refs', async () => {
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue(queryResult({ events: [] }) as never)
+    const { api } = await import('@/api/client')
+    const get = vi.spyOn(api, 'get').mockResolvedValue({ recoveryRefs: [], restoreCommand: null, branch: null, path: null, at: null })
+    renderPage()
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    expect(screen.queryByTestId('archived-recovery')).toBeNull()
+    get.mockRestore()
+  })
+})

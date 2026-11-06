@@ -1393,3 +1393,33 @@ def test_a_failed_discard_snapshot_files_one_warning(env, monkeypatch, caplog):
     assert ei.value.code == wc.WORKTREE_SNAPSHOT_FAILED
     warns = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert [r.getMessage() for r in warns] == ["session.worktree_discard_snapshot_failed"]
+
+
+# ── recovery refs for the archived reader (#3333) ────────────────────────────
+
+
+async def _seed_discard_audit(rows: list[tuple[str, dict]]):
+    from server.audit import record_audit
+    async with db_session() as db:
+        for type_, detail in rows:
+            await record_audit(db, type_, "testuser@example.com", detail)
+        await db.commit()
+
+
+def test_recovery_refs_endpoint_reads_the_discard_audit_row():
+    ref = f"refs/viberpit/recovery/{SID}/20261106T000000-discard"
+    client, _fake = _make_client()
+    with patch.dict(os.environ, _ENV), client:
+        client.portal.call(_seed_discard_audit, [
+            ("session.worktree_discard", {"sessionId": OTHER, "outcome": "discarded",
+                                          "recoveryRefs": ["refs/other"]}),
+            ("session.worktree_discard", {"sessionId": SID, "outcome": "discarded",
+                                          "path": "/w", "branch": "b", "recoveryRefs": [ref]}),
+        ])
+        got = client.get(f"/api/sessions/{SID}/recovery-refs", headers=_H).json()
+        assert got["recoveryRefs"] == [ref]
+        assert got["restoreCommand"] == worktrees.restore_command(ref)
+        assert (got["branch"], got["path"]) == ("b", "/w")
+        # A session that was never discarded (or kept nothing) answers empty, not 404.
+        none = client.get(f"/api/sessions/{OTHER}x/recovery-refs", headers=_H).json()
+        assert none["recoveryRefs"] == [] and none["restoreCommand"] is None

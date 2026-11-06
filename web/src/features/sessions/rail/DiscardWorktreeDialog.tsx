@@ -27,7 +27,7 @@ import {
 } from '@/session/sessionNavState'
 import { Button } from '@/ui/Button'
 import { Dialog } from '@/ui/Dialog'
-import { CopyablePath } from '../transcript/CopyablePath'
+import { Code, RecoveryRefs, Restore } from './RecoveryRefs'
 import {
   DISCARD_FAILED_FALLBACK, IGNORED_FILES_LOST, WORKTREE_ERROR_MESSAGES, countLine, worktreeError,
 } from './worktreeCopy'
@@ -56,42 +56,12 @@ function stillShowing(sessionId: string): boolean {
     .some((route) => matchPath(route, pathname)?.params.id === sessionId)
 }
 
-/** A ref or command as copyable monospace text that wraps rather than widening the dialog. */
-function Code({ text }: { text: string }) {
-  return <code className="block min-w-0 break-all rounded bg-surface-raised px-1.5 py-0.5 font-mono text-xs text-ink">{text}</code>
-}
-
-/** The restore command, copied by a click or Enter (the worktree path's own control). */
-function Restore({ command }: { command: string }) {
-  return (
-    <span className="block min-w-0 break-all font-mono text-xs" data-testid="restore-command">
-      <CopyablePath text={command} title="Copy restore command" />
-      <span className="ml-1 font-sans text-ink-muted">(click to copy)</span>
-    </span>
-  )
-}
-
-function Refs({ refs, restore }: { refs: readonly string[]; restore: string | null }) {
-  return (
-    <div className="space-y-1 min-w-0" data-testid="discard-recovery">
-      {refs.length > 0 && <p className="text-xs text-ink-muted">Saved as {refs.length === 1 ? 'a recovery ref' : 'recovery refs'}:</p>}
-      {refs.map((r) => <Code key={r} text={r} />)}
-      {restore && (
-        <>
-          <p className="text-xs text-ink-muted">Restore with:</p>
-          <Restore command={restore} />
-        </>
-      )}
-    </div>
-  )
-}
-
 /** A failure that arrives after the dialog is gone (the card unmounted mid-request)
  *  still says why, with the refs — up until dismissed when there are any. */
 function toastFailure(f: ReturnType<typeof worktreeError>) {
   const kept = f.refs.length > 0 || f.restore !== null
   toast.error(f.text, {
-    description: kept ? <span className="block"><Refs refs={f.refs} restore={f.restore} /></span> : undefined,
+    description: kept ? <span className="block"><RecoveryRefs refs={f.refs} restore={f.restore} /></span> : undefined,
     duration: kept ? Infinity : 8000,
   })
 }
@@ -202,7 +172,7 @@ export default function DiscardWorktreeDialog({ sessionId, onClose, onDiscarded 
             {failure?.text ?? blocked}
           </p>
         )}
-        {failure && (failure.refs.length > 0 || failure.restore) && <Refs refs={failure.refs} restore={failure.restore} />}
+        {failure && (failure.refs.length > 0 || failure.restore) && <RecoveryRefs refs={failure.refs} restore={failure.restore} />}
 
         <label htmlFor={ackId} className={cn('flex items-start gap-2 min-h-target text-ink cursor-pointer', (blocked || checking) && 'opacity-50')}>
           <input

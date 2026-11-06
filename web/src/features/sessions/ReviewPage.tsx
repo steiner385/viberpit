@@ -29,6 +29,8 @@ import { Skeleton } from '@/ui/Skeleton'
 import { EmptyState } from '@/ui/EmptyState'
 import { Button } from '@/ui/Button'
 import { useAutoMarkViewed } from './useAutoMarkViewed'
+import { useSessionRecoveryRefs } from '@/api/worktreeHooks'
+import { RecoveryRefs } from './rail/RecoveryRefs'
 
 /** Initial payload cap: the last N turns; older history pages in on scroll-up. */
 const INITIAL_TURN_LIMIT = 100
@@ -39,6 +41,7 @@ export function ArchivedReviewPage({ sessionId }: { sessionId: string }) {
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
   const unarchive = useUnarchiveSession()
   const record = useArchivedSessions().data?.find((s) => s.id === sessionId)
+  const recovery = useSessionRecoveryRefs(sessionId).data
   const title = record?.name || sessionId.slice(0, 8)
   // Opening the Reader marks it read, so the archived card's bold clears (D-10).
   // An archived session takes no new turns: there is no `updatedAt` to follow.
@@ -90,6 +93,14 @@ export function ArchivedReviewPage({ sessionId }: { sessionId: string }) {
           </Button>
         }
       />
+      {recovery && recovery.recoveryRefs.length > 0 && (
+        <div className="border-b border-edge px-4 py-3 md:px-6" data-testid="archived-recovery">
+          <p className="mb-1 text-sm text-ink">
+            This session's worktree was discarded{recovery.branch ? ` (branch ${recovery.branch})` : ''}; its work is kept in git.
+          </p>
+          <RecoveryRefs refs={recovery.recoveryRefs} restore={recovery.restoreCommand} />
+        </div>
+      )}
       <PageContent scroll={false} busy={isLoading}>
         {isLoading ? (
           <Skeleton lines={8} className="px-4 py-4 md:px-6" />
