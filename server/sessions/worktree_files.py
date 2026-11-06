@@ -34,6 +34,7 @@ import errno
 import heapq
 import logging
 import os
+import re
 import stat
 import time
 from typing import Any
@@ -375,13 +376,20 @@ def search_files(cwd: str, q: str, regex: bool = False,
     ``BAD_QUERY`` for a NUL in ``q``, ``BAD_REGEX`` when git rejects a ``regex``
     pattern, and ``SEARCH_FAILED`` for any other git failure.
 
+    Content: git's output is only a hint. Each returned line is re-read from the file
+    opened beneath the session root (:func:`_open_beneath`, once per path, at most
+    ``MAX_READ_BYTES``), so a file swapped after git read it can leak nothing; a line
+    that no longer holds the hit is dropped. The ``SEARCH_TIMEOUT_S`` budget covers
+    those reads too. A path containing a newline is rebuilt from git's split output
+    (see ``record``).
+
     Confinement: git ``lstat``s only the last component of a path, so a tracked
     ``dir/x`` whose ``dir`` was swapped for a symlink would be read from outside the
     work tree. A match is therefore reported only if its path opens beneath the
     session's root with no symlinked component (``open_beneath``, as :func:`read_file`);
     the rest are dropped silently. The highlight never re-runs the user's pattern in
-    Python (catastrophic backtracking would stall the daemon): a fixed string spans its
-    own length, a regex gets git's start column and an empty span.
+    Python (catastrophic backtracking would stall the daemon): a fixed string is located
+    with an escaped literal (linear), a regex gets git's start column and an empty span.
     """
     if "\0" in q:
         raise FileAccessError(BAD_QUERY)
@@ -407,42 +415,66 @@ def search_files(cwd: str, q: str, regex: bool = False,
     capped = False
     pending = b""
     root = os.path.realpath(cwd)
-    confined: dict[str, bool] = {}
+    deadline = time.monotonic() + SEARCH_TIMEOUT_S
+    out_of_time = False
+    literal = re.compile(re.escape(q), re.IGNORECASE if ignore_case else 0)
+    cache: tuple[str, list[bytes] | None] = ("", None)  # the last path's lines
 
-    def beneath(path: str) -> bool:
-        ok = confined.get(path)
-        if ok is None:
-            try:
-                os.close(_open_beneath(root, path))
-                ok = True
-            except (FileAccessError, OSError):
-                ok = False
-            confined[path] = ok
-        return ok
-
-    def take(line: bytes) -> bool:
-        nonlocal capped
-        # ``-z`` makes every separator a NUL: ``path \0 lineno \0 column \0 text`` (the
-        # text itself may hold anything but a newline).
-        parts = line.split(b"\0", 3)
-        if len(parts) != 4:
-            return False
+    def lines_of(path: str) -> list[bytes] | None:
+        """The lines of ``path`` read through an fd opened beneath the session root (no
+        symlinked component, regular file, at most ``MAX_READ_BYTES``, not binary), or
+        None. Git's output is only a hint; this is the source of every returned byte."""
+        nonlocal cache
+        if cache[0] == path:
+            return cache[1]
+        lines: list[bytes] | None = None
         try:
-            path = parts[0].decode("utf-8")
-            lineno, col = int(parts[1]), int(parts[2])
+            fd = _open_beneath(root, path)
+        except FileAccessError:
+            fd = -1
+        if fd >= 0:
+            try:
+                with os.fdopen(fd, "rb") as fh:
+                    if stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                        data = fh.read(MAX_READ_BYTES + 1)
+                        if (len(data) <= MAX_READ_BYTES
+                                and b"\0" not in data[:BINARY_SNIFF_BYTES]):
+                            lines = data.split(b"\n")
+            except OSError:
+                lines = None
+        cache = (path, lines)
+        return lines
+
+    def take(path_b: bytes, lineno_b: bytes, col_b: bytes) -> bool:
+        nonlocal capped, out_of_time
+        if time.monotonic() > deadline:
+            out_of_time = True
+            return True
+        try:
+            path = path_b.decode("utf-8")
+            lineno, col = int(lineno_b), int(col_b)
         except (UnicodeDecodeError, ValueError):
             return False  # not valid UTF-8 cannot round-trip through JSON to a read
-        if _is_git_internal(path) or not beneath(path):
+        if _is_git_internal(path):
             return False
+        lines = lines_of(path)
+        if lines is None or not 1 <= lineno <= len(lines):
+            return False
+        text = lines[lineno - 1].decode("utf-8", "replace")
+        if regex:
+            start = min(len(lines[lineno - 1][:max(col - 1, 0)].decode("utf-8", "replace")),
+                        len(text))
+            end = start
+        else:
+            hit = literal.search(text)
+            if hit is None:
+                return False  # the file changed since git read it
+            start, end = hit.span()
         if path not in files:
             if len(files) >= MAX_SEARCH_FILES:
                 capped = True
                 return True
             files.add(path)
-        raw = parts[3]
-        start = len(raw[:max(col - 1, 0)].decode("utf-8", "replace"))
-        text = raw.decode("utf-8", "replace")
-        end = start if regex else start + len(q)
         text, start, end = _clip_line(text, start, end)
         matches.append({"path": path, "line": lineno, "text": text,
                         "start": start, "end": end})
@@ -451,11 +483,34 @@ def search_files(cwd: str, q: str, regex: bool = False,
             return True
         return False
 
+    path_head: list[bytes] = []  # fragments of a path that contains a newline
+
+    def record(line: bytes) -> bool:
+        """One ``\\n``-split fragment of git's output. ``-z`` makes every separator a
+        NUL and does not quote paths: a record is ``path \\0 lineno \\0 column \\0
+        text``, the text never holds a newline, and a path may. A fragment with no NUL
+        therefore continues a path; one with exactly three ends a record (its path is
+        the held fragments plus the one before the first NUL, joined with ``\\n``);
+        any other count cannot be parsed unambiguously, so it and the fragments held
+        for it are dropped."""
+        nonlocal capped
+        nuls = line.count(b"\0")
+        if nuls == 0:
+            path_head.append(line)
+            if sum(len(h) + 1 for h in path_head) > _MAX_SEARCH_LINE_BYTES:
+                path_head.clear()
+            return False
+        held, path_head[:] = path_head[:], []
+        if nuls != 3:
+            return False
+        path_tail, lineno_b, col_b, _text = line.split(b"\0", 3)
+        return take(b"\n".join([*held, path_tail]), lineno_b, col_b)
+
     def consume(chunk: bytes) -> bool:
         nonlocal pending, capped
         *lines, pending = (pending + chunk).split(b"\n")
         for ln in lines:
-            if take(ln):
+            if record(ln):
                 return True
         if len(pending) > _MAX_SEARCH_LINE_BYTES:
             capped = True
@@ -472,7 +527,8 @@ def search_files(cwd: str, q: str, regex: bool = False,
             raise FileAccessError(BAD_REGEX)
         log.info("file search failed in %s: %s", cwd, reason[-300:] or "no output")
         raise FileAccessError(SEARCH_FAILED)
-    return {"matches": matches, "truncated": capped, "timedOut": status == "timeout"}
+    return {"matches": matches, "truncated": capped,
+            "timedOut": status == "timeout" or out_of_time}
 
 
 __all__ = [

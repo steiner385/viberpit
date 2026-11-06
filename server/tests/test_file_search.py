@@ -297,12 +297,13 @@ def test_long_line_is_truncated_around_the_match(repo: Path) -> None:
 def test_timeout_returns_partial_results(repo: Path) -> None:
     def slow(cwd, args, consume, **kw):
         assert kw["timeout"] == wf.SEARCH_TIMEOUT_S == 5.0
-        consume(b"src/app.py\x002\x001\x00partial\n")
+        consume(b"src/app.py\x002\x0014\x00ignored git text\n")
         return "timeout"
 
     with patch.object(wf, "stream_git", slow):
-        res = wf.search_files(str(repo), "partial")
-    assert res["timedOut"] is True and [m["text"] for m in res["matches"]] == ["partial"]
+        res = wf.search_files(str(repo), "World")
+    assert res["timedOut"] is True
+    assert [m["text"] for m in res["matches"]] == ["print('Hello World')"]  # from the file
 
 
 def test_search_never_touches_the_index(repo: Path) -> None:
@@ -507,3 +508,118 @@ async def test_fleet_routes_to_owning_host() -> None:
     assert await fo.session_file_search(SID, q="x", regex=True) == {"host": "rocky"}
     assert rocky.calls == [(SID, {"q": "x", "regex": True})]
     assert dobby.calls == []
+
+
+# --- fix round 2: newline-split paths, text read through the confined fd -------------
+
+def test_newline_in_symlinked_dir_name_does_not_leak_via_a_decoy(
+        repo: Path, tmp_path: Path) -> None:
+    """``git grep -z`` ends a record with ``\\n`` and does not quote paths, so the path
+    ``a\\nb/x`` arrives split in two. The tail ``b/x`` must never be read as a path of
+    its own (an in-tree decoy) to launder the outside line."""
+    (repo / "a\nb").mkdir()
+    (repo / "a\nb" / "x").write_text("SECRET_TOKEN tracked\n")
+    (repo / "b").mkdir()
+    (repo / "b" / "x").write_text("decoy\n")
+    _commit(repo)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "x").write_text("SECRET_TOKEN=hunter2\n")
+    shutil.rmtree(repo / "a\nb")
+    os.symlink(out, repo / "a\nb")
+    for regex in (False, True):
+        res = wf.search_files(str(repo), "SECRET_TOKEN", regex)
+        assert "hunter2" not in repr(res)
+        assert not any(m["path"] == "b/x" for m in res["matches"])
+        assert res["matches"] == []
+
+
+def test_newline_in_an_ordinary_path_keeps_its_real_path(repo: Path) -> None:
+    """The fragments are glued back with ``\\n``: the match carries the true path."""
+    (repo / "d\nir").mkdir()
+    (repo / "d\nir" / "f.txt").write_text("needle here\n")
+    _commit(repo)
+    res = wf.search_files(str(repo), "needle")
+    assert [(m["path"], m["line"], m["text"]) for m in res["matches"]] == [
+        ("d\nir/f.txt", 1, "needle here")]
+    assert wf.read_file(str(repo), res["matches"][0]["path"])["text"] == "needle here\n"
+
+
+def _swap_after_git(monkeypatch: pytest.MonkeyPatch, swap) -> None:
+    """Run git for real, but hold its output back until ``swap()`` has run — the file
+    changes after git read it and before the search reads the line."""
+    real = wf.stream_git
+
+    def staged(cwd, args, consume, **kw):
+        buf: list[bytes] = []
+        status = real(cwd, args, lambda c: buf.append(c) or False, **kw)
+        swap()
+        for c in buf:
+            if consume(c):
+                return "cut"
+        return status
+
+    monkeypatch.setattr(wf, "stream_git", staged)
+
+
+def test_toctou_swap_to_an_outside_symlink_returns_nothing(
+        repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    out = tmp_path / "out.txt"
+    out.write_text("hello OUTSIDE_SECRET\n")
+
+    def swap() -> None:
+        (repo / "notes.md").unlink()
+        os.symlink(out, repo / "notes.md")
+
+    _swap_after_git(monkeypatch, swap)
+    res = wf.search_files(str(repo), "hello")
+    assert "OUTSIDE_SECRET" not in repr(res)
+    assert "notes.md" not in _paths(res)
+
+
+def test_toctou_swapped_directory_returns_nothing(
+        repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    out = tmp_path / "outdir"
+    out.mkdir()
+    (out / "app.py").write_text("print('Hello OUTSIDE_SECRET')\n")
+
+    def swap() -> None:
+        shutil.rmtree(repo / "src")
+        os.symlink(out, repo / "src")
+
+    _swap_after_git(monkeypatch, swap)
+    assert "OUTSIDE_SECRET" not in repr(wf.search_files(str(repo), "Hello"))
+
+
+def test_toctou_text_comes_from_the_file_not_from_git(
+        repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Git's line is a hint: a regular file rewritten after git ran is re-read, and a
+    line that no longer holds the hit is dropped."""
+    def swap() -> None:
+        (repo / "notes.md").write_text("now Hello changed\nnothing\n")
+
+    _swap_after_git(monkeypatch, swap)
+    res = wf.search_files(str(repo), "hello")
+    by_path = {m["path"]: m for m in res["matches"]}
+    assert by_path["notes.md"]["text"] == "now Hello changed"
+    assert by_path["notes.md"]["line"] == 1
+    assert [m["line"] for m in res["matches"] if m["path"] == "notes.md"] == [1]
+
+    def swap2() -> None:
+        (repo / "notes.md").write_text("unrelated\n")
+
+    _swap_after_git(monkeypatch, swap2)
+    assert "notes.md" not in _paths(wf.search_files(str(repo), "hello"))
+
+
+def test_text_read_through_fd_handles_smart_case_offsets(repo: Path) -> None:
+    (repo / "u.txt").write_text("xßy Needle z\n")
+    _commit(repo)
+    m = [x for x in wf.search_files(str(repo), "needle")["matches"] if x["path"] == "u.txt"][0]
+    assert m["text"][m["start"]:m["end"]] == "Needle"
+
+
+def test_file_over_the_viewer_cap_is_skipped(repo: Path) -> None:
+    (repo / "big.txt").write_text("needle\n" + "x" * wf.MAX_READ_BYTES)
+    _commit(repo)
+    assert "big.txt" not in _paths(wf.search_files(str(repo), "needle"))
