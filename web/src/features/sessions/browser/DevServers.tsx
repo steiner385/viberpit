@@ -91,7 +91,7 @@ export function DevServers({ sessionId, servers, refetch, notice, onPreviewOpene
                   {s.title && (
                     <p className="truncate text-xs text-ink-muted" title={cap(s.title)}>{cap(s.title)}</p>
                   )}
-                  {s.bind === 'all' && <p className="text-xs text-ink-muted">{DEV_SERVERS_COPY.reachable}</p>}
+                  {s.bind !== 'loopback' && <p className="text-xs text-ink-muted">{DEV_SERVERS_COPY.reachable}</p>}
                 </div>
                 {s.open.kind === 'none' ? (
                   <span className="shrink-0 text-xs text-ink-muted">{DEV_SERVERS_COPY.unavailable}</span>

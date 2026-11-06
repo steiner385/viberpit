@@ -602,6 +602,156 @@ async def test_unknown_session_lists_nothing_and_probes_nothing(host) -> None:
     assert servers == [] and host.probe.calls == []
 
 
+# ---------------------------------------------------------------- #3329 detection gaps
+
+
+@pytest.mark.asyncio
+async def test_a_bind_to_one_specific_address_is_offered_at_that_address(host) -> None:
+    """A server bound to one non-loopback address (the tailnet IP, a LAN IP) is the
+    session's too: offered at that address, flagged as reachable from the network."""
+    host.proc.add(220, 210, ["node", "vite", "--host", "100.64.0.5"], cwd="/w/a",
+                  sockets=(9050,))
+    host.proc.listen(9050, "100.64.0.5", 5500)
+    host.probe.html[5500] = "Tailnet only"
+    servers = {s["port"]: s for s in await _detector(host).detect(
+        SID_A, host.keys, bg_commands=_no_bg, managed_worktrees=_MW)}
+    assert servers[5500] == {"port": 5500, "address": "100.64.0.5", "bind": "address",
+                             "pid": 220, "label": "node vite --host 100.64.0.5",
+                             "title": "Tailnet only", "note": ds.EXPOSED_NOTE}
+    assert ("100.64.0.5", 5500) in host.probe.calls
+
+
+@pytest.mark.asyncio
+async def test_an_mcp_server_launched_through_a_shell_wrapper_is_excluded(host) -> None:
+    """MCP exclusion used to skip every shell branch, so ``bash -c "npx …-mcp"`` slipped
+    through. The program a shell branch runs decides — while a tool shell's dev server
+    stays listed even when its paths name MCP."""
+    host.proc.add(230, 200, ["/bin/bash", "-c", "exec npx -y some-mcp-server"], cwd="/w/a")
+    host.proc.add(231, 230, ["npm", "exec", "some-mcp-server"], cwd="/w/a")
+    host.proc.add(232, 231, ["node", "/home/u/.npm/_npx/x/some-mcp-server/index.js"],
+                  cwd="/w/a", sockets=(9051,))
+    host.proc.listen(9051, "127.0.0.1", 4100)
+    host.proc.add(240, 200, ["/bin/bash", "-c", "eval 'npm run dev'"], cwd="/w/kindash-mcp")
+    host.proc.add(241, 240, ["npm", "run", "dev"], cwd="/w/kindash-mcp")
+    host.proc.add(242, 241, ["node", "/w/kindash-mcp/node_modules/.bin/vite"],
+                  cwd="/w/kindash-mcp", sockets=(9052,))
+    host.proc.listen(9052, "127.0.0.1", 5600)
+    host.probe.html.update({4100: "mcp", 5600: "app"})
+    servers = await _detector(host).detect(SID_A, host.keys, bg_commands=_no_bg,
+                                           managed_worktrees=_MW)
+    ports = {s["port"] for s in servers}
+    assert 4100 not in ports and ("127.0.0.1", 4100) not in host.probe.calls
+    assert 5600 in ports
+
+
+@pytest.mark.asyncio
+async def test_a_session_in_a_subdirectory_of_its_worktree_claims_the_worktree(
+        tmp_path: Path) -> None:
+    """A session started in ``<worktree>/web`` owns its worktree: an escaped server or a
+    shared-root (Codex) child anywhere in it is attributed, not only its own subtree."""
+    from viberpit import worktrees
+    repo_root = tmp_path.resolve() / "GitHub"
+    wt = worktrees.worktrees_base(str(repo_root)) / "viberpit" / "aaaaaaaa"
+    (wt / "web").mkdir(parents=True)
+    (wt / "api").mkdir()
+    p = FakeProc(tmp_path / "proc")
+    p.add(100, 1, ["python3"], cwd="/srv")
+    p.add(300, 1, ["node", "server.js"], cwd=str(wt / "api"), sockets=(9001,))  # escaped
+    p.listen(9001, "127.0.0.1", 5173)
+    p.add(600, 100, ["/usr/bin/codex", "app-server"], cwd="/home/u/.codex-home")
+    p.add(601, 600, ["bash", "-lc", "npm run dev"], cwd=str(wt))
+    p.add(602, 601, ["node", "vite"], cwd=str(wt), sockets=(9002,))
+    p.listen(9002, "127.0.0.1", 5174)
+    probe = _Probe({5173: None, 5174: None})
+    det = ds.DevServerDetector(fs=ds.ProcFs(str(p.root)), daemon_pid=100, probe=probe)
+    keys = [SessionKey(SID_A, "", str(wt / "web"))]
+    servers = await det.detect(SID_A, keys, bg_commands=_no_bg, repo_roots=[str(repo_root)])
+    assert sorted(s["port"] for s in servers) == [5173, 5174]
+    # Already-resolved roots work the same way.
+    det = ds.DevServerDetector(fs=ds.ProcFs(str(p.root)), daemon_pid=100, probe=probe)
+    servers = await det.detect(SID_A, keys, bg_commands=_no_bg,
+                               managed_worktrees=frozenset({str(wt)}))
+    assert sorted(s["port"] for s in servers) == [5173, 5174]
+
+
+@pytest.mark.asyncio
+async def test_two_sessions_in_one_worktree_claim_nothing_outside_their_subtrees(
+        tmp_path: Path) -> None:
+    from viberpit import worktrees
+    repo_root = tmp_path.resolve() / "GitHub"
+    wt = worktrees.worktrees_base(str(repo_root)) / "viberpit" / "aaaaaaaa"
+    (wt / "web").mkdir(parents=True)
+    p = FakeProc(tmp_path / "proc")
+    p.add(100, 1, ["python3"], cwd="/srv")
+    p.add(300, 1, ["node", "server.js"], cwd=str(wt), sockets=(9001,))
+    p.listen(9001, "127.0.0.1", 5173)
+    probe = _Probe({5173: None})
+    det = ds.DevServerDetector(fs=ds.ProcFs(str(p.root)), daemon_pid=100, probe=probe)
+    keys = [SessionKey(SID_A, "", str(wt / "web")), SessionKey(SID_B, "", str(wt))]
+    assert await det.detect(SID_A, keys, bg_commands=_no_bg,
+                            repo_roots=[str(repo_root)]) == []
+    assert probe.calls == []
+
+
+# ---------------------------------------------------------------- #3329 slow scans
+
+
+@pytest.mark.asyncio
+async def test_concurrent_polls_share_one_slow_scan_instead_of_queueing(host) -> None:
+    """A scan that is slow but not stuck used to serialise every session's poll on the
+    host-wide lock (N polls → N back-to-back scans), pushing late polls past the RPC
+    timeout. One host-wide scan now answers every poll that arrives while it runs."""
+    import threading
+    scans = []
+
+    class _SlowFs(ds.ProcFs):
+        def listeners(self):
+            scans.append(threading.current_thread().name)
+            time.sleep(0.4)
+            return super().listeners()
+    det = ds.DevServerDetector(fs=_SlowFs(host.fs.root), daemon_pid=100, probe=host.probe,
+                               scan_timeout=3.0)
+    t0 = time.monotonic()
+    a, b, c = await asyncio.gather(*(
+        det.detect(sid, host.keys, bg_commands=_no_bg, managed_worktrees=_MW)
+        for sid in (SID_A, SID_B, SID_C)))
+    elapsed = time.monotonic() - t0
+    assert len(scans) == 1
+    assert elapsed < 0.4 * 2
+    assert [s["port"] for s in a] == [3000, 5173, 5180, 5401, 8080]
+    assert [s["port"] for s in b] == [5300]
+    assert [s["port"] for s in c] == [5400]
+
+
+@pytest.mark.asyncio
+async def test_a_poll_for_a_session_the_running_scan_does_not_cover_gets_its_own(
+        host) -> None:
+    import threading
+    scans: list[int] = []
+    gate = threading.Event()
+
+    class _GatedFs(ds.ProcFs):
+        def listeners(self):
+            scans.append(1)
+            if len(scans) == 1:
+                gate.wait(5)
+            return super().listeners()
+    det = ds.DevServerDetector(fs=_GatedFs(host.fs.root), daemon_pid=100, probe=host.probe,
+                               scan_timeout=3.0)
+    only_b = [k for k in host.keys if k.session_id == SID_B]
+    first = asyncio.ensure_future(det.detect(SID_B, only_b, bg_commands=_no_bg,
+                                             managed_worktrees=_MW))
+    await asyncio.sleep(0.05)
+    second = asyncio.ensure_future(det.detect(SID_A, host.keys, bg_commands=_no_bg,
+                                              managed_worktrees=_MW))
+    await asyncio.sleep(0.05)
+    gate.set()
+    b, a = await asyncio.gather(first, second)
+    assert len(scans) == 2
+    assert [s["port"] for s in b] == [5300]
+    assert [s["port"] for s in a] == [3000, 5173, 5180, 5401, 8080]
+
+
 # ---------------------------------------------------------------- labels, cache
 
 
@@ -738,6 +888,10 @@ _ALL6 = {"port": 8081, "address": "::1", "bind": "all", "pid": 1, "label": "x",
          "note": ds.EXPOSED_NOTE}
 _IP = "100.101.102.103"
 _IP6 = "fd7a:115c:a1e0::1"
+_ADDR_TS = {"port": 5500, "address": _IP, "bind": "address", "pid": 1, "label": "x",
+            "note": ds.EXPOSED_NOTE}
+_ADDR_LAN = {"port": 5501, "address": "192.168.1.20", "bind": "address", "pid": 1,
+             "label": "x", "note": ds.EXPOSED_NOTE}
 
 
 @pytest.mark.parametrize("server,client_node,tailnet,expected", [
@@ -757,6 +911,12 @@ _IP6 = "fd7a:115c:a1e0::1"
     # No known tailnet IP, or not an IP at all (never a name): vnc.
     (_ALL, "phone", None, {"kind": "vnc"}),
     (_ALL, "phone", "rocky.tail0dd570.ts.net", {"kind": "vnc"}),
+    # One specific address (#3329): the tailnet link only when it IS the tailnet IP;
+    # a LAN-only bind is not reachable over the tailnet, so vnc. Locally, the address.
+    (_ADDR_TS, "phone", _IP,
+     {"kind": "tailnet-link", "url": f"http://{_IP}:5500/", "note": ds.EXPOSED_NOTE}),
+    (_ADDR_LAN, "phone", _IP, {"kind": "vnc"}),
+    (_ADDR_LAN, "rocky", _IP, {"kind": "local-link", "url": "http://192.168.1.20:5501/"}),
 ])
 def test_open_route(server, client_node, tailnet, expected) -> None:
     assert ds.open_route(server, client_node=client_node, runner="rocky",
@@ -886,6 +1046,37 @@ async def test_orchestrator_reports_its_own_tailnet_ip_for_an_exposed_server(orc
                return_value=frozenset({ipaddress.ip_address(_IP)})):
         res = await orch.o.dev_servers(SID_A)
     assert res["tailnetIp"] == _IP
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_reports_its_tailnet_ip_for_a_specific_address_bind(orch) -> None:
+    orch.found[:] = [dict(_ADDR_TS)]
+    with patch("server.sessions.dev_servers._self_tailscale_ips",
+               return_value=frozenset({ipaddress.ip_address(_IP)})):
+        res = await orch.o.dev_servers(SID_A)
+    assert res["tailnetIp"] == _IP
+
+
+@pytest.mark.asyncio
+async def test_background_work_read_is_one_executor_hop(monkeypatch, tmp_path: Path) -> None:
+    """A dev-server poll's label read used to make two ``to_thread`` calls on the shared
+    executor (the transcript lookup, then the scan); it is one now."""
+    import server.sessions.orchestrator as orch_mod
+    o = SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0,
+                            usage_fn=lambda name: None)
+    o._records[SID_A] = _rec(SID_A, "/w/a")
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("")
+    o.transcript_path = lambda session_id: str(transcript)  # type: ignore[method-assign,assignment]
+    hops: list[object] = []
+    real = asyncio.to_thread
+
+    async def counting(fn, *a, **kw):
+        hops.append(fn)
+        return await real(fn, *a, **kw)
+    monkeypatch.setattr(orch_mod.asyncio, "to_thread", counting)
+    assert await o._open_background_work(SID_A) == []
+    assert len(hops) == 1
 
 
 @pytest.mark.asyncio

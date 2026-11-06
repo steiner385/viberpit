@@ -181,7 +181,9 @@ export function BrowserTab({
     const delay = statusChanged ? 0
       : Math.min(NODISPLAY_RETRY_MAX_MS, NODISPLAY_RETRY_MS * 2 ** noDisplayAttempt.current)
     const t = setTimeout(() => {
-      noDisplayAttempt.current++
+      // The immediate reconnect on a status change is not a backoff step: the first
+      // slow retry after it still waits 5 s, not 10.
+      if (!statusChanged) noDisplayAttempt.current++
       setConnectNonce((n) => n + 1)
     }, delay)
     return () => clearTimeout(t)
