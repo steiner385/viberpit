@@ -138,6 +138,16 @@ RECONCILE_EXEMPT: set[str] = {
     # 0096_session_views on prod). viewed_at is written by every upsert in
     # server/sessions/read_state.py; a row without it would assert an arbitrary read time.
     "session_views.viewed_at",
+    # session_branches (D-22): a NEW table (create_all builds it on both dialects; Alembic
+    # 0108_session_branches is the record). Every column is supplied at INSERT by
+    # server/sessions/branch_ownership.py; a record without its session, host, clone,
+    # branch or source proves nothing, and created_at is written from db_utc_now().
+    "session_branches.session_id",
+    "session_branches.host",
+    "session_branches.clone",
+    "session_branches.branch",
+    "session_branches.source",
+    "session_branches.created_at",
 }
 
 

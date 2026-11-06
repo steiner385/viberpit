@@ -133,7 +133,7 @@ def check_disk_headroom(
 class WorktreeInfo:
     path: str             # the worktree directory — use this as the session cwd
     branch: str | None    # the branch checked out, or None for a detached worktree
-    is_child: bool        # True if we created a child branch (selected branch was busy)
+    is_child: bool        # True if this call created the branch it checked out
     repo: str             # absolute toplevel of the main repo the worktree belongs to
 
 

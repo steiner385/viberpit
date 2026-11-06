@@ -250,6 +250,9 @@ def import_(bundle: Bundle, repo_path: str, repo_root: str) -> WorktreeInfo:
     transport commit and the edits are back as unstaged changes. A branch already checked
     out elsewhere on this clone is refused rather than renamed — ``create_worktree``'s
     child-branch fallback would silently change the branch the agent remembers.
+
+    ``is_child`` is True only when this call created the branch (no local ref before
+    it), never for a reused worktree or a branch the clone already had.
     """
     top = _repo_top(repo_path)
     repo_name = os.path.basename(top.rstrip("/"))
@@ -272,6 +275,7 @@ def import_(bundle: Bundle, repo_path: str, repo_root: str) -> WorktreeInfo:
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     clear_stale_registration(top, dest)
+    made_branch = False   # this call created refs/heads/<branch> (no prior ref)
     if bundle.branch is None:
         add = _run(["git", "-C", top, "worktree", "add", "-q", "--detach", str(dest),
                     "--", bundle.head_sha])
@@ -293,6 +297,7 @@ def import_(bundle: Bundle, repo_path: str, repo_root: str) -> WorktreeInfo:
             else:
                 _run(["git", "-C", top, "branch", "-D", bundle.branch])
             raise TransferError("worktree_add_failed", add.stderr.strip())
+        made_branch = prev is None
     if bundle.wip_commit:
         rs = _run(["git", "-C", str(dest), "reset", "-q", "--mixed", bundle.base_sha])
         if rs.returncode != 0:
@@ -303,7 +308,7 @@ def import_(bundle: Bundle, repo_path: str, repo_root: str) -> WorktreeInfo:
     lock_worktree(top, dest)
     log.info("transfer.import session=%s path=%s branch=%s wip=%s",
              bundle.session_id, dest, bundle.branch, bundle.wip_commit)
-    return WorktreeInfo(str(dest), bundle.branch, is_child=False, repo=top)
+    return WorktreeInfo(str(dest), bundle.branch, is_child=made_branch, repo=top)
 
 
 def _wip_parent(cwd: str, session_id: str, bundle: Bundle | None) -> str | None:

@@ -90,6 +90,7 @@ from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, 
 from server.automations.claim_liveness import DEAD_CLAIM_STATUSES
 from server.pm.map_resolution import map_diff_key, parse_map_diff_key
 from server.sessions import adopt as _adopt
+from server.sessions import branch_ownership as _branch_ownership
 from server.sessions.helper_call import helper_cwd
 from server.sessions.account_auth import account_store_io, oauth_env_for
 from server.sessions.scratch_config import helper_config_dir
@@ -648,6 +649,14 @@ def _recovery_refs_wire(session_id: str, cwd: str, repo: str | None, root: str) 
                   "createdAt": e.created_at.isoformat(),
                   "restoreCommand": worktrees.restore_command(e.ref)} for e in entries],
     }
+
+
+def row_stamped_here(host: str | None) -> bool:
+    """Is a row stamped *host* this daemon's, strictly (never orphan adoption)? A
+    worker's rows carry its name; the primary's carry its name, NULL or "local"."""
+    if daemon_role() == "worker":
+        return host == self_host_name()
+    return _stamp_is_this_host(host)
 
 
 class SessionWorktreeMissing(RuntimeError):
@@ -6081,6 +6090,17 @@ class SessionOrchestrator:
         # which turned one transient AllAccountsBusy on a model approval into a
         # permanent 409 (#2255).
         try:
+            # D-22: record the branch ViberPit just created (a child branch or a fork
+            # branch) before the session is reported started — never the user's own
+            # branch (is_child False). A failed write leaves it unrecorded, i.e. never
+            # auto-deleted; record_branch logs that and does not raise.
+            if (worktree_info is not None and worktree_info.branch
+                    and (fork_worktree is not None or worktree_info.is_child)):
+                await _branch_ownership.record_branch(
+                    session_id=session_id, host=self_host_name(),
+                    clone=worktree_info.repo, branch=worktree_info.branch,
+                    source=(_branch_ownership.SOURCE_FORK if fork_worktree is not None
+                            else _branch_ownership.SOURCE_CREATE))
             # Resolve final cwd: an explicit cwd was already validated above; a
             # branch-selected session already has cwd=worktree path.  For a no-repo
             # session (no explicit cwd, no worktree) we create an isolated scratch dir
@@ -23211,11 +23231,8 @@ class SessionOrchestrator:
                 sa_select(DbSession).where(DbSession.id == session_id))).scalar_one_or_none()
 
     def _row_stamped_here(self, host: str | None) -> bool:
-        """Is a row stamped *host* this daemon's, strictly (never orphan adoption)? A
-        worker's rows carry its name; the primary's carry its name, NULL or "local"."""
-        if daemon_role() == "worker":
-            return host == self_host_name()
-        return _stamp_is_this_host(host)
+        """``row_stamped_here`` (module level, shared with the branch backfill)."""
+        return row_stamped_here(host)
 
     def _install_row(self, row) -> SessionRecord:
         """THE per-row import: (re)build this session's in-memory record from its DB row
@@ -23535,6 +23552,8 @@ class SessionOrchestrator:
                                f"The row is stamped {row.host!r}, not {me!r}.")
         cwd = row.cwd
         created = False
+        # The clone import_ created the session's branch in (no prior ref), else None.
+        branch_made_in: str | None = None
 
         async def _abandon() -> None:
             if local:
@@ -23580,6 +23599,7 @@ class SessionOrchestrator:
                         raise sm.MoveError(sm.MOVE_IMPORT_FAILED, f"{exc.code}: {exc.detail}",
                                            extra={"gitCode": exc.code}) from exc
                     created = not existed
+                    branch_made_in = info.repo if info.is_child else None
                     if os.path.abspath(info.path) != os.path.abspath(cwd):
                         raise sm.MoveError(sm.MOVE_PATH_MISMATCH,
                                            f"imported at {info.path}, row says {cwd}")
@@ -23606,6 +23626,15 @@ class SessionOrchestrator:
                 log.info("session.move could not undo a failed import id=%s",
                          session_id, exc_info=True)
             raise
+        # D-22: ownership travels with the move — but only for a branch this import
+        # created here AND the source had a record for. A branch the target clone
+        # already had is not proof. Never raises (an unrecorded branch is kept).
+        if (bundle is not None and bundle.branch and branch_made_in is not None
+                and await _branch_ownership.source_had_record(
+                    session_id, bundle.branch, source_host=source, target_host=me)):
+            await _branch_ownership.record_branch(
+                session_id=session_id, host=me, clone=branch_made_in,
+                branch=bundle.branch, source=_branch_ownership.SOURCE_IMPORT)
         # Import-complete evidence for the crash reconcile — the TRUE last step, outside
         # the try: once it may have committed, nothing can abandon this tree any more.
         # A CAS on moving_to == me, so it is a no-op on a source's restore. If it raises,
