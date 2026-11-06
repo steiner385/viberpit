@@ -436,18 +436,20 @@ describe('McpSection', () => {
 
     afterEach(() => window.history.replaceState(null, '', '/'))
 
-    it('links Fix auth to the one-tap start route when enabled', async () => {
+    it('posts Fix auth to the one-tap start route when enabled', async () => {
       mockConfig(true)
       renderSection()
-      const link = await screen.findByRole('link', { name: 'Sign in' })
-      expect(link.getAttribute('href')).toBe('/api/mcp/oauth/start?server=notion')
+      const button = await screen.findByRole('button', { name: 'Sign in' })
+      const form = button.closest('form')!
+      expect(form.getAttribute('method')).toBe('post')
+      expect(form.getAttribute('action')).toBe('/api/mcp/oauth/start?server=notion')
     })
 
     it('keeps the McpAuthFlow when one-tap is off', async () => {
       mockConfig(false)
       renderSection()
       await screen.findByText('Needs auth')
-      expect(screen.queryByRole('link', { name: 'Sign in' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Sign in' })).toBeNull()
       expect(await screen.findByRole('button', { name: 'Fix auth' })).toBeTruthy()
     })
 

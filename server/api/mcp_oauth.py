@@ -1,5 +1,6 @@
 """One-tap MCP sign-in routes (MCP auth overhaul phase 4): ``start`` sends the browser to the
-provider, ``callback`` takes it back. Every answer is a 302 to a relative ``/settings/mcp``
+provider, ``callback`` takes it back. ``start`` is a POST: it mints OAuth state and writes an audit
+row, so a GET would let any cross-site ``<img>`` trigger it (#3325). Every answer is a 302 to a relative ``/settings/mcp``
 URL whose only parameters are the server name (quoted) or a closed-set error code: provider
 text is never reflected. The flow lives in :mod:`server.mcp_health.one_tap`."""
 from __future__ import annotations
@@ -49,7 +50,7 @@ def _to_settings(param: str, value: str) -> RedirectResponse:
                             status_code=302)
 
 
-@router.get("/start")
+@router.post("/start")
 async def oauth_start(server: str = "", identity: str = Depends(current_identity),
                       db=Depends(get_db)) -> RedirectResponse:  # noqa: ANN001
     try:
