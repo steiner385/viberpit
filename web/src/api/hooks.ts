@@ -75,7 +75,7 @@ import { extractMutationErrorMessage, shouldRetryQuery } from './queryClient'
 import type { ForkTarget } from '@/session/forkTarget'
 import type { SessionEvent } from '@/session/events'
 import type { SessionDiff } from '@/features/sessions/diff/types'
-import type { SessionFileContent, SessionFileList } from '@/features/sessions/files/types'
+import type { SessionFileContent, SessionFileList, SessionFileSearch } from '@/features/sessions/files/types'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
 import { reconcileFlight } from '@/lib/promptFlight'
@@ -174,6 +174,8 @@ export const QK = {
   sessionFiles: (id: string, q?: string) =>
     q !== undefined ? ['session-files', id, q] as const : ['session-files', id] as const,
   sessionFile: (id: string, path: string) => ['session-file', id, path] as const,
+  /** One content search of a session's worktree (D-20). */
+  sessionFileSearch: (id: string, q: string, regex: boolean) => ['session-file-search', id, q, regex] as const,
   /** One PR's detail (D-15 PR tab): `repo` is `owner/name`. */
   prDetail: (repo: string, number: number) => ['pr-detail', repo, number] as const,
   /** One loaded memory file of a session (D-13). */
@@ -1554,6 +1556,26 @@ export function useSessionFiles(id: string, q: string, { enabled = true }: { ena
     queryFn: () => api.get<SessionFileList>(
       `/sessions/${encodeURIComponent(id)}/files?q=${encodeURIComponent(q)}`),
     enabled: enabled && !!id,
+    refetchOnWindowFocus: false,
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === id ? prev : undefined),
+  })
+}
+
+/**
+ * A content search of a session's worktree (D-20 Files tab): `git grep` on the
+ * owning host, `{matches, truncated, timedOut}`. Off while `q` is empty: the
+ * caller debounces it and passes '' below the server's minimum length. `regex`
+ * switches fixed-string to ERE; a pattern git rejects is a 400 `BAD_REGEX`.
+ * Like the file list: the same
+ * session's previous matches stay up while a new query is in flight, a 4xx fails
+ * fast, and nothing refetches on window focus.
+ */
+export function useSessionFileSearch(id: string, q: string, regex: boolean) {
+  return useQuery<SessionFileSearch>({
+    queryKey: QK.sessionFileSearch(id, q, regex),
+    queryFn: () => api.get<SessionFileSearch>(
+      `/sessions/${encodeURIComponent(id)}/files/search?q=${encodeURIComponent(q)}${regex ? '&regex=true' : ''}`),
+    enabled: !!id && !!q,
     refetchOnWindowFocus: false,
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === id ? prev : undefined),
   })

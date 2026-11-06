@@ -4,6 +4,7 @@
 // behaved differently (no clear button, its own sizing) right beside the
 // Initiatives scope's. Same reasoning as `ScopeBody`: one place a change to the
 // control has to land.
+import type { InputHTMLAttributes } from 'react'
 import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { listControlClass } from './listControlStyles'
@@ -16,10 +17,14 @@ export interface ListSearchInputProps {
   ariaLabel?: string
   /** Width (and anything else) for the wrapper; the input fills it. */
   className?: string
+  /** Extra input attributes — a combobox's role, `aria-*` and `onKeyDown` (the Files
+   *  tab's content search). The value, change handler and accessible name stay this
+   *  component's. */
+  inputProps?: Omit<InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'aria-label' | 'className'>
 }
 
 export function ListSearchInput({
-  value, onChange, placeholder = 'Search…', ariaLabel = 'Search', className,
+  value, onChange, placeholder = 'Search…', ariaLabel = 'Search', className, inputProps,
 }: ListSearchInputProps) {
   return (
     // A `search` landmark so a screen-reader user can jump to it. Deliberately
@@ -29,6 +34,7 @@ export function ListSearchInput({
     <div role="search" className={cn('relative', className)}>
       <input
         type="search"
+        {...inputProps}
         aria-label={ariaLabel}
         placeholder={placeholder}
         value={value}

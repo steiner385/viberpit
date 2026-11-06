@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { useSessionFiles } from '@/api/hooks'
 import { ApiRequestError, apiErrorDetail } from '@/api/client'
@@ -9,6 +9,9 @@ import type { FileTarget } from '../sessionView'
 import FileViewer from './FileViewer'
 import { TextAction } from './TextAction'
 import { FILE_SEARCH_DEBOUNCE_MS, MAX_SCAN_ENTRIES } from './types'
+
+// The content search (D-20) is its own chunk, fetched the first time Contents is pressed.
+const FileSearch = lazy(() => import('./FileSearch'))
 
 /**
  * The session's Files tab (D-7): a read-only look at the worktree. A search box
@@ -23,12 +26,15 @@ import { FILE_SEARCH_DEBOUNCE_MS, MAX_SCAN_ENTRIES } from './types'
  * container query on the tab's own width) the list is a column beside the
  * viewer; narrower, the file replaces the list and All files goes back to it.
  * CSS, not a measured width: nothing here needs the layout in React state.
+ *
+ * Contents switches the list column from the file-name search to the content
+ * search (D-20, `FileSearch`); a result opens its file at its line.
  */
 export default function FilesTab({ sessionId, target: { file, line }, onOpen }: {
   sessionId: string
   target: FileTarget
-  /** `useFileTarget`'s setter: a path opens it at its top, null goes back to the list. */
-  onOpen: (path: string | null) => void
+  /** `useFileTarget`'s setter: a path opens it (at `line`, else its top), null goes back to the list. */
+  onOpen: (path: string | null, line?: number | null) => void
 }) {
   return (
     <div data-testid="files-tab" className="@container flex h-full min-h-0 min-w-0">
@@ -55,12 +61,39 @@ export default function FilesTab({ sessionId, target: { file, line }, onOpen }: 
 function FileList({ sessionId, open, onOpen, className }: {
   sessionId: string
   open: string | null
-  onOpen: (path: string) => void
+  onOpen: (path: string, line?: number) => void
   className?: string
 }) {
   const [query, setQuery] = useState('')
+  const [contents, setContents] = useState(false)
   const q = useDebouncedValue(query.trim(), FILE_SEARCH_DEBOUNCE_MS)
-  const { data, error, isError, refetch } = useSessionFiles(sessionId, q)
+  // Off while Contents is on: the name list is not on screen.
+  const { data, error, isError, refetch } = useSessionFiles(sessionId, q, { enabled: !contents })
+
+  const toggle = (
+    <button
+      type="button"
+      aria-pressed={contents}
+      onClick={() => setContents((c) => !c)}
+      className={cn(
+        'inline-flex shrink-0 items-center justify-center rounded-md px-2 text-xs font-medium',
+        TOUCH_FLOOR,
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+        contents ? 'bg-accent-wash text-accent' : 'text-ink-muted hover:bg-surface-raised',
+      )}
+    >
+      Contents
+    </button>
+  )
+  if (contents) {
+    return (
+      <div className={cn('flex min-h-0 flex-col', className)}>
+        <Suspense fallback={<div className="flex shrink-0 justify-end border-b border-edge p-2">{toggle}</div>}>
+          <FileSearch sessionId={sessionId} initialQuery={query} onOpen={onOpen} trailing={toggle} />
+        </Suspense>
+      </div>
+    )
+  }
 
   let body
   if (!data) {
@@ -109,8 +142,9 @@ function FileList({ sessionId, open, onOpen, className }: {
 
   return (
     <div className={cn('flex min-h-0 flex-col', className)}>
-      <div className="shrink-0 border-b border-edge p-2">
-        <ListSearchInput value={query} onChange={setQuery} ariaLabel="Search files" placeholder="Search files…" />
+      <div className="flex shrink-0 items-center gap-1 border-b border-edge p-2">
+        <ListSearchInput value={query} onChange={setQuery} ariaLabel="Search files" placeholder="Search files…" className="min-w-0 flex-1" />
+        {toggle}
       </div>
       {data?.truncated && (
         <p role="note" className="shrink-0 px-3 pt-2 text-xs text-ink-muted">
