@@ -128,6 +128,26 @@ def _header(headers: list[tuple[bytes, bytes]], name: bytes) -> str | None:
     return None
 
 
+_warned_mismatch: set[str] = set()
+
+
+def _warn_public_origin_port_mismatch(origin: str, request_hosts: set[str]) -> None:
+    """Warn once when ``VIBERPIT_PUBLIC_ORIGIN`` is trusted outright but no request host
+    carries its port: the edge is probably served on another port, so whatever owns the
+    configured port is trusted with writes (#3325). Never changes the verdict."""
+    public = normalize_origin(get_settings().public_origin)
+    if public is None or normalize_origin(origin) != public or public in _warned_mismatch:
+        return
+    netloc = _netloc(public)
+    default = "443" if public.startswith("https://") else "80"
+    seen = {h for h in request_hosts if h.rsplit(":", 1)[0] not in _LOOPBACK_HOSTNAMES}
+    if seen and not any(h == netloc or h == f"{netloc}:{default}" for h in seen):
+        _warned_mismatch.add(public)
+        log.warning("origin.public_origin_port_mismatch configured=%s request_hosts=%s: "
+                    "set VIBERPIT_PUBLIC_ORIGIN to the host:port the edge is served on",
+                    public, sorted(seen))
+
+
 def scope_refusal(scope) -> str | None:
     """Why this ASGI scope must be refused, or None to let it through."""
     if scope["type"] == "http" and scope.get("method", "GET").upper() not in UNSAFE_METHODS:
@@ -139,7 +159,9 @@ def scope_refusal(scope) -> str | None:
         if site in ("cross-site", "same-site"):
             return f"no Origin but Sec-Fetch-Site={site}"
         return None
-    if origin_allowed(origin, _host_values(headers)):
+    hosts = _host_values(headers)
+    if origin_allowed(origin, hosts):
+        _warn_public_origin_port_mismatch(origin, hosts)
         return None
     return f"Origin {origin!r} is not allowed"
 
