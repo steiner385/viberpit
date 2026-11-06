@@ -21,6 +21,33 @@ export type SessionFileContent = {
   size: number
 }
 
+/** One line of a content search (D-20), `GET /api/sessions/{id}/files/search`. */
+export type SessionFileMatch = {
+  path: string
+  /** 1-based. */
+  line: number
+  /** The line, clipped server-side to about 300 characters. */
+  text: string
+  /** Character offsets into `text` of the match; `end === start` (a regex search) marks nothing. */
+  start: number
+  end: number
+}
+
+export type SessionFileSearch = {
+  matches: SessionFileMatch[]
+  /** The server's match or file cap stopped the search early. */
+  truncated: boolean
+  /** The search ran out of time; `matches` is what it found before. */
+  timedOut: boolean
+}
+
+/** The server's `MIN_SEARCH_QUERY_CHARS`: a shorter query is a 422, so it is never sent. */
+export const MIN_CONTENT_QUERY_CHARS = 2
+/** The server's `MAX_QUERY_CHARS`: it silently cuts a longer query, so the box stops there. */
+export const MAX_CONTENT_QUERY_CHARS = 64
+/** The content search box's debounce: each query runs `git grep` on the owning host. */
+export const CONTENT_SEARCH_DEBOUNCE_MS = 250
+
 export const MAX_SCAN_ENTRIES = 20_000
 export const MAX_READ_BYTES = 512 * 1024
 /** The memory-file read and user-memory size cap (D-13), mirroring `server/sessions/memory_files.py`

@@ -1069,15 +1069,27 @@ class RemoteOrchestrator:
         re-raised as KeyError and a refused read as FileAccessError with the code from
         the envelope's ``data`` — only the codes the edge maps; anything else stays a
         DaemonError rather than being invented into a 400/404."""
+        return await self._worktree_read("session_file", session_id, path=path)
+
+    async def session_file_search(self, session_id, *, q: str, regex: bool = False,
+                                  limit: int = worktree_files.MAX_SEARCH_MATCHES) -> dict:
+        """Proxy session_file_search (D-20) to the daemon that owns the worktree; errors
+        are mapped as :meth:`session_file` (plus ``BAD_REGEX``)."""
+        return await self._worktree_read("session_file_search", session_id, q=q,
+                                         regex=regex, limit=limit)
+
+    async def _worktree_read(self, method: str, session_id, **params) -> dict:
         try:
-            return await self._client.call("session_file", timeout=WORKTREE_RPC_TIMEOUT,
-                                           session_id=session_id, path=path)
+            return await self._client.call(method, timeout=WORKTREE_RPC_TIMEOUT,
+                                           session_id=session_id, **params)
         except DaemonError as exc:
             if exc.err_type == "KeyError":
                 raise KeyError(exc.message) from exc
             code = (exc.data or {}).get("code")
             if exc.err_type == "FileAccessError" and code in (
-                    worktree_files.PATH_OUTSIDE_WORKTREE, worktree_files.FILE_NOT_FOUND):
+                    worktree_files.PATH_OUTSIDE_WORKTREE, worktree_files.FILE_NOT_FOUND,
+                    worktree_files.BAD_REGEX, worktree_files.BAD_QUERY,
+                    worktree_files.SEARCH_FAILED):
                 raise worktree_files.FileAccessError(code) from exc
             raise
 

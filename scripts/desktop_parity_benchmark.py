@@ -97,7 +97,10 @@ D=[
 ("8 Code review & dev",[
  ("Changes pane: aggregate diff, unified/split, line comments",3,"Y",""),
  ("Inline tool diffs",2,"Y","shared DiffRenderer, highlighted; MultiEdit edits[] not rendered"),
- ("Files pane (view / edit)",1,"P","read-only viewer; edit rejected (D1), content search not yet"),
+ # Split in D-20: the owner rejected editing (D1), so it is its own rejected half-row and the
+ # adopted half (view + content search) can be scored on its own. Total weight is unchanged.
+ ("Files pane: view + content search",0.5,"Y","read-only viewer with line numbers + highlighting; content search over the worktree (D-20): git grep on the owning daemon, fixed/regex, results grouped by file, click opens the viewer at the line"),
+ ("Files pane: edit",0.5,"N","editing rejected (D1): the Files pane stays read-only; edits go through the agent"),
  ("PR viewer: checks, threads, merge, auto-merge",2,"Y","PR tab (checks, review threads, merge / auto-merge; merge queue read-only)"),
  ("Preview browser with dev-server detection",2,"Y","detection + per-viewer open (local link / tailnet IP / VNC on demand); no proxy, no element select (D-18)"),
  ("Integrated terminal",2,"N",""),
@@ -122,6 +125,7 @@ REJECTED={
  "Split view / tiled panes","Integrated terminal","Pin / star sessions","Pop session into own window",
  "Prompt history (↑/↓ + Ctrl+R search)","Notification levels per event type",
  "Appearance: theme, font + transcript size","Scheduled tasks / routines",
+ "Files pane: edit",
 }
 out=[]; tot=totw=0
 summ=[]
@@ -129,11 +133,11 @@ for dim,rows in D:
     s=sum(w*S[st] for _,w,st,_ in rows); W=sum(w for _,w,_,_ in rows)
     tot+=s; totw+=W; summ.append((dim,s,W))
 md=["| Dimension | ViberPit score | Parity |","|---|---:|---:|"]
-for dim,s,W in summ: md.append(f"| {dim} | {s:g} / {W} | {100*s/W:.0f}% |")
-md.append(f"| **Overall (weighted)** | **{tot:g} / {totw}** | **{100*tot/totw:.0f}%** |")
+for dim,s,W in summ: md.append(f"| {dim} | {s:g} / {W:g} | {100*s/W:.0f}% |")
+md.append(f"| **Overall (weighted)** | **{tot:g} / {totw:g}** | **{100*tot/totw:.0f}%** |")
 rows_t=[(w,st) for _,rows in D for f,w,st,_ in rows if f not in REJECTED]
 ts=sum(w*S[st] for w,st in rows_t); tw=sum(w for w,_ in rows_t)
-md.append(f"| **Target completion** (excl. rejected rows) | **{ts:g} / {tw}** | **{100*ts/tw:.0f}%** |")
+md.append(f"| **Target completion** (excl. rejected rows) | **{ts:g} / {tw:g}** | **{100*ts/tw:.0f}%** |")
 md.append("")
 for dim,rows in D:
     md+= [f"### {dim}","","| Desktop capability | Weight | ViberPit | Notes |","|---|:-:|:-:|---|"]
