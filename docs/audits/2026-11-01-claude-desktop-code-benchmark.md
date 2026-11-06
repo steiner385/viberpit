@@ -70,7 +70,7 @@ Full inventories, with an evidence tag on every item:
 | 9 Shortcuts & a11y | 8 / 8 | 100% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
 | **Overall (weighted)** | **151 / 161** | **94%** |
-| **Target completion** (excl. rejected rows) | **148.5 / 151** | **98%** |
+| **Target completion** (excl. rejected rows) | **148.5 / 150.5** | **99%** |
 
 ### 1 Shell & IA
 
@@ -184,7 +184,8 @@ Full inventories, with an evidence tag on every item:
 |---|:-:|:-:|---|
 | Changes pane: aggregate diff, unified/split, line comments | 3 | ✅ |  |
 | Inline tool diffs | 2 | ✅ | shared DiffRenderer, highlighted; MultiEdit edits[] not rendered |
-| Files pane (view / edit) | 1 | ◐ | read-only viewer; edit rejected (D1), content search not yet |
+| Files pane: view + content search | 0.5 | ✅ | read-only viewer with line numbers + highlighting; content search over the worktree (D-20): git grep on the owning daemon, fixed/regex, results grouped by file, click opens the viewer at the line |
+| Files pane: edit | 0.5 | ❌ | editing rejected (D1): the Files pane stays read-only; edits go through the agent · *rejected for target* |
 | PR viewer: checks, threads, merge, auto-merge | 2 | ✅ | PR tab (checks, review threads, merge / auto-merge; merge queue read-only) |
 | Preview browser with dev-server detection | 2 | ✅ | detection + per-viewer open (local link / tailnet IP / VNC on demand); no proxy, no element select (D-18) |
 | Integrated terminal | 2 | ❌ |  · *rejected for target* |
@@ -223,7 +224,7 @@ Full inventories, with an evidence tag on every item:
 | 9 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
 | 10 | Move session to cloud / other host | 7 Lifecycle & branching | 0.5 |
 | 11 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
-| 12 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
+| 12 | Files pane: edit | 8 Code review & dev | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 
@@ -257,7 +258,9 @@ Each gap was reviewed with the owner, one at a time, in ranked-gap order on 2026
 The resulting target is `docs/superpowers/specs/2026-11-01-ui-desktop-parity-design.md` (sub-spec D of the UI
 umbrella), whose §11 sequences the work into PRs D-1 … D-18. D-19 then closed the parity leftovers: recovery
 actions by error kind on the inline error card, worktree Discard and Repair on the Environment card, and
-"New session on repo@branch" from ⌘K (rows marked D-19 in §5).
+"New session on repo@branch" from ⌘K (rows marked D-19 in §5). D-20 added content search to the Files pane. The "Files pane (view / edit)" row
+was split into its adopted half (view + content search, ✅) and its rejected half (edit, D1), each weight 0.5, so
+the rejected half counts against overall parity but not the target.
 
 ## 7. Decisions log (owner review, 2026-11-01)
 

@@ -361,9 +361,14 @@ shell-capable modes (full-auto, bypass, an approved Bash) still have same-user a
 
 **Files tab, `@` mentions and clickable paths** — a read-only view of the session's worktree, and the
 ways into it from the composer and the transcript.
-- **Files tab:** search, line numbers, lazily loaded syntax highlighting, and virtualised large files.
+- **Files tab:** file-name search, content search, line numbers, lazily loaded syntax highlighting, and virtualised large files.
   Binary and truncated files show a notice. `?view=files&file=<path>&line=<n>` jumps to a line. It is
   read-only by design; edits go through the agent.
+- **Content search** (**Contents** next to the name search): searches the worktree's tracked files with
+  `git grep` on the session's host, as a fixed string or a regex (smart case). Results are grouped by file;
+  ↑/↓ move, Enter or a click opens the file at that line. At most 200 matches across 50 files, within 5 s; a
+  notice says when results are partial (a cap, a timeout, or a match past the viewer's size limit). Symlinked
+  paths are never searched.
 - **`@` mentions:** typing `@` in the composer opens a menu with **Files** first (worktree files,
   fuzzy-ranked on the session's host, debounced) and **Sessions** second. Picking a file inserts `@path`,
   or `@"path"` when the path contains spaces; the CLI resolves it. The menu also works inside
