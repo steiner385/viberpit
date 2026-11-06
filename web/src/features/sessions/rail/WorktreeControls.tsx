@@ -11,6 +11,7 @@
 import { lazy, Suspense, useState } from 'react'
 import { toast } from 'sonner'
 import { useRepairWorktree, useWorktreePreflight } from '@/api/worktreeHooks'
+import { TOUCH_FLOOR } from '@/ui/list/listControlStyles'
 import { REPAIR_FAILED_FALLBACK, worktreeError } from './worktreeCopy'
 
 const DiscardWorktreeDialog = lazy(() => import('./DiscardWorktreeDialog'))
@@ -22,7 +23,8 @@ export interface WorktreeControlsProps {
   onDiscarded?: () => void
 }
 
-const ACTION = 'rounded px-1.5 py-0.5 text-xs font-medium hover:bg-edge disabled:opacity-50 pointer-coarse:min-h-target pointer-coarse:px-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+/** The house 44px floor (`TOUCH_FLOOR`), with the label padded out on a coarse pointer. */
+const ACTION = `rounded px-1.5 py-0.5 text-xs font-medium hover:bg-edge disabled:opacity-50 ${TOUCH_FLOOR} pointer-coarse:px-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent`
 
 export function WorktreeControls({ sessionId, busy, onDiscarded }: WorktreeControlsProps) {
   const { data: pf } = useWorktreePreflight(sessionId, { enabled: !busy })

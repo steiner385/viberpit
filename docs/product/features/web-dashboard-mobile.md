@@ -411,9 +411,9 @@ ways into it from the composer and the transcript.
   switch to a model without fast mode turns it off. The toggle shows the stored choice, not the CLI's
   reported cooldown state (#3254).
 - **Effort ▾ on Claude:** changing effort now applies to the running Claude session at once, through the
-  existing model/effort route; `/effort <level|default>` does the same. The picker offers the CLI's levels
-  (low, medium, high, xhigh, max), and the server refuses one the model lacks. Showing only each model's own
-  levels is #3260.
+  existing model/effort route; `/effort <level|default>` does the same. The picker offers the levels the
+  current model supports (the CLI's `supportedEffortLevels` for it), and the server refuses one the model
+  lacks.
 - **`+` menu:** the dispatch bar's `+` holds **Attach image**, **Presets ›** and **Templates ›**. The
   composer's `+` holds **Attach file** and **Slash commands**, which seeds `/` only into an empty box.
 - **Presets:** choosing one shows a removable chip, fills the repo and the prompt when none is typed, and sets

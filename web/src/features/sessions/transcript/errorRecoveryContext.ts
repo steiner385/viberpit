@@ -2,6 +2,7 @@ import { createContext, useContext } from 'react'
 import type { ModelOption, Session } from '@/api/types'
 import type { EffortStep } from '@/features/sessions/composer/effortChoices'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
+import { TOUCH_FLOOR } from '@/ui/list/listControlStyles'
 
 /**
  * What an inline error card's recovery actions (D-19) — Switch model, Lower effort,
@@ -28,5 +29,6 @@ export function useErrorRecovery(): ErrorRecovery | null {
   return useContext(ErrorRecoveryContext)
 }
 
-/** One style for every action on the card, eager and lazy alike. */
-export const ERROR_ACTION_CLASS = 'rounded px-1.5 py-0.5 text-xs font-medium text-danger hover:bg-danger/10 disabled:opacity-50 pointer-coarse:min-h-target focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+/** One style for every action on the card, eager and lazy alike; the 44px floor is
+ *  the house `TOUCH_FLOOR`. */
+export const ERROR_ACTION_CLASS = `rounded px-1.5 py-0.5 text-xs font-medium text-danger hover:bg-danger/10 disabled:opacity-50 ${TOUCH_FLOOR} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent`

@@ -79,7 +79,8 @@ The rail switches on the session pane's own width (64rem, a container query), no
     **Edit in Settings**.
   - **Environment**: host, account, worktree path and branch, with actions open PR / discard worktree /
     repair `[A-D16]`, plus sandbox state and the PR auto-fix toggle `[A-D16]`.
-    **Discard and Repair shipped (D-19)**, for managed worktrees, in a human session only (hidden on a 403 or a
+    Of those three actions, D-19 shipped two, **Discard and Repair**; "open PR" is the D-15 **PR tab** (the
+    card itself only lists the session's PRs). Discard and Repair work for managed worktrees, in a human session only (hidden on a 403 or a
     failed preflight); `GET /sessions/{id}/worktree/preflight`, `POST .../worktree/discard {confirm: true}`,
     `POST .../worktree/repair`, per session through the RPC, remote, fleet and facade layers.
     - **Discard** means end the session and remove its worktree. It runs for an **idle** session only (a running

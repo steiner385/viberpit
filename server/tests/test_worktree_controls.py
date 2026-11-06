@@ -1180,3 +1180,216 @@ def test_a_person_repair_whose_worktree_add_fails_logs_no_warning(env, caplog):
     failed = [r for r in caplog.records if r.getMessage() == "worktree.recreate_failed"]
     assert failed and all(r.levelno == logging.INFO for r in failed)
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+# ── final review (fix wave) ──────────────────────────────────────────────────
+
+
+def _hold_attach_after_its_liveness_check(orch, monkeypatch):
+    """Park ensure_driver at its first await AFTER the record re-read (the lease claim),
+    the window an attach used to be invisible to a Discard or a move in."""
+    reached, gate = asyncio.Event(), asyncio.Event()
+    real = orch._claim_session
+
+    async def held(session_id, **kw):
+        if kw.get("why") == "resume" and not gate.is_set():
+            reached.set()
+            await gate.wait()
+        return await real(session_id, **kw)
+    monkeypatch.setattr(orch, "_claim_session", held)
+    return reached, gate
+
+
+def test_an_in_flight_attach_never_outlives_a_discard(user_env, monkeypatch):
+    """Important 1: an attach past its liveness check but before it claims the swap slot
+    resumed the archived session in its removed (and, on a user branch, recreated)
+    worktree. The Discard now waits it out and then ends what it built."""
+    env = user_env
+    env["cfg"] = env["tmp"] / "cfg"
+    env["cfg"].mkdir()
+
+    async def run():
+        orch = await _orch(env)
+        reached, gate = _hold_attach_after_its_liveness_check(orch, monkeypatch)
+        attach = asyncio.create_task(orch.ensure_driver(SID))
+        await asyncio.wait_for(reached.wait(), 10)
+        discard = asyncio.create_task(orch.discard_worktree(SID))
+        await asyncio.sleep(0.2)
+        assert not discard.done(), "the discard ran beside an in-flight attach"
+        gate.set()
+        await attach
+        res = await discard
+        return orch, res
+
+    with patch("server.sessions.orchestrator.compose", return_value=env["cfg"]), \
+         patch("server.sessions.orchestrator.configdir"):
+        orch, res = asyncio.run(run())
+    assert res["discarded"] is True
+    assert SID not in orch._drivers and SID not in orch._records
+    assert not Path(env["cwd"]).exists(), "the discarded worktree was recreated"
+    assert _row_status() == "archived"
+
+
+def test_preflight_reports_an_in_flight_attach_as_busy(user_env, monkeypatch):
+    env = user_env
+    env["cfg"] = env["tmp"] / "cfg"
+    env["cfg"].mkdir()
+
+    async def run():
+        orch = await _orch(env)
+        reached, gate = _hold_attach_after_its_liveness_check(orch, monkeypatch)
+        attach = asyncio.create_task(orch.ensure_driver(SID))
+        await asyncio.wait_for(reached.wait(), 10)
+        pf = await orch.worktree_preflight(SID)
+        gate.set()
+        drv = await attach
+        orch._drivers.pop(SID, None)
+        await drv.aclose()
+        return pf
+
+    with patch("server.sessions.orchestrator.compose", return_value=env["cfg"]), \
+         patch("server.sessions.orchestrator.configdir"):
+        pf = asyncio.run(run())
+    assert pf["busy"] is True and pf["canDiscard"] is False
+
+
+def test_an_in_flight_attach_never_outlives_a_move_export(env, monkeypatch):
+    """Important 1, D-17 twin: a move export that ran beside an in-flight attach left
+    a CLI running here on a session it had just handed to another host."""
+    env["cfg"] = env["tmp"] / "cfg"
+    env["cfg"].mkdir()
+
+    async def run():
+        orch = await _orch(env)
+        orch.transcript_path = lambda sid: str(env["tmp"] / "none.jsonl")
+        reached, gate = _hold_attach_after_its_liveness_check(orch, monkeypatch)
+        attach = asyncio.create_task(orch.ensure_driver(SID))
+        await asyncio.wait_for(reached.wait(), 10)
+        export = asyncio.create_task(orch.transfer_export(SID, target="elsewhere"))
+        await asyncio.sleep(0.2)
+        assert not export.done(), "the export ran beside an in-flight attach"
+        gate.set()
+        drv = await attach
+        manifest = await export
+        return orch, drv, manifest
+
+    with patch("server.sessions.orchestrator.compose", return_value=env["cfg"]), \
+         patch("server.sessions.orchestrator.configdir"):
+        orch, drv, manifest = asyncio.run(run())
+    assert manifest["target"] == "elsewhere"
+    assert drv is not None
+    assert SID not in orch._drivers, "a CLI kept running on the moved-away session"
+
+
+def test_a_stale_reassign_after_a_discard_rebuilds_nothing(user_env):
+    """Queued 2: the liveness guard ran only after waiting out a prior swap. A rotation
+    or recovery holding the record from before the Discard — with no swap in flight —
+    rebuilt the archived session and recreated its worktree."""
+    env = user_env
+    env["cfg"] = env["tmp"] / "cfg"
+    env["cfg"].mkdir()
+
+    async def run():
+        orch = await _orch(env)
+        stale = orch._records[SID]
+        res = await orch.discard_worktree(SID)
+        assert SID not in orch._swapping
+        result = await orch._reassign(stale, stale.account, reason="manual")
+        drv = orch._drivers.pop(SID, None)
+        if drv is not None:
+            await drv.aclose()
+        return res, result, drv
+
+    with patch("server.sessions.orchestrator.compose", return_value=env["cfg"]), \
+         patch("server.sessions.orchestrator.configdir"):
+        res, result, drv = asyncio.run(run())
+    assert res["discarded"] is True
+    assert result == "failed" and drv is None
+    assert not Path(env["cwd"]).exists(), "the discarded worktree was recreated"
+
+
+def test_a_discard_whose_close_fails_keeps_the_old_driver_registered(env, monkeypatch):
+    """Minor 6: the driver was unregistered before its close failed, so the next attach
+    built a second CLI beside one that might still be alive. It stays registered: the
+    next attach takes it, and a retry closes it again."""
+    class _Idle:
+        turn_active = drain_alive = awaiting_user_input = False
+        engine_session_id = None
+
+    async def run():
+        orch = await _orch(env)
+        old = _Idle()
+        orch._drivers[SID] = old
+
+        async def boom(*a, **k):
+            raise RuntimeError("aclose blew up")
+        monkeypatch.setattr(orch, "_close_automation_driver", boom)
+        with pytest.raises(wc.WorktreeControlError):
+            await orch.discard_worktree(SID)
+        return old, orch._drivers.get(SID), await orch.ensure_driver(SID)
+
+    old, registered, attached = asyncio.run(run())
+    assert registered is old and attached is old
+    assert Path(env["cwd"]).exists()
+
+
+def test_a_move_whose_close_fails_keeps_the_old_driver_registered(env, monkeypatch):
+    """Minor 6, D-17 twin (`_close_for_transfer`)."""
+    from server.sessions import session_move as sm
+
+    class _Raises:
+        turn_active = drain_alive = awaiting_user_input = False
+        engine_session_id = None
+
+        async def aclose(self):
+            raise RuntimeError("aclose failed")
+
+    async def run():
+        orch = await _orch(env)
+        old = _Raises()
+        orch._drivers[SID] = old
+        with pytest.raises(sm.MoveError) as ei:
+            await orch._close_for_transfer(SID)
+        return ei.value.code, old, orch._drivers.get(SID)
+
+    code, old, registered = asyncio.run(run())
+    assert code == sm.MOVE_EXPORT_FAILED and registered is old
+
+
+def test_an_audit_write_failure_logs_one_stable_warning(env, monkeypatch, caplog):
+    """Minor 4: the message is the bare event name; the session is a field."""
+    async def broken(*a, **k):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(orch_mod, "record_audit", broken)
+
+    async def run():
+        orch = await _orch(env)
+        await orch._audit_worktree_control("session.worktree_repair", "u@x", None,
+                                           {"sessionId": SID})
+
+    with caplog.at_level("INFO"):
+        asyncio.run(run())
+    warns = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert [r.getMessage() for r in warns] == ["session.worktree_control_audit_failed"]
+
+
+def test_a_failed_discard_snapshot_files_one_warning(env, monkeypatch, caplog):
+    """Minor 4: worktrees' own WARNING (session and path in the message) and the
+    orchestrator's both filed one incident."""
+    _dirty_and_commit(env)
+    real = worktrees.snapshot_recovery_ref
+
+    def boom(*a, **k):
+        raise RuntimeError("git exploded")
+    monkeypatch.setattr(worktrees, "snapshot_recovery_ref", boom)
+
+    async def run():
+        orch = await _orch(env)
+        await orch.discard_worktree(SID)
+
+    with caplog.at_level("INFO"), pytest.raises(wc.WorktreeControlError) as ei:
+        asyncio.run(run())
+    monkeypatch.setattr(worktrees, "snapshot_recovery_ref", real)
+    assert ei.value.code == wc.WORKTREE_SNAPSHOT_FAILED
+    warns = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert [r.getMessage() for r in warns] == ["session.worktree_discard_snapshot_failed"]

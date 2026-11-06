@@ -255,7 +255,9 @@ the Changes pane, and the mode and permission controls.
 
 Each gap was reviewed with the owner, one at a time, in ranked-gap order on 2026-11-01. The decisions are in §7.
 The resulting target is `docs/superpowers/specs/2026-11-01-ui-desktop-parity-design.md` (sub-spec D of the UI
-umbrella), whose §11 sequences the work into PRs D-1 … D-18.
+umbrella), whose §11 sequences the work into PRs D-1 … D-18. D-19 then closed the parity leftovers: recovery
+actions by error kind on the inline error card, worktree Discard and Repair on the Environment card, and
+"New session on repo@branch" from ⌘K (rows marked D-19 in §5).
 
 ## 7. Decisions log (owner review, 2026-11-01)
 

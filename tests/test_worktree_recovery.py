@@ -441,3 +441,41 @@ def test_recreate_failed_is_info_for_a_person(repo, tmp_path, caplog):
     levels = [r.levelno for r in caplog.records
               if r.getMessage() == "worktree.recreate_failed"]
     assert levels == [logging.INFO, logging.WARNING]
+
+
+def _fail_status(monkeypatch):
+    """Make remove_worktree's own `git status --porcelain` exit non-zero."""
+    real = worktrees._run
+
+    def run(args, *a, **k):
+        if "status" in args and "--porcelain" in args:
+            return subprocess.CompletedProcess(args, 128, "", "fatal: simulated")
+        return real(args, *a, **k)
+    monkeypatch.setattr(worktrees, "_run", run)
+
+
+def test_a_status_failure_is_not_clean_for_a_forced_removal(wt, repo, monkeypatch):
+    """D-19 final review, minor 5: a failed `git status` read as clean, so a forced
+    removal (janitor eviction, transfer finalize) skipped its snapshot. It is now
+    treated as dirty: the snapshot is taken, and the removal proceeds only with it."""
+    _dirty(Path(wt.path))
+    _fail_status(monkeypatch)
+    assert worktrees.remove_worktree(wt.path, force=True, session_id=S6) is True
+    refs = worktrees.recovery_refs(str(repo), S6)
+    assert len(refs) == 1 and refs[0].endswith("-forced")
+    assert _ls_tree(repo, refs[0])["untracked.txt"] == "untracked"
+
+
+def test_a_status_failure_with_no_snapshot_keeps_the_tree(wt, monkeypatch):
+    _dirty(Path(wt.path))
+    _fail_status(monkeypatch)
+    monkeypatch.setattr(worktrees, "snapshot_recovery_ref", lambda *a, **k: None)
+    assert worktrees.remove_worktree(wt.path, force=True, session_id=S6) is False
+    assert (Path(wt.path) / "untracked.txt").read_text() == "untracked\n"
+
+
+def test_a_status_failure_keeps_the_tree_for_a_normal_removal(wt, monkeypatch):
+    """Unforced callers never remove a tree whose state they could not read."""
+    _fail_status(monkeypatch)
+    assert worktrees.remove_worktree(wt.path, session_id=S6) is False
+    assert Path(wt.path).is_dir()

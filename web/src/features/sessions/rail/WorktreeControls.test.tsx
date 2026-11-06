@@ -12,6 +12,7 @@ vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), succe
 import { toast } from 'sonner'
 import { api, ApiRequestError } from '@/api/client'
 import type { WorktreePreflight } from '@/api/types'
+import { sessionPath, subAgentPath } from '@/session/sessionNavState'
 import { WorktreeControls } from './WorktreeControls'
 import { IGNORED_FILES_LOST, SESSION_ENDED, WORKTREE_ERROR_MESSAGES } from './worktreeCopy'
 
@@ -31,6 +32,8 @@ let posts: { path: string; body: unknown }[]
 let reply: unknown
 
 beforeEach(() => {
+  // The discard leaves the session only while the page still shows it (the live URL).
+  window.history.replaceState(null, '', sessionPath('s1'))
   vi.mocked(toast.success).mockReset()
   vi.mocked(toast.error).mockReset()
   preflight = PF
@@ -236,6 +239,39 @@ describe('WorktreeControls — Discard', () => {
     await waitFor(() => expect(onDiscarded).toHaveBeenCalledTimes(1))
     expect(toast.success).toHaveBeenCalledWith('Discarded — worktree and branch viberpit/s1 removed',
       expect.objectContaining({ duration: Infinity }))
+  })
+
+  it.each([
+    ['the session', () => sessionPath('s1')],
+    ['one of its sub-agents', () => subAgentPath('s1', 'a1')],
+    ['it in the background list', () => sessionPath('s1', 'background')],
+  ])('a response that lands while the page still shows %s leaves it', async (_name, path) => {
+    const pending = deferred<unknown>()
+    vi.mocked(api.post).mockImplementation(async () => pending.promise)
+    window.history.replaceState(null, '', path())
+    const { onDiscarded, dropControls } = mount()
+    const dialog = await openDiscard()
+    await userEvent.click(within(dialog).getByLabelText('End the session and delete its worktree'))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Discard' }))
+    dropControls()
+    pending.resolve(DISCARDED)
+    await waitFor(() => expect(onDiscarded).toHaveBeenCalledTimes(1))
+  })
+
+  it('a response that lands after the user moved to another page only toasts', async () => {
+    const pending = deferred<unknown>()
+    vi.mocked(api.post).mockImplementation(async () => pending.promise)
+    const { onDiscarded, dropControls } = mount()
+    const dialog = await openDiscard()
+    await userEvent.click(within(dialog).getByLabelText('End the session and delete its worktree'))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Discard' }))
+    // The user opened another session meanwhile: the rail (and this dialog) went with it.
+    window.history.pushState(null, '', sessionPath('s2'))
+    dropControls()
+    pending.resolve(DISCARDED)
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith(
+      'Discarded — worktree and branch viberpit/s1 removed', expect.objectContaining({ duration: Infinity })))
+    expect(onDiscarded).not.toHaveBeenCalled()
   })
 
   it('a failure after the card unmounted still says why, with the refs', async () => {

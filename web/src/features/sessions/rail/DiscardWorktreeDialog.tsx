@@ -8,17 +8,23 @@
  * needs an explicit tick and an answered, current preflight that allows it.
  *
  * On success the session is archived, so the dialog closes, the host navigates
- * away (`onDiscarded`), and a toast that outlives the page lists the recovery refs
+ * away (`onDiscarded`) — only if the page still shows this session: a response that
+ * lands after the user opened something else never pulls them off it — and a toast
+ * that outlives the page lists the recovery refs
  * and the restore command, which copies on click (`CopyablePath`). A failure after
  * the refs were written lists them in place, the same way. Paths, branches and refs
  * are untrusted text, never markup.
  */
 import { useEffect, useId, useRef, useState } from 'react'
+import { matchPath } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import type { WorktreeDiscardResult, WorktreePreflight } from '@/api/types'
 import { useDiscardWorktree, useWorktreePreflight } from '@/api/worktreeHooks'
+import {
+  BACKGROUND_SESSION_ROUTE, BACKGROUND_SUBAGENT_ROUTE, SESSION_ROUTE, SUBAGENT_ROUTE,
+} from '@/session/sessionNavState'
 import { Button } from '@/ui/Button'
 import { Dialog } from '@/ui/Dialog'
 import { CopyablePath } from '../transcript/CopyablePath'
@@ -38,6 +44,16 @@ function refusal(pf: WorktreePreflight): string {
   const code = pf.busy ? 'WORKTREE_SESSION_BUSY' : !pf.managed ? 'WORKTREE_NOT_MANAGED'
     : !pf.present ? 'WORKTREE_MISSING' : null
   return (code && WORKTREE_ERROR_MESSAGES[code]) || "This worktree can't be discarded right now"
+}
+
+/** Does the page show *sessionId* (its transcript or one of its sub-agents, in either
+ *  list scope) right now? Read from the live URL, not this component's render: the
+ *  discard's response can land after the dialog — and the rail — unmounted, and the
+ *  router keeps `window.location` current either way. */
+function stillShowing(sessionId: string): boolean {
+  const { pathname } = window.location
+  return [SESSION_ROUTE, SUBAGENT_ROUTE, BACKGROUND_SESSION_ROUTE, BACKGROUND_SUBAGENT_ROUTE]
+    .some((route) => matchPath(route, pathname)?.params.id === sessionId)
 }
 
 /** A ref or command as copyable monospace text that wraps rather than widening the dialog. */
@@ -132,7 +148,7 @@ export default function DiscardWorktreeDialog({ sessionId, onClose, onDiscarded 
     discard.mutateAsync(sessionId).then(
       (res) => {
         if (mounted.current) onClose()
-        onDiscarded?.()
+        if (stillShowing(sessionId)) onDiscarded?.()
         toastDiscarded(res)
       },
       (err: unknown) => {

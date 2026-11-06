@@ -1243,6 +1243,12 @@ class SessionOrchestrator:
         # burning quota in the same worktree (#1040). A caller that finds an entry
         # here awaits it and takes its driver instead of building a second one.
         self._swapping: dict[str, asyncio.Future] = {}
+        # In-flight ensure_driver resume builds, from the record re-read to the end of
+        # the build (D-19 final review). The build awaits the lease claim, the cwd gate
+        # and more before it publishes in `_swapping`; a Discard or a move that could
+        # not see it removed the worktree (or handed the session away) under it.
+        # `_transfer_slot` waits these out; `_worktree_control_busy` reports them.
+        self._attaching: dict[str, asyncio.Future] = {}
         # Sessions a resume admitted while this daemon was already at its cap (#3255).
         # Resumes are exempt from the cap by design, so the count they leave over the cap
         # is expected; /info reports it so the fleet alarm can tell it from a fault.
@@ -6925,6 +6931,7 @@ class SessionOrchestrator:
         if (rec.status in MID_TURN_STATUSES or rec.status in ("working", "waiting_external")
                 or getattr(driver, "turn_active", False)
                 or getattr(driver, "drain_alive", False) or session_id in self._spawning
+                or session_id in getattr(self, "_attaching", {})
                 or (callable(queued) and bool(list(queued())))
                 or self._has_live_card(session_id)):
             return True
@@ -6998,9 +7005,12 @@ class SessionOrchestrator:
             async with db_session() as db:
                 await record_audit(db, type_, identity, detail, via=via)
                 await db.commit()
-        except Exception:
-            log.warning("%s audit write failed session=%s", type_, detail.get("sessionId"),
-                        exc_info=True)
+        except Exception as exc:
+            # One bare event name, whichever control and session: the fields carry
+            # them, so the error sink files one issue per cause, not per session.
+            log_event(log, logging.WARNING, "session.worktree_control_audit_failed",
+                      audit_type=type_, session_id=detail.get("sessionId"),
+                      error=repr(exc))
 
     async def discard_worktree(self, session_id: str, *, identity: str = SYSTEM_IDENTITY,
                                via: str | None = None) -> dict:
@@ -7088,6 +7098,7 @@ class SessionOrchestrator:
                         self._close_automation_driver(driver, session_id),
                         timeout=DRIVER_RELEASE_WAIT_S,
                         phase=f"worktree.discard.close:{session_id}", fail_on_error=True):
+                    await self._keep_unclosed_driver(session_id, driver)
                     raise await failed(wc.WORKTREE_DISCARD_FAILED, "close",
                                        "the CLI did not close cleanly in time")
                 await self.archive_session(session_id, archived_by="user")
@@ -23149,14 +23160,28 @@ class SessionOrchestrator:
     async def _transfer_slot(self, session_id: str):
         """Hold the session's ``_swapping`` slot for a transfer step: send_prompt refuses
         (a prompt cannot land between the idle check and the close), ensure_driver and
-        _reassign wait. A swap already in flight is waited out, bounded."""
+        _reassign wait. A swap already in flight is waited out, bounded — and so is an
+        ensure_driver build (``_attaching``), which publishes itself before its first
+        await but claims ``_swapping`` only late in the build (D-19 final review). The
+        slot is claimed with no await after the last check, so an attach and a slot
+        holder never both proceed."""
         from server.sessions import session_move as sm
-        prior = self._swapping.get(session_id)
-        if prior is not None:
-            done, _ = await asyncio.wait({prior}, timeout=DRIVER_SWAP_TIMEOUT_S)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + DRIVER_SWAP_TIMEOUT_S
+        while True:
+            busy = {f for f in (self._swapping.get(session_id),
+                                getattr(self, "_attaching", {}).get(session_id))
+                    if f is not None}
+            if not busy:
+                break
+            remaining = deadline - loop.time()
+            done: set = set()
+            if remaining > 0:
+                done, _ = await asyncio.wait(busy, timeout=remaining,
+                                             return_when=asyncio.FIRST_COMPLETED)
             if not done:
                 raise sm.MoveError(sm.MOVE_MID_TURN, "A driver swap is still in flight.")
-        slot: asyncio.Future = asyncio.get_running_loop().create_future()
+        slot: asyncio.Future = loop.create_future()
         self._swapping[session_id] = slot
         try:
             yield
@@ -23166,8 +23191,26 @@ class SessionOrchestrator:
             if not slot.done():
                 slot.set_result(None)
 
+    async def _keep_unclosed_driver(self, session_id: str, driver: AgentDriver) -> None:
+        """Put back a driver whose bounded close failed or overran (D-19 final review).
+
+        Its CLI may still be alive, and there is no handle to kill it by. Left
+        unregistered, the next attach found no driver and started a second CLI beside
+        it on the same conversation and worktree. Registered again, the next attach
+        takes it (``ensure_driver``'s fast path), a retried close / Discard / move
+        closes it again, and the lease loop renews its claim as for any live driver
+        (re-taken here: the teardown released it)."""
+        if self._drivers.get(session_id) is None:
+            self._drivers[session_id] = driver
+        try:
+            await self._claim_session(session_id, why="close_failed")
+        except Exception:
+            log.debug("keep_unclosed_driver: lease re-claim for %s failed", session_id,
+                      exc_info=True)
+
     async def _close_for_transfer(self, session_id: str) -> None:
-        """Tear the driver down (releases the lease) and close it, bounded."""
+        """Tear the driver down (releases the lease) and close it, bounded. A close that
+        fails puts the driver back (``_keep_unclosed_driver``) and raises."""
         from server.sessions import session_move as sm
         popped = await self._teardown_driver_state(session_id)
         if popped is not None and not await bounded_wait(
@@ -23176,6 +23219,7 @@ class SessionOrchestrator:
             # The CLI may still be flushing the shared transcript: going on would let the
             # other host resume from a file still being written. A close that RAISED
             # proves no more than one that overran (D-19 review).
+            await self._keep_unclosed_driver(session_id, popped)
             raise sm.MoveError(sm.MOVE_EXPORT_FAILED,
                                "The session's CLI did not close cleanly in time.")
 
@@ -23921,287 +23965,348 @@ class SessionOrchestrator:
                 await self._await_driver_release(session_id, release_task)
 
             # Re-read the record: `rec` was looked up BEFORE `_ensure_lock` and the
-            # swap wait above (see _record_still_live).
-            current = await self._record_still_live(session_id, allow_ended=True)
-            if current is None:
-                log.info("ensure_driver: session %s ended while this attach waited — "
-                         "not resuming it", session_id)
-                return None
+            # swap wait above (see _record_still_live) — and wait out any slot holder
+            # that claimed the session since: a D-19 Discard or a D-17 move takes the
+            # `_swapping` slot without `_ensure_lock`, so it can start after the wait
+            # above. Nothing awaits between the last check here and the `_attaching`
+            # publish below, and `_transfer_slot` claims only once no attach is
+            # published: the two can never both proceed.
+            while True:
+                current = await self._record_still_live(session_id, allow_ended=True)
+                if current is None:
+                    log.info("ensure_driver: session %s ended while this attach waited — "
+                             "not resuming it", session_id)
+                    return None
+                holder = self._swapping.get(session_id)
+                if holder is None:
+                    break
+                await self._wait_out_swap(session_id, holder)
+                existing = self._drivers.get(session_id)
+                if existing is not None:
+                    _rethread_identity(existing, identity)
+                    return existing
             rec = current
 
-            # Claim the session before spawning anything (#1379). This is the choke
-            # point the duplicate-owner bug went through: after a fleet-wide daemon
-            # restart both hosts rehydrated the same row, both believed they owned it
-            # (the stamp flips during a cut-short drain), and both resumed the same
-            # conversation into the same worktree. `_owns_record` is a per-process
-            # OPINION; the lease is a fact both hosts read from the same row. Losing
-            # it returns None, which every caller of ensure_driver already handles.
-            if not await self._claim_session(session_id, why="resume"):
-                return None
+            # Publish the attach for the whole build (D-19 final review): from here it
+            # awaits the lease claim, the cwd gate, the display, the Codex runner and
+            # the overlay before it claims the swap slot, and a Discard / move that
+            # could not see it removed the worktree (or handed the session away) under
+            # it. `_transfer_slot` waits it out and `_worktree_control_busy` reports it.
+            attaching: asyncio.Future = asyncio.get_running_loop().create_future()
+            # setdefault: lease-layer tests build the orchestrator with __new__.
+            in_flight = self.__dict__.setdefault("_attaching", {})
+            in_flight[session_id] = attaching
+            try:
+                return await self._resume_detached_driver(session_id, rec, identity)
+            finally:
+                if in_flight.get(session_id) is attaching:
+                    del in_flight[session_id]
+                if not attaching.done():
+                    attaching.set_result(None)
 
-            # Build and start a new driver resuming from the stored engine_session_id,
-            # ON THE SESSION'S OWN ENGINE. This used to hardcode CLAUDE_CODE, so a
-            # detached Codex session came back as a Claude driver pointed at a Codex
-            # thread id — a resume that cannot work and whose first turn would mint a
-            # brand-new Claude conversation over the row.
-            resume_engine = rec.engine
-            resume = rec.engine_session_id or None
-            # Ensure the working directory exists without fabricating lost work: a
-            # missing scratch dir is recreated (without it the SDK fails with "Working
-            # directory does not exist", surfacing as a misleading re-auth error), but
-            # a missing managed worktree is recreated from its branch or the build is
-            # refused (#2913) — the caller handles None like any failed resume, and
-            # the enrollment keeps it on the resume-failure banner (gave-up after
-            # RESUME_RECOVERY_MAX_ATTEMPTS) instead of vanishing.
-            if not await self._ensure_session_cwd(
-                    session_id, rec.cwd, repo=getattr(rec, "repo", None),
-                    branch=getattr(rec, "branch", None), host=getattr(rec, "host", None)):
-                self._resume_recovery.setdefault(session_id, 0)
-                await self._release_session_lease(session_id)
-                return None
-            await self._unpack_stray_wip(session_id, rec.cwd)
-            disabled_mcp = (None if resume_engine is AgentEngine.CODEX else
-                            await disabled_for_session(
-                                repo=getattr(rec, "repo", None), session_id=rec.id))
-            driver_config_dir = self._driver_config_dir(
-                resume_engine, rec.account, rec.cwd, getattr(rec, "kind", None),
-                disabled_mcp=disabled_mcp,
+    async def _wait_out_swap(self, session_id: str, swapping: asyncio.Future) -> None:
+        """Wait (bounded by SPAWN_WAIT_S) for an in-flight swap of *session_id*; raise
+        ``asyncio.TimeoutError`` if it is still running."""
+        try:
+            await asyncio.wait_for(asyncio.shield(swapping), timeout=SPAWN_WAIT_S)
+        except asyncio.TimeoutError:
+            log.warning("ensure_driver: swap of %s still in flight after %.0fs",
+                        session_id, SPAWN_WAIT_S)
+            raise
+
+    async def _resume_detached_driver(self, session_id: str, rec: SessionRecord,
+                                      identity: str) -> AgentDriver | None:
+        """``ensure_driver``'s build: claim, prepare and start a driver resuming *rec*.
+        Runs under ``_ensure_lock`` with the attach published in ``_attaching``."""
+        # Claim the session before spawning anything (#1379). This is the choke
+        # point the duplicate-owner bug went through: after a fleet-wide daemon
+        # restart both hosts rehydrated the same row, both believed they owned it
+        # (the stamp flips during a cut-short drain), and both resumed the same
+        # conversation into the same worktree. `_owns_record` is a per-process
+        # OPINION; the lease is a fact both hosts read from the same row. Losing
+        # it returns None, which every caller of ensure_driver already handles.
+        if not await self._claim_session(session_id, why="resume"):
+            return None
+
+        # Build and start a new driver resuming from the stored engine_session_id,
+        # ON THE SESSION'S OWN ENGINE. This used to hardcode CLAUDE_CODE, so a
+        # detached Codex session came back as a Claude driver pointed at a Codex
+        # thread id — a resume that cannot work and whose first turn would mint a
+        # brand-new Claude conversation over the row.
+        resume_engine = rec.engine
+        resume = rec.engine_session_id or None
+        # Ensure the working directory exists without fabricating lost work: a
+        # missing scratch dir is recreated (without it the SDK fails with "Working
+        # directory does not exist", surfacing as a misleading re-auth error), but
+        # a missing managed worktree is recreated from its branch or the build is
+        # refused (#2913) — the caller handles None like any failed resume, and
+        # the enrollment keeps it on the resume-failure banner (gave-up after
+        # RESUME_RECOVERY_MAX_ATTEMPTS) instead of vanishing.
+        if not await self._ensure_session_cwd(
+                session_id, rec.cwd, repo=getattr(rec, "repo", None),
+                branch=getattr(rec, "branch", None), host=getattr(rec, "host", None)):
+            self._resume_recovery.setdefault(session_id, 0)
+            await self._release_session_lease(session_id)
+            return None
+        await self._unpack_stray_wip(session_id, rec.cwd)
+        disabled_mcp = (None if resume_engine is AgentEngine.CODEX else
+                        await disabled_for_session(
+                            repo=getattr(rec, "repo", None), session_id=rec.id))
+        driver_config_dir = self._driver_config_dir(
+            resume_engine, rec.account, rec.cwd, getattr(rec, "kind", None),
+            disabled_mcp=disabled_mcp,
+        )
+
+        # Allocate a virtual X11 display for this session (if X11Manager wired
+        # in). Without this, a resumed/rehydrated session — the common path
+        # after a daemon restart detaches every live session — builds its driver
+        # with the display-injecting factory but x11.env_for() returns {}, so the
+        # claude subprocess launches with no DISPLAY and X rendering escapes the
+        # virtual viewport. start_display is idempotent (no-op if already leased).
+        if self._x11 is not None and getattr(rec, "display_mode", None) != DISPLAY_NATIVE:
+            try:
+                await self._x11.start_display(session_id)
+            except Exception:
+                log.exception("session.display_start_failed id=%s", session_id)
+
+        # Ensure the Copilot proxy is running for copilot-backed accounts.
+        # If the proxy can't start (quota exhausted / token dead), schedule a
+        # rotation so the session moves to a working account without requiring
+        # user intervention, then re-raise so the WS caller shows an error.
+        if self._copilot is not None and _provider_of(rec.account) == _copilot_mod.PROVIDER:
+            try:
+                await self._copilot.ensure(rec.account)
+            except Exception:
+                log.warning("ensure_driver: copilot proxy start failed for %s; "
+                            "scheduling rotation session=%s", rec.account, session_id,
+                            exc_info=True)
+                if not self._shutting_down:
+                    self._spawn(
+                        self._rotate_away(rec, reason="proxy_start_failed"),
+                        name=f"rotate-proxy-{session_id}",
+                    )
+                raise
+
+        # …and the account's `codex app-server` for a Codex resume. Same contract
+        # as the spawn path (_ensure_codex_runner): no app-server means no session,
+        # so a failure here fails the attach rather than building a driver that
+        # would raise CodexRunnerUnavailable on its first call.
+        await self._ensure_codex_runner(resume_engine, rec.account)
+
+        # A session's options overlay is rebuilt for EVERY driver build here, not
+        # just at spawn: for an assistant it is what makes the session an assistant,
+        # for a coding session it is its `viberpit` MCP surface — and every teardown
+        # (close, archive, idle reap) drops it along with the driver. See
+        # _setup_assistant_overlay for why it must be rebuilt rather than preserved
+        # (the old one holds a closed loopback client and a token that may already
+        # have expired). Rebuilt per _build() call, so the fresh-start fallback
+        # below — which acloses the first driver, and with it the first
+        # AssistantApi — also gets a live one.
+        built_assistant_apis: list[AssistantApi] = []
+
+        async def _build(resume_arg):
+            # Must run before _create_driver: the SDK factory reads
+            # self._overlays[session_id] when it builds the client.
+            assistant_api = await self._setup_overlay_for_kind(
+                session_id, kind=getattr(rec, "kind", None), identity=identity,
+                model=rec.model, engine=resume_engine)
+            if assistant_api is not None:
+                built_assistant_apis.append(assistant_api)
+            await self.refresh_default_output_style()   # read by the spawn (D-16a)
+            return self._create_driver(
+                engine=resume_engine,
+                session_id=session_id,
+                account=rec.account,
+                cwd=rec.cwd,
+                config_dir=driver_config_dir,
+                mode=getattr(rec, "permission_mode", "interactive"),
+                identity=identity,
+                resume=resume_arg,
+                reasoning_effort=getattr(rec, "reasoning_effort", None),
+                on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
+                suggester=self._suggester_for(getattr(rec, "kind", None)),
+                assistant_api=assistant_api,
+                desired_disabled_mcp=disabled_mcp,
             )
 
-            # Allocate a virtual X11 display for this session (if X11Manager wired
-            # in). Without this, a resumed/rehydrated session — the common path
-            # after a daemon restart detaches every live session — builds its driver
-            # with the display-injecting factory but x11.env_for() returns {}, so the
-            # claude subprocess launches with no DISPLAY and X rendering escapes the
-            # virtual viewport. start_display is idempotent (no-op if already leased).
-            if self._x11 is not None and getattr(rec, "display_mode", None) != DISPLAY_NATIVE:
+        # A `_reassign` (which does not take `_ensure_lock`) may have claimed the slot
+        # while the awaits above ran. Overwriting it would start a second CLI beside
+        # its build (#1040): wait it out, take its driver, or stop if it ended the
+        # session. No await between the last check and the claim below.
+        while (holder := self._swapping.get(session_id)) is not None:
+            await self._wait_out_swap(session_id, holder)
+            existing = self._drivers.get(session_id)
+            if existing is not None:
+                _rethread_identity(existing, identity)
+                return existing
+            if await self._record_still_live(session_id, allow_ended=True) is None:
+                log.info("ensure_driver: session %s ended while this attach waited — "
+                         "not resuming it", session_id)
+                await self._release_session_lease(session_id)
+                return None
+
+        # Publish this build as an in-flight swap (#1040) so a concurrent
+        # _reassign for this session — triggered from outside `_ensure_lock` —
+        # waits for it instead of starting its own AgentDriver in parallel.
+        # Cleared in `finally` no matter how the build ends, so a failed
+        # resume can never wedge every later attach/reassign for this session.
+        swap_done: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._swapping[session_id] = swap_done
+        try:
+            # One budget for the whole build (#2967): this runs under
+            # `_ensure_lock`, so an unbounded build stalls every attach in the
+            # process, and `_swapping` makes send_prompt refuse this session's
+            # prompts until it ends.
+            async with asyncio.timeout(DRIVER_SWAP_TIMEOUT_S):
+                driver = await _build(resume)
                 try:
-                    await self._x11.start_display(session_id)
-                except Exception:
-                    log.exception("session.display_start_failed id=%s", session_id)
-
-            # Ensure the Copilot proxy is running for copilot-backed accounts.
-            # If the proxy can't start (quota exhausted / token dead), schedule a
-            # rotation so the session moves to a working account without requiring
-            # user intervention, then re-raise so the WS caller shows an error.
-            if self._copilot is not None and _provider_of(rec.account) == _copilot_mod.PROVIDER:
-                try:
-                    await self._copilot.ensure(rec.account)
-                except Exception:
-                    log.warning("ensure_driver: copilot proxy start failed for %s; "
-                                "scheduling rotation session=%s", rec.account, session_id,
-                                exc_info=True)
-                    if not self._shutting_down:
-                        self._spawn(
-                            self._rotate_away(rec, reason="proxy_start_failed"),
-                            name=f"rotate-proxy-{session_id}",
-                        )
-                    raise
-
-            # …and the account's `codex app-server` for a Codex resume. Same contract
-            # as the spawn path (_ensure_codex_runner): no app-server means no session,
-            # so a failure here fails the attach rather than building a driver that
-            # would raise CodexRunnerUnavailable on its first call.
-            await self._ensure_codex_runner(resume_engine, rec.account)
-
-            # A session's options overlay is rebuilt for EVERY driver build here, not
-            # just at spawn: for an assistant it is what makes the session an assistant,
-            # for a coding session it is its `viberpit` MCP surface — and every teardown
-            # (close, archive, idle reap) drops it along with the driver. See
-            # _setup_assistant_overlay for why it must be rebuilt rather than preserved
-            # (the old one holds a closed loopback client and a token that may already
-            # have expired). Rebuilt per _build() call, so the fresh-start fallback
-            # below — which acloses the first driver, and with it the first
-            # AssistantApi — also gets a live one.
-            built_assistant_apis: list[AssistantApi] = []
-
-            async def _build(resume_arg):
-                # Must run before _create_driver: the SDK factory reads
-                # self._overlays[session_id] when it builds the client.
-                assistant_api = await self._setup_overlay_for_kind(
-                    session_id, kind=getattr(rec, "kind", None), identity=identity,
-                    model=rec.model, engine=resume_engine)
-                if assistant_api is not None:
-                    built_assistant_apis.append(assistant_api)
-                await self.refresh_default_output_style()   # read by the spawn (D-16a)
-                return self._create_driver(
-                    engine=resume_engine,
-                    session_id=session_id,
-                    account=rec.account,
-                    cwd=rec.cwd,
-                    config_dir=driver_config_dir,
-                    mode=getattr(rec, "permission_mode", "interactive"),
-                    identity=identity,
-                    resume=resume_arg,
-                    reasoning_effort=getattr(rec, "reasoning_effort", None),
-                    on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
-                    suggester=self._suggester_for(getattr(rec, "kind", None)),
-                    assistant_api=assistant_api,
-                    desired_disabled_mcp=disabled_mcp,
-                )
-
-            # Publish this build as an in-flight swap (#1040) so a concurrent
-            # _reassign for this session — triggered from outside `_ensure_lock` —
-            # waits for it instead of starting its own AgentDriver in parallel.
-            # Cleared in `finally` no matter how the build ends, so a failed
-            # resume can never wedge every later attach/reassign for this session.
-            swap_done: asyncio.Future = asyncio.get_running_loop().create_future()
-            self._swapping[session_id] = swap_done
-            try:
-                # One budget for the whole build (#2967): this runs under
-                # `_ensure_lock`, so an unbounded build stalls every attach in the
-                # process, and `_swapping` makes send_prompt refuse this session's
-                # prompts until it ends.
-                async with asyncio.timeout(DRIVER_SWAP_TIMEOUT_S):
-                    driver = await _build(resume)
-                    try:
-                        await self._start_driver_bounded(driver, session_id=session_id,
-                                                         site="session.resume")
-                    except Exception as start_exc:
-                        if resume is None:
-                            # No resume to blame — the SDK genuinely can't start (e.g. a
-                            # truly dead account token / system problem). Surface it.
-                            raise
-                        if isinstance(start_exc, DriverStartTimeout):
-                            # Already closed by _start_driver_bounded. A start too slow to
-                            # finish says nothing about the resume handle: surface it for
-                            # the caller's retry rather than probe for a fresh start (#2967).
-                            log.info("session.resume id=%s start timed out after %.0fs; "
-                                     "surfacing it", session_id, DRIVER_START_TIMEOUT_S)
-                            raise
-                        from server.automations.ownership import StaleOwnership
-                        if isinstance(start_exc, StaleOwnership):
-                            # The automation fence refused: this session's target was
-                            # transferred to a successor operation, so no rebuild can ever
-                            # succeed. That is a known terminal state (ws.py maps it to
-                            # SESSION_OWNERSHIP_STALE, _reassign to automation_ownership_stale),
-                            # not a resume-handle or CLI fault — skip the transcript probe and
-                            # the fresh-start fallback, and log at INFO: a WARNING auto-files an
-                            # issue on every attach of such a session (#2174).
-                            with contextlib.suppress(Exception):
-                                await driver.aclose()
-                            log.info(
-                                "session.resume id=%s refused by the automation fence "
-                                "(ownership stale: %s); surfacing it", session_id, start_exc)
-                            raise
-                        if resume_engine is not AgentEngine.CLAUDE_CODE:
-                            # The fresh-start fallback below is discriminated by the
-                            # presence of a transcript FILE, which only Claude has: for any
-                            # other engine `_find_transcript` is unconditionally None, so
-                            # the fallback would fire on every failed resume and silently
-                            # abandon a perfectly good conversation (a Codex thread lives
-                            # in the app-server and is still there after a restart). No
-                            # equivalent liveness probe exists that is cheaper or more
-                            # honest than letting the caller retry, so refuse to guess.
-                            with contextlib.suppress(Exception):
-                                await driver.aclose()
-                            log.warning(
-                                "session.resume id=%s engine=%s could not resume %s — "
-                                "surfacing the failure rather than starting a new "
-                                "conversation over it", session_id, resume_engine.value,
-                                resume, exc_info=True)
-                            raise
-                        # A start() failure is NOT proof that the resume handle is bad, and
-                        # guessing that it is costs the user their conversation: the fresh
-                        # driver below reports a new engine_session_id, _persist_engine_session_id
-                        # overwrites the stored one, and the real transcript is orphaned with
-                        # nothing left pointing at it. That is not hypothetical — on 2026-09-04
-                        # a torn read of the account's `.claude.json` (rocky's account store was
-                        # still mounted with the 600s sshfs attribute cache #1005 replaced) made
-                        # the CLI exit 1 inside the SDK's initialize(), and six sessions were
-                        # permanently detached from transcripts up to 5.8 MB that were intact on
-                        # disk the entire time.
-                        #
-                        # The transcript file is the discriminator, and it is a fact rather than
-                        # a guess about an exception's meaning: if it is STILL THERE the handle
-                        # is fine, so re-raise and let the caller retry once the real fault
-                        # clears (_recover_resume_failures_once already retries and drives the
-                        # "failed to resume" banner). Only when it is genuinely gone — pruned,
-                        # or recorded under a different project dir — is starting fresh the
-                        # right call, and then there is no history left to lose.
-                        transcript = await asyncio.to_thread(
-                            self._find_transcript, driver_config_dir, resume, rec.cwd)
+                    await self._start_driver_bounded(driver, session_id=session_id,
+                                                     site="session.resume")
+                except Exception as start_exc:
+                    if resume is None:
+                        # No resume to blame — the SDK genuinely can't start (e.g. a
+                        # truly dead account token / system problem). Surface it.
+                        raise
+                    if isinstance(start_exc, DriverStartTimeout):
+                        # Already closed by _start_driver_bounded. A start too slow to
+                        # finish says nothing about the resume handle: surface it for
+                        # the caller's retry rather than probe for a fresh start (#2967).
+                        log.info("session.resume id=%s start timed out after %.0fs; "
+                                 "surfacing it", session_id, DRIVER_START_TIMEOUT_S)
+                        raise
+                    from server.automations.ownership import StaleOwnership
+                    if isinstance(start_exc, StaleOwnership):
+                        # The automation fence refused: this session's target was
+                        # transferred to a successor operation, so no rebuild can ever
+                        # succeed. That is a known terminal state (ws.py maps it to
+                        # SESSION_OWNERSHIP_STALE, _reassign to automation_ownership_stale),
+                        # not a resume-handle or CLI fault — skip the transcript probe and
+                        # the fresh-start fallback, and log at INFO: a WARNING auto-files an
+                        # issue on every attach of such a session (#2174).
                         with contextlib.suppress(Exception):
                             await driver.aclose()
-                        if transcript is not None:
-                            log.warning(
-                                "session.resume id=%s start failed but the transcript for "
-                                "claude_sid=%s is intact at %s — NOT starting fresh (that would "
-                                "orphan it); surfacing the failure instead",
-                                session_id, resume, transcript, exc_info=True)
-                            raise
-                        log.warning("session.resume id=%s could not resume claude_sid=%s "
-                                    "(no transcript on disk); starting fresh",
-                                    session_id, resume, exc_info=True)
-                        driver = await _build(None)
-                        await self._start_driver_bounded(driver, session_id=session_id,
-                                                         site="session.resume")
-                    self._drivers[session_id] = driver
-                    # Re-claim the account's Codex app-server, paired with the driver
-                    # registration exactly as _spawn_session pairs it — and mirroring
-                    # _teardown_driver_state, which released the claim when this session
-                    # detached. Without it a resumed Codex session runs on a runner the
-                    # manager believes nobody is using, and the idle sweep tears it down
-                    # underneath a live thread.
-                    if self._codex is not None and resume_engine is AgentEngine.CODEX:
-                        try:
-                            self._codex.attach(rec.account, session_id)
-                        except Exception:
-                            # attach() fails when the runner died between ensure() and
-                            # here. Unwind this build completely — a registered driver
-                            # bound to a dead app-server is worse than a failed attach,
-                            # which the caller retries.
-                            self._drivers.pop(session_id, None)
-                            with contextlib.suppress(Exception):
-                                self._codex.detach(session_id)
-                            with contextlib.suppress(Exception):
-                                await driver.aclose()
-                            raise
-            except BaseException:
-                # The resume failed and no driver was registered, so no teardown path
-                # will run: release what _setup_overlay_for_kind allocated, mirroring
-                # _spawn_session's own start()-failure path. Leaving the overlay behind
-                # would let an unrelated later build for this id pick up a stale one
-                # holding a closed loopback client, and the httpx clients would leak.
-                self._overlays.pop(session_id, None)
-                for _api in built_assistant_apis:
+                        log.info(
+                            "session.resume id=%s refused by the automation fence "
+                            "(ownership stale: %s); surfacing it", session_id, start_exc)
+                        raise
+                    if resume_engine is not AgentEngine.CLAUDE_CODE:
+                        # The fresh-start fallback below is discriminated by the
+                        # presence of a transcript FILE, which only Claude has: for any
+                        # other engine `_find_transcript` is unconditionally None, so
+                        # the fallback would fire on every failed resume and silently
+                        # abandon a perfectly good conversation (a Codex thread lives
+                        # in the app-server and is still there after a restart). No
+                        # equivalent liveness probe exists that is cheaper or more
+                        # honest than letting the caller retry, so refuse to guess.
+                        with contextlib.suppress(Exception):
+                            await driver.aclose()
+                        log.warning(
+                            "session.resume id=%s engine=%s could not resume %s — "
+                            "surfacing the failure rather than starting a new "
+                            "conversation over it", session_id, resume_engine.value,
+                            resume, exc_info=True)
+                        raise
+                    # A start() failure is NOT proof that the resume handle is bad, and
+                    # guessing that it is costs the user their conversation: the fresh
+                    # driver below reports a new engine_session_id, _persist_engine_session_id
+                    # overwrites the stored one, and the real transcript is orphaned with
+                    # nothing left pointing at it. That is not hypothetical — on 2026-09-04
+                    # a torn read of the account's `.claude.json` (rocky's account store was
+                    # still mounted with the 600s sshfs attribute cache #1005 replaced) made
+                    # the CLI exit 1 inside the SDK's initialize(), and six sessions were
+                    # permanently detached from transcripts up to 5.8 MB that were intact on
+                    # disk the entire time.
+                    #
+                    # The transcript file is the discriminator, and it is a fact rather than
+                    # a guess about an exception's meaning: if it is STILL THERE the handle
+                    # is fine, so re-raise and let the caller retry once the real fault
+                    # clears (_recover_resume_failures_once already retries and drives the
+                    # "failed to resume" banner). Only when it is genuinely gone — pruned,
+                    # or recorded under a different project dir — is starting fresh the
+                    # right call, and then there is no history left to lose.
+                    transcript = await asyncio.to_thread(
+                        self._find_transcript, driver_config_dir, resume, rec.cwd)
                     with contextlib.suppress(Exception):
-                        await _api.aclose()
-                raise
-            finally:
-                if self._swapping.get(session_id) is swap_done:
-                    del self._swapping[session_id]
-                if not swap_done.done():
-                    swap_done.set_result(None)
-            # Re-apply the persisted model, mirroring _reassign. ensure_driver
-            # previously dropped rec.model on resume (rotation kept it, a plain
-            # detach → attach lost it to the account default). Placed after the
-            # final driver assignment so the fresh-start fallback gets it too.
-            await self._reapply_model(driver, rec, site="session.resume")
-            # INVARIANT: a session holding a live driver is not capacity-exempt.
-            # `complete` is exempt (see CAPACITY_EXEMPT_STATUSES) precisely because
-            # its process was released; resuming it makes that false again. Without
-            # this, every path that resumes a finished session (autopilot assist,
-            # _rearm_session, restore_deploy / _recover_resume_failures_once, a user
-            # prompt over the WS) produced a live `claude` process that never passed
-            # the capacity gate AND stayed uncounted while it ran — the cap stops
-            # being a ceiling. `done` (a live session between turns) is the correct
-            # landing status: it has completed turns and is awaiting the next prompt.
-            # Done here rather than as a second capacity check at each call site so
-            # the existing accounting is simply true again (one source of truth).
-            if rec.status == "complete":
-                await self._exit_complete_on_resume(session_id, rec)
-            # Seed the rebuilt driver's status snapshot from the persisted record so
-            # the WS-attach status frame agrees with the session card (an "Answer
-            # needed" card must not open to a freshly-derived "Ready"). After the
-            # complete→done landing above so the seed matches what the card now
-            # shows. seed_status ignores statuses that can't be true on a fresh
-            # driver, and the first real emit supersedes it.
-            driver.seed_status(rec.status)
-            await self._maybe_rearm_on_attach(session_id)
-            log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
-            await self._note_resume_over_cap(session_id)
-            return driver
+                        await driver.aclose()
+                    if transcript is not None:
+                        log.warning(
+                            "session.resume id=%s start failed but the transcript for "
+                            "claude_sid=%s is intact at %s — NOT starting fresh (that would "
+                            "orphan it); surfacing the failure instead",
+                            session_id, resume, transcript, exc_info=True)
+                        raise
+                    log.warning("session.resume id=%s could not resume claude_sid=%s "
+                                "(no transcript on disk); starting fresh",
+                                session_id, resume, exc_info=True)
+                    driver = await _build(None)
+                    await self._start_driver_bounded(driver, session_id=session_id,
+                                                     site="session.resume")
+                self._drivers[session_id] = driver
+                # Re-claim the account's Codex app-server, paired with the driver
+                # registration exactly as _spawn_session pairs it — and mirroring
+                # _teardown_driver_state, which released the claim when this session
+                # detached. Without it a resumed Codex session runs on a runner the
+                # manager believes nobody is using, and the idle sweep tears it down
+                # underneath a live thread.
+                if self._codex is not None and resume_engine is AgentEngine.CODEX:
+                    try:
+                        self._codex.attach(rec.account, session_id)
+                    except Exception:
+                        # attach() fails when the runner died between ensure() and
+                        # here. Unwind this build completely — a registered driver
+                        # bound to a dead app-server is worse than a failed attach,
+                        # which the caller retries.
+                        self._drivers.pop(session_id, None)
+                        with contextlib.suppress(Exception):
+                            self._codex.detach(session_id)
+                        with contextlib.suppress(Exception):
+                            await driver.aclose()
+                        raise
+        except BaseException:
+            # The resume failed and no driver was registered, so no teardown path
+            # will run: release what _setup_overlay_for_kind allocated, mirroring
+            # _spawn_session's own start()-failure path. Leaving the overlay behind
+            # would let an unrelated later build for this id pick up a stale one
+            # holding a closed loopback client, and the httpx clients would leak.
+            self._overlays.pop(session_id, None)
+            for _api in built_assistant_apis:
+                with contextlib.suppress(Exception):
+                    await _api.aclose()
+            raise
+        finally:
+            if self._swapping.get(session_id) is swap_done:
+                del self._swapping[session_id]
+            if not swap_done.done():
+                swap_done.set_result(None)
+        # Re-apply the persisted model, mirroring _reassign. ensure_driver
+        # previously dropped rec.model on resume (rotation kept it, a plain
+        # detach → attach lost it to the account default). Placed after the
+        # final driver assignment so the fresh-start fallback gets it too.
+        await self._reapply_model(driver, rec, site="session.resume")
+        # INVARIANT: a session holding a live driver is not capacity-exempt.
+        # `complete` is exempt (see CAPACITY_EXEMPT_STATUSES) precisely because
+        # its process was released; resuming it makes that false again. Without
+        # this, every path that resumes a finished session (autopilot assist,
+        # _rearm_session, restore_deploy / _recover_resume_failures_once, a user
+        # prompt over the WS) produced a live `claude` process that never passed
+        # the capacity gate AND stayed uncounted while it ran — the cap stops
+        # being a ceiling. `done` (a live session between turns) is the correct
+        # landing status: it has completed turns and is awaiting the next prompt.
+        # Done here rather than as a second capacity check at each call site so
+        # the existing accounting is simply true again (one source of truth).
+        if rec.status == "complete":
+            await self._exit_complete_on_resume(session_id, rec)
+        # Seed the rebuilt driver's status snapshot from the persisted record so
+        # the WS-attach status frame agrees with the session card (an "Answer
+        # needed" card must not open to a freshly-derived "Ready"). After the
+        # complete→done landing above so the seed matches what the card now
+        # shows. seed_status ignores statuses that can't be true on a fresh
+        # driver, and the first real emit supersedes it.
+        driver.seed_status(rec.status)
+        await self._maybe_rearm_on_attach(session_id)
+        log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
+        await self._note_resume_over_cap(session_id)
+        return driver
 
     async def _note_resume_over_cap(self, session_id: str) -> None:
         """Record a resume that left this daemon over its cap (#3255).
@@ -27997,27 +28102,39 @@ class SessionOrchestrator:
         # references so it acts on the post-swap state instead of a stale one.
         log.info("reassign.start session=%s %s→%s reason=%s", record.id,
                  record.account, new_account, reason)
-        prior_swap = self._swapping.get(record.id)
-        if prior_swap is not None:
-            # Bounded (#2967). The prior swap's rebuild has its own deadline, so this
-            # only expires when that swap is wedged outside it. Never start a second
-            # build next to it (#1040) — report the failure and leave it be.
-            done, _ = await asyncio.wait({prior_swap}, timeout=DRIVER_SWAP_TIMEOUT_S)
-            if not done:
-                log.warning("reassign.prior_swap_timeout session=%s reason=%s — an "
-                            "earlier swap is still in flight after %.0fs; not starting "
-                            "another", record.id, reason, DRIVER_SWAP_TIMEOUT_S)
-                return "failed"
-            # The swap we waited out may have ended the session (a D-19 Discard holds
-            # this slot while it archives and removes the worktree). Rebuilding from
-            # the stale record would resume it and recreate that worktree. Nothing has
-            # been touched: "failed", like the timeout above.
-            current = await self._record_still_live(record.id)
+        # The caller's record may be stale with or without a swap to wait out: the
+        # swap waited out here (a D-19 Discard holds this slot while it archives and
+        # removes the worktree) or any close / archive / Discard since the caller
+        # looked it up may have ended the session. Rebuilding from that copy would
+        # resume it and recreate the worktree, so the liveness check runs on every
+        # pass, and the slot is re-checked after it (it awaits a row read; a Discard
+        # can claim the slot meanwhile). An assistant's idle reap keeps an `ended`
+        # record on purpose (resume-on-reopen), so its status is not held against it
+        # — the exception ensure_driver makes.
+        allow_ended = getattr(record, "kind", None) == ASSISTANT_KIND
+        while True:
+            prior_swap = self._swapping.get(record.id)
+            if prior_swap is not None:
+                # Bounded (#2967). The prior swap's rebuild has its own deadline, so
+                # this only expires when that swap is wedged outside it. Never start
+                # a second build next to it (#1040) — report the failure and leave
+                # it be.
+                done, _ = await asyncio.wait({prior_swap}, timeout=DRIVER_SWAP_TIMEOUT_S)
+                if not done:
+                    log.warning("reassign.prior_swap_timeout session=%s reason=%s — an "
+                                "earlier swap is still in flight after %.0fs; not "
+                                "starting another", record.id, reason,
+                                DRIVER_SWAP_TIMEOUT_S)
+                    return "failed"
+            current = await self._record_still_live(record.id, allow_ended=allow_ended)
             if current is None:
-                log.info("reassign.session_gone session=%s reason=%s — it ended while "
-                         "this swap waited; not resuming it", record.id, reason)
+                # Nothing has been touched: "failed", like the timeout above.
+                log.info("reassign.session_gone session=%s reason=%s — it ended before "
+                         "this swap; not resuming it", record.id, reason)
                 return "failed"
             record = current
+            if self._swapping.get(record.id) is None:
+                break   # no await from here to the claim below
 
         swap_done: asyncio.Future = asyncio.get_running_loop().create_future()
         self._swapping[record.id] = swap_done

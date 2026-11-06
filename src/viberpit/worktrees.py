@@ -1404,9 +1404,11 @@ def snapshot_before_discard(worktree: str, session_id: str) -> list[str] | None:
         return list(dict.fromkeys(refs))
     except RecoveryUnknown:
         raise
-    except Exception:
-        log.warning("worktree.discard_snapshot_failed session=%s path=%s",
-                    session_id, worktree, exc_info=True)
+    except Exception as exc:
+        # INFO with structured fields: the caller's refusal (the orchestrator's
+        # `session.worktree_discard_snapshot_failed`) is the incident's one WARNING.
+        _log_fields(logging.INFO, "worktree.discard_snapshot_failed", session=session_id,
+                    path=worktree, err=repr(exc))
         return None
 
 
@@ -1472,6 +1474,7 @@ def remove_worktree(worktree_path: str, force: bool = False, *,
     ``branch -D``'d keeps its tip when it holds unpushed commits. *session_id*
     names the refs; it defaults to the worktree's directory name (the session's
     short id, which is how managed worktrees are named). Both fail closed: a dirty tree
+    (or one whose ``git status`` fails, which counts as dirty)
     whose snapshot fails is not removed (False), and a branch whose unpushed state
     is unknown, or whose tip could not be kept, is not deleted.
 
@@ -1508,10 +1511,15 @@ def remove_worktree(worktree_path: str, force: bool = False, *,
     repo_top = os.path.dirname(common.stdout.strip().rstrip("/"))
 
     # Never blow away uncommitted work (unless the caller explicitly forces eviction).
+    # A status that failed is not "clean" (D-19 final review): it used to read as one,
+    # so a forced removal skipped its snapshot. It counts as dirty — an unforced caller
+    # keeps the tree, a forced one removes it only once the snapshot below exists.
     status = _run(["git", "-C", wt, "status", "--porcelain"])
-    is_dirty = status.returncode == 0 and bool(status.stdout.strip())
+    unreadable = status.returncode != 0
+    is_dirty = unreadable or bool(status.stdout.strip())
     if is_dirty and not force:
-        log.info("worktree.keep_dirty path=%s", wt)
+        log.info("worktree.keep_dirty path=%s%s", wt,
+                 " reason=status_failed" if unreadable else "")
         return False
     sid = session_id or os.path.basename(wt.rstrip("/"))
     if is_dirty and snapshot_recovery_ref(wt, sid, reason=RECOVERY_FORCED) is None:
