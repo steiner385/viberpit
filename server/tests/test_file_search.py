@@ -619,7 +619,57 @@ def test_text_read_through_fd_handles_smart_case_offsets(repo: Path) -> None:
     assert m["text"][m["start"]:m["end"]] == "Needle"
 
 
-def test_file_over_the_viewer_cap_is_skipped(repo: Path) -> None:
-    (repo / "big.txt").write_text("needle\n" + "x" * wf.MAX_READ_BYTES)
+def test_large_file_keeps_hits_inside_the_read_window(repo: Path) -> None:
+    (repo / "big.txt").write_text("needle one\n" + "x" * 600_000 + "\nneedle two\n")
+    (repo / "later.txt").write_text("y" * 600_000 + "\nneedle late\n")
     _commit(repo)
-    assert "big.txt" not in _paths(wf.search_files(str(repo), "needle"))
+    res = wf.search_files(str(repo), "needle")
+    by = {(m["path"], m["line"]) for m in res["matches"]}
+    assert ("big.txt", 1) in by
+    assert ("big.txt", 3) not in by and ("later.txt", 2) not in by
+    assert res["truncated"] is True  # hits beyond the window were not returned
+
+
+def test_large_file_with_no_hit_past_the_window_is_not_truncated(repo: Path) -> None:
+    (repo / "big.txt").write_text("needle one\n" + "x" * 600_000 + "\n")
+    _commit(repo)
+    res = wf.search_files(str(repo), "needle")
+    assert [m["path"] for m in res["matches"]] == ["big.txt"]
+    assert res["truncated"] is False
+
+
+@pytest.mark.parametrize("bad", ["../secret.txt", "/etc/hostname", "a/../notes.md",
+                                 "./notes.md", "a//b", ""])
+def test_unsafe_parsed_paths_are_refused_before_opening(
+        repo: Path, monkeypatch: pytest.MonkeyPatch, bad: str) -> None:
+    opened: list[str] = []
+
+    def spy(root: str, rel: str) -> int:
+        opened.append(rel)
+        raise AssertionError("opened an unsafe path")
+
+    monkeypatch.setattr(wf, "_open_beneath", spy)
+
+    def fake(cwd, args, consume, **kw):
+        consume(bad.encode() + b"\x001\x001\x00hello\n")
+        return "ok"
+
+    monkeypatch.setattr(wf, "stream_git", fake)
+    assert wf.search_files(str(repo), "hello")["matches"] == []
+    assert opened == []
+
+
+@pytest.mark.parametrize("q", ["ab\ncd", "ab\rcd", "ab\n"])
+def test_newline_or_cr_in_query_is_bad_query(repo: Path, q: str) -> None:
+    for regex in (False, True):
+        with pytest.raises(wf.FileAccessError) as ei:
+            wf.search_files(str(repo), q, regex)
+        assert ei.value.code == wf.BAD_QUERY
+
+
+def test_highlight_prefers_the_occurrence_at_gits_column(repo: Path) -> None:
+    (repo / "k.txt").write_text("\u212a-x kelvin-x\n")  # Kelvin sign folds to k
+    _commit(repo)
+    m = [x for x in wf.search_files(str(repo), "kelvin-x")["matches"]
+         if x["path"] == "k.txt"][0]
+    assert m["text"][m["start"]:m["end"]] == "kelvin-x"

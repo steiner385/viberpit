@@ -269,6 +269,12 @@ def _is_git_internal(rel: str) -> bool:
     return any(part.lower() == ".git" for part in rel.split("/"))
 
 
+def _unsafe_rel(rel: str) -> bool:
+    """Whether a path parsed from git's output is not a plain relative path: empty,
+    absolute, or holding an empty, ``.`` or ``..`` component."""
+    return rel.startswith("/") or any(part in ("", ".", "..") for part in rel.split("/"))
+
+
 def _open_beneath(root: str, rel: str) -> int:
     """Open ``root/rel`` read-only and non-blocking without following any symlink on
     the way, from ``root``'s directory fd (:mod:`viberpit.fs_beneath`). Raises
@@ -373,12 +379,12 @@ def search_files(cwd: str, q: str, regex: bool = False,
 
     A ``q`` shorter than ``MIN_SEARCH_QUERY_CHARS`` finds nothing. Raises
     ``FileAccessError(FILE_NOT_FOUND)`` for a missing, empty or non-git ``cwd``,
-    ``BAD_QUERY`` for a NUL in ``q``, ``BAD_REGEX`` when git rejects a ``regex``
+    ``BAD_QUERY`` for a NUL, newline or CR in ``q``, ``BAD_REGEX`` when git rejects a ``regex``
     pattern, and ``SEARCH_FAILED`` for any other git failure.
 
     Content: git's output is only a hint. Each returned line is re-read from the file
-    opened beneath the session root (:func:`_open_beneath`, once per path, at most
-    ``MAX_READ_BYTES``), so a file swapped after git read it can leak nothing; a line
+    opened beneath the session root (:func:`_open_beneath`, once per path, the first
+    ``MAX_READ_BYTES``; a hit beyond that sets ``truncated``), so a file swapped after git read it can leak nothing; a line
     that no longer holds the hit is dropped. The ``SEARCH_TIMEOUT_S`` budget covers
     those reads too. A path containing a newline is rebuilt from git's split output
     (see ``record``).
@@ -391,7 +397,7 @@ def search_files(cwd: str, q: str, regex: bool = False,
     Python (catastrophic backtracking would stall the daemon): a fixed string is located
     with an escaped literal (linear), a regex gets git's start column and an empty span.
     """
-    if "\0" in q:
+    if "\0" in q or "\n" in q or "\r" in q:  # git splits a newline into several patterns
         raise FileAccessError(BAD_QUERY)
     q = q[:MAX_QUERY_CHARS]
     limit = max(1, min(int(limit), MAX_SEARCH_MATCHES))
@@ -418,16 +424,20 @@ def search_files(cwd: str, q: str, regex: bool = False,
     deadline = time.monotonic() + SEARCH_TIMEOUT_S
     out_of_time = False
     literal = re.compile(re.escape(q), re.IGNORECASE if ignore_case else 0)
-    cache: tuple[str, list[bytes] | None] = ("", None)  # the last path's lines
+    # The last path's (lines, cut): ``cut`` = the file runs past ``MAX_READ_BYTES``.
+    cache: tuple[str, list[bytes] | None, bool] = ("", None, False)
 
-    def lines_of(path: str) -> list[bytes] | None:
-        """The lines of ``path`` read through an fd opened beneath the session root (no
-        symlinked component, regular file, at most ``MAX_READ_BYTES``, not binary), or
-        None. Git's output is only a hint; this is the source of every returned byte."""
+    def lines_of(path: str) -> tuple[list[bytes] | None, bool]:
+        """The complete lines among the first ``MAX_READ_BYTES`` of ``path``, read
+        through an fd opened beneath the session root (no symlinked component, regular
+        file, not binary), or None; and whether the file was cut there (as
+        :func:`read_file` truncates; the partial last line is discarded). Git's output
+        is only a hint; this is the source of every returned byte."""
         nonlocal cache
         if cache[0] == path:
-            return cache[1]
+            return cache[1], cache[2]
         lines: list[bytes] | None = None
+        cut = False
         try:
             fd = _open_beneath(root, path)
         except FileAccessError:
@@ -437,13 +447,15 @@ def search_files(cwd: str, q: str, regex: bool = False,
                 with os.fdopen(fd, "rb") as fh:
                     if stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
                         data = fh.read(MAX_READ_BYTES + 1)
-                        if (len(data) <= MAX_READ_BYTES
-                                and b"\0" not in data[:BINARY_SNIFF_BYTES]):
-                            lines = data.split(b"\n")
+                        cut = len(data) > MAX_READ_BYTES
+                        if b"\0" not in data[:BINARY_SNIFF_BYTES]:
+                            lines = data[:MAX_READ_BYTES].split(b"\n")
+                            if cut:
+                                lines.pop()  # partial: its end is past the cut
             except OSError:
                 lines = None
-        cache = (path, lines)
-        return lines
+        cache = (path, lines, cut)
+        return lines, cut
 
     def take(path_b: bytes, lineno_b: bytes, col_b: bytes) -> bool:
         nonlocal capped, out_of_time
@@ -455,10 +467,13 @@ def search_files(cwd: str, q: str, regex: bool = False,
             lineno, col = int(lineno_b), int(col_b)
         except (UnicodeDecodeError, ValueError):
             return False  # not valid UTF-8 cannot round-trip through JSON to a read
-        if _is_git_internal(path):
+        if _is_git_internal(path) or _unsafe_rel(path):
             return False
-        lines = lines_of(path)
-        if lines is None or not 1 <= lineno <= len(lines):
+        lines, cut = lines_of(path)
+        if lines is None or lineno < 1:
+            return False
+        if lineno > len(lines):
+            capped = capped or cut  # a hit past the read window: results incomplete
             return False
         text = lines[lineno - 1].decode("utf-8", "replace")
         if regex:
@@ -466,7 +481,14 @@ def search_files(cwd: str, q: str, regex: bool = False,
                         len(text))
             end = start
         else:
-            hit = literal.search(text)
+            # The occurrence nearest git's column (a case-fold can shift offsets).
+            git_start = len(lines[lineno - 1][:max(col - 1, 0)].decode("utf-8", "replace"))
+            hit = None
+            for m in literal.finditer(text):
+                if hit is None or abs(m.start() - git_start) < abs(hit.start() - git_start):
+                    hit = m
+                if m.start() >= git_start:
+                    break
             if hit is None:
                 return False  # the file changed since git read it
             start, end = hit.span()
