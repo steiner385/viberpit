@@ -102,10 +102,9 @@ workers (the primary is the sole refresher to avoid racing shared token files).
   poller, rotation monitor, autopilot, deploy watcher, lease heartbeat) vs `worker` (serves
   dispatched sessions only, never refreshes tokens). See KNOWN GAPS.
 - **Moving a session** (D-17; `server/sessions/session_move.py`, `src/viberpit/worktree_transfer.py`):
-  "Move to host…" in a session's menu resumes an idle **Claude** session on another fleet host,
-  keeping its id, transcript and worktree path. It is manual and per session: no automatic
-  rebalancing, no Codex (its history stays on its host), no cloud. Where the move is refused, the
-  dialog says why.
+  "Move to host…" in a session's menu resumes an idle **Claude** or **Codex** session on another
+  fleet host, keeping its id, conversation and worktree path. It is manual and per session: no
+  automatic rebalancing, no cloud. Where the move is refused, the dialog says why.
   - **What can move:** an idle session (no turn running, nothing queued, no open question,
     permission or plan card) that is not steering, or steered by, a live child or parent session.
     Live background tasks need a "Stop these tasks and move" confirm; the target re-arms them.
@@ -118,6 +117,17 @@ workers (the primary is the sole refresher to avoid racing shared token files).
     and sends are held (the draft is kept; a held "interrupt and post" retries as one). If the app
     cannot tell how a move ended, the dialog says "outcome unknown"; check the session's host in a
     minute.
+  - **Codex** (#3347; `server/codex/thread_move.py`): a Codex thread lives in a host-local
+    `CODEX_HOME`, so no shared tree holds it and the move copies it. After closing the driver, the
+    source exports the thread's rollout file plus ViberPit's two per-thread sidecars (item times,
+    turn history) inline in the move manifest over the daemon RPC (base64, capped at 128 MB raw;
+    over the cap the move is refused with `MOVE_HISTORY_TOO_LARGE` before anything is touched).
+    The target writes it under its own `CODEX_HOME` for the same account at the same relative
+    path, verifies size and sha256, then resumes by thread id; a thread already present on the
+    target refuses (`MOVE_HISTORY_EXISTS`, session restored to the source). At finalize the source
+    renames its rollout to `….jsonl.moved-to-<host>`, so it cannot be resumed there while the
+    bytes are kept. The stored manifest keeps only the descriptor (path, size, sha256), never the
+    bytes.
   - **Stopping a turn:** Stop and stopping a subagent are refused only while a move is actually
     running. A claim that is merely held (a failed move awaiting the reconcile, or one stuck on a
     removed host) does not block them, so a turn an automation starts meanwhile can still be
@@ -133,9 +143,9 @@ workers (the primary is the sole refresher to avoid racing shared token files).
     because a pushed commit would be readable by anyone with its SHA.
   - **API / switch:** `POST /api/sessions/{id}/move` and `GET /api/sessions/{id}/move/preflight`,
     both human-only; kill switch `VIBERPIT_SESSION_MOVE_ENABLED` (default on).
-  - **Not built:** a "Drain host" action, adoption of a dead host's sessions (#949), Codex as a
-    new thread, a UI to clear a claim stuck on a host removed from the fleet for good (manual
-    DB clear for now), and a check of org rulesets on private repos (`cairnea/KinDash`).
+  - **Not built:** a "Drain host" action, adoption of a dead host's sessions (#949), a UI to
+    clear a claim stuck on a host removed from the fleet for good (manual DB clear for now), and
+    a check of org rulesets on private repos (`cairnea/KinDash`).
 
 **Known gaps (open issues)** —
 - **#840 — worker role incomplete.** `orchestrator.start()` still launches all fleet-global
