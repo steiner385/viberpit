@@ -520,7 +520,14 @@ broker envelope, as `oauth_env_for` does). Each ran in a throwaway `CLAUDE_CONFI
   - **`steiner385/viberpit` is a public repo** (`private=false`).
   - So a D1(a) WIP commit is **published**: anyone who has the SHA can read it, with no auth, until GitHub GCs it.
     Deleting the ref does not retract it.
-- **Not checked.** Org rulesets on `cairnea/KinDash`, because the rules allowed only `steiner385/viberpit`.
+- **Org rulesets on `cairnea/KinDash` (private) — PASS, checked 2026-11-06 (#3320).**
+  - The repo's only ruleset ("Main merge queue", active) has `required_status_checks` and `merge_queue`, and its
+    `conditions.ref_name.include` is `["refs/heads/main"]`. It does not match `refs/viberpit/transfer/*`; no
+    ref-creation or `refs/*` rule exists.
+  - Live: `git push origin <sha>:refs/viberpit/transfer/verify-3320` returned `* [new reference]`, `ls-remote` listed it,
+    and `git push origin :refs/viberpit/transfer/verify-3320` returned `- [deleted]`; `ls-remote` was empty afterwards.
+  - No preflight is needed for this repo. A future org ruleset that targets `refs/*` would make the push fail, and
+    the export already fails safe by restoring the session on the source.
 
 ### Gate 2: cross-host resume of a session whose worktree came over by `import_` — PASS
 
