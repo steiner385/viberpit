@@ -4393,7 +4393,8 @@ class SessionOrchestrator:
         - ``host_capacity``: the edge found every enabled, healthy host full
           (*queue_only*). Product capacity wins the label when both apply — it is the
           stricter wait (the drain re-checks it per entry), host capacity merely a slot.
-        - ``global_cap``: at/over the active-session cap. Applies to EVERY origin —
+        - ``global_cap``: at/over the active-session cap, or (``host_capacity``) this host's own
+          ``Host.max_sessions``. Applies to EVERY origin —
           automations included (their claims simply wait)."""
         if is_assistant_kind(kind):
             return None
@@ -4408,6 +4409,14 @@ class SessionOrchestrator:
             return "host_capacity"
         if self._active_session_count() >= await self._max_active_sessions():
             return "global_cap"
+        # THIS host's own cap (``Host.max_sessions``). The global gate above is fleet-wide
+        # and compares a host-partitioned count, so a daemon-originated launch (child
+        # dispatch, fork, automation fallback) the edge ranker never saw would otherwise
+        # push a full host past its cap (#3341). The drain honours the same local cap, so
+        # the queued entry starts when a slot frees. Resumes do not come through here.
+        local_cap = await self._local_host_cap()
+        if local_cap is not None and await self.owned_active_session_count() >= local_cap:
+            return "host_capacity"
         return None
 
     async def _automation_create_session(self, **kwargs) -> SessionRecord:

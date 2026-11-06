@@ -141,6 +141,29 @@ def test_drain_never_exceeds_this_hosts_own_cap(tmp_path, me):
     asyncio.run(run())
 
 
+def test_direct_launch_at_the_hosts_own_cap_is_queued_not_spawned(tmp_path, me):
+    """#3341: a launch that never passed the edge ranker (child dispatch, fork) must
+    honour THIS host's ``max_sessions`` too — global cap 6 is far away, local cap is 1."""
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=10)
+        try:
+            await _add_hosts(orch, _host(ME, max_sessions=2), _host("other", max_sessions=5))
+            first = await orch.create_session("one")
+            assert first.status != "queued"          # cap-1 still spawns
+            second = await orch.create_session("two")
+            assert second.status != "queued"
+            third = await orch.create_session("three")  # now 2/2
+            assert third.status == "queued"
+            entry = await sq.next_entry()
+            assert entry is not None and entry.params.get("queue_reason") == "host_capacity"
+            assert orch._active_session_count() == 2
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
 # --- adoption: a slot frees on ANOTHER host --------------------------------------
 
 def test_a_host_with_headroom_adopts_an_entry_whose_owner_is_full(tmp_path, me):
