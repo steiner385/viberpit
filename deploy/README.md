@@ -80,7 +80,7 @@ a same-origin request (Origin = the `Host`/`X-Forwarded-Host` it arrived with) o
 origin's hostname or loopback, which covers `tailscale serve` on `:8443`; Vite under `VIBERPIT_DEV=1`;
 and `VIBERPIT_ALLOWED_ORIGINS` (comma-separated `scheme://host[:port]`). No `Origin` (CLI,
 `viberpit ask`, the assistant) passes. Without `VIBERPIT_PUBLIC_ORIGIN`, a browser on the tailnet
-hostname is refused: set one of the two. Refusals log `origin.refused` at INFO.
+hostname is refused: set one of the two. `VIBERPIT_PUBLIC_ORIGIN` is trusted outright, so it must include the port the edge is actually served on (e.g. `https://host.ts.net:8443` behind `tailscale serve`), never a port another service owns (#3325). A Vite dev loop on a port other than 5173/4173 (e.g. `npx vite --port 5199` against a deployed edge) needs that origin in `VIBERPIT_ALLOWED_ORIGINS`. Refusals log `origin.refused` at INFO.
 First live use: the first tap per provider registers ViberPit as an OAuth client with that provider.
 
 ## Install

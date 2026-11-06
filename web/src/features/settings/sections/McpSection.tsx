@@ -225,12 +225,15 @@ export function McpSection() {
             )}
             {signInNeeded && oneTap && pasteBack !== s.name && (s.transport === 'http' || s.transport === 'sse') && (
               <div className="mt-1 px-3 pb-2">
-                <a
-                  href={`/api/mcp/oauth/start?server=${encodeURIComponent(s.name)}`}
-                  className="inline-block rounded border border-edge-strong px-2 py-1 text-xs hover:bg-surface-raised"
-                >
-                  Sign in
-                </a>
+                {/* POST (not a link): start mints OAuth state + audits, so it must not be GET-triggerable (#3325). */}
+                <form method="post" action={`/api/mcp/oauth/start?server=${encodeURIComponent(s.name)}`}>
+                  <button
+                    type="submit"
+                    className="inline-block rounded border border-edge-strong px-2 py-1 text-xs hover:bg-surface-raised"
+                  >
+                    Sign in
+                  </button>
+                </form>
               </div>
             )}
             {s.overall.status === 'needs-auth' && s.transport === 'stdio' && (

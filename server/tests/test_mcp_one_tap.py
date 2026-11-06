@@ -132,7 +132,7 @@ def client(fakes: Fakes) -> TestClient:
 
 def _start(client: TestClient, name: str = "railway") -> str:
     """Start a sign-in; return the state the provider would echo back."""
-    resp = client.get("/api/mcp/oauth/start", params={"server": name})
+    resp = client.post("/api/mcp/oauth/start", params={"server": name})
     assert resp.status_code == 302, resp.text
     loc = resp.headers["location"]
     assert loc.startswith("https://auth.railway.example/authorize?")
@@ -146,7 +146,7 @@ def _callback(client: TestClient, **params: str) -> str:
 
 
 def test_start_redirects_to_the_provider_with_pkce(client: TestClient, fakes: Fakes) -> None:
-    resp = client.get("/api/mcp/oauth/start", params={"server": "railway"})
+    resp = client.post("/api/mcp/oauth/start", params={"server": "railway"})
     assert resp.status_code == 302
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(resp.headers["location"]).query)
     assert query["code_challenge_method"] == ["S256"]
@@ -284,7 +284,7 @@ def test_start_past_the_deadline_redirects_to_paste_back(
 
     monkeypatch.setattr(one_tap, "discover", slow_discover)
     monkeypatch.setattr(one_tap, "START_DEADLINE_S", 0.01)
-    resp = client.get("/api/mcp/oauth/start", params={"server": "railway"})
+    resp = client.post("/api/mcp/oauth/start", params={"server": "railway"})
     assert resp.status_code == 302
     assert resp.headers["location"] == "/settings/mcp?pasteBack=railway"
     assert fakes.redirect_uris == [] and one_tap.pending_count() == 0
@@ -327,7 +327,7 @@ def test_start_falls_back_to_paste_back_on_registration_failure(
         fakes.discover_exc = exc
     else:
         fakes.ensure_exc = exc
-    resp = client.get("/api/mcp/oauth/start", params={"server": "railway"})
+    resp = client.post("/api/mcp/oauth/start", params={"server": "railway"})
     assert resp.status_code == 302
     assert resp.headers["location"] == "/settings/mcp?pasteBack=railway"
 
@@ -335,7 +335,7 @@ def test_start_falls_back_to_paste_back_on_registration_failure(
 def test_start_without_public_origin_uses_paste_back(
         client: TestClient, fakes: Fakes, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(one_tap, "get_settings", lambda: types.SimpleNamespace(public_origin=None))
-    resp = client.get("/api/mcp/oauth/start", params={"server": "railway"})
+    resp = client.post("/api/mcp/oauth/start", params={"server": "railway"})
     assert resp.status_code == 302
     assert resp.headers["location"] == "/settings/mcp?pasteBack=railway"
     assert fakes.redirect_uris == []
@@ -354,7 +354,7 @@ def test_start_unknown_server_is_not_configured(
         client: TestClient, monkeypatch: pytest.MonkeyPatch, servers: list, name: str) -> None:
     monkeypatch.setattr(one_tap.scan, "list_mcp_servers",
                         lambda status_rows=None: {"servers": servers})
-    resp = client.get("/api/mcp/oauth/start", params={"server": name})
+    resp = client.post("/api/mcp/oauth/start", params={"server": name})
     assert resp.status_code == 302
     assert resp.headers["location"] == "/settings/mcp?signInError=not_configured"
 
@@ -365,7 +365,7 @@ def test_start_url_quotes_the_name(client: TestClient, fakes: Fakes,
     monkeypatch.setattr(one_tap.scan, "list_mcp_servers",
                         lambda status_rows=None: {"servers": [server]})
     fakes.ensure_exc = RegistrationUnsupported("x")
-    resp = client.get("/api/mcp/oauth/start", params={"server": "my.srv_1"})
+    resp = client.post("/api/mcp/oauth/start", params={"server": "my.srv_1"})
     assert resp.headers["location"] == "/settings/mcp?pasteBack=my.srv_1"
 
 
@@ -431,7 +431,7 @@ def test_no_dcr_fallback_logs_no_warning(client: TestClient, fakes: Fakes,
                                          caplog: pytest.LogCaptureFixture) -> None:
     fakes.ensure_exc = RegistrationUnsupported("no dcr")
     with caplog.at_level("INFO", logger=one_tap.log.name):
-        resp = client.get("/api/mcp/oauth/start", params={"server": "railway"})
+        resp = client.post("/api/mcp/oauth/start", params={"server": "railway"})
     assert resp.headers["location"] == "/settings/mcp?pasteBack=railway"
     assert [r for r in caplog.records if r.levelno >= 30] == []
     assert any("RegistrationUnsupported" in r.getMessage() for r in caplog.records)
@@ -446,7 +446,7 @@ def test_refused_redirect_uri_fallback_logs_no_warning(
     fakes.ensure_exc = RegistrationFailed(f"registration endpoint returned 400 {code}",
                                           code=code)
     with caplog.at_level("INFO", logger=one_tap.log.name):
-        resp = client.get("/api/mcp/oauth/start", params={"server": "railway"})
+        resp = client.post("/api/mcp/oauth/start", params={"server": "railway"})
     assert resp.headers["location"] == "/settings/mcp?pasteBack=railway"
     assert [r for r in caplog.records if r.levelno >= 30] == []
     assert any("invalid_redirect_uri" in r.getMessage() for r in caplog.records)
@@ -463,7 +463,7 @@ def test_real_start_failures_still_warn(client: TestClient, fakes: Fakes, exc: E
     else:
         fakes.ensure_exc = exc
     with caplog.at_level("INFO", logger=one_tap.log.name):
-        client.get("/api/mcp/oauth/start", params={"server": "railway"})
+        client.post("/api/mcp/oauth/start", params={"server": "railway"})
     assert [r.levelno for r in caplog.records] == [30]
 
 
@@ -483,7 +483,7 @@ def test_invalid_name_is_not_configured_even_without_public_origin(
         client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(one_tap, "get_settings", lambda: types.SimpleNamespace(public_origin=None))
     for name in ("<script>", "nope"):
-        resp = client.get("/api/mcp/oauth/start", params={"server": name})
+        resp = client.post("/api/mcp/oauth/start", params={"server": name})
         assert resp.headers["location"] == "/settings/mcp?signInError=not_configured"
 
 
@@ -499,6 +499,13 @@ def test_assistant_tokens_cannot_reach_one_tap_routes(path: str) -> None:
     for method in ("GET", "POST"):
         assert route_allowed(method, path) is False
         assert route_allowed(method, path, operator=True) is False
+
+
+def test_start_is_post_only() -> None:
+    """start mints state and audits, so a cross-site GET (<img>) must not reach it (#3325)."""
+    from server.api.mcp_oauth import router
+    methods = {m for r in router.routes if r.path.endswith("/start") for m in r.methods}
+    assert methods == {"POST"}
 
 
 def test_shutdown_reaps_follow_through_tasks() -> None:
@@ -536,7 +543,7 @@ def test_start_on_a_worker_is_not_configured(client: TestClient, fakes: Fakes,
                                              monkeypatch: pytest.MonkeyPatch) -> None:
     from viberpit import fleet_role
     monkeypatch.setenv(fleet_role.ROLE_ENV, "worker")
-    resp = client.get("/api/mcp/oauth/start", params={"server": "railway"})
+    resp = client.post("/api/mcp/oauth/start", params={"server": "railway"})
     assert resp.headers["location"] == "/settings/mcp?signInError=not_configured"
     assert fakes.redirect_uris == [] and one_tap.pending_count() == 0
 
@@ -552,7 +559,7 @@ def test_unexpected_start_failure_pastes_back(client: TestClient, fakes: Fakes, 
             raise RuntimeError("scan broke")
         monkeypatch.setattr(one_tap.scan, "list_mcp_servers", boom)
     with caplog.at_level("INFO"):
-        resp = client.get("/api/mcp/oauth/start", params={"server": "railway"})
+        resp = client.post("/api/mcp/oauth/start", params={"server": "railway"})
     assert resp.status_code == 302
     assert resp.headers["location"] == "/settings/mcp?pasteBack=railway"
     warnings = [r for r in caplog.records if r.levelno == 30]
@@ -564,7 +571,7 @@ def test_unexpected_start_failure_with_an_invalid_name_is_not_configured(
     async def boom(identity, name):  # noqa: ANN001, ANN202
         raise RuntimeError("x")
     monkeypatch.setattr(one_tap, "start", boom)
-    resp = client.get("/api/mcp/oauth/start", params={"server": "<script>"})
+    resp = client.post("/api/mcp/oauth/start", params={"server": "<script>"})
     assert resp.headers["location"] == "/settings/mcp?signInError=not_configured"
 
 
