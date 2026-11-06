@@ -441,8 +441,15 @@ ways into it from the composer and the transcript.
   automatic fixes for that session (see [CI/CD pipeline](cicd-pipeline-merge-queue.md)).
 - **Worktree location:** Settings › Sessions › Worktrees edits the root that repos are cloned into and
   session worktrees created under, moved here from General. Changing it doesn't move existing worktrees —
-  they keep working, but cleanup skips them. **Reset** returns it to the server default. The branch prefix
-  `viberpit/` is shown read-only: it guards automatic branch cleanup.
+  they keep working, but cleanup skips them. **Reset** returns it to the server default.
+- **Branch prefix (D-22):** Settings › Sessions › Worktrees sets what new session branches start with
+  (default `viberpit/`; **Reset** returns to it). ViberPit records every branch it creates, and automatic
+  cleanup deletes a branch only when that record exists (a branch from before D-22 also counts if it has
+  its own session's exact name shape), so changing the prefix never makes your own branches deletable.
+  A prefix is refused, with the reason shown under the field, when git won't accept the name, when it is
+  a common team namespace (`feature/`, `fix/`, `release/`, …) or a ref namespace (`refs/`, `origin/`, …),
+  or when it would collide with branches that already exist in your clones (including a branch named
+  like one of its folders). If ViberPit can't check your clones in time, it refuses rather than guesses.
 
 **Output styles and app slash commands (D-16a)** — output styles are Claude only; `/plan` works on both engines.
 - **Style ›** in the composer's `+` menu lists the styles the session's CLI reports (built-ins, your own, and

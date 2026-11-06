@@ -62,7 +62,7 @@ D=[
 ]),
 ("5 Settings",[
  ("PR behaviour: auto-fix, auto-archive on merge, branch prefix",1,"Y","per-session PR auto-fix switch in the Environment card (D-14) + auto-archive + autopilot; branch prefix shown read-only (fixed viberpit/)"),
- ("Worktree location / policy",1,"P","repo/worktree root editable in Settings › Sessions (D-14); configurable branch prefix adopted (2026-11-06, D22b) behind a recorded-ownership guard on automatic deletion — not built yet"),
+ ("Worktree location / policy",1,"Y","repo/worktree root (D-14) and branch prefix (D-22) editable in Settings › Sessions; automatic branch deletion requires a recorded-ownership row, so no prefix can make your own branches deletable"),
  ("Default transcript view",1,"Y",""),
  ("Notification levels per event type",1,"P","quiet hours, channels, routing rules"),
  ("Appearance: theme, font + transcript size",1,"P","theme + widths"),

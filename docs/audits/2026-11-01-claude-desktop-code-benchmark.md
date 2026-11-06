@@ -63,14 +63,14 @@ Full inventories, with an evidence tag on every item:
 | 2 Transcript | 21 / 21 | 100% |
 | 3 Composer | 28.5 / 29 | 98% |
 | 4 Commands & config | 15 / 15 | 100% |
-| 5 Settings | 5.5 / 8 | 69% |
+| 5 Settings | 6 / 8 | 75% |
 | 6 User feedback | 19 / 19 | 100% |
 | 7 Lifecycle & branching | 24.5 / 25 | 98% |
 | 8 Code review & dev | 9.5 / 12 | 79% |
 | 9 Shortcuts & a11y | 8 / 8 | 100% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **151.5 / 161** | **94%** |
-| **Target completion** (excl. rejected rows) | **149 / 150.5** | **99%** |
+| **Overall (weighted)** | **152 / 161** | **94%** |
+| **Target completion** (excl. rejected rows) | **149.5 / 150.5** | **99%** |
 
 ### 1 Shell & IA
 
@@ -140,7 +140,7 @@ Full inventories, with an evidence tag on every item:
 | Desktop capability | Weight | ViberPit | Notes |
 |---|:-:|:-:|---|
 | PR behaviour: auto-fix, auto-archive on merge, branch prefix | 1 | ✅ | per-session PR auto-fix switch in the Environment card (D-14) + auto-archive + autopilot; branch prefix shown read-only (fixed viberpit/) |
-| Worktree location / policy | 1 | ◐ | repo/worktree root editable in Settings › Sessions (D-14); configurable branch prefix adopted (2026-11-06, D22b) behind a recorded-ownership guard on automatic deletion — not built yet |
+| Worktree location / policy | 1 | ✅ | repo/worktree root (D-14) and branch prefix (D-22) editable in Settings › Sessions; automatic branch deletion requires a recorded-ownership row, so no prefix can make your own branches deletable |
 | Default transcript view | 1 | ✅ |  |
 | Notification levels per event type | 1 | ◐ | quiet hours, channels, routing rules · *rejected for target* |
 | Appearance: theme, font + transcript size | 1 | ◐ | theme + widths · *rejected for target* |
@@ -219,11 +219,10 @@ Full inventories, with an evidence tag on every item:
 | 4 | Sandbox settings | 5 Settings | 1 |
 | 5 | Pop session into own window | 1 Shell & IA | 0.5 |
 | 6 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
-| 7 | Worktree location / policy | 5 Settings | 0.5 |
-| 8 | Notification levels per event type | 5 Settings | 0.5 |
-| 9 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
-| 10 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
-| 11 | Files pane: edit | 8 Code review & dev | 0.5 |
+| 7 | Notification levels per event type | 5 Settings | 0.5 |
+| 8 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 9 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 10 | Files pane: edit | 8 Code review & dev | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 
