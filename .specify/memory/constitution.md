@@ -1,28 +1,25 @@
 <!--
 SYNC IMPACT REPORT
-Version change: 1.1.0 → 1.2.0   [amendment]
-Bump rationale (MINOR): Principles I–IV and the session-model constraint generalized from Claude
-  Code alone to any native agent engine (Claude Code and OpenAI Codex). No principle is removed or
-  weakened: Principle I keeps the absolute no-fork/no-patch/no-scrape rule and adds a gated
-  allowance for experimental vendor surfaces; Principle II keeps per-process, per-account isolation
-  and adds a single-credential-authority model that preserves the same guarantee — no long-lived
-  credential off its owning host, no shared runtime home — by a different mechanism. Materially
-  expanded guidance, hence MINOR. Driven by the native OpenAI Codex integration design.
-Modified principles:
-  - I. Black-Box Integration (generalized to native agent binaries; surfaces described by role;
-    experimental surfaces gated on owner approval plus version pin, startup probe, kill switch,
-    and fail-closed behavior)
-  - II. Account = Engine-Scoped Identity (account defined as an engine-scoped identity spanning
-    an authority home and host-local runner homes; credential-authority paragraph added)
-  - III. Verify Against Reality (live smoke verification required for any native agent session)
-  - IV. Security First (scope stated as native agent tools and paid AI-agent accounts)
+Version change: 1.2.0 → 1.3.0   [amendment]
+Bump rationale (MINOR): the UI accessibility bar is raised from WCAG 2.1 AA to WCAG 2.2 AA. 2.2 AA
+  adds success criteria 2.1 AA did not require — 2.4.11 Focus Not Obscured (Minimum), 2.5.7
+  Dragging Movements, 2.5.8 Target Size (Minimum), 3.2.6 Consistent Help, 3.3.7 Redundant Entry,
+  3.3.8 Accessible Authentication (Minimum) — so a quality gate is materially expanded, hence
+  MINOR. Nothing is weakened: 2.2 retires only 4.1.1 Parsing as obsolete. No principle's meaning
+  changes. Driven by the UI E2 spec (#1579, policy concern PC-1) and the owner's ruling on it.
+Modified principles: none
 Modified sections:
-  - Technology & Architecture Constraints → Session model (PTY/xterm.js description replaced by
-    daemon-owned engine drivers emitting normalized events; stable session id preserved)
-Prior history: 1.1.0 (2026-06-19) exposure-conditional auth; 1.0.0 (2026-06-19) initial
-  ratification — all core principles and governance.
+  - Development Workflow & Quality Gates → UI standards (WCAG 2.1 AA → WCAG 2.2 AA; unobscured
+    focus and adequate target size named alongside the existing criteria)
+Prior history: 1.2.0 (2026-09-04) Principles I–IV and the session model generalized to native
+  agent engines (Claude Code + Codex); 1.1.0 (2026-06-19) exposure-conditional auth; 1.0.0
+  (2026-06-19) initial ratification — all core principles and governance.
 Added sections: none
 Removed sections: none
+Dependent documents:
+  - docs/ACCESSIBILITY.md (title, §1 Scope) and PRODUCT.md § Accessibility & Inclusion — updated
+    in #3335, merged after this amendment.
+  - UI E2 Build (#1579): AC-1 (touch targets) and AC-4 (conformance matrix) measure against 2.2 AA.
 Templates requiring updates:
   - .specify/templates/plan-template.md  — ⚠ pending (spec-kit not initialized; file absent)
   - .specify/templates/spec-template.md  — ⚠ pending (spec-kit not initialized; file absent)
@@ -178,9 +175,10 @@ component kit) are a smaller risk surface than novel, fragile, bespoke implement
 - **Phased delivery:** ship in vertical phases that each produce working, independently-testable
   software (foundation → backend → frontend → enhancements). A phase is not "done" until its tests
   pass and (for session-launching work) its live smoke passes.
-- **UI standards:** user-facing surfaces are mobile-first and meet WCAG 2.1 AA — keyboard
-  operability, sufficient contrast, semantic structure, visible focus, and `prefers-reduced-motion`
-  respected. New components ship with their tests (and stories where a visual component warrants).
+- **UI standards:** user-facing surfaces are mobile-first and meet WCAG 2.2 AA — keyboard
+  operability, sufficient contrast, semantic structure, visible focus that is not obscured,
+  adequate target size, and `prefers-reduced-motion` respected. New components ship with their
+  tests (and stories where a visual component warrants).
 - **Review:** changes are reviewed against this constitution before merge; a reviewer may block on
   any principle violation.
 
@@ -200,4 +198,4 @@ with Principles I–VII; where a spec-kit plan/spec/tasks template exists, it MU
   against Principles II (isolation), III (verification), IV (security), and V (quality gates) and
   record the result in the phase's plan or PR.
 
-**Version**: 1.2.0 | **Ratified**: 2026-06-19 | **Last Amended**: 2026-09-04
+**Version**: 1.3.0 | **Ratified**: 2026-06-19 | **Last Amended**: 2026-11-06
