@@ -1050,3 +1050,133 @@ def test_an_attach_waiting_out_the_discard_never_recreates_the_worktree(user_env
     assert res["discarded"] is True
     assert drv is None
     assert not Path(env["cwd"]).exists(), "the discarded worktree was recreated"
+
+
+# ── fix round 2 ──────────────────────────────────────────────────────────────
+
+
+def test_a_reassign_waiting_out_a_discard_never_recreates_the_worktree(user_env,
+                                                                       monkeypatch):
+    """Item 1: an account switch / rotation / recovery waiting on the discard's slot
+    must not rebuild the archived session from its stale record (which recreated the
+    removed worktree on the user's branch)."""
+    env = user_env
+    env["cfg"] = env["tmp"] / "cfg"
+    env["cfg"].mkdir()
+    started, release = _block_snapshot(monkeypatch)
+
+    async def run():
+        orch = await _orch(env)
+        stale = orch._records[SID]
+        discard = asyncio.create_task(orch.discard_worktree(SID))
+        await asyncio.to_thread(started.wait, 10)
+        switch = asyncio.create_task(orch._reassign(stale, stale.account, reason="manual"))
+        await asyncio.sleep(0.1)
+        release.set()
+        res = await discard
+        result = await switch
+        drv = orch._drivers.pop(SID, None)
+        if drv is not None:
+            await drv.aclose()
+        return res, result, drv
+
+    with patch("server.sessions.orchestrator.compose", return_value=env["cfg"]), \
+         patch("server.sessions.orchestrator.configdir"):
+        res, result, drv = asyncio.run(run())
+    assert res["discarded"] is True
+    assert result == "failed" and drv is None
+    assert not Path(env["cwd"]).exists(), "the discarded worktree was recreated"
+
+
+def test_a_repair_waiting_out_a_discard_never_recreates_the_worktree(user_env,
+                                                                     monkeypatch):
+    env = user_env
+    started, release = _block_snapshot(monkeypatch)
+
+    async def run():
+        orch = await _orch(env)
+        discard = asyncio.create_task(orch.discard_worktree(SID))
+        await asyncio.to_thread(started.wait, 10)
+        repair = asyncio.create_task(orch.repair_worktree(SID))
+        await asyncio.sleep(0.1)
+        release.set()
+        await discard
+        with pytest.raises(KeyError):
+            await repair
+
+    asyncio.run(run())
+    assert not Path(env["cwd"]).exists()
+
+
+def test_record_still_live_cross_checks_the_row(env):
+    async def run():
+        orch = await _orch(env)
+        live = await orch._record_still_live(SID)
+        async with db_session() as db:
+            (await db.get(DbSession, SID)).status = "archived"
+            await db.commit()
+        gone = await orch._record_still_live(SID)
+        kept = await orch._record_still_live(SID, allow_ended=True)
+        orch._records.pop(SID)
+        popped = await orch._record_still_live(SID, allow_ended=True)
+        return live, gone, kept, popped
+
+    live, gone, kept, popped = asyncio.run(run())
+    assert live is not None and gone is None and kept is live and popped is None
+
+
+def test_a_close_that_raises_stops_the_discard(env, monkeypatch):
+    """Item 2: bounded_wait answered True for a close that raised; that is no close."""
+    _dirty_and_commit(env)
+
+    class _Idle:
+        turn_active = drain_alive = awaiting_user_input = False
+        engine_session_id = None
+
+    async def run():
+        orch = await _orch(env)
+        orch._drivers[SID] = _Idle()
+
+        async def boom(*a, **k):
+            raise RuntimeError("aclose blew up")
+        monkeypatch.setattr(orch, "_close_automation_driver", boom)
+        with pytest.raises(wc.WorktreeControlError) as ei:
+            await orch.discard_worktree(SID)
+        return ei.value
+
+    err = asyncio.run(run())
+    assert err.code == wc.WORKTREE_DISCARD_FAILED
+    assert (Path(env["cwd"]) / "untracked.txt").exists()
+    assert _row_status() != "archived"
+
+
+def test_a_person_repair_logs_no_warning(env, caplog):
+    """Item 3: every outcome comes back to the person as a code."""
+    shutil.rmtree(env["cwd"])
+
+    async def run():
+        orch = await _orch(env)
+        await orch.repair_worktree(SID)
+
+    with caplog.at_level("INFO"):
+        asyncio.run(run())
+    assert any(r.getMessage() == "worktree.recreated" and r.levelno == logging.INFO
+               for r in caplog.records)
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_a_person_repair_whose_worktree_add_fails_logs_no_warning(env, caplog):
+    """`main` is checked out in the clone, so `git worktree add` refuses it."""
+    shutil.rmtree(env["cwd"])
+    _git("checkout", "-q", "main", cwd=env["clone"])
+
+    async def run():
+        orch = await _orch(env, branch="main")
+        await orch.repair_worktree(SID)
+
+    with caplog.at_level("INFO"), pytest.raises(wc.WorktreeControlError) as ei:
+        asyncio.run(run())
+    assert ei.value.code == wc.WORKTREE_REPAIR_FAILED
+    failed = [r for r in caplog.records if r.getMessage() == "worktree.recreate_failed"]
+    assert failed and all(r.levelno == logging.INFO for r in failed)
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]

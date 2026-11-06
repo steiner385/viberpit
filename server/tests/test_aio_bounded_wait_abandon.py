@@ -173,3 +173,16 @@ async def test_abandonment_still_costs_only_the_budget(caplog):
                                timeout=0.1, phase="wedged", cancel_grace=0.1)
         elapsed = loop.time() - start
         assert elapsed < 2.0, f"bounded_wait took {elapsed:.2f}s on a cancel-immune phase"
+
+
+@pytest.mark.asyncio
+async def test_fail_on_error_reports_a_raising_awaitable_as_not_done():
+    """D-19: a close that raised is not a close for a caller about to act on it."""
+    async def boom():
+        raise RuntimeError("close failed")
+    assert await bounded_wait(boom(), timeout=1.0, phase="boom") is True
+    assert await bounded_wait(boom(), timeout=1.0, phase="boom", fail_on_error=True) is False
+
+    async def fine():
+        return None
+    assert await bounded_wait(fine(), timeout=1.0, phase="fine", fail_on_error=True) is True

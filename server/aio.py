@@ -49,6 +49,7 @@ async def bounded_wait(
     timeout: float,
     phase: str,
     cancel_grace: float = _CANCEL_GRACE_S,
+    fail_on_error: bool = False,
 ) -> bool:
     """Await *aw* for at most ``timeout`` seconds; never hang, never raise.
 
@@ -65,7 +66,10 @@ async def bounded_wait(
     a hang into a mystery.
 
     Returns True if the awaitable completed (or failed) on its own, False if it
-    had to be cancelled or abandoned.
+    had to be cancelled or abandoned. ``fail_on_error=True`` also answers False when
+    it raised (or was cancelled from elsewhere): for a caller about to act on "it is
+    closed" — removing a worktree, handing a transcript to another host — a close
+    that blew up is not a close.
     """
     task: asyncio.Task[Any] = (
         aw if isinstance(aw, asyncio.Task) else asyncio.ensure_future(aw)
@@ -73,7 +77,7 @@ async def bounded_wait(
     done, _ = await asyncio.wait({task}, timeout=timeout)
     if done:
         _consume(task, phase)
-        return True
+        return not (fail_on_error and (task.cancelled() or task.exception() is not None))
     task.cancel()
     done, _ = await asyncio.wait({task}, timeout=cancel_grace)
     if done:

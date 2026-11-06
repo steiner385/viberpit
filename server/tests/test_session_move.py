@@ -2039,3 +2039,20 @@ async def test_a_failed_finalize_after_a_move_is_its_own_one_warning_incident(
     assert "path=/wt/viberpit/5e55a0aa" in warnings[0]
     audit = (await _audits())[-1]
     assert audit["outcome"] == "moved" and audit["finalized"] is False
+
+
+@pytest.mark.asyncio
+async def test_close_for_transfer_that_raises_fails_the_export(monkeypatch, isolated_db,
+                                                               tmp_path):
+    """D-19 review: a close that RAISED proves no more than one that overran — the
+    CLI may still be flushing the shared transcript."""
+    o = _bare(monkeypatch, host="dobby", role="primary", root=tmp_path)
+    del o._close_for_transfer                                   # the real one
+
+    class _Raises:
+        async def aclose(self):
+            raise RuntimeError("aclose failed")
+    o._teardown_driver_state = AsyncMock(return_value=_Raises())
+    with pytest.raises(sm.MoveError) as ei:
+        await o._close_for_transfer(SID)
+    assert ei.value.code == sm.MOVE_EXPORT_FAILED

@@ -410,3 +410,34 @@ def test_a_failed_forced_snapshot_stops_the_removal(wt, monkeypatch):
     monkeypatch.setattr(worktrees, "snapshot_recovery_ref", lambda *a, **k: None)
     assert worktrees.remove_worktree(wt.path, force=True, session_id=S6) is False
     assert (Path(wt.path) / "untracked.txt").read_text() == "untracked\n"
+
+
+def test_keep_branch_warning_has_a_path_free_message(repo, tmp_path, monkeypatch, caplog):
+    """The path rides in structured fields, so the error fingerprint is one per cause."""
+    import logging
+    info = _child_session_worktree(repo, tmp_path, S6)
+    _commit(Path(info.path))
+    monkeypatch.setattr(worktrees, "snapshot_branch_tip", lambda *a, **k: None)
+    with caplog.at_level(logging.WARNING):
+        assert worktrees.remove_worktree(info.path, session_id=S6)
+    rec = next(r for r in caplog.records if r.getMessage() == "worktree.keep_branch")
+    assert rec.levelno == logging.WARNING
+    assert rec.fields["reason"] == "snapshot_failed"  # type: ignore[attr-defined]
+    assert rec.fields["branch"] == info.branch  # type: ignore[attr-defined]
+    assert str(tmp_path) not in rec.getMessage()
+
+
+def test_recreate_failed_is_info_for_a_person(repo, tmp_path, caplog):
+    import logging
+    import shutil
+    _git("branch", "feature", cwd=repo)
+    info = worktrees.create_worktree(str(repo), "feature", S6, str(tmp_path))
+    shutil.rmtree(info.path)
+    with caplog.at_level(logging.INFO):
+        # `main` is checked out in the clone: `git worktree add` refuses it.
+        assert not worktrees.recreate_worktree(str(repo), info.path, "main",
+                                               person_initiated=True)
+        assert not worktrees.recreate_worktree(str(repo), info.path, "main")
+    levels = [r.levelno for r in caplog.records
+              if r.getMessage() == "worktree.recreate_failed"]
+    assert levels == [logging.INFO, logging.WARNING]

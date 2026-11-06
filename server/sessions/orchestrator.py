@@ -6761,7 +6761,7 @@ class SessionOrchestrator:
     async def _ensure_session_cwd(self, session_id: str, cwd: str, *,
                                   repo: str | None, branch: str | None,
                                   host: str | None = None,
-                                  refusal_level: int | None = None) -> bool:
+                                  person_initiated: bool = False) -> bool:
         """Make *cwd* usable for a driver build WITHOUT ever fabricating lost work.
 
         THE single gate every driver-build site routes its working directory
@@ -6782,6 +6782,9 @@ class SessionOrchestrator:
           or the row is stamped for ANOTHER host — that host's disk has the tree, and
           rebuilding a copy here is the 2026-09-07 incident itself.
         """
+        # A person's Repair (D-19) gets each outcome back as a code, so none of them is
+        # an auto-filed WARNING; a recreation on a driver build stays loud.
+        refusal_level = logging.INFO if person_initiated else None
         p = Path(cwd)
         if (p / ".git").exists():
             return True   # a present worktree (or any git checkout): never touched
@@ -6810,14 +6813,16 @@ class SessionOrchestrator:
             except ValueError:
                 clone = None
         if clone is None or not branch or not clone.is_dir() or not await asyncio.to_thread(
-                worktrees.recreate_worktree, str(clone), cwd, branch):
+                functools.partial(worktrees.recreate_worktree, str(clone), cwd, branch,
+                                  person_initiated=person_initiated)):
             self._note_worktree_missing(
                 session_id, cwd, level=refusal_level, branch=branch, repo=repo, host=host,
                 reason="branch_unavailable",
                 clone=str(clone) if clone is not None else None)
             return False
         refs = await asyncio.to_thread(worktrees.recovery_refs, str(clone), session_id)
-        log_event(log, logging.WARNING, "worktree.recreated", session_id=session_id,
+        log_event(log, logging.INFO if person_initiated else logging.WARNING,
+                  "worktree.recreated", session_id=session_id,
                   path=cwd, branch=branch, recovery_refs=refs)
         try:
             async with db_session() as db:
@@ -6837,6 +6842,35 @@ class SessionOrchestrator:
                      f" (or `git checkout {refs[0]} -- .`).")
         self._queue_prompt_preamble(session_id, note)
         return True
+
+    async def _record_still_live(self, session_id: str, *,
+                                 allow_ended: bool = False) -> SessionRecord | None:
+        """The session's CURRENT record after a caller waited out a slot (a swap, a
+        D-19 Discard, the ensure lock), or None when the session ended meanwhile.
+
+        A waiter holds the record it looked up BEFORE the wait; a close / archive /
+        Discard that ran in between pops it. Rebuilding a driver from that stale copy
+        resumes an ended session and lets ``_ensure_session_cwd`` recreate the
+        worktree a Discard just removed. One check for every such waiter
+        (``ensure_driver``, ``_reassign``): no record → None; a record whose status or
+        row is inactive → None, unless *allow_ended* (the assistant idle reap keeps an
+        ``ended`` record on purpose, and resuming it is resume-on-reopen)."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            return None
+        if allow_ended:
+            return rec
+        if rec.status in INACTIVE_SESSION_STATUSES:
+            return None
+        try:
+            row = await self._read_session_row(session_id)
+        except Exception:
+            log.debug("record_still_live: row read failed for %s", session_id,
+                      exc_info=True)
+            return rec   # the record is the in-process authority; the row is a cross-check
+        if row is not None and row.status in INACTIVE_SESSION_STATUSES:
+            return None
+        return rec
 
     # ── Worktree controls (D-19): preflight / Discard / Repair ────────────────────────
     # Run on the daemon that owns the session (per-session RPCs). The vocabulary —
@@ -6895,6 +6929,18 @@ class SessionOrchestrator:
                 or self._has_live_card(session_id)):
             return True
         return driver is not None and bool(await self._open_background_work(session_id))
+
+    async def _live_worktree_record(self, session_id: str) -> SessionRecord:
+        """The record a Discard / Repair acts on, re-read once its slot is held: a swap
+        it waited out (another Discard, say) may have ended the session, and a Repair
+        built from the stale copy would recreate the worktree that one removed. An
+        ended session is unknown here, as ``_worktree_record`` answers."""
+        rec = await self._record_still_live(session_id)
+        if rec is None:
+            exc = KeyError(f"No session with id {session_id}")
+            exc.error_data = {"code": worktree_files.SESSION_NOT_FOUND}  # type: ignore[attr-defined]
+            raise exc
+        return rec
 
     def _worktree_shared(self, session_id: str, cwd: str) -> bool:
         mine = os.path.realpath(cwd)
@@ -6980,7 +7026,7 @@ class SessionOrchestrator:
                                 identity: str, via: str | None) -> dict:
         from server.sessions import worktree_controls as wc
         async with self._worktree_control_slot(session_id, "discard"):
-            rec = self._records.get(session_id) or rec
+            rec = await self._live_worktree_record(session_id)
             if await self._worktree_control_busy(session_id, rec):
                 raise self._worktree_refusal(session_id, "discard", wc.WORKTREE_SESSION_BUSY)
             facts = await self._worktree_control_facts(rec)
@@ -7041,9 +7087,9 @@ class SessionOrchestrator:
                 if driver is not None and not await bounded_wait(
                         self._close_automation_driver(driver, session_id),
                         timeout=DRIVER_RELEASE_WAIT_S,
-                        phase=f"worktree.discard.close:{session_id}"):
+                        phase=f"worktree.discard.close:{session_id}", fail_on_error=True):
                     raise await failed(wc.WORKTREE_DISCARD_FAILED, "close",
-                                       "the CLI did not close in time")
+                                       "the CLI did not close cleanly in time")
                 await self.archive_session(session_id, archived_by="user")
             except wc.WorktreeControlError:
                 raise
@@ -7081,7 +7127,7 @@ class SessionOrchestrator:
         from server.sessions import worktree_controls as wc
         rec = self._worktree_record(session_id)
         async with self._worktree_control_slot(session_id, "repair"):
-            rec = self._records.get(session_id) or rec
+            rec = await self._live_worktree_record(session_id)
             if await self._worktree_control_busy(session_id, rec):
                 raise self._worktree_refusal(session_id, "repair", wc.WORKTREE_SESSION_BUSY)
             facts = await self._worktree_control_facts(rec)
@@ -7095,7 +7141,7 @@ class SessionOrchestrator:
             branch = getattr(rec, "branch", None)
             if not await self._ensure_session_cwd(
                     session_id, cwd, repo=getattr(rec, "repo", None), branch=branch,
-                    host=getattr(rec, "host", None), refusal_level=logging.INFO):
+                    host=getattr(rec, "host", None), person_initiated=True):
                 raise self._worktree_refusal(session_id, "repair", wc.WORKTREE_REPAIR_FAILED)
             clone_refs: list[str] = []
             if (Path(cwd) / ".git").exists():
@@ -23126,11 +23172,12 @@ class SessionOrchestrator:
         popped = await self._teardown_driver_state(session_id)
         if popped is not None and not await bounded_wait(
                 popped.aclose(), timeout=DRIVER_RELEASE_WAIT_S,
-                phase=f"move.close:{session_id}"):
+                phase=f"move.close:{session_id}", fail_on_error=True):
             # The CLI may still be flushing the shared transcript: going on would let the
-            # other host resume from a file still being written.
+            # other host resume from a file still being written. A close that RAISED
+            # proves no more than one that overran (D-19 review).
             raise sm.MoveError(sm.MOVE_EXPORT_FAILED,
-                               "The session's CLI did not close in time.")
+                               "The session's CLI did not close cleanly in time.")
 
     async def transfer_preflight(self, session_id: str) -> dict:
         """Read-only: what a move of *session_id* off this host would carry — the dirty
@@ -23874,12 +23921,8 @@ class SessionOrchestrator:
                 await self._await_driver_release(session_id, release_task)
 
             # Re-read the record: `rec` was looked up BEFORE `_ensure_lock` and the
-            # swap wait above, and a close / archive / D-19 Discard that ran meanwhile
-            # pops it. Building from the stale copy would resume an ended session and —
-            # its worktree just removed — let _ensure_session_cwd recreate it. (Not a
-            # status test: the assistant idle reap keeps an "ended" record on purpose,
-            # and resuming it is resume-on-reopen.)
-            current = self._records.get(session_id)
+            # swap wait above (see _record_still_live).
+            current = await self._record_still_live(session_id, allow_ended=True)
             if current is None:
                 log.info("ensure_driver: session %s ended while this attach waited — "
                          "not resuming it", session_id)
@@ -27965,7 +28008,16 @@ class SessionOrchestrator:
                             "earlier swap is still in flight after %.0fs; not starting "
                             "another", record.id, reason, DRIVER_SWAP_TIMEOUT_S)
                 return "failed"
-            record = self._records.get(record.id, record)
+            # The swap we waited out may have ended the session (a D-19 Discard holds
+            # this slot while it archives and removes the worktree). Rebuilding from
+            # the stale record would resume it and recreate that worktree. Nothing has
+            # been touched: "failed", like the timeout above.
+            current = await self._record_still_live(record.id)
+            if current is None:
+                log.info("reassign.session_gone session=%s reason=%s — it ended while "
+                         "this swap waited; not resuming it", record.id, reason)
+                return "failed"
+            record = current
 
         swap_done: asyncio.Future = asyncio.get_running_loop().create_future()
         self._swapping[record.id] = swap_done

@@ -49,6 +49,13 @@ from .worktree_diff import (
 
 log = logging.getLogger(__name__)
 
+
+def _log_fields(level: int, event: str, **fields: object) -> None:
+    """A structured record (the ``server.obs`` shape — ``event`` + ``fields`` extras —
+    without importing it): the message is the bare event name, so the error sink's
+    fingerprint does not change with a path or a branch name."""
+    log.log(level, event, extra={"event": event, "fields": fields})
+
 class WorktreeError(Exception):
     """Raised when a worktree could not be created."""
 
@@ -1403,7 +1410,8 @@ def snapshot_before_discard(worktree: str, session_id: str) -> list[str] | None:
         return None
 
 
-def recreate_worktree(repo_path: str, path: str, branch: str) -> bool:
+def recreate_worktree(repo_path: str, path: str, branch: str, *,
+                      person_initiated: bool = False) -> bool:
     """Re-add a missing (or EMPTY) managed worktree at *path* from its LOCAL *branch*.
 
     An empty directory is the leftover of the old unconditional ``mkdir`` (the
@@ -1436,8 +1444,12 @@ def recreate_worktree(repo_path: str, path: str, branch: str) -> bool:
         clear_stale_registration(repo_top, dest)
         r = _run(["git", "-C", repo_top, "worktree", "add", str(dest), "--", branch])
         if r.returncode != 0:
-            log.warning("worktree.recreate_failed path=%s branch=%s err=%s",
-                        dest, branch, r.stderr.strip())
+            # A person's Repair (D-19) gets the refusal back as a code: INFO, not an
+            # auto-filed WARNING. Fields are structured, so the path never splits the
+            # fingerprint.
+            _log_fields(logging.INFO if person_initiated else logging.WARNING,
+                        "worktree.recreate_failed", path=str(dest), branch=branch,
+                        err=r.stderr.strip())
             return False
         lock_worktree(repo_top, dest)
     return True
@@ -1537,8 +1549,8 @@ def remove_worktree(worktree_path: str, force: bool = False, *,
             log.info("worktree.keep_branch path=%s branch=%s reason=unpushed_unknown",
                      wt, branch)
         elif at_risk and snapshot_branch_tip(repo_top, branch, sid) is None:
-            log.warning("worktree.keep_branch path=%s branch=%s reason=snapshot_failed",
-                        wt, branch)
+            _log_fields(logging.WARNING, "worktree.keep_branch", path=wt, branch=branch,
+                        reason="snapshot_failed")
         else:
             _run(["git", "-C", repo_top, "branch", "-D", branch])
     log.info("worktree.remove path=%s branch=%s force=%s", wt, branch, force)
