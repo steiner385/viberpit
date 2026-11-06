@@ -143,6 +143,8 @@ class InProcessOrchestratorAdapter:
     async def set_pr_autofix_paused(self, *a, **k): return await _maybe_await(self._orch.set_pr_autofix_paused(*a, **k))
     async def set_auto_archive_opt_out(self, *a, **k): return await _maybe_await(self._orch.set_auto_archive_opt_out(*a, **k))
     async def dismiss_suspected_complete(self, *a, **k): return await _maybe_await(self._orch.dismiss_suspected_complete(*a, **k))
+    async def snooze_session(self, *a, **k): return await _maybe_await(self._orch.snooze_session(*a, **k))
+    async def wake_session(self, *a, **k): return await _maybe_await(self._orch.wake_session(*a, **k))
     async def list_archived(self, *a, **k): return await _maybe_await(self._orch.list_archived(*a, **k))
     async def transcript_events(self, *a, **k): return await _maybe_await(self._orch.transcript_events(*a, **k))
     async def transcript_window(self, *a, **k): return await _maybe_await(self._orch.transcript_window(*a, **k))

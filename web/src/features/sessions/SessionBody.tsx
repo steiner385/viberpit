@@ -22,6 +22,7 @@ import { CondensingProgress } from '@/features/sessions/transcript/CondensingPro
 import { PendingQuestionPanel } from '@/features/sessions/panels/PendingQuestionPanel'
 import { PendingPermissionPanel } from '@/features/sessions/panels/PendingPermissionPanel'
 import { SessionErrorBanner } from '@/features/sessions/panels/SessionErrorBanner'
+import { SnoozeBanner } from '@/features/sessions/panels/SnoozeBanner'
 import { InterruptedAskNotice } from '@/features/sessions/transcript/InterruptedAskNotice'
 import { PendingModelApprovalPanel } from '@/features/sessions/panels/PendingModelApprovalPanel'
 import { SessionAriaLive } from './SessionAriaLive'
@@ -264,6 +265,9 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
                 {/* Error banner — shared with the assistant drawer; see the component
                     for why it is transient and where the durable record lives. */}
                 <SessionErrorBanner rt={rt} />
+                {sessionRecord?.snooze && (
+                  <SnoozeBanner sessionId={sessionRecord.id} snooze={sessionRecord.snooze} />
+                )}
 
                 {/* Transcript — rotation dividers are interleaved inline by anchor turn.
                     With no turns to show, the transcript area would be blank; the

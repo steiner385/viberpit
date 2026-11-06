@@ -527,3 +527,30 @@ describe('search × filters', () => {
     // idleB matches the search but not the filter; askA/busyA the reverse.
   })
 })
+
+// ── snooze: an overlay held out like the pre-spawn rows ──────────────────────
+
+describe('snooze partition', () => {
+  const snz = (until: string | null) => ({ at: '2026-11-06T00:00:00Z', until, reason: null, by: 'user' as const })
+  const later = mk('snzLater', { status: 'waiting_input', repo: 'o/a', host: 'dobby', snooze: snz('2026-11-09T14:00:00Z') })
+  const forever = mk('snzForever', { repo: 'o/a', host: 'dobby', snooze: snz(null) })
+  const soon = mk('snzSoon', { repo: 'o/b', host: 'rocky', snooze: snz('2026-11-06T16:00:00Z') })
+
+  it('holds snoozed rows out of the grouped list, soonest wake first and indefinite last', async () => {
+    const h = await mountReady([...ALL, later, forever, soon])
+    expect(ids(h.result.current.snoozed)).toEqual(['snzSoon', 'snzLater', 'snzForever'])
+    expect(ids(h.result.current.ordering.orderedSessions)).not.toContain('snzLater')
+    expect(ids(h.result.current.ordering.allOrderedSessions)).not.toContain('snzSoon')
+    // Filters narrow the grouped list only, never the Snoozed section.
+    act(() => h.result.current.setFilters(filters({ project: 'o/b' })))
+    expect(ids(h.result.current.snoozed)).toEqual(['snzSoon', 'snzLater', 'snzForever'])
+  })
+
+  it('returns a woken session to the grouped list', async () => {
+    const h = mount({ sessions: [...ALL, later], sessionsLoading: false })
+    await waitFor(() => expect(ids(h.result.current.snoozed)).toEqual(['snzLater']))
+    h.rerender({ sessions: [...ALL, { ...later, snooze: null }], sessionsLoading: false })
+    expect(ids(h.result.current.snoozed)).toEqual([])
+    expect(ids(h.result.current.ordering.orderedSessions)).toContain('snzLater')
+  })
+})

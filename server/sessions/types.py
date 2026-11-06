@@ -198,6 +198,9 @@ class SessionRecord:
     # _persist_status on any non-stalled status. See server/sessions/usage_stall.py.
     paused_reason: str | None = None
     paused_until: datetime | None = None
+    # Snooze overlay ({at, until, reason, by} — server/sessions/snooze.py), None = awake.
+    # Unlike paused_*, no status write clears it: only a wake does. Persisted.
+    snooze: dict | None = None
     authored_branches: list[str] = field(default_factory=list)  # feature branches → multi-PR badges
     # (repo, head branch) of PRs this session shared via `share_artifact` in a repo OTHER
     # than its own (#2663). In-memory only: the bar re-learns them if the session
@@ -391,6 +394,7 @@ class SessionRecord:
             "pausedReason": self.paused_reason,
             "pausedUntil": iso_utc(self.paused_until),
             "usageStalled": is_usage_stalled(self.status, self.paused_reason),
+            "snooze": dict(self.snooze) if self.snooze else None,
             "authoredBranches": list(self.authored_branches),
             "contextUsedTokens": self.context_used_tokens,
             "contextMaxTokens": self.context_max_tokens,
@@ -472,6 +476,7 @@ class SessionRecord:
             paused_reason=d.get("pausedReason"),
             paused_until=(datetime.fromisoformat(d["pausedUntil"])
                           if d.get("pausedUntil") else None),
+            snooze=d.get("snooze") or None,
             authored_branches=list(d.get("authoredBranches") or []),
             context_used_tokens=d.get("contextUsedTokens"),
             context_max_tokens=d.get("contextMaxTokens"),

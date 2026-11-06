@@ -38,6 +38,7 @@ import { useArchivedSessions } from '@/api/hooks'
 import { SessionListControls } from '@/features/sessions/list/SessionListControls'
 import { PendingApprovalSection } from '@/features/sessions/list/PendingApprovalSection'
 import { QueuedSection } from '@/features/sessions/list/QueuedSection'
+import { SnoozedSection } from '@/features/sessions/list/SnoozedSection'
 import { SessionList } from '@/features/sessions/list/SessionList'
 import { AdoptPanel } from '@/features/sessions/list/AdoptPanel'
 import { DaemonHealthIndicator } from '@/shell/DaemonHealthIndicator'
@@ -256,7 +257,7 @@ function LiveScopeBody({
   searchPlaceholder,
   searchAriaLabel,
 }: LiveScopeBodyProps) {
-  const { sessions, queued, pendingApproval, search, ordering, nav } = state
+  const { sessions, queued, pendingApproval, snoozed, search, ordering, nav } = state
   const { filters, setFilters, filterOptions } = state
   // One source of truth for "is anything narrowing the list" — `listFilters`'
   // own predicate, never a re-derived `status !== null || …` here.
@@ -323,6 +324,9 @@ function LiveScopeBody({
         onExpand={ordering.expandGroup}
         onCollapse={ordering.collapseGroup}
       />
+      {/* Below the list, collapsed: snoozed rows are out of sight on purpose.
+          Like the pre-spawn sections, not narrowed by filters or search. */}
+      <SnoozedSection sessions={snoozed} onOpen={onOpen} />
       {adoptionEnabled && <AdoptPanel />}
     </ScopeBody>
   )

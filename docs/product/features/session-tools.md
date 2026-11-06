@@ -40,7 +40,7 @@ declaration the session made on purpose.
 the operators who triage `session_feedback` rows into the backlog.
 
 **Desired outcome** — every coding session mounts an in-process `viberpit` MCP server with up to
-thirteen tools (plus the nine roadmap tools: five for triage and four for release milestones,
+fourteen tools (plus the nine roadmap tools: five for triage and four for release milestones,
 below):
 
 | Tool | Class | Args | What it does |
@@ -53,6 +53,7 @@ below):
 | `set_hold` | SIGNAL | kind (`evidence`\|`stronger_model`\|null), reason, ref? | Holds (or releases) the issue this session was dispatched for, on the roadmap ladder (spec 2026-09-18 §8). Limited to the two agent-settable kinds — see below. |
 | `propose_decision` | SIGNAL | options (2–6 × {key, label, detail?}), recommended_key, rationale | Parks this session's issue on a PRODUCT DECISION only a person can take: draft the options, name the one you recommend, say why. The person picks one in the Inbox (spec 2026-09-18 §6). |
 | `rename_self` | SIGNAL | name (3–60 chars) | Retitles THIS session on the board (the same write as the user's `PATCH /api/sessions/{id}`; pins `name_is_auto=False`). For when the scope has drifted from the dispatch name (#3214). Rendered as an ordinary ToolCall card. |
+| `snooze` | SIGNAL | until (ISO-8601, 5 min–30 days), reason | Puts THIS session to sleep while it waits on a distant event: it moves to the Snoozed section, autopilot and auto-archive leave it alone, and its turn ends at `waiting_external` with no finishing signal. At `until` the owning daemon sends a `<snooze-wake>` prompt quoting the reason; a person's prompt wakes it sooner. People snooze from the card (`POST/DELETE /api/sessions/{id}/snooze`). Rendered as an ordinary ToolCall card. See the [design](../../superpowers/specs/2026-11-06-session-snooze-design.md). |
 | `share_artifact` | SIGNAL | kind (`url`\|`path`\|`image`), value, label, note? | Puts a deliverable in front of the user as an always-visible transcript card: an http(s) URL, an absolute path on the session host (copyable chip), or an image on the session host, which the handler ingests into the attachment store and the card renders inline. See below. |
 | `request_model` | SIGNAL | model (`haiku`\|`sonnet`\|`opus`\|`fable`), reason | Asks to move to a different model tier. |
 | `dispatch_session` | MUTATION | name, prompt, model?, permission_mode? | Starts a linked **child session** (same repo, own worktree, same owner) the user can steer like any session; the parent is notified by a `<child-session-notification>` prompt when the child stops. Claude only; gated by `VIBERPIT_CHILD_SESSIONS_ENABLED`, capped by `VIBERPIT_CHILD_SESSION_CAP` / `_MAX_DEPTH`. Raises a permission card in interactive mode. See [Child sessions](../guides/child-sessions.md). |

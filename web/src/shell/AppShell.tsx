@@ -20,7 +20,7 @@ import type { SessionListColumnProps } from '@/features/sessions/SessionListColu
 import { useRoadmapWorkspace } from '@/features/roadmap/useRoadmapWorkspace'
 import { useDeliveryWorkspace } from '@/features/delivery/useDeliveryWorkspace'
 import { isPendingSessionId } from '@/lib/pendingSessions'
-import { isPreSpawnStatus } from '@/api/types'
+import { isPreSpawnStatus, isSnoozed } from '@/api/types'
 import { setServerSttEnabled } from '@/lib/sttCapability'
 import { focusAllowsTranscriptSearch, textEntryClaimsKey } from '@/lib/detachKeyGuard'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
@@ -718,11 +718,11 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
    * opens beside a list that does not contain it, and the ‹ › chevrons and
    * Alt+[ ] have no place to step from. A pre-spawn session (queued, pending
    * approval) is exempt: it is never in the ordered list, and its own section
-   * shows it whatever the filters say.
+   * shows it whatever the filters say. So is a snoozed one (SnoozedSection).
    */
   const openFromPalette = (id: string, inScope: 'live' | 'background') => {
     const session = list.sessions.find((s) => s.id === id)
-    if (inScope === 'live' && session && !isPreSpawnStatus(session.status) && !orderedIds.includes(id)) {
+    if (inScope === 'live' && session && !isPreSpawnStatus(session.status) && !isSnoozed(session) && !orderedIds.includes(id)) {
       if (isFiltered(list.filters) || list.search.query !== '') {
         list.setFilters(NO_FILTERS)
         list.search.setQuery('')

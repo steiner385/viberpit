@@ -56,6 +56,9 @@ class SessionToolContext:
     #: ``note_recheck(iso)``: bound to the orchestrator's durable record of a hand-back's
     #: ``recheck_at`` (#3216), read by the Backlog Runner. None when unwired (tests).
     note_recheck: Callable[[str], Awaitable[None]] | None = None
+    #: ``snooze(snooze_dict)``: bound to ``snooze_session(session_id, …, identity=owner)``;
+    #: the `snooze` handler's ONE call. None when unwired (tests).
+    snooze: Callable[[dict], Awaitable[None]] | None = None
 
 
 def context_snapshot(ctx: SessionToolContext) -> dict[str, Any]:

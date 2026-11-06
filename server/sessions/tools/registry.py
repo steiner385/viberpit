@@ -67,6 +67,13 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     # drifted can retitle itself without a card nobody is there to answer (#3214). Absent
     # from TURN_SIGNAL_NAMES: the ordinary ToolCall card is the transcript's record.
     ToolSpec("rename_self", ToolClass.SIGNAL, "Rename this session"),
+    # SIGNAL: it moves the session into the Snoozed section and arms its wake — a
+    # state the user sees, set without a card so an unattended session waiting on a
+    # distant event can sleep instead of handing back (session-snooze design). Absent
+    # from TURN_SIGNAL_NAMES: the ordinary ToolCall card is the transcript's record;
+    # the turn then ends with no finishing signal and lands at `waiting_external`.
+    ToolSpec("snooze", ToolClass.SIGNAL, "Snooze this session until a time",
+             idempotent=False),
     # MUTATION: it creates a session the user sees on the board. Gated on its
     # annotation by the permission layer, exactly like the assistant drawer's
     # create_session: our own MUTATION tools raise a card in EVERY session mode
@@ -141,6 +148,7 @@ def mounted_signal_names(*, signalling_tools: bool, self_model_switch: bool) -> 
     ``hand_back`` for the half that is missing. ``share_artifact`` rides
     unconditionally too: every session that can finish has deliverables to show.
     ``rename_self`` rides with it: any session whose scope drifts can retitle itself.
+    ``snooze`` rides with them too: any session can be left waiting on a distant event.
     ``roadmap_milestone_note`` rides unconditionally too: it acts as the session, so it
     needs no owner and no engine capability.
 
@@ -150,7 +158,7 @@ def mounted_signal_names(*, signalling_tools: bool, self_model_switch: bool) -> 
     if not signalling_tools:
         return ()
     names = ["mark_complete", "mark_no_pr", "hand_back", "set_hold", "propose_decision",
-             "share_artifact", "rename_self", "roadmap_milestone_note"]
+             "share_artifact", "rename_self", "snooze", "roadmap_milestone_note"]
     if self_model_switch:
         names.append("request_model")
     return tuple(names)

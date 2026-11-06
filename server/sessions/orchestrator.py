@@ -2097,6 +2097,7 @@ class SessionOrchestrator:
         self._archive_limit_task: asyncio.Task | None = None
         self._janitor_task: asyncio.Task | None = None
         self._assistant_reap_task: asyncio.Task | None = None
+        self._snooze_wake_task: asyncio.Task | None = None
         self._pr_branch_task: asyncio.Task | None = None
         # Primary-lease state (#852): the heartbeat task and the fence acquired at
         # start(). None on workers and on an orchestrator that never start()ed.
@@ -2358,7 +2359,8 @@ class SessionOrchestrator:
             # recorded when the user allowed its card (draft_hold_guard).
             draft_ready_granted=self._ready_grants(session_id).has,
             rename=functools.partial(self.rename_session, session_id),
-            note_recheck=functools.partial(self._note_hand_back_recheck, session_id))
+            note_recheck=functools.partial(self._note_hand_back_recheck, session_id),
+            snooze=functools.partial(self.snooze_session, session_id, identity=identity))
         if selected is AgentEngine.CODEX:
             from server.sessions.tools.codex import CodexSessionTools
             self.register_overlay(session_id, CodexSessionTools.build(ctx))
@@ -3244,6 +3246,11 @@ class SessionOrchestrator:
         self._assistant_reap_task = asyncio.create_task(
             self._assistant_reap_loop(interval=60.0), name="assistant-reap-loop"
         )
+        # Snooze wake sweep: per host, like the reap above — each daemon wakes the
+        # snoozed sessions whose records it owns.
+        self._snooze_wake_task = asyncio.create_task(
+            self._snooze_wake_loop(interval=60.0), name="snooze-wake-loop"
+        )
         # Assistance and resume recovery act only on this host's sessions. Workers
         # need periodic retries even when a deference skip emits no status event.
         self._autopilot_task = asyncio.create_task(
@@ -4017,7 +4024,7 @@ class SessionOrchestrator:
                      "_deploy_monitor_task", "_decision_escalation_task",
                      "_needs_you_hygiene_task", "_milestones_refresh_task",
                      "_archaudit_task", "_sweep_task",
-                     "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
+                     "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_snooze_wake_task", "_recurring_task",
                      "_lease_task", "_session_lease_task", "_hb_task", "_drain_timer"):
             # Default None: stop() must be safe on an orchestrator that never
             # start()ed (tests build one via __new__/without start).
@@ -7454,6 +7461,9 @@ class SessionOrchestrator:
         if completed_turn:
             from .completion import strip_markers
             parked, snapshot = await self._parked_with_background_work(session_id)
+            # A snoozed session (its own `snooze` call, or a person's) that finishes a
+            # turn is waiting on its wake, not on the user (session-snooze design).
+            parked = parked or self._is_snoozed(session_id)
             if parked:
                 background_work = snapshot
                 # A parked `done` turn normally reads "Waiting…". But if the turn handed
@@ -7823,6 +7833,9 @@ class SessionOrchestrator:
             return
         # A human unarchived this session → honor the sticky opt-out and never re-archive it.
         if getattr(rec, "auto_archive_opt_out_reason", None):
+            return
+        # Snoozed = "not finished, don't archive" (session-snooze design).
+        if getattr(rec, "snooze", None):
             return
         if session_id in self._auto_archiving:
             return
@@ -8431,7 +8444,12 @@ class SessionOrchestrator:
         Never raises. A failed read reports "not parked": leaving a session pinned on
         "Waiting…" because one RPC timed out is the worse failure — the next turn-end
         asks again, while a stuck overlay needs a restart to clear.
+
+        A snoozed session is parked on either engine: its snooze is an armed wakeup
+        that ViberPit owns rather than the CLI.
         """
+        if self._is_snoozed(session_id):
+            return True
         if self._engine_of(session_id) is AgentEngine.CLAUDE_CODE:
             from .background_tasks import is_parked
             path = await asyncio.to_thread(self.transcript_path, session_id)
@@ -16564,6 +16582,9 @@ class SessionOrchestrator:
             if getattr(rec, "autopilot_paused", False):
                 withheld_reasons[sid] = "paused"
                 continue
+            if getattr(rec, "snooze", None):
+                withheld_reasons[sid] = "snoozed"
+                continue
             if repos and rec.repo not in repos:
                 continue
             out.append(sid)
@@ -20211,6 +20232,7 @@ class SessionOrchestrator:
             owner_identity=getattr(row, "owner_identity", None),
             paused_reason=getattr(row, "paused_reason", None),
             paused_until=getattr(row, "paused_until", None),
+            snooze=getattr(row, "snooze", None) or None,
         )
         fields.update(overrides)
         return SessionRecord(**fields)
@@ -27995,6 +28017,121 @@ class SessionOrchestrator:
                 sa_update(DbSession).where(DbSession.id == session_id)
                 .values(auto_archive_opt_out_reason=reason)
             )
+
+    # -- Session snooze (docs/superpowers/specs/2026-11-06-session-snooze-design.md) --
+    # The rules (validation, due-ness, the wake prompt) live in `snooze.py`; callers
+    # build the snooze dict there, so what crosses the RPC is a JSON-scalar dict.
+
+    def _is_snoozed(self, session_id: str) -> bool:
+        # getattr: harnesses build the orchestrator via __new__, and the parked checks
+        # that call this promise never to raise.
+        rec = getattr(self, "_records", {}).get(session_id)
+        return bool(rec is not None and getattr(rec, "snooze", None))
+
+    async def _write_snooze(self, session_id: str, snooze: dict | None) -> None:
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.snooze = snooze
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                             .values(snooze=snooze))
+
+    async def snooze_session(self, session_id: str, snooze: dict,
+                             identity: str = SYSTEM_IDENTITY) -> None:
+        """Snooze *session_id* with a snooze built by ``snooze.build_snooze`` (the caller
+        validated it). Replaces any snooze already set. KeyError for an unknown session."""
+        if session_id not in self._records:
+            raise KeyError(session_id)
+        await self._write_snooze(session_id, dict(snooze))
+        log.info("snooze.set session=%s by=%s until=%s", session_id, snooze.get("by"),
+                 snooze.get("until"))
+        async with db_session() as db:
+            await record_audit(db, "session.snooze", identity,
+                               {"session_id": session_id, **snooze},
+                               via="session" if snooze.get("by") == "session" else None)
+
+    async def wake_session(self, session_id: str, *, cause: str = "user",
+                           identity: str = SYSTEM_IDENTITY) -> bool:
+        """End *session_id*'s snooze. False when it was not snoozed.
+
+        *cause*: ``user`` (Wake button), ``prompt`` (a person prompted it) or ``timer``
+        (the wake loop). A session's OWN snooze is ended with the ``<snooze-wake>``
+        prompt it asked for — except on ``prompt``, where the person's message is the
+        wake. The snooze is cleared BEFORE that prompt is sent, so the turn it starts
+        never ends parked on it. If a timer wake cannot deliver it during a deploy
+        drain, the snooze is restored for the next tick; any other failure leaves the
+        session awake and tells the person, rather than retrying forever."""
+        from .snooze import wake_prompt
+        rec = self._records.get(session_id)
+        snooze = getattr(rec, "snooze", None) if rec is not None else None
+        if not snooze:
+            return False
+        await self._write_snooze(session_id, None)
+        delivered: str | None = None
+        if snooze.get("by") == "session" and cause != "prompt":
+            drv = await self.ensure_driver(session_id, SYSTEM_IDENTITY)
+            delivered = ("no_driver" if drv is None else
+                         await self.send_prompt(session_id, wake_prompt(snooze), replayable=False))
+            if delivered == "draining" and cause == "timer":
+                log.info("snooze.wake_deferred_for_drain session=%s", session_id)
+                await self._write_snooze(session_id, snooze)
+                return False
+            if delivered != "sent":
+                log.warning("snooze.wake_prompt_undelivered session=%s result=%s",
+                            session_id, delivered)
+        log.info("snooze.woken session=%s cause=%s by=%s", session_id, cause, snooze.get("by"))
+        async with db_session() as db:
+            await record_audit(db, "session.wake", identity,
+                               {"session_id": session_id, "cause": cause,
+                                "by": snooze.get("by"), "reason": snooze.get("reason"),
+                                "promptResult": delivered})
+        # A timer ending a PERSON's snooze is the "it's back" moment; an undelivered
+        # wake prompt is a session that could not resume on its own. Both need a person.
+        if cause == "timer" and (snooze.get("by") == "user" or delivered not in (None, "sent")):
+            name = getattr(rec, "name", None) or session_id
+            body = (f"{name}: snooze ended" + (f" — {snooze['reason']}" if snooze.get("reason") else "")
+                    if delivered in (None, "sent") else
+                    f"{name}: snooze ended but the session could not be resumed — open it")
+            await push_mod.notify_event(
+                "needs_input", f"{brand.NAME} — snooze ended", body,
+                repo=getattr(rec, "repo", None), account=getattr(rec, "account", None),
+                automation=getattr(rec, "origin", None), session_id=session_id,
+                url=f"/session/{session_id}", orch=self)
+        return True
+
+    async def _wake_due_snoozes_once(self, now: datetime | None = None) -> int:
+        """Wake every snooze on THIS daemon's records whose time has come. A snooze on
+        a session that has since ended or been archived is dropped without a wake."""
+        from datetime import datetime, timezone
+
+        from .snooze import UNSNOOZABLE_STATUSES, is_due
+        now = now or datetime.now(timezone.utc)
+        woken = 0
+        for sid, rec in list(self._records.items()):
+            snooze = getattr(rec, "snooze", None)
+            if not snooze:
+                continue
+            if rec.status in UNSNOOZABLE_STATUSES:
+                await self._write_snooze(sid, None)
+                continue
+            if is_due(snooze, now):
+                try:
+                    if await self.wake_session(sid, cause="timer"):
+                        woken += 1
+                except Exception:  # noqa: BLE001 - one bad wake must not stall the rest
+                    log.warning("snooze.wake_failed session=%s", sid, exc_info=True)
+        return woken
+
+    async def _snooze_wake_loop(self, interval: float = 60.0) -> None:
+        """Per-host sweep (each daemon wakes the sessions it owns), shaped like
+        _assistant_reap_loop: sleep, sweep, log and survive a failed tick."""
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._wake_due_snoozes_once()
+            except Exception:
+                log.exception("snooze-wake: sweep failed")
 
     def _is_stranded_dead_driver(self, session_id: str, driver: AgentDriver) -> bool:
         """True when *driver*'s SDK stream is dead, no swap of the session is running,

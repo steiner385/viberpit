@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Archive, RotateCcw, Shuffle } from 'lucide-react'
-import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useSetAutoArchiveOptOut, useResolveSuspectedComplete, useBulkArchiveSessions, useResumeInterrupted, useRotateStalled, useMarkSessionViewed, useMarkSessionUnread } from '@/api/hooks'
+import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useSetAutoArchiveOptOut, useSnoozeSession, useResolveSuspectedComplete, useBulkArchiveSessions, useResumeInterrupted, useRotateStalled, useMarkSessionViewed, useMarkSessionUnread } from '@/api/hooks'
 import { SessionCard } from './SessionCard'
 import { GroupedList } from '@/ui/list/GroupedList'
 import { EmptyState } from '@/ui/EmptyState'
@@ -71,6 +71,7 @@ export function SessionList({
   const genSuggestions = useGenerateSuggestions()
   const setAutopilot = useSetAutopilotPaused()
   const setAutoArchive = useSetAutoArchiveOptOut()
+  const snooze = useSnoozeSession()
   const resolveSuspected = useResolveSuspectedComplete()
   const markViewed = useMarkSessionViewed()
   const markUnread = useMarkSessionUnread()
@@ -189,6 +190,7 @@ export function SessionList({
         onFixPr={(id, number) => fixPr.mutate({ id, number })}
         onToggleAutopilot={(id, paused) => setAutopilot.mutate({ id, paused })}
         onToggleAutoArchive={(id, optedOut) => setAutoArchive.mutate({ id, optedOut })}
+        onSnooze={(id, until) => snooze.mutate({ id, until })}
         onResolveSuspectedComplete={(id, decision) => resolveSuspected.mutate({ id, decision })}
         onSetUnread={(id, unread) => (unread ? markUnread : markViewed).mutate(id)}
       />

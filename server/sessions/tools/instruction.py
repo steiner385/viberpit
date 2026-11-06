@@ -86,6 +86,9 @@ _BLURBS: dict[str, str] = {
                        "collapsed tool result."),
     "rename_self": ("this session's scope has changed and its board title no longer "
                        "says what it is doing."),
+    "snooze": ("the work is waiting on a distant event (a merge, a deploy soak, a date) "
+               "and there is nothing to do until then: sleep until a time, then end the "
+               "turn with no other signal; a prompt wakes you."),
     "request_model": "you want to run the rest of the work on a different model tier.",
     "dispatch_session": "you need a linked child session the user can steer independently.",
     "reply_to_child": ("a child session handed back or stopped and you can answer, "

@@ -281,6 +281,10 @@ class Session(Base):
     # so clearing via None persists SQL NULL. Nullable so init_db backfills without a migration.
     archive_context: Mapped[dict | None] = mapped_column(
         JSON(none_as_null=True), nullable=True, default=None)
+    # Session snooze, an overlay on any status: {at, until, reason, by} (see
+    # server/sessions/snooze.py), NULL = awake. none_as_null so a wake persists SQL NULL.
+    snooze: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None)
     # True once the user manually pinned the account: usage-ceiling rotation skips
     # the session (it goes 'limited' at the ceiling instead). Hard 401/429 recovery
     # still rotates and clears the pin. Nullable for the same backfill reason.

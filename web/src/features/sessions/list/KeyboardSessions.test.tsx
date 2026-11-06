@@ -66,6 +66,8 @@ vi.mock('@/api/hooks', () => ({
   useUpdateSettings: vi.fn(),
   useSetAutopilotPaused: () => ({ mutate: vi.fn() }),
   useSetAutoArchiveOptOut: () => ({ mutate: vi.fn() }),
+  useSnoozeSession: () => ({ mutate: vi.fn() }),
+  useWakeSession: () => ({ mutate: vi.fn(), isPending: false, variables: undefined }),
   useResolveSuspectedComplete: () => ({ mutate: vi.fn() }),
   useMarkSessionViewed: () => ({ mutate: vi.fn() }),
   useMarkSessionUnread: () => ({ mutate: vi.fn() }),

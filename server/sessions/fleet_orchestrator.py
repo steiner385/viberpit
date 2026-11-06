@@ -207,6 +207,8 @@ _PER_SESSION: frozenset[str] = frozenset({
     # owning host's.
     "set_pr_autofix_paused",
     "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
+    # Session snooze: the live record mirror and the wake prompt are the owning host's.
+    "snooze_session", "wake_session",
     "stop_subagent", "mcp_status_for", "mcp_reconnect", "mcp_toggle",
     # The diff reads the session's worktree, which lives on its owning host.
     "session_diff",
@@ -276,6 +278,7 @@ _MOVE_BLOCKED: frozenset[str] = frozenset({
     # Live-record writes on the source host: landed mid-move, they would be lost with
     # the source's record (a worker forgets it) or race the target's import.
     "rename_session", "set_pr_autofix_paused", "set_auto_archive_opt_out",
+    "snooze_session", "wake_session",
     "dismiss_suspected_complete", "interrupt", "stop_subagent",
     # D-19: removing or recreating the worktree a move is carrying.
     "discard_worktree", "repair_worktree",

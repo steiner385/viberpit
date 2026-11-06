@@ -491,6 +491,38 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
         await ctx.rename(name)
         return {"name": name}
 
+    @spec_tool("snooze",
+               "Put THIS session to sleep until a time, because the work is waiting on a "
+               "distant event — a PR to merge, a deploy to soak, a vendor reply, a date — "
+               "and there is nothing useful to do until then. The session leaves the "
+               "user's live list for a Snoozed section, nobody is alerted, and automation "
+               "leaves it alone. At `until` you receive a <snooze-wake> prompt quoting "
+               "your reason: check whether the event happened, then continue, snooze "
+               "again, or hand_back. A person may wake you sooner by prompting you. "
+               "until: ISO-8601 time, 5 minutes to 30 days from now; for an event with "
+               "no known time, pick a sensible re-check interval rather than the "
+               "maximum. reason: one sentence naming what you are waiting for and what "
+               "to check on waking — it is shown to the user and handed back to you. "
+               "After a successful call, end your turn: no mark_complete, mark_no_pr or "
+               "hand_back. Never snooze to avoid a question only the user can answer "
+               "(that is hand_back) or work you could do now.",
+               {"type": "object",
+                "properties": {"until": {"type": "string"}, "reason": {"type": "string"}},
+                "required": ["until", "reason"]})
+    @guarded
+    async def snooze(args: dict[str, Any]) -> Any:
+        from server.sessions.snooze import SnoozeError, build_snooze
+        try:
+            parsed = build_snooze(until=args.get("until"), reason=args.get("reason"),
+                                  by="session")
+        except SnoozeError as e:
+            raise ToolArgError(str(e)) from e
+        if ctx.snooze is None:
+            raise ToolArgError("snooze is unavailable in this session")
+        await ctx.snooze(parsed)
+        return {"snoozedUntil": parsed["until"], "reason": parsed["reason"],
+                "next": "end your turn now, with no mark_complete, mark_no_pr or hand_back"}
+
     @spec_tool("share_artifact",
                "Put a link, URL, local path or image IN FRONT OF THE USER as an "
                "always-visible card in the session transcript. Use it for every "
@@ -589,6 +621,7 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "propose_decision": propose_decision, "dispatch_session": dispatch_session,
                "reply_to_child": reply_to_child,
                "share_artifact": share_artifact, "rename_self": rename_self,
+               "snooze": snooze,
                "request_draft_ready": request_draft_ready}
     from .roadmap import build_roadmap_tools
     by_name.update(build_roadmap_tools(ctx, spec_tool, guarded))
