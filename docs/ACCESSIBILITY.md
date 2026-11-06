@@ -1,8 +1,9 @@
-# Accessibility (WCAG 2.1 AA)
+# Accessibility (WCAG 2.2 AA)
 
 ## 1. Scope
 
-Every page and every shared primitive targets **WCAG 2.1 Level AA** in full. There is no
+Every page and every shared primitive targets **WCAG 2.2 Level AA** in full (constitution
+§ Development Workflow & Quality Gates, "UI standards"). There is no
 partial-conformance surface: the terminal exception this document used to carry is retired (§7) —
 there is no raw-PTY terminal in the tree, only the WebSocket-bridged transcript view, which is a
 normal page under the same contract as everything else.

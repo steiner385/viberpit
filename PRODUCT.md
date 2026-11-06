@@ -153,7 +153,7 @@ Owner-approved, from `docs/product/guides/viberpit-rebrand.md` § Visual identit
 
 ## Accessibility & Inclusion
 
-Every page and shared component targets **WCAG 2.1 AA in full, no exceptions**
+Every page and shared component targets **WCAG 2.2 AA in full, no exceptions**
 (`docs/ACCESSIBILITY.md`): landmarks and live regions per shell region, `jest-axe` in the unit
 tests, keyboard-reachable everything. Touch targets meet **WCAG 2.2 AA 2.5.8** (44 px) on coarse
 pointers (`web/e2e/touch-targets.spec.ts`). `prefers-reduced-motion` is honoured across the shell
