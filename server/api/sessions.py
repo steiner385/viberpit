@@ -2309,12 +2309,14 @@ async def session_recovery_refs(
     request: Request,
     _identity: str = Depends(current_identity),
 ) -> dict:
-    """``{refs: [{ref, reason, sha, createdAt}], restoreCommand}`` — the session's
-    recovery snapshots (D-21), newest first, live or archived, read from its clone on
-    the daemon that owns it. Only refs named ``<utc-ts>-<reason>`` in safe characters
-    are listed, so ``reason`` and ``createdAt`` (ISO 8601 UTC) are always set;
-    ``restoreCommand`` (shell-quoted) restores the newest ref, or is null with no refs. No repo or no clone is 200 with no refs. Read-only: identity
-    only, no audit row. Unknown session 404; an old daemon 409 ``daemon_outdated``."""
+    """``{refs: [{ref, reason, sha, createdAt, restoreCommand}], restoreCommand}`` —
+    the session's recovery snapshots (D-21), newest first, live or archived, read from
+    its clone on the daemon that owns it. Only refs named ``<utc-ts>-<reason>`` in safe
+    characters are listed, so ``reason`` and ``createdAt`` (ISO 8601 UTC) are always
+    set. Each entry's ``restoreCommand`` (shell-quoted) restores that ref; the top-level
+    one restores the newest, or is null with no refs. No repo or no clone is 200 with
+    no refs. Read-only: identity only, no audit row. Unknown session 404; an old daemon
+    409 ``daemon_outdated``."""
     try:
         return await _get_orchestrator(request).session_recovery_refs(session_id)
     except KeyError:

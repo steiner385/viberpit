@@ -645,7 +645,8 @@ def _recovery_refs_wire(session_id: str, cwd: str, repo: str | None, root: str) 
     entries = entries or []
     return {
         "refs": [{"ref": e.ref, "reason": e.reason, "sha": e.sha,
-                  "createdAt": e.created_at.isoformat()} for e in entries],
+                  "createdAt": e.created_at.isoformat(),
+                  "restoreCommand": worktrees.restore_command(e.ref)} for e in entries],
         "restoreCommand": worktrees.restore_command(entries[0].ref) if entries else None,
     }
 
@@ -22448,9 +22449,9 @@ class SessionOrchestrator:
                                        regex=regex, limit=limit)
 
     async def session_recovery_refs(self, session_id: str) -> dict:
-        """``{refs: [{ref, reason, sha, createdAt}], restoreCommand}`` — the recovery
-        refs kept for this session (D-21), newest first; ``restoreCommand`` restores the
-        newest, or is None. Works for a live session and for an archived one whose
+        """``{refs: [{ref, reason, sha, createdAt, restoreCommand}], restoreCommand}`` —
+        the recovery refs kept for this session (D-21), newest first; each entry's
+        ``restoreCommand`` restores that ref, the top-level one the newest (or None). Works for a live session and for an archived one whose
         worktree is gone: the refs live in the clone's common git dir, read from the
         worktree while it is present, else from ``clone_path(root, repo)`` on this — the
         owning — host; no repo or no clone answers no refs. Keyed on the session's own

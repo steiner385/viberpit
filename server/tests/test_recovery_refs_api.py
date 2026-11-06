@@ -120,7 +120,10 @@ def test_a_live_session_lists_its_refs_newest_first_with_the_newest_restore(env)
     created = [datetime.fromisoformat(r["createdAt"]) for r in out["refs"]]
     assert created[0] >= created[1]
     assert out["restoreCommand"] == worktrees.restore_command(second)
-    assert set(out["refs"][0]) == {"ref", "reason", "sha", "createdAt"}
+    assert [r["restoreCommand"] for r in out["refs"]] == [
+        f"git restore --source={second} --worktree --staged -- . && git reset",
+        f"git restore --source={first} --worktree --staged -- . && git reset"]
+    assert set(out["refs"][0]) == {"ref", "reason", "sha", "createdAt", "restoreCommand"}
 
 
 def test_an_archived_session_whose_worktree_is_gone_lists_refs_through_the_clone(env):
@@ -244,6 +247,32 @@ def test_an_unknown_session_is_a_key_error_marked_as_an_expected_refusal(env):
     with pytest.raises(KeyError) as ei:
         asyncio.run(run())
     assert ei.value.error_data == {"code": worktree_files.SESSION_NOT_FOUND}  # type: ignore[attr-defined]
+
+
+def test_every_entrys_restore_command_is_built_by_restore_command_and_quoted(env, monkeypatch):
+    """Each entry's command comes from ``worktrees.restore_command`` for THAT ref, so
+    it is shell-quoted whenever the ref would need it. (The listing filter already
+    keeps such names out; this pins the per-entry path on its own.)"""
+    import shlex
+    from datetime import timezone
+    when = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
+    odd = worktrees.RecoveryRef(ref="refs/viberpit/recovery/abcd1234/a b;$(x)", sha="a" * 40,
+                                reason="drain", created_at=when)
+    plain = worktrees.RecoveryRef(ref="refs/viberpit/recovery/abcd1234/p", sha="b" * 40,
+                                  reason="delete", created_at=when)
+    monkeypatch.setattr(worktrees, "recovery_ref_entries", lambda *_a: [odd, plain])
+
+    async def run():
+        orch = await _orch(env, _row(SID, cwd=env["cwd"]))
+        return await orch.session_recovery_refs(SID)
+
+    out = asyncio.run(run())
+    first, second = out["refs"]
+    assert first["restoreCommand"] == worktrees.restore_command(odd.ref)
+    assert f"--source={shlex.quote(odd.ref)} " in first["restoreCommand"]
+    assert second["restoreCommand"] == (
+        f"git restore --source={plain.ref} --worktree --staged -- . && git reset")
+    assert out["restoreCommand"] == first["restoreCommand"]
 
 
 def test_the_read_writes_nothing(env):
