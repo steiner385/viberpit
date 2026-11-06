@@ -172,11 +172,13 @@ export function appSettings(over: Partial<AppSettings> = {}): AppSettings {
     assistantEnabled: null,
     assistantModel: null,
     assistantOperatorTools: null,
+    branchPrefix: null,
     acceptedPermissionModes: ['interactive', 'auto', 'allowlist', 'acceptEdits', 'full-auto', 'bypassPermissions'],
     effectiveDefaults: {
       repoRoot: '/home/user/GitHub', archiveHome: null,
       modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable',
       globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] },
+      branchPrefix: 'viberpit/',
     },
     managed: [],
     about: { gitSha: null, hostName: 'test-host' },

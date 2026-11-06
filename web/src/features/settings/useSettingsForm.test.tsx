@@ -245,6 +245,9 @@ describe('messageOf', () => {
       new ApiRequestError(409, { detail: { code: 'archive_move_failed', moved: 2, failed: 1, total: 3 } }),
       '2 of 3 archived sessions were moved before the copy failed; the path was not changed. '
         + 'Move the remaining files by hand or try again.'],
+    ['a refused branch prefix is its reason (D-22)',
+      new ApiRequestError(400, { detail: { code: 'BRANCH_PREFIX_INVALID', reason: 'feature/ is a common branch namespace; pick one of your own.' } }),
+      'feature/ is a common branch namespace; pick one of your own.'],
     ['an unrecognised object detail falls back to the status',
       new ApiRequestError(500, { detail: { code: 'boom' } }),
       'Request failed (500)'],

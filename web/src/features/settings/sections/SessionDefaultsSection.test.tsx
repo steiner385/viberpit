@@ -18,7 +18,8 @@ import * as hooks from '@/api/hooks'
 import type { AppSettings } from '@/api/hooks'
 import { appSettings } from '@/test/factories'
 import { queryResult, idleQueryResult, loadingQueryResult, mutationResult } from '@/test/reactQuery'
-import { SessionDefaultsSection } from './SessionDefaultsSection'
+import { ApiRequestError } from '@/api/client'
+import { BRANCH_PREFIX_COPY, SessionDefaultsSection } from './SessionDefaultsSection'
 
 expect.extend(toHaveNoViolations)
 
@@ -91,7 +92,7 @@ describe('SessionDefaultsSection', () => {
     vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({
       effectiveDefaults: {
         repoRoot: '/home/tony/GitHub', archiveHome: null, modelApprovalAction: 'require_approval',
-        modelApprovalDenylist: '', globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] },
+        modelApprovalDenylist: '', branchPrefix: 'viberpit/', globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] },
       },
     })))
     mount()
@@ -145,7 +146,7 @@ describe('SessionDefaultsSection', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(mutateAsync).toHaveBeenCalledWith({
       defaultPermissionMode: 'interactive', modelApprovalAction: 'block', modelApprovalDenylist: 'fable, opus',
-      defaultToolDetail: 'all-open', thinkingCollapsed: true, repoRoot: null,
+      defaultToolDetail: 'all-open', thinkingCollapsed: true, repoRoot: null, branchPrefix: null,
     })
   })
 
@@ -175,12 +176,54 @@ describe('SessionDefaultsSection', () => {
       expect(mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ repoRoot: null }))
     })
 
-    it('shows the branch prefix read-only, with why it is fixed', () => {
+    it('edits the branch prefix, with its copy, the built-in placeholder and a Reset (D-22)', async () => {
+      const { container } = mount()
+      const field = screen.getByRole('textbox', { name: 'Branch prefix' })
+      expect(field).toHaveAttribute('placeholder', 'viberpit/')
+      expect(field).toHaveAccessibleDescription(BRANCH_PREFIX_COPY)
+      await userEvent.type(field, ' agent/ ')
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ branchPrefix: 'agent/' }))
+      expect(await axe(container)).toHaveNoViolations()
+    })
+
+    it('Reset on a stored prefix saves branchPrefix: null — back to the built-in', async () => {
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ branchPrefix: 'agent/' })))
       mount()
-      const prefix = screen.getByText('viberpit/')
-      expect(prefix.tagName).toBe('CODE')
-      expect(screen.getByText('Fixed — it guards automatic branch cleanup.')).toBeInTheDocument()
-      expect(screen.queryByRole('textbox', { name: /branch prefix/i })).toBeNull()
+      const field = screen.getByRole('textbox', { name: 'Branch prefix' })
+      expect(field).toHaveValue('agent/')
+      await userEvent.click(screen.getByRole('button', { name: 'Reset branch prefix to default' }))
+      expect(field).toHaveValue('')
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ branchPrefix: null }))
+    })
+
+    it('shows a refused prefix inline under the field, not in the banner, until the next edit', async () => {
+      const reason = 'Branches already use agent/ that ViberPit did not create: repo:agent/mine.'
+      const err = new ApiRequestError(400, { detail: { code: 'BRANCH_PREFIX_INVALID', reason } })
+      mutateAsync.mockRejectedValueOnce(err)
+      vi.mocked(hooks.useUpdateSettings).mockReturnValue(mutationResult({ mutateAsync, error: err }))
+      const { container } = mount()
+      const field = screen.getByRole('textbox', { name: 'Branch prefix' })
+      await userEvent.type(field, 'agent/')
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent(reason)
+      expect(field).toHaveAccessibleDescription(expect.stringContaining(reason))
+      expect(screen.queryByText('Not saved')).toBeNull()
+      expect(await axe(container)).toHaveNoViolations()
+      await userEvent.type(field, 'x')
+      expect(screen.queryByText(reason)).toBeNull()
+    })
+
+    it('any other save failure still shows in the section banner', async () => {
+      const err = new ApiRequestError(422, { detail: 'invalid defaultToolDetail' })
+      mutateAsync.mockRejectedValueOnce(err)
+      vi.mocked(hooks.useUpdateSettings).mockReturnValue(mutationResult({ mutateAsync, error: err }))
+      mount()
+      await userEvent.type(screen.getByRole('textbox', { name: 'Branch prefix' }), 'agent/')
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(await screen.findByText('Not saved')).toBeInTheDocument()
     })
   })
 })

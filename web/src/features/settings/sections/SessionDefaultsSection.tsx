@@ -15,7 +15,7 @@ import { SettingRow } from '../chassis/SettingRow'
 import { SaveBar } from '../chassis/SaveBar'
 import { PathControl } from '../chassis/PathControl'
 import { BRANCH_PREFIX } from '@/brand'
-import { useSettingsForm } from '../useSettingsForm'
+import { branchPrefixReason, useSettingsForm } from '../useSettingsForm'
 
 /** '' is the draft's "server default" — the payload turns it back into null. */
 type ApprovalAction = '' | 'require_approval' | 'block' | 'allow'
@@ -29,11 +29,17 @@ interface DefaultsDraft {
   thinkingCollapsed: boolean
   /** '' = the server default (`VIBERPIT_REPO_ROOT`, else ~/GitHub). */
   repoRoot: string
+  /** '' = the built-in prefix (D-22). */
+  branchPrefix: string
 }
 
 /** D-14 copy: one root for clones AND worktrees, and what a change does not do. */
 export const REPO_ROOT_COPY =
   "Where repos are cloned and session worktrees are created. Changing it doesn't move existing worktrees — they keep working but cleanup skips them."
+
+/** D-22 copy: what the prefix does, and why changing it is safe. */
+export const BRANCH_PREFIX_COPY =
+  'New session branches start with this. ViberPit only ever deletes branches it recorded creating, so changing it never makes your own branches deletable.'
 
 /** Modes that let a session act without a human in the loop; saving one asks first (S17). */
 const UNSAFE_MODES = new Set(['full-auto', 'bypassPermissions'])
@@ -62,6 +68,7 @@ function toDraft(s: AppSettings): DefaultsDraft {
     toolDetail: s.defaultToolDetail,
     thinkingCollapsed: s.thinkingCollapsed,
     repoRoot: s.repoRoot ?? '',
+    branchPrefix: s.branchPrefix ?? '',
   }
 }
 
@@ -80,6 +87,8 @@ function toPayload(d: DefaultsDraft): Partial<AppSettings> {
     // Blank sends null, the same convention Settings › General used before the
     // field moved here (D-14).
     repoRoot: d.repoRoot.trim() || null,
+    // Blank resets to the built-in; the server validates anything else (D-22).
+    branchPrefix: d.branchPrefix.trim() || null,
   }
 }
 
@@ -146,6 +155,9 @@ export function SessionDefaultsSection() {
   const accepted = new Set(settings.acceptedPermissionModes)
   const rejected = PERMISSION_MODES.filter((m) => !accepted.has(m.value))
   const eff = settings.effectiveDefaults
+  // A refused prefix is shown under its field, not in the section banner (D-22). Tied
+  // to form.error, which clears on the next edit, so a stale refusal never lingers.
+  const prefixError = form.error ? branchPrefixReason(update.error) : null
   const confirmMode = confirm?.mode
   const confirmLabel = PERMISSION_MODES.find((m) => m.value === confirmMode)?.label ?? confirmMode
 
@@ -157,7 +169,7 @@ export function SessionDefaultsSection() {
       description={SETTINGS_BY_ID.sessions.description}
       footer={<SaveBar form={form} />}
     >
-      {form.error && <Banner tone="danger" role="alert" title="Not saved">{form.error}</Banner>}
+      {form.error && !prefixError && <Banner tone="danger" role="alert" title="Not saved">{form.error}</Banner>}
       {/* Stale data, not missing data (R17) — a `status` notice above the form
           rather than an `alert` in place of it. */}
       {isError && (
@@ -282,8 +294,14 @@ export function SessionDefaultsSection() {
             onChange={(v) => set('repoRoot', v)}
           />
         </SettingRow>
-        <SettingRow label="Branch prefix" htmlFor="defaults-branch-prefix" description="Fixed — it guards automatic branch cleanup." selfLabelled>
-          <code id="defaults-branch-prefix" className="font-mono text-sm text-ink">{BRANCH_PREFIX}</code>
+        <SettingRow label="Branch prefix" htmlFor="defaults-branch-prefix" description={BRANCH_PREFIX_COPY} error={prefixError}>
+          <PathControl
+            id="defaults-branch-prefix"
+            value={draft.branchPrefix}
+            placeholder={BRANCH_PREFIX}
+            resetLabel="Reset branch prefix to default"
+            onChange={(v) => set('branchPrefix', v)}
+          />
         </SettingRow>
       </SettingsGroup>
 

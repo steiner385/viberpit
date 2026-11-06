@@ -517,14 +517,15 @@ def session_worktree_root(path: str, repo_root: str) -> Path | None:
     return None
 
 
-def _child_branch(base: str, session_id: str) -> str:
-    """Name of the per-session child branch created off *base*.
+def _child_branch(base: str, session_id: str, prefix: str = brand.BRANCH_PREFIX) -> str:
+    """Name of the per-session child branch created off *base*: ``<prefix><base>-<short>``.
 
     One function rather than the two identical f-strings create_worktree used to
-    carry: the name it emits must stay inside the set ``brand.is_session_branch``
-    recognises, and remove_worktree's ``git branch -D`` is what enforces that.
+    carry. *prefix* is the configured session-branch prefix (D-22; the server resolves
+    it), defaulting to the built-in one. The name is never the deletion gate — a
+    branch is deleted only through its recorded creation.
     """
-    return f"{brand.BRANCH_PREFIX}{base}-{_short(session_id)}"
+    return f"{prefix}{base}-{_short(session_id)}"
 
 
 def _registered_worktrees(repo_top: str) -> set[str]:
@@ -643,11 +644,13 @@ def pin_worktree_config(repo_top: str, dest: Path) -> None:
                         dest, key, r.stderr.strip())
 
 
-def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_root: str) -> WorktreeInfo:
+def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_root: str,
+                    *, branch_prefix: str | None = None) -> WorktreeInfo:
     """Create an isolated per-session worktree and return its info.
 
     When `branch` is given, checks it out directly; if it is already checked out
-    elsewhere, creates a child branch ``viberpit/<branch>-<short>`` instead. When
+    elsewhere, creates a child branch ``<branch_prefix><branch>-<short>`` instead (the
+    built-in ``viberpit/`` when *branch_prefix* is None). When
     `branch` is None, creates a DETACHED worktree off the repo's current HEAD — used
     for repo sessions that didn't pick a branch, so every session still gets its own
     isolated working directory (never sharing the clone) without needing a branch.
@@ -719,7 +722,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
         # remote tip origin/<branch>. This is the normal path (not just a fallback):
         # a fresh, writable, isolated branch without moving the user's local <branch>.
         if use_remote and _branch_on_origin(repo_top, branch):
-            child = _child_branch(branch, session_id)
+            child = _child_branch(branch, session_id, branch_prefix or brand.BRANCH_PREFIX)
             r = _run(["git", "-C", repo_top, "worktree", "add", "-b", child,
                       str(dest), "--", f"origin/{branch}"])
             if r.returncode == 0:
@@ -740,7 +743,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
             return WorktreeInfo(str(dest), branch, is_child=False, repo=repo_top)
 
         # 3) Branch is busy (checked out elsewhere) — make a session child branch off it.
-        child = _child_branch(branch, session_id)
+        child = _child_branch(branch, session_id, branch_prefix or brand.BRANCH_PREFIX)
         r2 = _run(["git", "-C", repo_top, "worktree", "add", "-b", child, str(dest), "--", branch])
         if r2.returncode == 0:
             lock_worktree(repo_top, dest)
@@ -820,25 +823,31 @@ class ForkWorktreeInfo:
     repo: str     # absolute toplevel of the main clone both worktrees belong to
 
 
-def fork_branch_name(source_session_id: str, n: int) -> str:
-    """``<prefix>fork-<short source id>-<n>`` — inside ``brand.is_session_branch``, so
-    ``remove_worktree`` tidies it like any other session child branch."""
-    return f"{brand.BRANCH_PREFIX}fork-{_short(source_session_id)}-{n}"
+def fork_branch_name(source_session_id: str, n: int,
+                     prefix: str = brand.BRANCH_PREFIX) -> str:
+    """``<prefix>fork-<short source id>-<n>``; *prefix* is the configured session-branch
+    prefix (D-22), defaulting to the built-in one. Deleted only through its record."""
+    return f"{prefix}fork-{_short(source_session_id)}-{n}"
 
 
-def _next_fork_branch(repo_top: str, source_session_id: str) -> str:
-    """The first ``fork_branch_name(source, n)`` (n ≥ 1) with no local branch, from
-    one ``for-each-ref``. Call under ``clone_lock(repo_top)``."""
-    stem = "refs/heads/" + fork_branch_name(source_session_id, 0)[:-1]
-    out = run_git(repo_top, *NO_SUBMODULE_RECURSE, "for-each-ref", "--format=%(refname)", stem + "*")
+def _next_fork_branch(repo_top: str, source_session_id: str,
+                      prefix: str = brand.BRANCH_PREFIX) -> str:
+    """The first ``fork_branch_name(source, n, prefix)`` (n ≥ 1) whose ``n`` no fork of
+    this source has under *prefix* OR any built-in prefix — so a prefix change never
+    reuses an ``n`` an older fork still holds. One ``for-each-ref``. Call under
+    ``clone_lock(repo_top)``."""
+    stems = ["refs/heads/" + fork_branch_name(source_session_id, 0, p)[:-1]
+             for p in dict.fromkeys((prefix, *brand.BRANCH_PREFIXES))]
+    out = run_git(repo_top, *NO_SUBMODULE_RECURSE, "for-each-ref", "--format=%(refname)",
+                  *(stem + "*" for stem in stems))
     if out is None:
         raise ForkWorktreeError("could not list the fork branches")
-    taken = {int(s) for line in os.fsdecode(out).splitlines()
-             if (s := line[len(stem):]).isascii() and s.isdecimal()}
+    taken = {int(s) for line in os.fsdecode(out).splitlines() for stem in stems
+             if line.startswith(stem) and (s := line[len(stem):]).isascii() and s.isdecimal()}
     n = 1
     while n in taken:
         n += 1
-    return fork_branch_name(source_session_id, n)
+    return fork_branch_name(source_session_id, n, prefix)
 
 
 def _rel_ok(rel: bytes) -> bool:
@@ -968,7 +977,7 @@ def discard_fork_worktree(info: ForkWorktreeInfo) -> None:
 
 
 def create_fork_worktree(source_cwd: str, *, source_session_id: str,
-                         dest: str) -> ForkWorktreeInfo:
+                         dest: str, branch_prefix: str | None = None) -> ForkWorktreeInfo:
     """Create a new worktree at ``dest`` on a new fork branch, at the source worktree's
     current HEAD and carrying its uncommitted work. Read-only on the source.
 
@@ -1066,7 +1075,8 @@ def create_fork_worktree(source_cwd: str, *, source_session_id: str,
             if os.path.lexists(dest):
                 raise ForkWorktreeError(f"fork dest already exists: {dest}",
                                         FORK_DEST_EXISTS)
-            branch = _next_fork_branch(repo_top, source_session_id)
+            branch = _next_fork_branch(repo_top, source_session_id,
+                                       branch_prefix or brand.BRANCH_PREFIX)
         except DiskSpaceError as exc:
             raise ForkWorktreeError(str(exc), FORK_DISK_FULL) from exc
         except GitTimeout as exc:

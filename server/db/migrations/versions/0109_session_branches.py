@@ -1,7 +1,7 @@
 """D-22 branch ownership registry: session_branches.
 
-Revision ID: 0108_session_branches
-Revises: 0107_milestone_notes
+Revision ID: 0109_session_branches
+Revises: 0108_session_snooze
 
 One row per branch ViberPit created (``source``: create | fork | import | backfill),
 unique per ``(host, clone, branch)`` because clones are per host while the DB is
@@ -10,15 +10,15 @@ hard-deleted session row while the branch still exists. ``init_db``'s ``create_a
 creates the table on both dialects (and its one-shot backfill seeds it); this revision
 is the reviewable record.
 
-Chaining note: chained off 0107_milestone_notes (origin/master's newest revision when
-written). If another revision lands first, re-chain ``down_revision`` to the newest one
+Chaining note: chained off 0108_session_snooze (origin/master's newest revision when
+written; re-chained from 0107 when 0108_session_snooze landed first). If another revision lands first, re-chain ``down_revision`` to the newest one
 (``test_alembic_single_head`` enforces one head).
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0108_session_branches"
-down_revision = "0107_milestone_notes"
+revision = "0109_session_branches"
+down_revision = "0108_session_snooze"
 branch_labels = None
 depends_on = None
 

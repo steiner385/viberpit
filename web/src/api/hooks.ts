@@ -428,6 +428,8 @@ export interface EffectiveDefaults {
   modelApprovalAction: string
   modelApprovalDenylist: string
   globalCap: GlobalCapDefaults
+  /** The prefix a NEW session branch gets (D-22): the stored one, else the built-in. */
+  branchPrefix: string
 }
 
 export interface AppSettings {
@@ -460,6 +462,9 @@ export interface AppSettings {
   /** The output style new sessions start with (D-16a); null = the CLI's `default`. Must
    *  be a built-in or a shared user style (`GET /settings/output-styles`), else 422. */
   defaultOutputStyle?: string | null
+  /** Session-branch prefix (D-22); null = the built-in. PUT validates it (400
+   *  `BRANCH_PREFIX_INVALID` with a reason); null or blank resets. */
+  branchPrefix?: string | null
   /** The modes PUT accepts, in display order. The client's PERMISSION_MODES must equal this set. */
   acceptedPermissionModes: string[]
   effectiveDefaults: EffectiveDefaults

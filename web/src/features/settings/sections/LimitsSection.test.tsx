@@ -84,7 +84,7 @@ describe('LimitsSection', () => {
       ],
       effectiveDefaults: {
         repoRoot: '/r', archiveHome: null, modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable',
-        globalCap: TWO_HOSTS,
+        branchPrefix: 'viberpit/', globalCap: TWO_HOSTS,
       },
     })))
     vi.mocked(hooks.useUpdateSettings).mockReturnValue(mutationResult({ mutateAsync }))
@@ -128,7 +128,7 @@ describe('LimitsSection', () => {
     vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({
       effectiveDefaults: {
         repoRoot: '/r', archiveHome: null, modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable',
-        globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [{ name: 'rocky', cap: null }] },
+        branchPrefix: 'viberpit/', globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [{ name: 'rocky', cap: null }] },
       },
     })))
     mount()

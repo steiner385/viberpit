@@ -91,6 +91,7 @@ from server.automations.claim_liveness import DEAD_CLAIM_STATUSES
 from server.pm.map_resolution import map_diff_key, parse_map_diff_key
 from server.sessions import adopt as _adopt
 from server.sessions import branch_ownership as _branch_ownership
+from server.sessions import branch_prefix as _branch_prefix
 from server.sessions.helper_call import helper_cwd
 from server.sessions.account_auth import account_store_io, oauth_env_for
 from server.sessions.scratch_config import helper_config_dir
@@ -6072,9 +6073,12 @@ class SessionOrchestrator:
             self._worktrees[session_id] = worktree_info
         elif cwd is not None and worktrees.is_git_repo(cwd):
             try:
-                worktree_info = await asyncio.to_thread(
-                    worktrees.create_worktree, cwd, branch, session_id, repo_root
-                )
+                # D-22: the configured prefix, resolved like the repo root; the
+                # branch is recorded below, which is what makes it deletable.
+                branch_prefix = await _branch_prefix.effective_branch_prefix()
+                worktree_info = await asyncio.to_thread(functools.partial(
+                    worktrees.create_worktree, cwd, branch, session_id, repo_root,
+                    branch_prefix=branch_prefix))
             except worktrees.WorktreeError as exc:
                 raise BranchSwitchError(str(exc)) from exc
             assert worktree_info is not None  # create_worktree returns a value or raises
@@ -19630,9 +19634,10 @@ class SessionOrchestrator:
         """``create_fork_worktree`` off the loop. The git work cannot be interrupted, so
         a cancellation mid-way waits for it and then discards what it made — never a
         worktree left behind for a fork nobody will spawn."""
+        branch_prefix = await _branch_prefix.effective_branch_prefix()   # D-22
         work = asyncio.ensure_future(asyncio.to_thread(
             worktrees.create_fork_worktree, source_cwd,
-            source_session_id=source_id, dest=dest))
+            source_session_id=source_id, dest=dest, branch_prefix=branch_prefix))
         try:
             return await asyncio.shield(work)
         except asyncio.CancelledError:

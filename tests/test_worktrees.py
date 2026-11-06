@@ -162,6 +162,14 @@ class WorktreeTests(unittest.TestCase):
         self.assertTrue(worktrees.remove_worktree(info.path, owned_branch=boom))
         self.assertTrue(self._branch_exists(info.branch))
 
+    def test_a_child_branch_takes_the_configured_prefix(self) -> None:
+        info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111",
+                                         str(self.root), branch_prefix="agent/")
+        self.assertTrue(info.is_child)
+        self.assertEqual(info.branch, "agent/main-def67890")
+        self.assertEqual(worktrees._child_branch("main", "def67890-1111", "agent/"),
+                         info.branch)
+
     def test_remove_clean_worktree_and_child_branch(self) -> None:
         info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
         self.assertTrue(worktrees.remove_worktree(info.path, owned_branch=brand.is_session_branch))
