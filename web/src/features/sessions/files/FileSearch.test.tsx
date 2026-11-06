@@ -68,7 +68,7 @@ async function openContents() {
   const user = userEvent.setup()
   await user.click(screen.getByRole('button', { name: 'Contents' }))
   const box = await screen.findByRole('combobox', { name: 'Search file contents' })
-  return { user, box }
+  return { user, box, qc }
 }
 
 beforeEach(() => {
@@ -263,6 +263,43 @@ describe('FileSearch', () => {
     fail = false
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findAllByRole('option')).toHaveLength(3)
+  })
+
+  it('a failed refetch hides the old rows: nothing to pick, nothing active', async () => {
+    let fail = false
+    serve(() => (fail ? json(500, { detail: { code: 'SEARCH_FAILED' } }) : json(200, HITS)))
+    const { user, box, qc } = await openContents()
+    await user.type(box, 'needle')
+    expect(await screen.findAllByRole('option')).toHaveLength(3)
+    fail = true
+    await qc.refetchQueries()
+    expect(await screen.findByText(/Couldn.t search the files/)).toBeInTheDocument()
+    expect(screen.queryByRole('option')).toBeNull()
+    expect(box).toHaveAttribute('aria-expanded', 'false')
+    expect(box).not.toHaveAttribute('aria-activedescendant')
+    await user.keyboard('{Enter}')
+    expect(search().get('file')).toBeNull()
+  })
+
+  it('a single emoji is one character: below the minimum, nothing is sent', async () => {
+    serve()
+    const { user, box } = await openContents()
+    await user.click(box)
+    await user.paste('😀')
+    expect(box).toHaveValue('😀')
+    await new Promise((r) => setTimeout(r, 400))
+    expect(searches()).toEqual([])
+    expect(screen.getByText(/Type at least 2 characters/)).toBeInTheDocument()
+  })
+
+  it('caps the query at the server limit of 64 characters, counted in code points', async () => {
+    serve()
+    const { user, box } = await openContents()
+    await user.click(box)
+    await user.paste('😀'.repeat(70))
+    expect(box).toHaveValue('😀'.repeat(64))
+    await waitFor(() => expect(searches()).toHaveLength(1))
+    expect(searches()[0].searchParams.get('q')).toBe('😀'.repeat(64))
   })
 
   it('carries the name query over, and Contents goes back to the file list', async () => {

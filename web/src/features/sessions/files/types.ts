@@ -43,6 +43,8 @@ export type SessionFileSearch = {
 
 /** The server's `MIN_SEARCH_QUERY_CHARS`: a shorter query is a 422, so it is never sent. */
 export const MIN_CONTENT_QUERY_CHARS = 2
+/** The server's `MAX_QUERY_CHARS`: it silently cuts a longer query, so the box stops there. */
+export const MAX_CONTENT_QUERY_CHARS = 64
 /** The content search box's debounce: each query runs `git grep` on the owning host. */
 export const CONTENT_SEARCH_DEBOUNCE_MS = 250
 

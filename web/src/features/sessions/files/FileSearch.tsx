@@ -7,7 +7,9 @@ import { ListSearchInput } from '@/ui/list/ListSearchInput'
 import { TOUCH_FLOOR } from '@/ui/list/listControlStyles'
 import { MARK_CLASS } from '../transcript/search/searchMarks'
 import { TextAction } from './TextAction'
-import { CONTENT_SEARCH_DEBOUNCE_MS, MIN_CONTENT_QUERY_CHARS, type SessionFileMatch } from './types'
+import {
+  CONTENT_SEARCH_DEBOUNCE_MS, MAX_CONTENT_QUERY_CHARS, MIN_CONTENT_QUERY_CHARS, type SessionFileMatch,
+} from './types'
 
 /**
  * The Files tab's content search (D-20): `git grep` over the session's worktree
@@ -31,13 +33,16 @@ export default function FileSearch({ sessionId, initialQuery = '', onOpen, trail
   /** Rendered beside the box — `FilesTab`'s switch back to the file list. */
   trailing?: ReactNode
 }) {
-  const [query, setQuery] = useState(initialQuery)
+  const [query, setQueryRaw] = useState(() => clampQuery(initialQuery))
+  const setQuery = (v: string) => setQueryRaw(clampQuery(v))
   const [regex, setRegex] = useState(false)
   const debounced = useDebouncedValue(query, CONTENT_SEARCH_DEBOUNCE_MS)
-  const q = debounced.length >= MIN_CONTENT_QUERY_CHARS ? debounced : ''
+  // Code points, as the server counts them: one emoji is two UTF-16 units but one character.
+  const q = Array.from(debounced).length >= MIN_CONTENT_QUERY_CHARS ? debounced : ''
   const { data: raw, error, isError, isPlaceholderData, refetch } = useSessionFileSearch(sessionId, q, regex)
-  // A disabled query still hands back its placeholder: below the minimum there is nothing to show.
-  const data = q ? raw : undefined
+  // A disabled query still hands back its placeholder (below the minimum there is nothing to
+  // show), and a failed refetch its last data: neither may stay pickable behind the message.
+  const data = q && !isError ? raw : undefined
   const stale = query !== debounced || isPlaceholderData
 
   const groups = useMemo(() => {
@@ -170,11 +175,17 @@ export default function FileSearch({ sessionId, initialQuery = '', onOpen, trail
         </button>
         {trailing}
       </div>
-      {data && !isError && data.timedOut && <Notice>Search timed out — showing partial results</Notice>}
-      {data && !isError && data.truncated && !data.timedOut && <Notice>Showing first {data.matches.length} matches</Notice>}
+      {data?.timedOut && <Notice>Search timed out — showing partial results</Notice>}
+      {data?.truncated && !data.timedOut && <Notice>Showing first {data.matches.length} matches</Notice>}
       {body}
     </div>
   )
+}
+
+/** `v` cut to the server's query cap, in code points (a `maxLength` would count UTF-16 units). */
+function clampQuery(v: string): string {
+  const cps = Array.from(v)
+  return cps.length > MAX_CONTENT_QUERY_CHARS ? cps.slice(0, MAX_CONTENT_QUERY_CHARS).join('') : v
 }
 
 /** `text` with `[start, end)` marked. The offsets are the server's (Python) code-point
