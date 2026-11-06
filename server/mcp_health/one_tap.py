@@ -145,12 +145,16 @@ async def start(identity: str, server_name: str) -> str:
             client = await asyncio.to_thread(ensure_client, discovery,
                                              f"{origin}{CALLBACK_PATH}")
     except (DiscoveryFailed, RegistrationUnsupported, RegistrationFailed, TimeoutError) as exc:
-        # No DCR is an expected provider shape (e.g. KinDash), not a fault: INFO, so a
-        # Fix-auth tap does not auto-file an issue. A refused or broken one is WARNING,
-        # as is a provider too slow to finish discovery inside START_DEADLINE_S.
-        level = logging.INFO if isinstance(exc, RegistrationUnsupported) else logging.WARNING
-        log.log(level, "mcp one-tap: falling back to paste-back server=%s reason=%s",
-                    server_name, type(exc).__name__)
+        # No DCR (e.g. KinDash) and a refused redirect URI (AWS answers
+        # ``invalid_redirect_uri`` to the tailnet callback) are provider policy, not a
+        # fault: INFO, so a Sign-in tap does not auto-file an issue. Any other refused or
+        # broken registration is WARNING, as is a provider too slow to finish discovery
+        # inside START_DEADLINE_S.
+        code = _oauth_code(exc)
+        expected = isinstance(exc, RegistrationUnsupported) or code == "invalid_redirect_uri"
+        level = logging.INFO if expected else logging.WARNING
+        log.log(level, "mcp one-tap: falling back to paste-back server=%s reason=%s code=%s",
+                    server_name, type(exc).__name__, code or None)
         raise PasteBack(server_name) from None
     verifier, challenge = pkce_pair()
     state = new_state()

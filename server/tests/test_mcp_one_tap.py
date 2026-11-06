@@ -437,7 +437,25 @@ def test_no_dcr_fallback_logs_no_warning(client: TestClient, fakes: Fakes,
     assert any("RegistrationUnsupported" in r.getMessage() for r in caplog.records)
 
 
-@pytest.mark.parametrize("exc", [DiscoveryFailed("x"), RegistrationFailed("x")])
+@pytest.mark.parametrize("code", ["invalid_redirect_uri", "INVALID_REDIRECT_URI"])
+def test_refused_redirect_uri_fallback_logs_no_warning(
+        client: TestClient, fakes: Fakes, code: str, caplog: pytest.LogCaptureFixture) -> None:
+    """A provider that refuses the tailnet redirect URI (AWS: ``invalid_redirect_uri``, "not
+    allowed by this server") is a provider policy, not a fault: INFO, naming the code, so
+    every Sign-in tap on that server does not auto-file an issue."""
+    fakes.ensure_exc = RegistrationFailed(f"registration endpoint returned 400 {code}",
+                                          code=code)
+    with caplog.at_level("INFO", logger=one_tap.log.name):
+        resp = client.get("/api/mcp/oauth/start", params={"server": "railway"})
+    assert resp.headers["location"] == "/settings/mcp?pasteBack=railway"
+    assert [r for r in caplog.records if r.levelno >= 30] == []
+    assert any("invalid_redirect_uri" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("exc", [DiscoveryFailed("x"), RegistrationFailed("x"),
+                                 RegistrationFailed("registration endpoint returned 400 "
+                                                    "invalid_client_metadata",
+                                                    code="invalid_client_metadata")])
 def test_real_start_failures_still_warn(client: TestClient, fakes: Fakes, exc: Exception,
                                         caplog: pytest.LogCaptureFixture) -> None:
     if isinstance(exc, DiscoveryFailed):
