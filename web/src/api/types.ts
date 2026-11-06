@@ -274,6 +274,24 @@ export function isPreSpawnStatus(status: string | null | undefined): boolean {
   return !!status && PRE_SPAWN_STATUSES.has(status as SessionStatus)
 }
 
+/** A session's snooze overlay (`sessions.snooze`): out of sight until `until`,
+ *  or until woken by hand when `until` is null. `by` says who snoozed it — the
+ *  user, or the session itself through its `snooze` tool. */
+export interface SessionSnooze {
+  /** ISO instant the snooze was set. */
+  at: string
+  /** ISO wake instant; null = until someone wakes it. */
+  until: string | null
+  reason: string | null
+  by: 'user' | 'session'
+}
+
+/** True while a session is snoozed — THE predicate the list partition and every
+ *  "needs you" count read, so a snoozed session never nags. */
+export function isSnoozed(session: { snooze?: SessionSnooze | null }): boolean {
+  return session.snooze != null
+}
+
 // ---------------------------------------------------------------------------
 // Session-status vocabularies — the single home for "which statuses count as X"
 // (constitution VI). These used to live as three independent inline Sets in
@@ -432,6 +450,10 @@ export interface Session {
   /** Sticky auto-archive opt-out reason (e.g. "manual-unarchive"); set when a human
    *  unarchived the session, so autopilot never auto-archives it again. Null/absent = eligible. */
   autoArchiveOptOut?: string | null
+  /** Snooze overlay (not a status): held out of the live list and every "needs you"
+   *  count until `until` (or until woken). Null/absent = not snoozed.
+   *  `POST|DELETE /sessions/{id}/snooze`. */
+  snooze?: SessionSnooze | null
   /** Automation that has acted on this human-created session (e.g. "autopilot").
    *  Distinct from origin (spawned-by). Drives the violet provenance badge. */
   assistedBy?: string | null

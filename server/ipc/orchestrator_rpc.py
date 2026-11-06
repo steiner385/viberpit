@@ -380,6 +380,8 @@ def register_orchestrator_rpc(app, orch) -> None:
         # MoveError, whose error_data carries the code (and dirty paths / tasks).
         "transfer_preflight", "transfer_export", "transfer_import", "transfer_finalize",
         "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "set_pr_autofix_paused", "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
+        # Session snooze: the snooze dict is JSON scalars, built at the edge/tool.
+        "snooze_session", "wake_session",
         "stop_subagent",
         "set_permission_mode", "set_model_for_session",
         "cancel_queued", "resolve_permission", "answer_question",

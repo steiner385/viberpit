@@ -704,6 +704,26 @@ export function useSetAutoArchiveOptOut() {
   })
 }
 
+/** POST /sessions/{id}/snooze: hide the session from the live list until `until`
+ *  (ISO, UTC) — or, with `until: null`, until someone wakes it. Answers the record. */
+export function useSnoozeSession() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string; until: string | null; reason?: string | null }>({
+    mutationFn: ({ id, until, reason }) =>
+      api.post<Session>(`/sessions/${encodeURIComponent(id)}/snooze`, { until, reason: reason ?? null }),
+    onSuccess: (session, { id }) => patchSessionInCache(qc, id, { snooze: session?.snooze ?? null }),
+  })
+}
+
+/** DELETE /sessions/{id}/snooze: wake a snoozed session now. Answers the record. */
+export function useWakeSession() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, string>({
+    mutationFn: (id) => api.del<Session>(`/sessions/${encodeURIComponent(id)}/snooze`),
+    onSuccess: (_session, id) => patchSessionInCache(qc, id, { snooze: null }),
+  })
+}
+
 /** The user's answer to a "likely complete" hand-back: confirm archives, reject
  *  clears the hint. Invalidates the list either way — confirm removes the card,
  *  reject drops the pill. */

@@ -125,7 +125,7 @@ class AutopilotLoop:
         degraded = False
         governed = await self._list_governed()
         counts = {"waiting": 0, "deferring": 0, "budget_blocked": 0,
-                  "paused": 0, "handed_back": 0, "pr_facts_unavailable": 0, "policy_paused": 0,
+                  "paused": 0, "snoozed": 0, "handed_back": 0, "pr_facts_unavailable": 0, "policy_paused": 0,
                   "credentials_pending": 0}
         for sid, reason in getattr(self._ctx, "autopilot_withheld", {}).items():
             try:
@@ -320,6 +320,7 @@ class AutopilotLoop:
         labels = {"deferring": "waiting for human steering to settle",
                   "budget_blocked": "waiting for the action budget",
                   "paused": "session assistance is paused",
+                  "snoozed": "session is snoozed",
                   "policy_paused": "session assistance is paused by product policy",
                   "handed_back": "waiting for your response",
                   "pr_facts_unavailable": "waiting for verified PR facts",

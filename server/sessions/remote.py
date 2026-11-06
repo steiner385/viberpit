@@ -995,6 +995,14 @@ class RemoteOrchestrator:
         return await self._client.call(
             "set_auto_archive_opt_out", session_id=session_id, opted_out=opted_out)
 
+    async def snooze_session(self, session_id, snooze, identity="system"):
+        return await self._client.call("snooze_session", session_id=session_id,
+                                       snooze=snooze, identity=identity)
+
+    async def wake_session(self, session_id, *, cause="user", identity="system"):
+        return bool(await self._client.call("wake_session", session_id=session_id,
+                                            cause=cause, identity=identity))
+
     async def dismiss_suspected_complete(self, session_id: str) -> bool:
         return bool(await self._client.call("dismiss_suspected_complete", session_id=session_id))
 

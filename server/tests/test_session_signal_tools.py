@@ -17,7 +17,8 @@ from server.sessions.tools.registry import SESSION_TOOL_SPECS
 from server.sessions.tools.tools import build_session_tools, mounted_tool_names
 
 SIGNALS = ("mark_complete", "mark_no_pr", "hand_back", "set_hold", "propose_decision",
-           "share_artifact", "rename_self", "roadmap_milestone_note", "request_model")
+           "share_artifact", "rename_self", "snooze", "roadmap_milestone_note",
+           "request_model")
 
 
 def _ctx(**kw):
@@ -55,7 +56,7 @@ def test_session_tool_specs_declares_all_nine_unconditionally():
                                        "mark_complete", "mark_no_pr", "hand_back",
                                        "set_hold", "propose_decision", "request_model",
                                        "dispatch_session", "reply_to_child", "share_artifact",
-                                       "rename_self",
+                                       "rename_self", "snooze",
                                        "roadmap_needs_you", "roadmap_item", "roadmap_resolve",
                                        "roadmap_hold", "roadmap_advance",
                                        "roadmap_milestones", "roadmap_milestone_tick",

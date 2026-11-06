@@ -2179,6 +2179,15 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # last-interaction timestamp is not worth paging on.
                 log.info("ws.prompt note_user_interaction failed session=%s",
                          session_id)
+            # A person prompting a snoozed session is the wake (session-snooze
+            # design). Best-effort like the stamp above: the prompt already landed.
+            if status == "sent" and getattr(rec, "snooze", None):
+                try:
+                    await orchestrator.wake_session(session_id, cause="prompt",
+                                                    identity=identity)
+                except Exception:  # noqa: BLE001 - never fail a delivered prompt
+                    log.info("ws.prompt snooze wake failed session=%s", session_id,
+                             exc_info=True)
             # The split #1180 asked for, isolated: `ensure_ms` is the wake
             # (ws.session.resume breaks it down further), `send_ms` is everything
             # after the driver exists. Together they answer "does the resume really

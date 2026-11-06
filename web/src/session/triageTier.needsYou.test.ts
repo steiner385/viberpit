@@ -48,3 +48,14 @@ describe('needsYouCount', () => {
     expect(needsYouCount([])).toBe(0)
   })
 })
+
+describe('needsYouCount — snooze', () => {
+  it('never counts a snoozed session, whatever its tier', () => {
+    const snooze = { at: '2026-11-06T00:00:00Z', until: null, reason: 'waiting on deploy', by: 'user' as const }
+    expect(needsYouCount([
+      session({ id: '1', status: 'waiting_input', snooze }),
+      session({ id: '2', status: 'handed_back', snooze }),
+      session({ id: '3', status: 'waiting_input', snooze: null }),
+    ])).toBe(1)
+  })
+})

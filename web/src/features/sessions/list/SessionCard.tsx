@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Loader2, Target, Wrench, Bot, Monitor, Eye, CircleDot } from 'lucide-react'
+import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Loader2, Target, Wrench, Bot, Monitor, Eye, CircleDot, AlarmClock } from 'lucide-react'
 import { toast } from 'sonner'
 import { inGroup, matchShortcut } from '@/shell/shortcuts'
 import { useQuickReplies } from '@/api/quickReplies'
@@ -25,7 +25,8 @@ import { CardFrame } from '@/ui/list/CardFrame'
 import { CardMenu, Sep, actionBtn, menuItem } from '@/ui/list/CardMenu'
 import { useViewport } from '@/shell/useViewport'
 import { useNow } from '@/hooks/useNow'
-import type { Session, Account } from '@/api/types'
+import { isPreSpawnStatus, type Session, type Account } from '@/api/types'
+import { snoozePresets } from '@/session/snoozePresets'
 import { displayFallbackTitle } from '../displayFallback'
 import { SessionStatusDot } from '../SessionStatusDot'
 import { MovingChip } from '../move/MovingChip'
@@ -97,6 +98,9 @@ interface SessionCardProps {
   onToggleAutopilot?: (id: string, paused: boolean) => void
   /** Called when the user toggles this session's auto-archive opt-out — parent owns the mutation. */
   onToggleAutoArchive?: (id: string, optedOut: boolean) => void
+  /** Snooze this session until `until` (ISO UTC; null = until woken) — parent owns
+   *  the mutation. The menu offers it only once the session has spawned. */
+  onSnooze?: (id: string, until: string | null) => void
   /** Called when the user answers a "likely complete" hand-back: confirm archives the
    *  session, reject clears the hint — parent owns the mutation. */
   onResolveSuspectedComplete?: (id: string, decision: 'confirm' | 'reject') => void
@@ -110,7 +114,7 @@ interface SessionCardProps {
   parentName?: string | null
 }
 
-export function SessionCard({ session, account, selected = false, open = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr, onToggleAutopilot, onToggleAutoArchive, onResolveSuspectedComplete, onSetUnread, childSessions = [], parentName = null }: SessionCardProps) {
+export function SessionCard({ session, account, selected = false, open = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr, onToggleAutopilot, onToggleAutoArchive, onSnooze, onResolveSuspectedComplete, onSetUnread, childSessions = [], parentName = null }: SessionCardProps) {
   // Per-viewer read state (D-10): a turn ended since this viewer last looked.
   // `unread` is the server's flag (it drives the menu); `showUnread` is what the
   // card displays — never bold for the session open right now.
@@ -561,6 +565,26 @@ export function SessionCard({ session, account, selected = false, open = false, 
                     <Archive size={16} aria-hidden="true" />
                     {session.autoArchiveOptOut ? 'Enable auto-archive' : 'Disable auto-archive'}
                   </button>
+                )}
+                {onSnooze && !isPreSpawnStatus(session.status) && (
+                  <>
+                    <div role="separator" className="my-1 border-t border-edge" />
+                    {/* Computed at open time, in the viewer's local time. */}
+                    {snoozePresets().map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        role="menuitem"
+                        data-testid={`card-overflow-snooze-${preset.id}`}
+                        onClick={() => { close(); onSnooze(session.id, preset.until) }}
+                        className={cn(menuItem, 'text-ink')}
+                      >
+                        <AlarmClock size={16} aria-hidden="true" />
+                        {preset.label}
+                      </button>
+                    ))}
+                    <div role="separator" className="my-1 border-t border-edge" />
+                  </>
                 )}
                 {onSetUnread && (
                   <button

@@ -1,4 +1,4 @@
-import type { Session } from '@/api/types'
+import { isSnoozed, type Session } from '@/api/types'
 import {
   statusPresentation, TIER_RANK, PR_CHECKS_FAILING,
   type StatusTier, type StatusPresentation,
@@ -68,7 +68,8 @@ export function triageRank(session: Session): number {
  * the same triage read the card pill, group header and sort use. THE queue
  * number (PRODUCT.md principle 1): the nav badge and the Active scope's
  * attention dot both read it, so they can never disagree with the list.
+ * A snoozed session is out of the list and must not nag, so it never counts.
  */
 export function needsYouCount(sessions: readonly Session[]): number {
-  return sessions.reduce((n, s) => n + (triageTier(s) === 'needs-you' ? 1 : 0), 0)
+  return sessions.reduce((n, s) => n + (!isSnoozed(s) && triageTier(s) === 'needs-you' ? 1 : 0), 0)
 }

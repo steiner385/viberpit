@@ -29,7 +29,7 @@
 // handle); `useBackgroundListState` is the Background scope's, mounted inside
 // its body so its state lives only while it is on screen.
 import { useEffect, useMemo, useState } from 'react'
-import { isPreSpawnStatus, type Session } from '@/api/types'
+import { isPreSpawnStatus, isSnoozed, type Session } from '@/api/types'
 import { useFleetHosts } from '@/api/fleet'
 import { useSessionSearch, type SessionSearch } from '@/session/useSessionSearch'
 import {
@@ -54,6 +54,9 @@ export interface ListPipelineState {
   queued: Session[]
   /** Parked at the launch-time model gate (PendingApprovalSection). */
   pendingApproval: Session[]
+  /** Snoozed (`isSnoozed`), soonest wake first and "until woken" last
+   *  (SnoozedSection). Held out of the grouped list like the pre-spawn rows. */
+  snoozed: Session[]
   /** Search box state; `matchedIds` already feeds `ordering`. */
   search: SessionSearch
   /** Status/Project/Environment selection (DEC-8), already applied to `ordering`. */
@@ -90,6 +93,13 @@ export interface SessionListStateOptions {
  *  identity would report a change on every render and loop the state update. */
 function sameFilters(a: ListFilters, b: ListFilters): boolean {
   return a.status === b.status && a.project === b.project && a.environment === b.environment
+}
+
+/** Sort key for the Snoozed section: wake instant, indefinite (or unparseable) last. */
+function snoozeWakeKey(s: Session): number {
+  const until = s.snooze?.until
+  const t = until ? Date.parse(until) : NaN
+  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t
 }
 
 /**
@@ -130,7 +140,20 @@ function useListPipeline(
     () => sessions.filter((s) => s.status === 'pending_approval'),
     [sessions],
   )
-  const listed = useMemo(() => sessions.filter((s) => !isPreSpawnStatus(s.status)), [sessions])
+  // Snooze is an overlay, not a status, so it is its own hold-out: a snoozed
+  // row leaves the grouped list (and everything derived from it — filters,
+  // search, ordering, nav) for the collapsed SnoozedSection.
+  const snoozed = useMemo(
+    () =>
+      sessions
+        .filter((s) => !isPreSpawnStatus(s.status) && isSnoozed(s))
+        .sort((a, b) => snoozeWakeKey(a) - snoozeWakeKey(b)),
+    [sessions],
+  )
+  const listed = useMemo(
+    () => sessions.filter((s) => !isPreSpawnStatus(s.status) && !isSnoozed(s)),
+    [sessions],
+  )
 
   // `useFleetHosts`, NOT `useEnabledFleetHosts`: a session can still be running
   // on a host an operator has since disabled, and the environment filter has to
@@ -193,7 +216,7 @@ function useListPipeline(
   const nav = useListNavigation(ordering.navItems)
 
   return {
-    sessions, queued, pendingApproval, search,
+    sessions, queued, pendingApproval, snoozed, search,
     filters, setFilters, filterOptions, ordering, nav,
   }
 }

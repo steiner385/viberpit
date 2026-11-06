@@ -146,6 +146,12 @@ class AutoArchiveOptOutRequest(BaseModel):
     optedOut: bool
 
 
+class SnoozeRequest(BaseModel):
+    # ISO-8601; null = until someone wakes it. Validated by snooze.build_snooze.
+    until: str | None = None
+    reason: str | None = None
+
+
 class PrAutofixRequest(BaseModel):
     enabled: bool
 
@@ -394,6 +400,9 @@ def _record_to_dict(
         # to show (prod 2026-09-25: "Handed back" with nothing beside it).
         "handBackReason": getattr(record, "hand_back_reason", None),
         "suspectedCompleteReason": getattr(record, "suspected_complete_reason", None),
+        # Snooze overlay ({at, until, reason, by} | null). Same two-serializer rule:
+        # SessionRecord.to_dict carries it daemon→edge, this carries it to the browser.
+        "snooze": getattr(record, "snooze", None) or None,
         "resumable": bool(getattr(record, "interrupted_by_restart", False)
                           and getattr(record, "interrupted_from_status", None)
                           in RESUME_ELIGIBLE_STATUSES),
@@ -1626,6 +1635,60 @@ async def set_auto_archive_opt_out(
     return _record_to_dict(final, repo=await _resolve_repo(final))
 
 
+@router.post("/{session_id}/snooze")
+async def snooze_session(
+    session_id: str,
+    body: SnoozeRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+) -> dict:
+    """Snooze a session until ``until`` (or until woken, when null): it leaves the live
+    list, autopilot and auto-archive leave it alone, and it comes back at that time.
+    Replaces an existing snooze. 404 unknown; 409 queued/held/over; 422 bad time."""
+    from server.sessions.snooze import UNSNOOZABLE_STATUSES, SnoozeError, build_snooze
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    if record.status in UNSNOOZABLE_STATUSES:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "code": "not_snoozable", "message": f"A {record.status} session cannot be snoozed"})
+    try:
+        snooze = build_snooze(until=body.until, reason=body.reason, by="user")
+    except SnoozeError as e:
+        raise HTTPException(status_code=422,
+                            detail={"code": "invalid_snooze", "message": str(e)}) from e
+    await orch.snooze_session(session_id, snooze, identity=identity)
+    updated = await orch.get_session(session_id)
+    final = updated or record
+    return _record_to_dict(final, repo=await _resolve_repo(final))
+
+
+@router.delete("/{session_id}/snooze")
+async def wake_session(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+) -> dict:
+    """Wake a snoozed session now. A session that snoozed itself gets its wake prompt.
+    Idempotent: waking an awake session is a no-op. 404 unknown."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    if getattr(record, "snooze", None):
+        await orch.wake_session(session_id, cause="user", identity=identity)
+    updated = await orch.get_session(session_id)
+    final = updated or record
+    return _record_to_dict(final, repo=await _resolve_repo(final))
+
+
 @router.post("/{session_id}/pr-autofix")
 async def set_pr_autofix(
     session_id: str,
@@ -2091,6 +2154,9 @@ async def send_session_prompt(
     if delivery not in ("sent", "draining", APP_COMMAND):
         log.warning("quick-resume prompt not delivered session=%s result=%s",
                     session_id, delivery)
+    if delivery == "sent" and getattr(record, "snooze", None):
+        # A person prompting a snoozed session is the wake (session-snooze design).
+        await orch.wake_session(session_id, cause="prompt", identity=identity)
     if delivery == "sent":
         try:
             await observe_reply(
