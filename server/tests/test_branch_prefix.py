@@ -271,6 +271,24 @@ def test_an_unreadable_root_is_a_400_not_a_500(tmp_path):
     assert r.json()["detail"]["code"] == "BRANCH_PREFIX_INVALID"
 
 
+def test_re_saving_an_unchanged_prefix_skips_the_clash_scan(tmp_path):
+    """An unrelated save that re-sends the stored prefix (an older client does) must not
+    fail on a branch that appeared under it since — nothing about the prefix changed."""
+    clone = _clone(tmp_path, "acme/one")
+    with _client(tmp_path) as client:
+        assert client.put("/api/settings", json={"branchPrefix": "agent/"},
+                          headers=IDENTITY).status_code == 200
+        _git(clone, "branch", "agent/not-ours")                  # unrecorded clash now
+        r = client.put("/api/settings", json={"branchPrefix": "agent/",
+                                              "thinkingCollapsed": False}, headers=IDENTITY)
+        assert r.status_code == 200
+        assert r.json()["thinkingCollapsed"] is False and r.json()["branchPrefix"] == "agent/"
+        # A CHANGED prefix is still validated.
+        r = client.put("/api/settings", json={"branchPrefix": "agent/not-ours/"},
+                       headers=IDENTITY)
+        assert r.status_code == 400
+
+
 def test_a_clashing_prefix_is_a_400_naming_the_branch(tmp_path):
     _clone(tmp_path, "acme/one", "agent/mine")
     with _client(tmp_path) as client:

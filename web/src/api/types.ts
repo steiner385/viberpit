@@ -1344,6 +1344,12 @@ export interface WorktreePreflight {
   state: 'present' | 'missing' | 'empty' | 'not_a_worktree' | 'none'
   branch: string | null
   sessionBranch: boolean
+  /** D-22 (read-only): does ViberPit's ownership record vouch for `branch`? `unknown` =
+   *  it could not be read. Absent from an older daemon. */
+  branchOwnership?: 'owned' | 'unowned' | 'unknown' | null
+  /** `branch` has a built-in or the configured session-branch prefix, i.e. it LOOKS
+   *  like a ViberPit branch — the only case a "kept on cleanup" note is worth showing. */
+  branchPrefixed?: boolean
   dirty: number | null
   unpushed: number | null
   recoveryRefs: string[]

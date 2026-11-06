@@ -139,7 +139,7 @@ Full inventories, with an evidence tag on every item:
 
 | Desktop capability | Weight | ViberPit | Notes |
 |---|:-:|:-:|---|
-| PR behaviour: auto-fix, auto-archive on merge, branch prefix | 1 | ✅ | per-session PR auto-fix switch in the Environment card (D-14) + auto-archive + autopilot; branch prefix shown read-only (fixed viberpit/) |
+| PR behaviour: auto-fix, auto-archive on merge, branch prefix | 1 | ✅ | per-session PR auto-fix switch in the Environment card (D-14) + auto-archive + autopilot; branch prefix editable in Settings › Sessions (D-22), deletion gated on recorded ownership |
 | Worktree location / policy | 1 | ✅ | repo/worktree root (D-14) and branch prefix (D-22) editable in Settings › Sessions; automatic branch deletion requires a recorded-ownership row, so no prefix can make your own branches deletable |
 | Default transcript view | 1 | ✅ |  |
 | Notification levels per event type | 1 | ◐ | quiet hours, channels, routing rules · *rejected for target* |

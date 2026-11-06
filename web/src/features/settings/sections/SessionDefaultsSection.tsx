@@ -76,7 +76,8 @@ function toDraft(s: AppSettings): DefaultsDraft {
  * `null`, so blank never means "the empty policy": an unselected action and an
  * empty denylist both send null and the server keeps deciding.
  */
-function toPayload(d: DefaultsDraft): Partial<AppSettings> {
+function toPayload(d: DefaultsDraft, saved: DefaultsDraft): Partial<AppSettings> {
+  const prefix = d.branchPrefix.trim()
   return {
     defaultPermissionMode: d.permissionMode,
     modelApprovalAction: d.modelApprovalAction || null,
@@ -86,8 +87,10 @@ function toPayload(d: DefaultsDraft): Partial<AppSettings> {
     // Blank sends null, the same convention Settings › General used before the
     // field moved here (D-14).
     repoRoot: d.repoRoot.trim() || null,
-    // Blank resets to the built-in; the server validates anything else (D-22).
-    branchPrefix: d.branchPrefix.trim() || null,
+    // Sent ONLY when it changed (D-22): the server re-validates every prefix it is
+    // sent, and an unrelated save must never fail on the clash scan of a prefix the
+    // user did not touch. Blank resets to the built-in.
+    ...(prefix !== saved.branchPrefix.trim() ? { branchPrefix: prefix || null } : {}),
   }
 }
 
@@ -125,7 +128,7 @@ export function SessionDefaultsSection() {
   const initial = React.useMemo(() => (settings ? toDraft(settings) : undefined), [settings])
   const form = useSettingsForm<DefaultsDraft>({
     initial,
-    save: (d) => update.mutateAsync(toPayload(d)),
+    save: (d) => update.mutateAsync(toPayload(d, initial ?? d)),
     beforeSave: (d, base) => (
       UNSAFE_MODES.has(d.permissionMode) && d.permissionMode !== base.permissionMode
         ? new Promise<boolean>((resolve) => setConfirm({ resolve, mode: d.permissionMode }))

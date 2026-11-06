@@ -50,6 +50,7 @@ from server.db.clock import db_utc_now
 from server.db.models import DataBackfill, Session as DbSession, SessionBranch
 from server.hostname import self_host_name
 from server.obs.context import log_event
+from server.obs.logdedupe import LogThrottle, log_event_throttled
 
 log = logging.getLogger(__name__)
 
@@ -261,11 +262,17 @@ class OwnedBranchGate:
     "will be deleted / kept" is the deletion's own answer); calling the gate asks the
     same question and notes a yes. A predicate that raises owns nothing."""
 
-    def __init__(self, host: str, clone: str | None, owns: Callable[[str], bool]) -> None:
+    def __init__(self, host: str, clone: str | None, owns: Callable[[str], bool], *,
+                 known: bool = True) -> None:
         self.host = host
         self.clone = clone
         self._owns = owns
+        #: False when ownership could not be read at all (the clone or the DB): every
+        #: answer is then a fail-closed "no", which callers report as "unknown".
+        self.known = known
         self.approved: list[str] = []
+        #: Branches asked about and NOT owned — kept (D-22 choice 3A surfaces them).
+        self.denied: list[str] = []
 
     def also_owning(self, created: str | None) -> "OwnedBranchGate":
         """This gate, also owning *created*: a branch the caller ITSELF just made in this
@@ -277,8 +284,9 @@ class OwnedBranchGate:
             return self
         inner = self._owns
         gate = OwnedBranchGate(self.host, self.clone,
-                               lambda b: b == created or bool(inner(b)))
+                               lambda b: b == created or bool(inner(b)), known=self.known)
         gate.approved = self.approved
+        gate.denied = self.denied
         return gate
 
     def owns(self, branch: str) -> bool:
@@ -291,9 +299,15 @@ class OwnedBranchGate:
 
     def __call__(self, branch: str) -> bool:
         ok = self.owns(branch)
-        if ok:
-            self.approved.append(branch)
+        (self.approved if ok else self.denied).append(branch)
         return ok
+
+    def ownership(self, branch: str) -> str:
+        """``owned`` | ``unowned`` | ``unknown`` (the read failed) for *branch* — the
+        read-only answer the Environment card shows (D-22 choice 3A)."""
+        if self.owns(branch):
+            return "owned"
+        return "unowned" if self.known else "unknown"
 
     async def settle(self) -> list[str]:
         """The approved branches git PROVES no longer exist (deleted), each record
@@ -316,8 +330,15 @@ class OwnedBranchGate:
 
 async def forget_branch(host: str, clone: str, branch: str) -> None:
     """Drop the record of *branch* (deleted) for ``(host, clone)`` — *clone* is already a
-    :func:`clone_key`. Never raises: a record left behind for a deleted branch can only
-    vouch for a later same-named branch of the same session."""
+    :func:`clone_key`. Never raises.
+
+    A record left behind (this failed, or nothing called it) keeps vouching: a
+    ``create``/``fork``/``import`` record owns its branch NAME in that clone for ANY
+    session being removed, so a later branch of the same name there would be
+    deletable — after its unpushed tip is snapshotted (``remove_worktree`` keeps it as
+    a recovery ref first). Names embed the creating session's short id, so a later
+    same-named branch is in practice that session's own; the rule is not tightened to
+    the session id because the janitor must delete unmapped worktrees' branches."""
     try:
         async with db_session() as db:
             await db.execute(sa_delete(SessionBranch).where(
@@ -355,7 +376,7 @@ async def owned_branch_predicate(host: str, path: str, session_id: str) -> Owned
     try:
         clone = await asyncio.to_thread(clone_key, path)
         if clone is None:
-            return OwnedBranchGate(host, None, _never)
+            return OwnedBranchGate(host, None, _never, known=False)
         async with db_session() as db:
             records = await _records_for(db, host, clone)
             row = (await db.execute(
@@ -364,7 +385,7 @@ async def owned_branch_predicate(host: str, path: str, session_id: str) -> Owned
     except Exception as exc:
         log_event(log, logging.INFO, "session_branch.lookup_failed", host=host,
                   error=type(exc).__name__)
-        return OwnedBranchGate(host, None, _never)
+        return OwnedBranchGate(host, None, _never, known=False)
     fork_parent = row.parent_session_id if row is not None and row.is_fork else None
     return OwnedBranchGate(host, clone, predicate_from(
         records, session_id, fork_parent_id=fork_parent,
@@ -372,6 +393,10 @@ async def owned_branch_predicate(host: str, path: str, session_id: str) -> Owned
 
 
 # ── the janitor's once-per-sweep snapshot ──────────────────────────────────────
+
+#: Weekly pacing for the janitor's kept-branches summary (one family, one throttle).
+_KEPT_THROTTLE = LogThrottle(window_s=7 * 86400.0)
+
 
 class _SessionFacts(NamedTuple):
     session_id: str
@@ -407,11 +432,11 @@ class JanitorOwnership:
     def owned_branch_for(self, worktree: str) -> OwnedBranchGate:
         """Blocking (resolves the clone with git): the gate for *worktree*."""
         if self.records_by_clone is None:
-            gate = OwnedBranchGate(self.host, None, _never)
+            gate = OwnedBranchGate(self.host, None, _never, known=False)
         else:
             clone = clone_key(worktree)
             if clone is None:
-                gate = OwnedBranchGate(self.host, None, _never)
+                gate = OwnedBranchGate(self.host, None, _never, known=False)
             else:
                 facts = self._session_at(worktree)
                 gate = OwnedBranchGate(self.host, clone, predicate_from(
@@ -423,9 +448,27 @@ class JanitorOwnership:
         return gate
 
     async def settle(self) -> None:
-        """Forget the records of every branch the sweep deleted."""
+        """Forget the records of every branch the sweep deleted, then report the
+        branches it KEPT because nothing vouched for them (D-22 choice 3A)."""
         for gate in self.gates:
             await gate.settle()
+        self.report_kept()
+
+    def kept_counts(self) -> tuple[int, int]:
+        """``(kept, unknown)``: worktrees the sweep removed whose branch it kept because
+        the gate did not own it, and how many of those because ownership could not be
+        read at all."""
+        kept = [g for g in self.gates if g.denied]
+        return len(kept), sum(1 for g in kept if not g.known)
+
+    def report_kept(self) -> None:
+        """One INFO summary per sweep that kept any, at most once a week — a standing
+        backlog, not news, and never a WARNING (nothing is wrong: the branch is safe)."""
+        count, unknown = self.kept_counts()
+        if count:
+            log_event_throttled(log, _KEPT_THROTTLE, "worktree.janitor.kept_unowned",
+                                logging.INFO, "worktree.janitor.kept_unowned",
+                                count=count, unknown=unknown)
 
 
 async def janitor_ownership(host: str) -> JanitorOwnership:

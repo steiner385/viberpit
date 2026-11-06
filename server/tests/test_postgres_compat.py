@@ -220,7 +220,7 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     "session_rewinds": {"id": "dtcheck-rewind", "session_id": "dtcheck-session"},
     # session_views (D-10) joins the sweep via viewed_at; identity is half the PK.
     "session_views": {"identity": "dtcheck@example.invalid"},
-    # session_branches (D-22, 0108) joins the sweep via created_at; every key column is
+    # session_branches (D-22, 0109) joins the sweep via created_at; every key column is
     # mandatory at INSERT (branch_ownership.record_branch) and has no default.
     "session_branches": {"session_id": "dtcheck-session", "host": "dtcheck-host",
                          "clone": "/tmp/dtcheck", "branch": "viberpit/dtcheck",

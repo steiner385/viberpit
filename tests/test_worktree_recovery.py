@@ -336,7 +336,7 @@ def test_discard_refs_are_never_pruned(wt, repo):
 
 def test_snapshot_before_discard_keeps_a_dirty_tree(wt, repo):
     _dirty(Path(wt.path))
-    refs = worktrees.snapshot_before_discard(wt.path, S5)
+    refs = worktrees.snapshot_before_discard(wt.path, S5, owned_branch=brand.is_session_branch)
     assert refs is not None and len(refs) == 1 and refs[0].endswith("-discard")
     files = _ls_tree(repo, refs[0])
     assert files["untracked.txt"] == "untracked" and files["staged.txt"] == "staged"
@@ -345,7 +345,7 @@ def test_snapshot_before_discard_keeps_a_dirty_tree(wt, repo):
 def test_snapshot_before_discard_keeps_unpushed_session_branch_commits(repo, tmp_path):
     info = _child_session_worktree(repo, tmp_path, S5)
     tip = _commit(Path(info.path))
-    refs = worktrees.snapshot_before_discard(info.path, S5)
+    refs = worktrees.snapshot_before_discard(info.path, S5, owned_branch=brand.is_session_branch)
     assert refs is not None and len(refs) == 1 and refs[0].endswith("-branch")
     assert _git("rev-parse", refs[0], cwd=repo) == tip
 
@@ -354,14 +354,14 @@ def test_snapshot_before_discard_keeps_dirty_first_then_branch(repo, tmp_path):
     info = _child_session_worktree(repo, tmp_path, S5)
     tip = _commit(Path(info.path))
     _dirty(Path(info.path))
-    refs = worktrees.snapshot_before_discard(info.path, S5)
+    refs = worktrees.snapshot_before_discard(info.path, S5, owned_branch=brand.is_session_branch)
     assert refs is not None and [r.rsplit("-", 1)[-1] for r in refs] == ["discard", "branch"]
     assert _git("rev-parse", refs[1], cwd=repo) == tip
 
 
 def test_snapshot_before_discard_of_a_clean_pushed_tree_writes_nothing(repo, tmp_path):
     info = _child_session_worktree(repo, tmp_path, S5)
-    assert worktrees.snapshot_before_discard(info.path, S5) == []
+    assert worktrees.snapshot_before_discard(info.path, S5, owned_branch=brand.is_session_branch) == []
     assert worktrees.recovery_refs(str(repo), S5) == []
 
 
@@ -370,7 +370,7 @@ def test_snapshot_before_discard_keeps_detached_head_commits(repo, tmp_path):
     them unreferenced, so the HEAD commit is kept."""
     info = worktrees.create_worktree(str(repo), None, S5, str(tmp_path))
     tip = _commit(Path(info.path))
-    refs = worktrees.snapshot_before_discard(info.path, S5)
+    refs = worktrees.snapshot_before_discard(info.path, S5, owned_branch=brand.is_session_branch)
     assert refs is not None and len(refs) == 1 and refs[0].endswith("-discard")
     assert _git("rev-parse", refs[0], cwd=repo) == tip
 
@@ -379,19 +379,19 @@ def test_snapshot_before_discard_leaves_a_user_branch_alone(wt, repo):
     """`feature` is the user's branch: removal never deletes it, so its commits are not
     at risk and no branch ref is written."""
     _commit(Path(wt.path))
-    assert worktrees.snapshot_before_discard(wt.path, S5) == []
+    assert worktrees.snapshot_before_discard(wt.path, S5, owned_branch=brand.is_session_branch) == []
 
 
 def test_snapshot_before_discard_fails_closed_off_a_worktree(tmp_path):
     (tmp_path / "plain").mkdir()
-    assert worktrees.snapshot_before_discard(str(tmp_path / "plain"), S5) is None
+    assert worktrees.snapshot_before_discard(str(tmp_path / "plain"), S5, owned_branch=brand.is_session_branch) is None
 
 
 def test_snapshot_before_discard_fails_closed_when_the_dirty_snapshot_fails(
         wt, monkeypatch):
     _dirty(Path(wt.path))
     monkeypatch.setattr(worktrees, "snapshot_recovery_ref", lambda *a, **k: None)
-    assert worktrees.snapshot_before_discard(wt.path, S5) is None
+    assert worktrees.snapshot_before_discard(wt.path, S5, owned_branch=brand.is_session_branch) is None
 
 
 def test_discard_then_force_remove_loses_nothing(repo, tmp_path):
@@ -401,7 +401,7 @@ def test_discard_then_force_remove_loses_nothing(repo, tmp_path):
     info = _child_session_worktree(repo, tmp_path, S5)
     tip = _commit(Path(info.path))
     _dirty(Path(info.path))
-    refs = worktrees.snapshot_before_discard(info.path, S5)
+    refs = worktrees.snapshot_before_discard(info.path, S5, owned_branch=brand.is_session_branch)
     assert worktrees.remove_worktree(info.path, force=True, session_id=S5, owned_branch=brand.is_session_branch)
     assert not Path(info.path).exists()
     gone = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
@@ -453,7 +453,7 @@ def test_an_unknown_unpushed_state_raises_before_discard(repo, tmp_path, monkeyp
     _commit(Path(info.path))
     _fail_unpushed_check(monkeypatch)
     with pytest.raises(worktrees.RecoveryUnknown):
-        worktrees.snapshot_before_discard(info.path, S6)
+        worktrees.snapshot_before_discard(info.path, S6, owned_branch=brand.is_session_branch)
     assert worktrees.recovery_refs(str(repo), S6) == []
 
 

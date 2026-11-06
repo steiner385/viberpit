@@ -146,7 +146,7 @@ describe('SessionDefaultsSection', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(mutateAsync).toHaveBeenCalledWith({
       defaultPermissionMode: 'interactive', modelApprovalAction: 'block', modelApprovalDenylist: 'fable, opus',
-      defaultToolDetail: 'all-open', thinkingCollapsed: true, repoRoot: null, branchPrefix: null,
+      defaultToolDetail: 'all-open', thinkingCollapsed: true, repoRoot: null,
     })
   })
 
@@ -185,6 +185,16 @@ describe('SessionDefaultsSection', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Save' }))
       expect(mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ branchPrefix: 'agent/' }))
       expect(await axe(container)).toHaveNoViolations()
+    })
+
+    it('saving another field never re-sends an unchanged prefix (D-22)', async () => {
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ branchPrefix: 'agent/' })))
+      mount()
+      await userEvent.click(screen.getByRole('radio', { name: 'Expand all' }))
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(mutateAsync).toHaveBeenCalledTimes(1)
+      expect(mutateAsync.mock.calls[0][0]).not.toHaveProperty('branchPrefix')
+      expect(mutateAsync.mock.calls[0][0]).toMatchObject({ defaultToolDetail: 'all-open' })
     })
 
     it('Reset on a stored prefix saves branchPrefix: null — back to the built-in', async () => {

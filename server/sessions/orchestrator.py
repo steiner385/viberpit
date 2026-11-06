@@ -6975,6 +6975,8 @@ class SessionOrchestrator:
         branch: str | None = None
         refs: list[str] = []
         session_branch = False
+        ownership: str | None = None
+        prefixed = False
         if managed and state == "present":
             try:
                 st = await asyncio.to_thread(wtx.inspect, cwd)
@@ -6985,12 +6987,19 @@ class SessionOrchestrator:
             # D-22: THE deletion predicate Discard hands remove_worktree, so the dialog's
             # "will be deleted / kept" is the deletion's own answer.
             if branch:
-                session_branch = (await self._owned_branch_gate(rec.id, cwd)).owns(branch)
+                gate = await self._owned_branch_gate(rec.id, cwd)
+                session_branch = gate.owns(branch)
+                # D-22 choice 3A (read-only): whether cleanup will keep a branch that
+                # LOOKS like ours, so the Environment card can say why.
+                ownership = gate.ownership(branch)
+                prefixed = (brand.is_session_branch(branch) or branch.startswith(
+                    await _branch_prefix.effective_branch_prefix()))
         at_risk = bool(dirty) or bool(unpushed)
         return {
             "sessionId": rec.id, "path": cwd or None, "managed": managed,
             "present": state == "present", "state": state, "branch": branch,
             "sessionBranch": session_branch,
+            "branchOwnership": ownership, "branchPrefixed": prefixed,
             "dirty": dirty, "unpushed": unpushed, "recoveryRefs": refs,
             "restoreHint": (worktrees.restore_command("<recovery-ref>")
                             if at_risk or dirty is None else None),
@@ -7031,8 +7040,9 @@ class SessionOrchestrator:
 
     async def worktree_preflight(self, session_id: str) -> dict:
         """The Discard / Repair dialog's facts (D-19): ``{sessionId, path, managed,
-        present, state, branch, sessionBranch, dirty, unpushed, recoveryRefs,
-        restoreHint, busy, canDiscard, canRepair}``. ``KeyError`` for an unknown session.
+        present, state, branch, sessionBranch, branchOwnership, branchPrefixed, dirty,
+        unpushed, recoveryRefs, restoreHint, busy, canDiscard, canRepair}``. ``KeyError``
+        for an unknown session.
         ``dirty``/``unpushed`` are None when the tree could not be read."""
         rec = self._worktree_record(session_id)
         facts = await self._worktree_control_facts(rec)
@@ -7127,9 +7137,14 @@ class SessionOrchestrator:
             if self._worktree_shared(session_id, cwd):
                 raise self._worktree_refusal(session_id, "discard", wc.WORKTREE_SHARED)
             repo_top = await asyncio.to_thread(_branch_ownership.clone_top, cwd)
+            # Built while the worktree still exists (it resolves the clone from it): the
+            # same predicate the preflight's sessionBranch asked, the snapshot asks
+            # (an owned branch keeps its tip first) and the removal is handed (D-22).
+            owned_branch = await self._owned_branch_gate(session_id, cwd)
             try:
-                refs = await asyncio.to_thread(worktrees.snapshot_before_discard, cwd,
-                                               session_id)
+                refs = await asyncio.to_thread(functools.partial(
+                    worktrees.snapshot_before_discard, cwd, session_id,
+                    owned_branch=owned_branch.owns))
             except worktrees.RecoveryUnknown as exc:
                 raise self._worktree_refusal(session_id, "discard",
                                              wc.WORKTREE_DISCARD_UNSAFE) from exc
@@ -7140,9 +7155,6 @@ class SessionOrchestrator:
             log_event(log, logging.INFO, "session.worktree_discard_snapshot",
                       session_id=session_id, path=cwd, recovery_refs=refs)
             branch = facts["branch"]
-            # Built while the worktree still exists (it resolves the clone from it), and
-            # the same predicate the preflight's sessionBranch asked (D-22).
-            owned_branch = await self._owned_branch_gate(session_id, cwd)
 
             async def kept() -> dict:
                 # Every ref the session now has, the removal's own included — re-read,
@@ -23624,7 +23636,10 @@ class SessionOrchestrator:
             await self._close_for_transfer(session_id)
             self._retarget_record(session_id, source or "")
             if created and bundle is not None:
-                owned_branch = await self._owned_branch_gate(session_id, cwd)
+                # The branch import_ just made has no record yet (it is written after
+                # the import succeeds): undoing our own creation needs none (D-22).
+                owned_branch = (await self._owned_branch_gate(session_id, cwd)).also_owning(
+                    bundle.branch if branch_made_in else None)
                 await asyncio.to_thread(functools.partial(
                     wtx.finalize, bundle, cwd, owned_branch=owned_branch))
                 await owned_branch.settle()

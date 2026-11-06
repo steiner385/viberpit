@@ -296,7 +296,12 @@ async def put_settings_row(
             raise HTTPException(status_code=422, detail="invalid defaultOutputStyle")
         row.default_output_style = style
     if "branchPrefix" in body.model_fields_set:
-        row.branch_prefix = await _validated_branch_prefix(body.branchPrefix, row)
+        from server.sessions import branch_prefix as bp
+        # Unchanged → nothing to validate (D-22): re-running the clash scan on every
+        # save would let one unrecorded branch, or one unreadable clone, fail every
+        # unrelated Settings › Sessions save on a field the user never touched.
+        if bp.normalise(body.branchPrefix) != row.branch_prefix:
+            row.branch_prefix = await _validated_branch_prefix(body.branchPrefix, row)
     # LAST, after every other field above has had its chance to raise: this
     # block commits (not merely flushes), which is this handler's one point of
     # no return. `get_db`'s deferred commit made the whole PUT atomic before

@@ -12,7 +12,7 @@ import { lazy, Suspense, useState } from 'react'
 import { toast } from 'sonner'
 import { useRepairWorktree, useWorktreePreflight } from '@/api/worktreeHooks'
 import { TOUCH_FLOOR } from '@/ui/list/listControlStyles'
-import { REPAIR_FAILED_FALLBACK, worktreeError } from './worktreeCopy'
+import { BRANCH_KEPT_NOTE, BRANCH_KEPT_UNKNOWN, REPAIR_FAILED_FALLBACK, worktreeError } from './worktreeCopy'
 
 const DiscardWorktreeDialog = lazy(() => import('./DiscardWorktreeDialog'))
 
@@ -35,7 +35,11 @@ export function WorktreeControls({ sessionId, busy, onDiscarded }: WorktreeContr
   const managed = pf?.managed === true
   const canOpenDiscard = managed && pf.state === 'present'
   const repairable = managed && (pf.state === 'missing' || pf.state === 'empty') && pf.canRepair
-  if (!canOpenDiscard && !repairable && !discardOpen) return null
+  // D-22 choice 3A, read-only: a branch that looks like ours but nothing vouches for is
+  // kept on cleanup — say so quietly. Never for the user's own unprefixed branch.
+  const keptNote = managed && pf.branchPrefixed === true
+    && (pf.branchOwnership === 'unowned' || pf.branchOwnership === 'unknown')
+  if (!canOpenDiscard && !repairable && !discardOpen && !keptNote) return null
 
   // `mutateAsync`, not `mutate`'s callbacks: the result toasts even if the card has gone.
   function runRepair() {
@@ -47,6 +51,12 @@ export function WorktreeControls({ sessionId, busy, onDiscarded }: WorktreeContr
 
   return (
     <div className="flex flex-wrap items-center justify-end gap-1" data-testid="worktree-controls">
+      {keptNote && (
+        <p className="mr-auto w-full text-xs text-ink-muted" data-testid="branch-kept-note">
+          {BRANCH_KEPT_NOTE}
+          {pf?.branchOwnership === 'unknown' && <> {BRANCH_KEPT_UNKNOWN}</>}
+        </p>
+      )}
       {repairable && (
         <>
           <span className="mr-auto text-warning">The worktree is missing from this host.</span>

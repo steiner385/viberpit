@@ -43,7 +43,7 @@
 **DB.**
 - The CLI core (`src/viberpit/`) has no DB access. Ownership must be resolved in the server and passed down, following the `_fetch_archived_cwds` → `live_cwds` precedent (`orchestrator.py:28798`).
 - There is **one shared Postgres** for all hosts, but clones are per host, so a record must be host- and clone-scoped.
-- The newest migration is `0107_milestone_notes`; the next is `0108_…`.
+- The newest migration was `0107_milestone_notes` when written; D-22 landed as `0109_session_branches` and `0110_app_settings_branch_prefix` after `0108_session_snooze`.
 - A new table needs entries in:
   - `_REQUIRED_EXTRAS` (`server/tests/test_postgres_compat.py`);
   - `_FK_LINKS` if it has an FK;
@@ -71,7 +71,7 @@
   - `source`: `create` | `fork` | `import` | `backfill`
   - `created_at` (`db_utc_now`)
 - It has a unique constraint on `(host, clone, branch)`.
-- Add migration `0108_session_branches`, chained off 0107.
+- Add migration `0109_session_branches`, chained off `0108_session_snooze` (renumbered from 0108 when #3349 landed first); Task 3's `AppSettings.branch_prefix` is `0110_app_settings_branch_prefix`.
 - Recording rules:
   - Record when ViberPit actually created the branch: `create_worktree` with `is_child=True`, every fork, and `import_` when `prev is None` **and** the source host had a record for it. The source record travels with the move (bundle metadata or a DB read on the target, since it is one shared DB).
   - The recording must succeed before the session is reported started. If the DB write fails, the branch still exists but is unrecorded, so it is never auto-deleted (fail closed). Log at WARNING with a bare event name.
@@ -137,7 +137,7 @@
 
 **Files:**
 - `server/db/models.py`
-- `server/db/migrations/versions/0108_session_branches.py`
+- `server/db/migrations/versions/0109_session_branches.py`
 - `server/db/__init__.py` (backfill)
 - a new `server/sessions/branch_ownership.py`: record, lookup, the predicate builder, the legacy shape rule
 - the orchestrator spawn, fork and move-import recording calls

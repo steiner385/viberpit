@@ -16,10 +16,11 @@ they were created in), and share the original repo's object store (cheap — no 
 
 If the selected branch is already checked out somewhere (commonly the user's real
 checkout sitting on `main`), git refuses to check it out twice, so we fall back to
-a per-session child branch ``viberpit/<branch>-<short>`` based on it — still
-isolated, still writable, and clearly named.  Branches created before the rebrand
-carry the ``ccswitch/`` prefix and are matched too (``brand.is_session_branch``);
-that accept side is permanent, because a pushed branch outlives the flip.
+a per-session child branch ``<prefix><branch>-<short>`` based on it — still
+isolated, still writable, and clearly named. ``<prefix>`` is the configured
+session-branch prefix (D-22; built-in ``viberpit/``). No name decides deletion:
+``remove_worktree`` deletes a branch only when its required ``owned_branch``
+predicate — the server's recorded-ownership check — says ViberPit created it.
 """
 from __future__ import annotations
 
@@ -1429,7 +1430,8 @@ def snapshot_branch_tip(repo_top: str, branch: str, session_id: str) -> str | No
         return None
 
 
-def snapshot_before_discard(worktree: str, session_id: str) -> list[str] | None:
+def snapshot_before_discard(worktree: str, session_id: str, *,
+                            owned_branch: Callable[[str], bool]) -> list[str] | None:
     """Keep everything a Discard (D-19) would destroy, BEFORE anything is touched.
 
     A Discard force-removes the worktree and ``branch -D``'s its session branch
@@ -1466,7 +1468,14 @@ def snapshot_before_discard(worktree: str, session_id: str) -> list[str] | None:
                 return None
             refs.append(ref)
         branch = current_branch(worktree)
-        if branch is not None and brand.is_session_branch(branch):
+        # The SAME ownership predicate the removal will ask (D-22): a branch it would
+        # delete — custom prefix included — gets its tip kept first; a branch it keeps
+        # loses nothing. A predicate that raises owns nothing, as in remove_worktree.
+        try:
+            owned = branch is not None and bool(owned_branch(branch))
+        except Exception:
+            owned = False
+        if branch is not None and owned:
             at_risk = _branch_has_unpushed_commits(repo_top, branch)
             if at_risk is None:
                 raise RecoveryUnknown(f"unpushed commits on {branch} unknown")

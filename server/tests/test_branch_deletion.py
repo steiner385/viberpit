@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select, update
+from unittest.mock import patch
 
 from viberpit import worktrees
 from server.db import db_session
@@ -30,7 +31,7 @@ from server.tests.test_worktree_controls import (  # noqa: F401
     SID, _branch_exists, _git, _orch, env,
 )
 from server.tests.test_session_move import (  # noqa: F401
-    SID as MOVE_SID, _managed, _source, two_hosts, visibility,
+    SID as MOVE_SID, _managed, _manifest, _source, _target, two_hosts, visibility,
 )
 
 OTHER = "eeee9999-5678-0000-0000-000000000000"
@@ -245,6 +246,63 @@ async def test_finalize_keeps_an_unrecorded_branch(monkeypatch, two_hosts,  # no
     assert worktrees.local_branch_exists(str(h.a_clone), "viberpit/foo")
 
 
+async def _abandoned_import(monkeypatch, h, *, branch: str, target_had_it: bool):
+    """A move import that fails after import_ (the resume never comes up): _abandon
+    finalizes the target tree it made."""
+    from unittest.mock import AsyncMock
+    from server.sessions import session_move as sm
+    _git("branch", "-m", worktrees._child_branch("main", MOVE_SID), branch, cwd=h.cwd)
+    if target_had_it:
+        subprocess.run(["git", "-C", str(h.b_clone), "branch", branch], check=True)
+    manifest = _manifest(h)
+    o = await _target(monkeypatch, h)
+    o.ensure_driver = AsyncMock(return_value=None)
+    with pytest.raises(sm.MoveError):
+        await o.transfer_import(MOVE_SID, manifest, source="dobby")
+    assert not h.b_cwd.exists()
+    return worktrees.local_branch_exists(str(h.b_clone), branch)
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_import_deletes_the_custom_prefix_branch_it_created(
+        monkeypatch, two_hosts) -> None:  # noqa: F811 — pytest fixture
+    """No record exists yet (it is written only after a successful import), and a
+    custom-prefix name has no legacy shape: only the just-created exception can undo it."""
+    assert await _abandoned_import(monkeypatch, two_hosts, branch="agent/main-5e55a0aa",
+                                   target_had_it=False) is False
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_import_keeps_a_branch_the_target_already_had(
+        monkeypatch, two_hosts) -> None:  # noqa: F811 — pytest fixture
+    assert await _abandoned_import(monkeypatch, two_hosts, branch="agent/main-5e55a0aa",
+                                   target_had_it=True) is True
+
+
+# ── Discard's pre-removal snapshot asks the same ownership predicate ───────────
+
+def test_discard_snapshots_the_tip_of_an_owned_custom_prefix_branch(env):  # noqa: F811 — pytest fixture
+    """An unpushed commit on a recorded custom-prefix branch is kept as a recovery ref
+    BEFORE anything is removed — the snapshot asks ownership, not the name."""
+    _switch(env, "agent/custom")
+    Path(env["cwd"], "w.txt").write_text("unpushed\n")
+    _git("add", "-A", cwd=env["cwd"])
+    _git("-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "w", cwd=env["cwd"])
+    tip = _git("rev-parse", "HEAD", cwd=env["cwd"])
+    calls: list[list[str] | None] = []
+    real = worktrees.snapshot_before_discard
+
+    def spy(*a, **k):
+        out = real(*a, **k)
+        calls.append(out)
+        return out
+    with patch.object(worktrees, "snapshot_before_discard", spy):
+        facts, res = asyncio.run(_discard(env, branch="agent/custom", record_host=HOST))
+    assert res["branchDeleted"] is True
+    (snap,) = calls
+    assert snap and any(_git("rev-parse", r, cwd=env["clone"]) == tip for r in snap)
+
+
 # ── the janitor: one snapshot per sweep, and the unmapped-worktree rule ────────
 
 def _run(*args: str, cwd) -> None:
@@ -357,6 +415,85 @@ async def test_a_failed_janitor_snapshot_keeps_every_branch(janitor, monkeypatch
     monkeypatch.setattr(bo, "db_session", broken)
     await SessionOrchestrator(repo_root=str(root))._janitor_tick()
     assert not wt1.exists() and worktrees.local_branch_exists(str(clone), own)
+
+
+# ── D-22 choice 3A: kept branches are surfaced, read-only ──────────────────────
+
+@pytest.mark.parametrize("branch,prefix,record,broken,want", [
+    (None, None, False, False, ("owned", True)),             # own legacy shape
+    ("viberpit/foo", None, False, False, ("unowned", True)),
+    ("viberpit/foo", None, True, False, ("owned", True)),
+    ("viberpit/foo", None, False, True, ("unknown", True)),   # the read failed
+    ("mine", None, False, False, ("unowned", False)),        # the user's own branch
+    ("agent/x", "agent/", False, False, ("unowned", True)),  # the configured prefix
+])
+def test_preflight_reports_branch_ownership(
+        env, monkeypatch, branch, prefix, record, broken, want):  # noqa: F811 — pytest fixture
+    from server.db.models import AppSettings
+    if branch is not None:
+        _switch(env, branch)
+    branch = branch or env["branch"]
+
+    async def run():
+        orch = await _orch(env, branch=branch)
+        if prefix:
+            async with db_session() as db:
+                db.add(AppSettings(id="singleton", branch_prefix=prefix))
+        if record:
+            await bo.record_branch(session_id=SID, host=HOST, path=env["cwd"],
+                                   branch=branch, source=bo.SOURCE_CREATE)
+        if broken:
+            def down():
+                raise RuntimeError("db down")
+            monkeypatch.setattr(bo, "db_session", down)
+        return await orch.worktree_preflight(SID)
+    facts = asyncio.run(run())
+    assert (facts["branchOwnership"], facts["branchPrefixed"]) == want
+    assert facts["sessionBranch"] is (want[0] == "owned")
+
+
+def _kept_records(caplog):
+    return [r for r in caplog.records if r.getMessage() == "worktree.janitor.kept_unowned"]
+
+
+@pytest.mark.asyncio
+async def test_janitor_summarises_kept_branches_once_a_week(janitor, monkeypatch, caplog):
+    import logging
+    from server.obs.logdedupe import LogThrottle
+    monkeypatch.setattr(bo, "_KEPT_THROTTLE", LogThrottle(window_s=7 * 86400.0))
+    root, clone = janitor
+    s3 = "33333333-0000-0000-0000-000000000000"
+    _stale_worktree(root, clone, s3, worktrees._child_branch("main", s3))   # unmapped
+    orch = SessionOrchestrator(repo_root=str(root))
+    with caplog.at_level(logging.DEBUG, logger=bo.log.name):
+        await orch._janitor_tick()
+    (rec,) = _kept_records(caplog)
+    assert rec.levelno == logging.INFO and rec.fields == {"count": 1, "unknown": 0}
+    caplog.clear()
+    s4 = "44444444-0000-0000-0000-000000000000"
+    _stale_worktree(root, clone, s4, worktrees._child_branch("main", s4))
+    with caplog.at_level(logging.DEBUG, logger=bo.log.name):
+        await orch._janitor_tick()
+    (again,) = _kept_records(caplog)
+    assert again.levelno == logging.DEBUG                   # throttled within the week
+
+
+@pytest.mark.asyncio
+async def test_janitor_summary_counts_unknown_ownership(janitor, monkeypatch, caplog):
+    import logging
+    from server.obs.logdedupe import LogThrottle
+    monkeypatch.setattr(bo, "_KEPT_THROTTLE", LogThrottle(window_s=7 * 86400.0))
+    root, clone = janitor
+    s1 = "11111111-0000-0000-0000-000000000000"
+    _stale_worktree(root, clone, s1, worktrees._child_branch("main", s1))
+
+    def broken():
+        raise RuntimeError("db down")
+    monkeypatch.setattr(bo, "db_session", broken)
+    with caplog.at_level(logging.INFO, logger=bo.log.name):
+        await SessionOrchestrator(repo_root=str(root))._janitor_tick()
+    (rec,) = _kept_records(caplog)
+    assert rec.fields == {"count": 1, "unknown": 1}
 
 
 # ── every remove_worktree call site passes a predicate ─────────────────────────
