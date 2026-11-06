@@ -6,7 +6,7 @@
 // (D2) and reports per-host outcomes; install, update, add and confirm hide while the
 // `installEnabled` kill switch is off, while enable/disable, uninstall and remove stay.
 import { useEffect, useState } from 'react'
-import { useLibraryPluginDetail, useLibraryPlugins, useTogglePlugin, useUninstallPlugin } from '@/api/pluginHooks'
+import { useLibraryPluginDetail, useLibraryPlugins, useReloadPlugins, useTogglePlugin, useUninstallPlugin } from '@/api/pluginHooks'
 import type { LibraryMarketplace, LibraryPlugin } from '@/api/types'
 import { Button } from '@/ui/Button'
 import { QueryFailureBanner } from '@/ui/QueryFailureBanner'
@@ -14,14 +14,16 @@ import { useConfirm } from '@/ui/useConfirm'
 import { BrowsePanel } from './plugins/BrowsePanel'
 import { ConsentDialog, type ConsentTarget } from './plugins/ConsentDialog'
 import { HostOutcomes, type OpRecord } from './plugins/HostOutcomes'
+import { SessionOutcomes } from './plugins/SessionOutcomes'
 import { MarketplacesPanel } from './plugins/MarketplacesPanel'
 import { useOpRecord } from './plugins/useOpRecord'
-import { INSTALL_OFF_COPY, LOAD_FAILED_COPY, clip, marketplaceSourceText, refusalMessage } from './plugins/pluginText'
+import { INSTALL_OFF_COPY, LOAD_FAILED_COPY, RELOAD_BUTTON, clip, marketplaceSourceText, refusalMessage } from './plugins/pluginText'
 
 export default function PluginsSection() {
   const { data, isLoading, isError, refetch } = useLibraryPlugins()
   const [consent, setConsent] = useState<ConsentTarget | null>(null)
   const uninstall = useOpRecord(useUninstallPlugin())
+  const reload = useReloadPlugins()
   const { confirm, dialog } = useConfirm()
   if (isLoading) return <div className="text-sm opacity-70 p-4">Loading…</div>
   // A failed read is not "No plugins installed": say it failed and offer a retry.
@@ -46,9 +48,26 @@ export default function PluginsSection() {
 
   return (
     <div className="min-w-0">
-      <p className="text-xs opacity-60 mb-3">
-        Plugins are shared across all accounts and installed on every host. Changes apply to newly started sessions.
-      </p>
+      <div className="flex items-start gap-3 mb-3 min-w-0">
+        <p className="flex-1 min-w-0 text-xs opacity-60">
+          Plugins are shared across all accounts and installed on every host. Changes apply to newly started sessions.
+        </p>
+        <Button
+          size="sm"
+          variant="secondary"
+          className="shrink-0"
+          loading={reload.isPending}
+          onClick={() => reload.mutate({ holdOnCacheImpact: true })}
+        >
+          {RELOAD_BUTTON}
+        </Button>
+      </div>
+      {reload.isError && (
+        <p role="alert" className="mb-2 text-xs text-danger break-words">
+          Couldn’t reload running sessions: {refusalMessage(reload.error)}
+        </p>
+      )}
+      {reload.data && <div className="mb-2"><SessionOutcomes result={reload.data} /></div>}
       {failure && <div className="mb-3">{failure}</div>}
       {!installEnabled && (
         <p className="mb-3 rounded-md border border-edge p-2 text-sm" aria-label="Plugin installs off">{INSTALL_OFF_COPY}</p>

@@ -65,10 +65,13 @@ PLUGIN_NOT_FOUND = "PLUGIN_NOT_FOUND"
 PLUGIN_UNREVIEWED = "PLUGIN_UNREVIEWED"
 COMMAND_SOURCE_REFUSED = "PLUGIN_COMMAND_SOURCE_REFUSED"
 ENTRY_SOURCE_REFUSED = "PLUGIN_ENTRY_SOURCE_REFUSED"
+DIRECTORY_UNAVAILABLE = "PLUGIN_DIRECTORY_UNAVAILABLE"
 
 #: ``MARKETPLACE_NOT_CURATED`` reasons — the UI tells "confirm it" from "it changed".
 REASON_NOT_CONFIRMED = "not_confirmed"
 REASON_SOURCE_CHANGED = "source_changed"
+#: ``PLUGIN_UNREVIEWED`` reason: the live Directory disagrees with the cached listing.
+REASON_DIRECTORY_MISMATCH = "directory_mismatch"
 
 # The CLI's own GitHub shorthand (``Lon`` @280765576); ``fullmatch`` everywhere (a ``$``
 # under ``re.match`` also accepts a trailing newline).
@@ -213,49 +216,54 @@ def _internal(addr: str) -> bool:
 
 
 def _check_host(host: str, *, resolve: bool) -> str | None:
-    """Why *host* is refused, else ``None``. Refuses every IP-literal spelling
+    """Why *host* is refused, else ``None`` (see :func:`_host_verdict`)."""
+    return _host_verdict(host, resolve=resolve)[0]
+
+
+def _host_verdict(host: str, *, resolve: bool) -> tuple[str | None, list[str]]:
+    """``(why, addresses)``: why *host* is refused, else ``None``, plus the addresses the
+    check saw (empty unless *resolve* and accepted) so a caller can pin the clone to them.
+    Refuses every IP-literal spelling
     (``127.1``, ``0x7f.1``, ``017700000001`` …), ``localhost`` and ``*.localhost``, and —
     a private-network suffix (``*.ts.net``, ``*.local`` … ``_INTERNAL_SUFFIXES``), and —
     when *resolve* — a name that resolves to a private, loopback, link-local, CGNAT
     (``100.64/10``, the tailnet), multicast, unspecified or reserved address, or does not
     resolve at all.
 
-    Residual: DNS rebinding. The name is resolved here and again by git when the CLI
-    clones, so a name that answers public now and internal later passes this check. The
-    check stops the plain case (a URL that names an internal service); closing rebinding
-    would need the clone to be pinned to the checked address, which the CLI does not offer.
+    The one DNS answer is also what :func:`resolved_pin` hands the clone, so the CLI's own
+    ``git clone`` cannot re-resolve the name to something internal (DNS rebinding).
     """
     lowered = host.lower().rstrip(".")
     if lowered == "localhost" or lowered.endswith(".localhost"):
-        return "localhost"
+        return "localhost", []
     if lowered.endswith(_INTERNAL_SUFFIXES):
-        return "a private-network name"
+        return "a private-network name", []
     if all(_NUMERIC_LABEL_RE.fullmatch(label) for label in lowered.split(".")):
-        return "an IP address"
+        return "an IP address", []
     try:
         ipaddress.ip_address(lowered)
-        return "an IP address"
+        return "an IP address", []
     except ValueError:
         pass
     try:
         socket.inet_aton(lowered)
-        return "an IP address"
+        return "an IP address", []
     except OSError:
         pass
     if not resolve:
-        return None
+        return None, []
     try:
         addrs = _resolve(lowered)
     except (OSError, UnicodeError):
-        return "a host that does not resolve"
+        return "a host that does not resolve", []
     if not addrs:
-        return "a host that does not resolve"
+        return "a host that does not resolve", []
     try:
         if any(_internal(a) for a in addrs):
-            return "a host on a private or internal network"
+            return "a host on a private or internal network", []
     except ValueError:
-        return "a host with an unreadable address"
-    return None
+        return "a host with an unreadable address", []
+    return None, addrs
 
 
 def _would_be_name(repo: str) -> str:
@@ -301,6 +309,11 @@ def check_marketplace_source(source: object, *, resolve: bool = True) -> str:
     ``file:``, ssh and anything carrying whitespace or shell metacharacters are refused, as
     is a source whose name would impersonate an official marketplace from anyone but
     ``anthropics``. *resolve* does a blocking DNS lookup: call it off the event loop."""
+    return _checked_source(source, resolve=resolve)[0]
+
+
+def _checked_source(source: object, *, resolve: bool) -> tuple[str, list[str]]:
+    """:func:`check_marketplace_source` plus the addresses its one DNS lookup saw."""
     def refuse(why: str) -> PolicyRefusal:
         return PolicyRefusal(MARKETPLACE_SOURCE_REFUSED,
                              f"Marketplace source refused: {why}. Use a GitHub owner/repo "
@@ -321,7 +334,7 @@ def check_marketplace_source(source: object, *, resolve: bool = True) -> str:
     m = _GITHUB_RE.fullmatch(source)
     if m:
         _guard_reserved(m["owner"], m["repo"])
-        return source
+        return source, []
     if not source.startswith("https://"):
         raise refuse("not a GitHub owner/repo or an https:// URL")
     parts = urlsplit(source)
@@ -330,13 +343,33 @@ def check_marketplace_source(source: object, *, resolve: bool = True) -> str:
             or parts.query or parts.fragment or not _HOST_RE.fullmatch(host)
             or not _URL_PATH_RE.fullmatch(parts.path or "")):
         raise refuse("unsupported https URL")
-    why = _check_host(host, resolve=resolve)
+    why, addrs = _host_verdict(host, resolve=resolve)
     if why:
         raise refuse(f"it names {why}")
     segments = [s for s in parts.path.split("/") if s]
     owner = segments[0] if host.lower() == "github.com" and len(segments) >= 2 else ""
     _guard_reserved(owner, segments[-1])
-    return source
+    return source, addrs
+
+
+def resolved_pin(source: str) -> str | None:
+    """The libcurl ``CURLOPT_RESOLVE`` entry (``host:443:addr1,[v6addr]``) that pins a clone of
+    *source* to the addresses the SSRF check saw, or ``None`` for ``owner/repo`` (GitHub's
+    own host, not a caller-chosen name). One DNS lookup serves the check and the pin.
+    Raises the same :class:`PolicyRefusal` as :func:`check_marketplace_source`. Blocking."""
+    checked, addrs = _checked_source(source, resolve=True)
+    if not checked.startswith("https://"):
+        return None
+    host = (urlsplit(checked).hostname or "").lower().rstrip(".")
+    # curl's --resolve form brackets an IPv6 address: ``host:443:[2001:db8::1],1.2.3.4``.
+    return f"{host}:443:{','.join(f'[{a}]' if ':' in a else a for a in sorted(set(addrs)))}"
+
+
+def pin_for_normalized(normalized: str | None) -> str | None:
+    """:func:`resolved_pin` for a normalized ``https:<host><path>`` source, else ``None``."""
+    if not normalized or not normalized.startswith("https:"):
+        return None
+    return resolved_pin("https://" + normalized[len("https:"):])
 
 
 # --------------------------------------------------------------------------- install policy
@@ -418,6 +451,67 @@ def is_reviewed(listing: Mapping[str, Any] | None) -> bool:
     return review_state(listing) == "done"
 
 
+#: Keys the live Directory API may carry that the CLI's cache drops. Probed 2026-11-05 over
+#: all 3,605 cached listings: 3,512 equal live after dropping ``source.marketplace_slug``;
+#: the other 93 differ only by ``source.repository.tracked_ref``. No cached key was ever
+#: missing live. Anything else live-only is unexplained, so it is a mismatch.
+_LIVE_ONLY_KEYS = frozenset({("source", "marketplace_slug"), ("repository", "tracked_ref")})
+
+
+def _same_node(scope: str, cached: Mapping[str, Any], live: Mapping[str, Any]) -> bool:
+    """Deny by default: every cached key exists live and is equal (``repository`` recursively,
+    ``url`` by normalized identity); a live-only key must be in :data:`_LIVE_ONLY_KEYS`."""
+    if any((scope, k) not in _LIVE_ONLY_KEYS for k in live.keys() - cached.keys()):
+        return False
+    for key, value in cached.items():
+        if key not in live:
+            return False
+        other = live[key]
+        if key == "repository" and scope == "source":
+            if not isinstance(value, Mapping) or not isinstance(other, Mapping) \
+                    or not _same_node("repository", value, other):
+                return False
+        elif key == "url" and scope == "repository":
+            norm = _normalize_url(value) if isinstance(value, str) else None
+            if norm is None or norm != (_normalize_url(other) if isinstance(other, str) else None):
+                return False
+        elif value != other:
+            return False
+    return True
+
+
+def _same_source(cached: Mapping[str, Any], live: Mapping[str, Any]) -> bool:
+    """The whole install-relevant ``source`` agrees (``type``, ``repository.url``/``path``/
+    ``reviewed_commit`` …); see :func:`_same_node`. Both lacking a source passes."""
+    cs, ls = cached.get("source"), live.get("source")
+    if cs is None and ls is None:
+        return True
+    return isinstance(cs, Mapping) and isinstance(ls, Mapping) and _same_node("source", cs, ls)
+
+
+def check_directory_listing(cached: Mapping[str, Any], live: object) -> None:
+    """The cache file is forgeable; the live Directory API is the authority. Passes only
+    when *live* is the same listing (``id``), is reviewed, and its install-relevant
+    ``source`` equals the cached one (:func:`_same_source`)."""
+    mismatch = PolicyRefusal(
+        PLUGIN_UNREVIEWED,
+        "The Anthropic Directory does not confirm this listing as reviewed and unchanged, "
+        "so it cannot be installed from here.", reason=REASON_DIRECTORY_MISMATCH)
+    if not isinstance(live, Mapping) or live.get("id") != cached.get("id") \
+            or not isinstance(cached.get("id"), str) or not is_reviewed(live):
+        raise mismatch
+    if not _same_source(cached, live):
+        raise mismatch
+
+
+def verified_listing(live: Mapping[str, Any]) -> dict[str, Any]:
+    """The part of a live listing :func:`check_directory_listing` judges (``id``, review
+    state, ``source``): what the edge sends each host as ``expected_listing`` once the live
+    Directory has confirmed the edge's cache."""
+    return {"id": live.get("id"), "source": live.get("source"),
+            "checks": {"review": {"state": review_state(live)}}}
+
+
 def check_curated(marketplace: str, curated: Mapping[str, str],
                   sources: Mapping[str, str | None]) -> None:
     """THE "is this marketplace curated, as configured right now?" check: the owner
@@ -459,6 +553,11 @@ def check_install(plugin_id: str, curated: Mapping[str, str], catalog: InstallCa
                                 "installed from here.")
         if is_command_source(listing):
             raise _command_refusal(plugin_id)
+        why = entry_source_refusal(listing)
+        if why:
+            raise PolicyRefusal(ENTRY_SOURCE_REFUSED,
+                                f"{plugin_id} would be fetched from {why}. ViberPit installs "
+                                "plugins only from public https sources.")
         return
     check_curated(marketplace, curated, catalog.sources)
     entry = (catalog.marketplaces.get(marketplace) or {}).get(name)

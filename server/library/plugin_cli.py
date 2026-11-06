@@ -29,6 +29,7 @@ import logging
 import os
 import secrets
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Awaitable
@@ -119,7 +120,29 @@ def _config_dir_env() -> dict[str, str]:
     return {key: helper_env(str(paths.shared_base()), "", writes_back=True)[key]}
 
 
-def _env(nonce: str) -> dict[str, str]:
+def git_pin_config(pin: str) -> str:
+    """A git global config that resolves the pinned host to the checked addresses
+    (``http.curloptResolve``) and still includes the user's own ``~/.gitconfig`` so
+    credential helpers keep working. The CLI replaces ``GIT_CONFIG_COUNT``/``KEY``/``VALUE``
+    but leaves ``GIT_CONFIG_GLOBAL`` alone."""
+    return f"[include]\n\tpath = ~/.gitconfig\n[http]\n\tcurloptResolve = {pin}\n"
+
+
+def git_pin(op: str, args: dict[str, Any]) -> str | None:
+    """The DNS pin for *op*'s clone, else ``None``. ``marketplace_add`` pins its source,
+    ``marketplace_update`` the confirmed ``expected_source``. A ``PolicyRefusal`` (the host
+    now resolves internal) propagates. Blocking: one DNS lookup."""
+    if op == "marketplace_add":
+        return plugin_policy.resolved_pin(str(args.get("source")))
+    if op == "marketplace_update":
+        expected = args.get("expected_source")
+        return plugin_policy.pin_for_normalized(expected if isinstance(expected, str) else None)
+    return None
+
+
+def _env(nonce: str, *, git_pin: str | None = None) -> dict[str, str]:
+    """The CLI's env. With *git_pin*, ``GIT_CONFIG_GLOBAL`` names a temp file the caller
+    must remove (``run_op`` does, in a ``finally``)."""
     env = {k: os.environ[k] for k in _ENV_PASSTHROUGH if k in os.environ}
     env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
     env.update(_config_dir_env())
@@ -129,12 +152,18 @@ def _env(nonce: str) -> dict[str, str]:
         "GIT_TERMINAL_PROMPT": "0",
         "NO_COLOR": "1",
     })
+    if git_pin is not None:
+        with tempfile.NamedTemporaryFile("w", prefix="viberpit-git-pin.", suffix=".gitconfig",
+                                         delete=False) as fh:
+            fh.write(git_pin_config(git_pin))
+        env["GIT_CONFIG_GLOBAL"] = fh.name
     return env
 
 
-def build_argv(binary: str, op: str, args: dict[str, Any]) -> list[str]:
+def build_argv(binary: str, op: str, args: dict[str, Any], *, resolve: bool = True) -> list[str]:
     """argv for *op*, re-validating every argument here (defense in depth: this runs on
-    the daemon, whatever the edge checked)."""
+    the daemon, whatever the edge checked). *resolve* False skips the DNS leg of the source
+    check for a caller that does it itself (``run_op``, via :func:`git_pin`)."""
     spec = _OPS.get(op)
     if spec is None:
         raise InvalidPluginOp(f"unknown plugin op {op!r}")
@@ -148,7 +177,7 @@ def build_argv(binary: str, op: str, args: dict[str, Any]) -> list[str]:
         raise InvalidPluginOp(f"invalid marketplace name {value!r}")
     if key == "source":
         try:
-            value = plugin_policy.check_marketplace_source(value)
+            value = plugin_policy.check_marketplace_source(value, resolve=resolve)
         except plugin_policy.PolicyRefusal as exc:
             raise InvalidPluginOp(exc.message) from None
     argv = [binary, "plugin", *words, value, *flags, "--json"]
@@ -263,15 +292,28 @@ def host_policy(op: str, args: dict[str, Any]) -> dict[str, Any] | None:
     ``install``/``update`` of ``<p>@<mkt>`` and ``marketplace_update`` carry
     ``expected_source`` — the normalized source the owner confirmed — and refuse unless this
     host's configured source normalizes equal (``source_changed``); a missing one refuses
-    as unconfirmed. Directory installs re-check the review state from this host's cache."""
+    as unconfirmed. Directory installs re-check the review state from this host's cache and
+    refuse unless that cached listing matches ``expected_listing`` — the edge's live-verified
+    ``id``/``source``/review state — absent which they refuse (fail closed)."""
     from server.library import scan
     try:
         if op in ("install", "update"):
             pid = str(args.get("plugin_id"))
             marketplace = pid.partition("@")[2]
             if marketplace == plugin_policy.DIRECTORY_MARKETPLACE:
+                expected = args.get("expected_listing")
+                if not isinstance(expected, dict):
+                    raise plugin_policy.PolicyRefusal(
+                        plugin_policy.PLUGIN_UNREVIEWED,
+                        "The edge sent no verified Directory listing, so this host cannot "
+                        "confirm the listing is reviewed and unchanged.",
+                        reason=plugin_policy.REASON_DIRECTORY_MISMATCH)
                 refresh_available()
-                plugin_policy.check_install(pid, {}, scan.install_catalog({}))
+                catalog = scan.install_catalog({})
+                plugin_policy.check_install(pid, {}, catalog)
+                # This host's cache is forgeable too: it must match what the edge verified.
+                plugin_policy.check_directory_listing(
+                    (catalog.directory or {}).get(pid.partition("@")[0]) or {}, expected)
             else:
                 curated = _expected(marketplace, args)
                 plugin_policy.check_install(pid, curated, scan.install_catalog(curated))
@@ -298,22 +340,31 @@ def run_op(op: str, args: dict[str, Any]) -> dict[str, Any]:
     if binary is None:
         return _outcome("failed", "claude_not_found", "No claude binary resolves on this host.")
     try:
-        argv = build_argv(binary, op, args)
+        argv = build_argv(binary, op, args, resolve=False)  # git_pin below does the DNS
     except InvalidPluginOp as exc:
         log.info("plugin_cli.refused op=%s reason=%s", op, exc)
         return _outcome("failed", "invalid_args", str(exc))
     refused = host_policy(op, args)
     if refused is not None:
         return refused
-    nonce = secrets.token_hex(16)
     try:
-        rc, stdout = _run(argv, env=_env(nonce), cwd=_cwd(), timeout=CLI_TIMEOUT_S)
+        pin = git_pin(op, args)
+    except plugin_policy.PolicyRefusal as exc:
+        log.info("plugin_cli.pin_refused op=%s code=%s reason=%s", op, exc.code, exc.reason)
+        return _outcome("failed", exc.code, exc.message, reason=exc.reason)
+    nonce = secrets.token_hex(16)
+    env = _env(nonce, git_pin=pin)
+    try:
+        rc, stdout = _run(argv, env=env, cwd=_cwd(), timeout=CLI_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         log.info("plugin_cli.timeout op=%s", op)
         return _outcome("failed", "cli_timeout", f"claude plugin {op} exceeded {CLI_TIMEOUT_S:.0f}s.")
     except OSError as exc:
         log.warning("plugin_cli.spawn_failed op=%s error=%s", op, exc)
         return _outcome("failed", "cli_spawn_failed", str(exc))
+    finally:
+        if pin is not None:
+            Path(env["GIT_CONFIG_GLOBAL"]).unlink(missing_ok=True)
     out = parse_result(op, rc, stdout, nonce)
     log.info("plugin_cli.result op=%s outcome=%s code=%s", op, out["outcome"],
              out.get("failureCode"))
@@ -372,29 +423,36 @@ def _run_available_refresh() -> bool:
     return rc == 0
 
 
-async def host_outcome(host: str, call: Awaitable[dict[str, Any]]) -> dict[str, Any]:
-    """Await one host's ``plugin_op`` and label it. A host that cannot answer is a
-    ``failed`` outcome for THAT host — never an exception for the fan-out: an old daemon
-    (``UnknownMethod``) is ``daemon_outdated``, an unreachable one ``host_unreachable``."""
+def host_failure(host: str, exc: Exception) -> dict[str, Any]:
+    """Label one host's failed RPC. The single mapping from a daemon error to a ``failed``
+    row, shared by every fan-out: an old daemon (``UnknownMethod``) is ``daemon_outdated``,
+    an unreachable one ``host_unreachable``, a slow one ``host_timeout``."""
     from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
-    try:
-        res = await call
-    except DaemonError as exc:
+    if isinstance(exc, DaemonError):
         if exc.err_type == "UnknownMethod":
             return {"host": host, **_outcome("failed", "daemon_outdated",
-                                             "This host's daemon predates plugin management; "
+                                             "This host's daemon predates this operation; "
                                              "update it, then retry.")}
         log.warning("plugin_cli.host_error host=%s type=%s", host, exc.err_type)
         return {"host": host, **_outcome("failed", "daemon_error", exc.message)}
-    except DaemonTimeout:
+    if isinstance(exc, DaemonTimeout):
         return {"host": host, **_outcome("failed", "host_timeout",
                                          "The host did not answer in time; retry to confirm.")}
-    except (DaemonUnavailable, OSError) as exc:
+    if isinstance(exc, (DaemonUnavailable, OSError)):
         log.info("plugin_cli.host_unreachable host=%s error=%s", host, exc)
         return {"host": host, **_outcome("failed", "host_unreachable", "The host is unreachable.")}
-    except Exception:
-        log.warning("plugin_cli.host_failed host=%s", host, exc_info=True)
-        return {"host": host, **_outcome("failed", "error_internal", "Unexpected error on this host.")}
+    log.warning("plugin_cli.host_failed host=%s", host, exc_info=exc)
+    return {"host": host, **_outcome("failed", "error_internal", "Unexpected error on this host.")}
+
+
+async def host_outcome(host: str, call: Awaitable[dict[str, Any]]) -> dict[str, Any]:
+    """Await one host's ``plugin_op`` and label it. A host that cannot answer is a
+    ``failed`` outcome for THAT host (see ``host_failure``) — never an exception for the
+    fan-out."""
+    try:
+        res = await call
+    except Exception as exc:
+        return host_failure(host, exc)
     if not isinstance(res, dict) or res.get("outcome") not in ("ok", "noop", "failed"):
         return {"host": host, **_outcome("failed", "unparseable_result", "Malformed host reply.")}
     return {"host": host, **res}

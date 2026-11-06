@@ -513,8 +513,9 @@ initialCss **15.6** (gzip kB). Assistant tools: 114 registered and 107 exposed
   network clone).
 - What `plugin install` does with a plugin whose hooks or MCP servers need `userConfig` (`--config`) and none is
   given.
-- `reload_plugins` with `hold_on_cache_impact` on a session with a real prompt cache. In the probe the session had no
-  conversation.
+- ~~`reload_plugins` with `hold_on_cache_impact` on a session with a real prompt cache. In the probe the session had no
+  conversation.~~ Resolved by binary read in `2026-11-05-d16c-residuals-verification.md` §1 (the hold needs
+  `totalOutputTokens() > 0` and no tool search). The held reply itself is still unobserved.
 - Whether `mcp_status` with `liveReply` drops `tools` for many-server configs on stdio hosts. The schema says only
   CCR transports do.
 - Whether the CLI auto-installs project-declared plugins after the workspace-trust dialog, which ViberPit pre-accepts

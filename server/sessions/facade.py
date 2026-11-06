@@ -256,6 +256,14 @@ class InProcessOrchestratorAdapter:
         from server.hostname import self_host_name
         from server.library.plugin_cli import host_outcome
         return [await host_outcome(self_host_name(), self.plugin_op(op, args))]
+
+    async def reload_plugins_live(self, *a, **k): return await _maybe_await(self._orch.reload_plugins_live(*a, **k))
+
+    async def reload_plugins_everywhere(self, hold_on_cache_impact: bool = True) -> list[dict]:
+        from server.hostname import self_host_name
+        from server.sessions.plugin_reload import host_rows
+        return await host_rows(self_host_name(),
+                               self.reload_plugins_live(hold_on_cache_impact=hold_on_cache_impact))
     async def refine_prompt_codex(self, *a, **k): return await _maybe_await(self._orch.refine_prompt_codex(*a, **k))
     # --- pipeline / merge-queue methods (GET /api/pipeline/events and siblings) ---
     async def latest_queue_entries(self, *a, **k): return await _maybe_await(self._orch.latest_queue_entries(*a, **k))

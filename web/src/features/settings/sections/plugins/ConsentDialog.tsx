@@ -3,10 +3,13 @@
 // and it always posts `confirm: true` — the server refuses an install without it.
 import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
-import { useInstallPlugin, useUpdatePlugin } from '@/api/pluginHooks'
+import { useInstallPlugin, useReloadPlugins, useUpdatePlugin } from '@/api/pluginHooks'
+import { useState } from 'react'
+import type { PluginReloadResult } from '@/api/types'
 import { HostOutcomes } from './HostOutcomes'
+import { SessionOutcomes } from './SessionOutcomes'
 import { useOpRecord } from './useOpRecord'
-import { CONSENT_COPY, CONTENTS_UNKNOWN, RESTART_COPY, clip } from './pluginText'
+import { CONSENT_COPY, CONTENTS_UNKNOWN, RELOAD_HELP, RELOAD_LABEL, RESTART_COPY, clip, refusalMessage } from './pluginText'
 
 export interface ConsentTarget {
   mode: 'install' | 'update'
@@ -25,14 +28,18 @@ export function ConsentDialog({ target, onClose }: { target: ConsentTarget; onCl
   const install = useInstallPlugin()
   const update = useUpdatePlugin()
   const op = useOpRecord(target.mode === 'install' ? install : update)
+  const reload = useReloadPlugins()
+  const [reloadSessions, setReloadSessions] = useState(false)
+  const [reloaded, setReloaded] = useState<PluginReloadResult | null>(null)
   const verb = target.mode === 'install' ? 'Install' : 'Update'
   // Zero hosts answering is not done: nothing changed, so the action stays offered.
   const done = op.record !== null && (op.record.result.hosts ?? []).length > 0
   // While the op is in flight the card is the only place its per-host outcome lands:
   // closing it (Cancel, Escape, backdrop) would lose the result, and couldn't stop the op.
-  const close = () => { if (!op.pending) onClose() }
+  const busy = op.pending || reload.isPending
+  const close = () => { if (!busy) onClose() }
   return (
-    <Dialog open onClose={close} dismissable={!op.pending} title={`${verb} plugin`} size="lg">
+    <Dialog open onClose={close} dismissable={!busy} title={`${verb} plugin`} size="lg">
       <div className="space-y-3 text-sm min-w-0">
         <div className="min-w-0">
           <div className="font-medium break-all"><bdi>{clip(target.name, 120)}</bdi></div>
@@ -56,13 +63,38 @@ export function ConsentDialog({ target, onClose }: { target: ConsentTarget; onCl
         <p className="rounded-md border border-warning p-2 text-warning">{CONSENT_COPY}</p>
         {op.error && <p role="alert" className="text-xs text-danger break-words">{op.error}</p>}
         {op.record && <HostOutcomes record={op.record} retrying={op.pending} />}
+        {reloaded && <SessionOutcomes result={reloaded} />}
+        {reload.isError && (
+          <p role="alert" className="text-xs text-danger break-words">
+            Couldn’t reload running sessions: {refusalMessage(reload.error)}
+          </p>
+        )}
+        {!done && (
+          <label className="flex items-start gap-2 text-xs">
+            <input
+              type="checkbox"
+              aria-label={RELOAD_LABEL}
+              checked={reloadSessions}
+              disabled={busy}
+              onChange={(e) => setReloadSessions(e.target.checked)}
+            />
+            <span className="min-w-0"><span className="font-medium">{RELOAD_LABEL}</span> — {RELOAD_HELP}</span>
+          </label>
+        )}
         <div className="flex justify-end gap-2 flex-wrap">
-          <Button variant="secondary" size="lg" disabled={op.pending} onClick={close}>{done ? 'Close' : 'Cancel'}</Button>
+          <Button variant="secondary" size="lg" disabled={busy} onClick={close}>{done ? 'Close' : 'Cancel'}</Button>
           {!done && (
             <Button
               size="lg"
-              loading={op.pending}
-              onClick={() => op.run(target.pluginId, `${verb} ${target.name}`, { note: RESTART_COPY })}
+              loading={busy}
+              onClick={() => op.run(target.pluginId, `${verb} ${target.name}`, {
+                // Ticked: the session list below says who reloaded, so no restart note.
+                note: reloadSessions ? undefined : RESTART_COPY,
+                onSuccess: (result) => {
+                  if (!reloadSessions || !(result.ok || result.hosts.some((h) => h.outcome === 'ok'))) return
+                  reload.mutate({ holdOnCacheImpact: true }, { onSuccess: setReloaded })
+                },
+              })}
             >
               {verb}
             </Button>

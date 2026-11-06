@@ -22,7 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
-from server.library import plugin_cli, plugin_policy, scan
+from server.library import directory_api, plugin_cli, plugin_policy, scan
 from server.library.plugin_policy import InstallCatalog, PolicyRefusal
 
 DIR = plugin_policy.DIRECTORY_MARKETPLACE
@@ -377,6 +377,132 @@ def test_run_op_pins_env_config_dir_and_cwd(shared: Path, monkeypatch: pytest.Mo
     assert seen["cwd"].endswith("helper-cwd") and seen["timeout"] == plugin_cli.CLI_TIMEOUT_S
 
 
+# --------------------------------------------------------------- DNS pin (D16c residual)
+
+def test_resolved_pin_for_https_sources_and_none_for_github(_dns) -> None:
+    _dns["git.example.com"] = ["140.82.112.5", "140.82.112.4", "140.82.112.5"]
+    assert (plugin_policy.resolved_pin("https://Git.Example.com/m")
+            == "git.example.com:443:140.82.112.4,140.82.112.5")
+    assert plugin_policy.resolved_pin("acme/m") is None
+
+
+def test_resolved_pin_brackets_ipv6_in_a_mixed_answer(_dns) -> None:
+    _dns["git.example.com"] = ["2606:4700::1111", "140.82.112.4"]
+    assert (plugin_policy.resolved_pin("https://git.example.com/m")
+            == "git.example.com:443:140.82.112.4,[2606:4700::1111]")
+
+
+def test_resolved_pin_refuses_what_the_check_refuses(_dns) -> None:
+    _dns["evil.example.com"] = ["10.0.0.5"]
+    with pytest.raises(PolicyRefusal) as ei:
+        plugin_policy.resolved_pin("https://evil.example.com/m")
+    assert ei.value.code == plugin_policy.MARKETPLACE_SOURCE_REFUSED
+
+
+def test_resolved_pin_resolves_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def _resolve(h: str) -> list[str]:
+        calls.append(h)
+        return [PUBLIC_IP]
+
+    monkeypatch.setattr(plugin_policy, "_resolve", _resolve)
+    plugin_policy.resolved_pin("https://git.example.com/m")
+    assert calls == ["git.example.com"]
+
+
+def test_pin_for_normalized_only_pins_https(_dns) -> None:
+    _dns["git.example.com"] = ["140.82.112.4"]
+    assert (plugin_policy.pin_for_normalized("https:git.example.com/m")
+            == "git.example.com:443:140.82.112.4")
+    assert plugin_policy.pin_for_normalized("github:o/r") is None
+    assert plugin_policy.pin_for_normalized(None) is None
+
+
+def test_git_pin_for_ops(_dns) -> None:
+    _dns["git.example.com"] = ["140.82.112.4"]
+    pin = "git.example.com:443:140.82.112.4"
+    assert plugin_cli.git_pin("marketplace_add", {"source": "https://git.example.com/m"}) == pin
+    assert plugin_cli.git_pin("marketplace_add", {"source": "acme/m"}) is None
+    assert plugin_cli.git_pin("marketplace_update", {
+        "name": "m", "expected_source": "https:git.example.com/m"}) == pin
+    assert plugin_cli.git_pin("marketplace_update", {
+        "name": "m", "expected_source": "github:o/r"}) is None
+    assert plugin_cli.git_pin("install", {"plugin_id": "p@m"}) is None
+
+
+def test_env_git_pin_writes_a_global_config_that_includes_the_users(
+        shared: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert "GIT_CONFIG_GLOBAL" not in plugin_cli._env(N)
+    pin = "git.example.com:443:140.82.112.4"
+    env = plugin_cli._env(N, git_pin=pin)
+    path = Path(env["GIT_CONFIG_GLOBAL"])
+    try:
+        assert path.read_text() == plugin_cli.git_pin_config(pin) == (
+            f"[include]\n\tpath = ~/.gitconfig\n[http]\n\tcurloptResolve = {pin}\n")
+    finally:
+        path.unlink()
+
+
+def test_run_op_removes_the_pin_file_and_passes_it_to_the_cli(
+        shared: Path, monkeypatch: pytest.MonkeyPatch, _dns) -> None:
+    _dns["git.example.com"] = ["140.82.112.4"]
+    seen: dict[str, Any] = {}
+
+    def fake_run(argv, *, env, cwd, timeout):
+        path = Path(env["GIT_CONFIG_GLOBAL"])
+        seen.update(path=path, text=path.read_text())
+        return 0, json.dumps({"outcome": "ok", "nonce": env["CLAUDE_CODE_RESULT_NONCE"]})
+
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", fake_run)
+    out = plugin_cli.run_op("marketplace_add", {"source": "https://git.example.com/m"})
+    assert out["outcome"] == "ok"
+    assert "curloptResolve = git.example.com:443:140.82.112.4" in seen["text"]
+    assert not seen["path"].exists()
+
+
+@pytest.mark.parametrize("exc", [subprocess.TimeoutExpired("git", 1), OSError("boom")])
+def test_run_op_removes_the_pin_file_when_the_cli_fails_to_run(
+        shared: Path, monkeypatch: pytest.MonkeyPatch, exc: Exception) -> None:
+    seen: dict[str, Path] = {}
+
+    def fake_run(argv, *, env, cwd, timeout):
+        seen["path"] = Path(env["GIT_CONFIG_GLOBAL"])
+        raise exc
+
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", fake_run)
+    out = plugin_cli.run_op("marketplace_add", {"source": "https://git.example.com/m"})
+    assert out["outcome"] == "failed" and not seen["path"].exists()
+
+
+def test_run_op_gives_a_github_add_no_pin(shared: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_run(argv, *, env, cwd, timeout):
+        seen["env"] = env
+        return 0, json.dumps({"outcome": "ok", "nonce": env["CLAUDE_CODE_RESULT_NONCE"]})
+
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", fake_run)
+    plugin_cli.run_op("marketplace_add", {"source": "acme/m"})
+    assert "GIT_CONFIG_GLOBAL" not in seen["env"]
+
+
+def test_marketplace_update_with_an_internal_source_is_refused_before_the_cli(
+        shared: Path, monkeypatch: pytest.MonkeyPatch, _dns) -> None:
+    _write_marketplace(shared, "m", [], repo="o/r")
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", lambda *a, **k: pytest.fail("the CLI ran"))
+    monkeypatch.setattr(plugin_cli, "host_policy", lambda op, args: None)
+    _dns["git.example.com"] = ["10.0.0.5"]
+    out = plugin_cli.run_op("marketplace_update", {
+        "name": "m", "expected_source": "https:git.example.com/m"})
+    assert (out["outcome"], out["failureCode"]) == (
+        "failed", plugin_policy.MARKETPLACE_SOURCE_REFUSED)
+
+
 def _ok_runner(calls: list[list[str]] | None = None):
     def fake_run(argv, *, env, cwd, timeout):
         if calls is not None:
@@ -440,9 +566,56 @@ def test_host_rechecks_directory_review_state(shared: Path, monkeypatch: pytest.
     monkeypatch.setattr(plugin_cli, "refresh_available", fake_refresh)
     monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
     monkeypatch.setattr(plugin_cli, "_run", _ok_runner())
-    assert plugin_cli.run_op("install", {"plugin_id": f"bad@{DIR}"})["failureCode"] == "PLUGIN_UNREVIEWED"
-    assert plugin_cli.run_op("install", {"plugin_id": f"good@{DIR}"})["outcome"] == "ok"
+    verified = plugin_policy.verified_listing({**_listing("done"), "id": "id_good"})
+    assert plugin_cli.run_op("install", {"plugin_id": f"bad@{DIR}", "expected_listing": verified}
+                             )["failureCode"] == "PLUGIN_UNREVIEWED"
+    assert plugin_cli.run_op("install", {"plugin_id": f"good@{DIR}",
+                                         "expected_listing": verified})["outcome"] == "ok"
     assert refreshed == [True, True]
+
+
+def _directory_host(shared: Path, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    _write_directory(shared, {"good": _listing("done")})
+    calls: list[list[str]] = []
+    monkeypatch.setattr(plugin_cli, "refresh_available", lambda **_k: False)
+    monkeypatch.setattr(plugin_cli, "_claude_bin", lambda: "/fake/claude")
+    monkeypatch.setattr(plugin_cli, "_run", _ok_runner(calls))
+    return calls
+
+
+@pytest.mark.parametrize("op", ["install", "update"])
+def test_host_refuses_a_directory_cache_that_differs_from_the_verified_listing(
+        shared: Path, monkeypatch: pytest.MonkeyPatch, op: str) -> None:
+    """A worker whose cache was forged before the edge's check: the edge-verified listing
+    is the truth, so a cached source that differs from it never reaches the CLI."""
+    calls = _directory_host(shared, monkeypatch)
+    live = {**_listing("done"), "id": "id_good",
+            "source": {"type": "directory", "repository": {"url": "https://github.com/real/b"}}}
+    out = plugin_cli.host_policy(op, {"plugin_id": f"good@{DIR}",
+                                      "expected_listing": plugin_policy.verified_listing(live)})
+    assert out is not None and out["outcome"] == "failed"
+    assert (out["failureCode"], out["reason"]) == ("PLUGIN_UNREVIEWED", "directory_mismatch")
+    assert calls == []
+
+
+@pytest.mark.parametrize("op", ["install", "update"])
+def test_host_passes_a_directory_cache_equal_to_the_verified_listing(
+        shared: Path, monkeypatch: pytest.MonkeyPatch, op: str) -> None:
+    _directory_host(shared, monkeypatch)
+    live = {**_listing("done"), "id": "id_good"}
+    assert plugin_cli.host_policy(op, {"plugin_id": f"good@{DIR}",
+                                       "expected_listing": plugin_policy.verified_listing(live)}) is None
+
+
+@pytest.mark.parametrize("op", ["install", "update"])
+def test_host_refuses_a_directory_install_without_a_verified_listing(
+        shared: Path, monkeypatch: pytest.MonkeyPatch, op: str) -> None:
+    calls = _directory_host(shared, monkeypatch)
+    out = plugin_cli.run_op(op, {"plugin_id": f"good@{DIR}"})
+    assert (out["outcome"], out["failureCode"], out["reason"]) == (
+        "failed", "PLUGIN_UNREVIEWED", "directory_mismatch")
+    assert "no verified" in out["message"]
+    assert calls == []
 
 
 @pytest.mark.parametrize("exc,code", [
@@ -651,10 +824,16 @@ class _Fleet:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.reply: list[dict] = [{"host": "dobby", "outcome": "ok"}]
+        self.reload_reply: list[dict] = [
+            {"host": "dobby", "sessionId": "s1", "name": "alpha", "outcome": "applied"}]
 
     async def plugin_op_everywhere(self, op: str, args: dict) -> list[dict]:
         self.calls.append((op, args))
         return [dict(h) for h in self.reply]
+
+    async def reload_plugins_everywhere(self, hold_on_cache_impact: bool = True) -> list[dict]:
+        self.calls.append(("reload", hold_on_cache_impact))  # type: ignore[arg-type]
+        return [dict(r) for r in self.reload_reply]
 
 
 def _write_marketplace(base: Path, name: str, plugins: list[dict], *, repo: str | None = None,
@@ -703,6 +882,13 @@ def env(shared: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "unreviewed": _listing("none"),
     })
     monkeypatch.setattr(plugin_cli, "refresh_available", lambda **k: False)
+
+    async def live_echo(listing_id: str) -> dict | None:
+        """Default live Directory: agrees with the cache (tests override to diverge)."""
+        return next((v for v in (scan.directory_listings() or {}).values()
+                     if v.get("id") == listing_id), None)
+
+    monkeypatch.setattr(directory_api, "fetch_listing", live_echo)
     fleet = _Fleet()
     with patch.dict(os.environ, _ENV):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0,
@@ -733,8 +919,11 @@ def test_install_happy_path_fans_out_with_the_expected_source_and_audits(env) ->
     r = client.post(f"/api/library/plugins/reviewed@{DIR}/install", json={"confirm": True}, headers=_H)
     assert r.status_code == 200
     # Every host re-checks against its own state with the confirmed source.
+    live = {**_listing("done"), "name": "Reviewed", "release": {"version": "2.0"}, "id": "id_reviewed"}
     assert fleet.calls == [("install", {"plugin_id": "good@mine", "expected_source": "github:o/mine"}),
-                           ("install", {"plugin_id": f"reviewed@{DIR}"})]
+                           ("install", {"plugin_id": f"reviewed@{DIR}", "expected_listing": {
+                               "id": "id_reviewed", "source": live["source"],
+                               "checks": {"review": {"state": "done"}}}})]
     events = [e for e in client.portal.call(_audit) if e[0] == "library_plugin_installed"]
     assert events[0][1] == "owner@example.com"
     assert events[0][2] == {"pluginId": "good@mine", "hosts": fleet.reply}
@@ -862,6 +1051,7 @@ MUTATIONS = [
     ("post", "/api/library/marketplaces/mine/update", None),
     ("delete", "/api/library/marketplaces/mine", None),
     ("post", "/api/library/marketplaces/mine/confirm", {"source": "github:o/mine", "confirm": True}),
+    ("post", "/api/library/plugins/reload", {}),
 ]
 
 
@@ -920,6 +1110,111 @@ def test_kill_switch(env, monkeypatch, method: str, url: str, body, blocked: boo
     browse = client.get("/api/library/plugins/browse", headers=_H).json()
     assert browse["plugins"] == [] and browse["installEnabled"] is False
     assert client.get("/api/library/plugins", headers=_H).json()["installEnabled"] is False
+
+
+def test_reload_route_fans_out_and_audits(env) -> None:
+    client, fleet, _ = env
+    r = client.post("/api/library/plugins/reload", json={"holdOnCacheImpact": False}, headers=_H)
+    assert r.status_code == 200
+    assert fleet.calls == [("reload", False)]
+    assert r.json() == {"op": "reload_plugins", "ok": True, "sessions": fleet.reload_reply}
+    events = [e for e in client.portal.call(_audit) if e[0] == "library_plugins_reloaded"]
+    assert events[0][1] == "owner@example.com"
+    assert events[0][2] == {"holdOnCacheImpact": False, "sessions": fleet.reload_reply}
+    client.post("/api/library/plugins/reload", json={}, headers=_H)
+    assert fleet.calls[-1] == ("reload", True)  # default holds on a cache impact
+
+
+def test_reload_route_ok_is_false_on_a_failed_row(env) -> None:
+    client, fleet, _ = env
+    fleet.reload_reply = [{"host": "dobby", "sessionId": "s1", "outcome": "applied"},
+                          {"host": "rocky", "outcome": "failed", "failureCode": "host_unreachable"}]
+    body = client.post("/api/library/plugins/reload", json={}, headers=_H).json()
+    assert body["ok"] is False and body["sessions"] == fleet.reload_reply
+    fleet.reload_reply = []
+    assert client.post("/api/library/plugins/reload", json={}, headers=_H).json()["ok"] is False
+
+
+def test_reload_is_not_behind_the_install_kill_switch(env, monkeypatch) -> None:
+    client, fleet, _ = env
+    monkeypatch.setenv("VIBERPIT_PLUGIN_INSTALL_ENABLED", "false")
+    r = client.post("/api/library/plugins/reload", json={}, headers=_H)
+    assert r.status_code == 200 and fleet.calls == [("reload", True)]
+
+
+class _ReloadDriver:
+    def __init__(self) -> None:
+        self.calls: list[bool] = []
+
+    async def reload_plugins(self, *, hold_on_cache_impact: bool = True) -> dict:
+        self.calls.append(hold_on_cache_impact)
+        return {"outcome": "applied", "plugins": ["p@m"], "errorCount": 0}
+
+
+def test_reload_route_through_the_real_in_process_facade(
+        shared: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No hand-written ``app.state.sessions`` double: the route reaches a live session
+    through the facade ``create_app`` really installs (the drift that shipped with #3314)."""
+    from server.app import create_app
+    from server.sessions.engine import AgentDriver
+    from server.sessions.facade import InProcessOrchestratorAdapter
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.sessions.types import AgentEngine, SessionRecord
+    from server.tests.fakes.fake_factory import fake_sdk_factory
+
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
+    (tmp_path / "home" / "store").mkdir(parents=True)
+    driver = _ReloadDriver()
+    with patch.dict(os.environ, _ENV):
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0,
+                                   usage_fn=lambda name: None)
+        app = create_app(orchestrator=orch)
+        assert isinstance(app.state.sessions, InProcessOrchestratorAdapter)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            orch._drivers["s1"] = cast(AgentDriver, driver)
+            orch._records["s1"] = SessionRecord(
+                id="s1", name="alpha", account="a", engine=AgentEngine.CLAUDE_CODE,
+                engine_session_id="c", cols=80, rows=24, cwd="/tmp")
+            r = client.post("/api/library/plugins/reload", json={"holdOnCacheImpact": False},
+                            headers=_H)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"op": "reload_plugins", "ok": True, "sessions": [
+        {"sessionId": "s1", "name": "alpha", "host": "dobby", "outcome": "applied",
+         "plugins": ["p@m"], "errorCount": 0}]}
+    assert driver.calls == [False]
+
+
+def test_remote_orchestrator_reload_rpc_carries_its_own_deadline(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from server.sessions.plugin_reload import RELOAD_CONTROL_TIMEOUT_S
+    from server.sessions.remote import RemoteOrchestrator
+
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
+    seen: list[tuple[str, dict, float]] = []
+
+    class _Client:
+        async def call(self, method: str, *, timeout: float, **params: Any) -> Any:
+            seen.append((method, params, timeout))
+            return [{"sessionId": "s1", "name": "alpha", "host": "dobby", "outcome": "held"}, "junk"]
+
+    remote = RemoteOrchestrator.__new__(RemoteOrchestrator)
+    remote._client = cast(Any, _Client())
+    rows = asyncio.run(remote.reload_plugins_everywhere(hold_on_cache_impact=False))
+    assert seen == [("reload_plugins_live", {"hold_on_cache_impact": False}, seen[0][2])]
+    assert seen[0][2] >= 80 and seen[0][2] > RELOAD_CONTROL_TIMEOUT_S
+    assert rows == [{"sessionId": "s1", "name": "alpha", "host": "dobby", "outcome": "held"},
+                    {"host": "dobby", "outcome": "failed", "failureCode": "unparseable_result",
+                     "message": "Malformed host reply."}]
+
+    class _Old:
+        async def call(self, method: str, **params: Any) -> Any:
+            raise DaemonError("UnknownMethod", method)
+
+    remote._client = cast(Any, _Old())
+    rows = asyncio.run(remote.reload_plugins_everywhere())
+    assert [(r["host"], r["failureCode"]) for r in rows] == [("dobby", "daemon_outdated")]
+    assert "predates this operation" in rows[0]["message"]
 
 
 def test_browse_lists_curated_and_reviewed_only(env) -> None:
@@ -1297,3 +1592,185 @@ def test_directory_browse_source_is_the_reviewed_repository(shared: Path) -> Non
     by_id = {e["pluginId"]: e["source"] for e in scan.browse_entries({})}
     assert by_id == {f"pinned@{DIR}": f"https://github.com/obra/superpowers @ {sha[:12]}",
                      f"bare@{DIR}": "https://github.com/a/b", f"odd@{DIR}": None}
+
+
+# ----------------------------------------------- Directory review verified live (#3314)
+
+def test_directory_listing_passes_when_id_review_and_repo_match() -> None:
+    plugin_policy.check_directory_listing(_listing("done"), _listing("done"))
+    # A listing with no repository on BOTH sides passes on id + review alone.
+    bare = {"id": "plugin_x", "checks": {"review": {"state": "done"}}, "source": {"type": "directory"}}
+    plugin_policy.check_directory_listing(bare, dict(bare))
+
+
+def test_directory_listing_refuses_a_repointed_source() -> None:
+    live = _listing("done")
+    cached = _listing("done", source={"type": "directory",
+                                      "repository": {"url": "https://github.com/evil/b"}})
+    with pytest.raises(PolicyRefusal) as exc:
+        plugin_policy.check_directory_listing(cached, live)
+    assert exc.value.code == "PLUGIN_UNREVIEWED"
+    assert exc.value.reason == plugin_policy.REASON_DIRECTORY_MISMATCH
+    # A repository on only one side is a mismatch too.
+    bare = {"id": "plugin_x", "checks": {"review": {"state": "done"}}, "source": {"type": "directory"}}
+    for c, lv in ((bare, _listing("done")), (_listing("done"), bare)):
+        with pytest.raises(PolicyRefusal) as exc:
+            plugin_policy.check_directory_listing(c, lv)
+        assert exc.value.reason == plugin_policy.REASON_DIRECTORY_MISMATCH
+
+
+@pytest.mark.parametrize("live", [_listing("none"), _listing("done", id="plugin_other"), "nope"])
+def test_directory_listing_refuses_unreviewed_live_or_wrong_id_or_garbage(live: object) -> None:
+    with pytest.raises(PolicyRefusal) as exc:
+        plugin_policy.check_directory_listing(_listing("done"), live)
+    assert exc.value.code == "PLUGIN_UNREVIEWED"
+    assert exc.value.reason == plugin_policy.REASON_DIRECTORY_MISMATCH
+
+
+def test_directory_install_verifies_the_listing_live(env, monkeypatch) -> None:
+    client, fleet, _ = env
+    asked: list[str] = []
+
+    async def live(listing_id: str) -> dict | None:
+        asked.append(listing_id)
+        return _listing("done", id=listing_id)
+
+    monkeypatch.setattr(directory_api, "fetch_listing", live)
+    r = client.post(f"/api/library/plugins/reviewed@{DIR}/install", json={"confirm": True}, headers=_H)
+    assert r.status_code == 200
+    assert asked == ["id_reviewed"]
+
+
+def test_directory_install_refuses_a_forged_cache(env, monkeypatch) -> None:
+    client, fleet, _ = env
+
+    async def live(listing_id: str) -> dict | None:
+        return _listing("none", id=listing_id)
+
+    monkeypatch.setattr(directory_api, "fetch_listing", live)
+    r = client.post(f"/api/library/plugins/reviewed@{DIR}/install", json={"confirm": True}, headers=_H)
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "PLUGIN_UNREVIEWED"
+    assert r.json()["detail"]["reason"] == "directory_mismatch"
+    assert fleet.calls == []
+
+
+def test_directory_install_fails_closed_when_the_api_is_down(env, monkeypatch) -> None:
+    client, fleet, _ = env
+
+    async def live(listing_id: str) -> dict | None:
+        return None
+
+    monkeypatch.setattr(directory_api, "fetch_listing", live)
+    r = client.post(f"/api/library/plugins/reviewed@{DIR}/update", json={"confirm": True}, headers=_H)
+    assert r.status_code == 503
+    assert r.json()["detail"]["code"] == "PLUGIN_DIRECTORY_UNAVAILABLE"
+    assert fleet.calls == []
+
+
+def test_curated_marketplace_installs_never_call_the_directory(env, monkeypatch) -> None:
+    client, fleet, _ = env
+
+    async def live(listing_id: str) -> dict | None:
+        raise AssertionError("the Directory API must not be called for a curated marketplace")
+
+    monkeypatch.setattr(directory_api, "fetch_listing", live)
+    r = client.post("/api/library/plugins/good@mine/install", json={"confirm": True}, headers=_H)
+    assert r.status_code == 200
+    assert len(fleet.calls) == 1
+
+
+_EXPO_CACHED = {"id": "plugin_expo", "checks": {"review": {"state": "done"}},
+                "source": {"type": "directory", "repository": {
+                    "url": "https://github.com/expo/skills", "path": "plugins/expo",
+                    "reviewed_commit": "170589a7"}}}
+
+
+def _expo_live(**repo: Any) -> dict[str, Any]:
+    return {"id": "plugin_expo", "checks": {"review": {"state": "done"}},
+            "source": {"marketplace_slug": DIR, "type": "directory",
+                       "repository": {"path": "plugins/expo", "reviewed_commit": "170589a7",
+                                      "url": "https://github.com/expo/skills", **repo}}}
+
+
+def test_directory_listing_passes_the_real_live_shape_with_marketplace_slug() -> None:
+    plugin_policy.check_directory_listing(_EXPO_CACHED, _expo_live())
+
+
+@pytest.mark.parametrize("repo", [{"path": "plugins/other"}, {"reviewed_commit": "deadbeef"},
+                                  {"mirror_url": "https://x.example/y"}])
+def test_directory_listing_refuses_any_changed_repository_field(repo: dict) -> None:
+    with pytest.raises(PolicyRefusal) as exc:
+        plugin_policy.check_directory_listing(_EXPO_CACHED, _expo_live(**repo))
+    assert exc.value.reason == plugin_policy.REASON_DIRECTORY_MISMATCH
+
+
+def test_directory_listing_refuses_a_changed_source_type() -> None:
+    live = _expo_live()
+    live["source"]["type"] = "github"
+    with pytest.raises(PolicyRefusal):
+        plugin_policy.check_directory_listing(_EXPO_CACHED, live)
+
+
+def _raw_cache(shared: Path, listings: list[dict], names: dict[str, str]) -> None:
+    (shared / "plugins" / "plugin-directory-cache-v2.json").write_text(
+        json.dumps({"schemaVersion": 2, "listings": listings, "entryNames": names}))
+
+
+def test_duplicate_listing_ids_void_the_directory_cache(shared: Path) -> None:
+    _raw_cache(shared, [{**_listing("done"), "id": "dup"}, {**_listing("done"), "id": "dup"}],
+               {"dup": "x"})
+    assert scan.directory_listings() is None
+
+
+def test_two_ids_mapped_to_one_entry_name_void_the_directory_cache(shared: Path) -> None:
+    _raw_cache(shared, [{**_listing("done"), "id": "a"}, {**_listing("done"), "id": "b"}],
+               {"a": "x", "b": "x"})
+    assert scan.directory_listings() is None
+
+
+def test_install_from_a_duplicate_cache_is_refused_and_never_fanned_out(env) -> None:
+    client, fleet, shared = env
+    _raw_cache(shared, [{**_listing("done"), "id": "a"}, {**_listing("done"), "id": "b"}],
+               {"a": "reviewed", "b": "reviewed"})
+    r = client.post(f"/api/library/plugins/reviewed@{DIR}/install", json={"confirm": True}, headers=_H)
+    assert r.status_code in (404, 409)
+    assert r.json()["detail"]["code"] in ("PLUGIN_NOT_FOUND", "PLUGIN_UNREVIEWED")
+    assert fleet.calls == []
+
+
+def test_directory_listing_tolerates_the_live_only_tracked_ref() -> None:
+    cached = {"id": "p", "checks": {"review": {"state": "done"}}, "source": {
+        "type": "directory", "repository": {
+            "url": "https://github.com/tableau/tableau-plugin", "path": "plugins/tableau",
+            "reviewed_commit": "099c6abdafb177466ee5256ac0beccdde64099da"}}}
+    live = {"id": "p", "checks": {"review": {"state": "done"}}, "source": {
+        "marketplace_slug": DIR, "type": "directory", "repository": {
+            "path": "plugins/tableau", "tracked_ref": "dist-claude-slim",
+            "reviewed_commit": "099c6abdafb177466ee5256ac0beccdde64099da",
+            "url": "https://github.com/tableau/tableau-plugin"}}}
+    plugin_policy.check_directory_listing(cached, live)
+    plugin_policy.check_install(f"p@{DIR}", {}, InstallCatalog(directory={"p": cached}))
+
+
+def test_directory_listing_refuses_a_cached_only_key() -> None:
+    live = _expo_live()
+    del live["source"]["repository"]["path"]
+    with pytest.raises(PolicyRefusal) as exc:
+        plugin_policy.check_directory_listing(_EXPO_CACHED, live)
+    assert exc.value.reason == plugin_policy.REASON_DIRECTORY_MISMATCH
+
+
+@pytest.mark.parametrize("url", ["http://10.0.0.5/x", "https://box.tail1234.ts.net/x"])
+def test_a_reviewed_directory_listing_naming_an_internal_source_is_refused(url: str) -> None:
+    listing = _listing("done", source={"type": "directory", "repository": {"url": url}})
+    with pytest.raises(PolicyRefusal) as exc:
+        plugin_policy.check_install(f"x@{DIR}", {}, InstallCatalog(directory={"x": listing}))
+    assert exc.value.code == "PLUGIN_ENTRY_SOURCE_REFUSED"
+
+
+def test_a_normal_reviewed_listing_with_commit_and_ref_passes_check_install() -> None:
+    listing = {**_EXPO_CACHED, "source": {"type": "directory", "repository": {
+        "url": "https://github.com/expo/skills", "path": "plugins/expo",
+        "reviewed_commit": "170589a7", "tracked_ref": "release"}}}
+    plugin_policy.check_install(f"x@{DIR}", {}, InstallCatalog(directory={"x": listing}))

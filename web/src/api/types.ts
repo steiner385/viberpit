@@ -972,6 +972,25 @@ export interface PluginOpResult {
   hosts: PluginHostOutcome[]
 }
 
+/** One session's (or, with no `sessionId`, one failed host's) answer to a live plugin reload. */
+export interface PluginSessionOutcome {
+  host: string
+  sessionId?: string
+  name?: string
+  outcome: 'applied' | 'held' | 'busy' | 'skipped' | 'failed'
+  failureCode?: string
+  message?: string
+  plugins?: string[]
+  cacheImpact?: Record<string, unknown>
+}
+
+/** `POST /library/plugins/reload`: 200 even when some session or host failed. */
+export interface PluginReloadResult {
+  op: 'reload_plugins'
+  ok: boolean
+  sessions: PluginSessionOutcome[]
+}
+
 export interface PluginComponentsSummary {
   hooks: number
   mcpServers: number

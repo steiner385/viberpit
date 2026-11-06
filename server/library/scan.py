@@ -9,6 +9,7 @@ component dirs of installed plugins' installPath.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -20,6 +21,8 @@ from viberpit import paths
 from server.library import plugin_policy
 from server.library.names import resolve_under, valid_plugin_id
 from viberpit.mcp_names import short_name
+
+log = logging.getLogger(__name__)
 
 _FM_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.S)
 
@@ -177,6 +180,16 @@ def directory_listings() -> dict[str, dict[str, Any]] | None:
     names = data.get("entryNames")
     listings = data.get("listings")
     if not isinstance(names, dict) or not isinstance(listings, list):
+        return None
+    ids = [x.get("id") for x in listings if isinstance(x, dict)]
+    if len(ids) != len(set(map(repr, ids))):
+        # The CLI's own duplicate resolution is unknown: verifying listing A while it
+        # installs listing B is a parser differential, so a repeated id voids the cache.
+        log.info("scan.directory_cache_refused reason=duplicate_id")
+        return None
+    name_values = [v for v in names.values() if isinstance(v, str)]
+    if len(name_values) != len(set(name_values)):
+        log.info("scan.directory_cache_refused reason=duplicate_name")
         return None
     out: dict[str, dict[str, Any]] = {}
     for listing in listings:

@@ -24,7 +24,7 @@ from server.auth.middleware import current_identity
 from server.codex.capabilities import CODEX_CAPABILITIES, CODEX_LIBRARY_UNSUPPORTED_DETAIL
 from server.db import db_session, get_db
 from server.db.models import INACTIVE_SESSION_STATUSES, Session as SessionRow
-from server.library import curated, mutate, plugin_cli, plugin_policy, scan
+from server.library import curated, directory_api, mutate, plugin_cli, plugin_policy, scan
 from server.library.mutate import ConfigUnreadableError
 from server.library.snapshots import snapshot_before_mutation
 from server.library.names import (
@@ -215,7 +215,8 @@ async def _check_install(db, plugin_id: str) -> dict:
     """``plugin_policy.check_install`` on the edge, over the confirmed records and this
     host's catalogs (the Directory cache refreshed first when its TTL has passed). Returns
     the RPC args: every host re-checks against its own state, so a curated marketplace's
-    confirmed source rides along as ``expected_source``."""
+    confirmed source rides along as ``expected_source`` and a Directory listing's
+    live-verified ``id``/``source``/review state as ``expected_listing``."""
     records = await curated.confirmed(db)
     marketplace = plugin_id.partition("@")[2]
     if marketplace == plugin_policy.DIRECTORY_MARKETPLACE:
@@ -225,9 +226,27 @@ async def _check_install(db, plugin_id: str) -> dict:
         plugin_policy.check_install(plugin_id, records, catalog)
     except plugin_policy.PolicyRefusal as exc:
         raise _policy_http(exc, plugin_id) from None
-    args = {"plugin_id": plugin_id}
+    args: dict[str, Any] = {"plugin_id": plugin_id}
     if marketplace in records:
         args["expected_source"] = records[marketplace]
+    if marketplace == plugin_policy.DIRECTORY_MARKETPLACE:
+        # The cache passed, but it is forgeable: the live Directory must agree (fail closed).
+        listing = (catalog.directory or {})[plugin_id.partition("@")[0]]
+        live = await directory_api.fetch_listing(str(listing.get("id")))
+        if live is None:
+            log.info("library.plugin_refused code=%s subject=%s",
+                     plugin_policy.DIRECTORY_UNAVAILABLE, plugin_id)
+            raise HTTPException(status_code=503, detail={
+                "code": plugin_policy.DIRECTORY_UNAVAILABLE,
+                "message": "The Anthropic Directory could not be reached to verify this "
+                           "listing's review; try again."})
+        try:
+            plugin_policy.check_directory_listing(listing, live)
+        except plugin_policy.PolicyRefusal as exc:
+            raise _policy_http(exc, plugin_id) from None
+        # The verified truth rides along, as ``expected_source`` does for a curated
+        # marketplace: each host matches its OWN (forgeable) cache against it.
+        args["expected_listing"] = plugin_policy.verified_listing(live)
     return args
 
 
@@ -292,6 +311,26 @@ async def uninstall_plugin(plugin_id: str, request: Request,
     await record_audit(db=db, type="library_plugin_uninstalled", identity=identity,
                        detail={"pluginId": plugin_id, "hosts": out["hosts"]}, via=via)
     return out
+
+
+class ReloadBody(BaseModel):
+    holdOnCacheImpact: bool = True  # keep a started session's plugins when that would bust its cache
+
+
+@router.post("/plugins/reload")
+async def reload_plugins(body: ReloadBody, request: Request,
+                         identity: str = Depends(current_identity), db=Depends(get_db)) -> Any:
+    """Reload plugins in every running session on every host. Installs nothing, so it is
+    not behind the install kill switch; it is still human-only because it changes what
+    code a live session runs."""
+    via = _plugin_human_gate(request, identity)
+    orch = request.app.state.sessions  # captured lazily: the fleet replaces it after build
+    rows = await orch.reload_plugins_everywhere(hold_on_cache_impact=body.holdOnCacheImpact)
+    await record_audit(db=db, type="library_plugins_reloaded", identity=identity,
+                       detail={"holdOnCacheImpact": body.holdOnCacheImpact, "sessions": rows},
+                       via=via)
+    ok = bool(rows) and not any(r.get("outcome") == "failed" for r in rows)
+    return {"op": "reload_plugins", "ok": ok, "sessions": rows}
 
 
 async def _vetted_source(source: object) -> str:

@@ -151,3 +151,22 @@ def test_cli_contract_round_trip(sandbox) -> None:
     # The CLI writes THROUGH an account's links; it never replaces them with files.
     assert (acct / "settings.json").is_symlink() and (acct / "plugins").is_symlink()
     assert (shared / "settings.json").is_file() and not (shared / "settings.json").is_symlink()
+
+
+@pytest.mark.skipif(os.environ.get("VIBERPIT_TEST_NETWORK") != "1", reason="needs network")
+def test_marketplace_add_clone_honours_the_pin(sandbox) -> None:
+    """The CLI's own ``git clone`` connects where ``GIT_CONFIG_GLOBAL`` pins the host:
+    pointing github.com at loopback makes the clone fail to connect (not a manifest error)."""
+    assert BINARY is not None
+    nonce = "contract-" + os.urandom(4).hex()
+    argv = [BINARY, "plugin", "marketplace", "add", "https://github.com/octocat/Hello-World",
+            "--scope", "user", "--json"]
+    env = plugin_cli._env(nonce, git_pin="github.com:443:127.0.0.1")
+    try:
+        rc, stdout = plugin_cli._run(argv, env=env, cwd=plugin_cli._cwd(),
+                                     timeout=plugin_cli.CLI_TIMEOUT_S)
+    finally:
+        os.unlink(env["GIT_CONFIG_GLOBAL"])
+    out = plugin_cli.parse_result("marketplace_add", rc, stdout, nonce)
+    assert out["outcome"] == "failed" and out["failureCode"] != "manifest_missing", out
+    assert "unable to access" in out["message"], out

@@ -1131,6 +1131,27 @@ class FleetOrchestrator:
 
         return list(await asyncio.gather(*(_one(n) for n in self._router.names())))
 
+    async def reload_plugins_everywhere(self, hold_on_cache_impact: bool = True) -> list[dict]:
+        """Live-reload plugins in every session on EVERY host (D-16c residuals).
+
+        Same fan-out contract as ``plugin_op_everywhere``: a host the registry knows is down
+        is reported without being dialled, and a host that fails yields exactly one
+        ``failed`` row (no ``sessionId``) rather than an exception. The result is the
+        concatenation of every reachable host's per-session rows.
+        """
+        from server.library.plugin_cli import unreachable
+        from server.sessions.plugin_reload import host_rows
+        reachable = set(await self._fanout_names())
+
+        async def _one(name: str) -> list[dict]:
+            if name not in reachable:
+                return [unreachable(name)]
+            return await host_rows(name, self._router.get(name).reload_plugins_live(
+                hold_on_cache_impact=hold_on_cache_impact))
+
+        return [row for rows in await asyncio.gather(*(_one(n) for n in self._router.names()))
+                for row in rows]
+
     async def push_credentials(self, lease_s: float = CREDS_LEASE_S) -> dict[str, dict[str, int]]:
         """Mint the primary's Claude envelopes and push them to every runner (#2629), carrying
         the shared MCP store's public view and purge keys with them (#3287).
