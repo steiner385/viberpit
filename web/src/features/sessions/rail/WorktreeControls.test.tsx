@@ -50,12 +50,22 @@ beforeEach(() => {
 function mount(busy = false) {
   const onDiscarded = vi.fn()
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  render(
+  const ui = (controls: boolean) => (
     <QueryClientProvider client={qc}>
-      <WorktreeControls sessionId="s1" busy={busy} onDiscarded={onDiscarded} />
-    </QueryClientProvider>,
+      {controls && <WorktreeControls sessionId="s1" busy={busy} onDiscarded={onDiscarded} />}
+    </QueryClientProvider>
   )
-  return { onDiscarded }
+  const r = render(ui(true))
+  /** The rail drops the card (the archived record left the sessions poll). */
+  const dropControls = () => r.rerender(ui(false))
+  return { onDiscarded, qc, dropControls }
+}
+
+function deferred<T>() {
+  let resolve!: (v: T) => void
+  let reject!: (e: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
 }
 
 async function openDiscard() {
@@ -66,6 +76,12 @@ async function openDiscard() {
 }
 
 describe('WorktreeControls — visibility', () => {
+  it('does not ask the daemon while a turn runs', async () => {
+    mount(true)
+    await new Promise((r) => setTimeout(r, 30))
+    expect(api.get).not.toHaveBeenCalled()
+  })
+
   it('a present managed worktree offers Discard and no Repair', async () => {
     mount()
     expect(await screen.findByRole('button', { name: 'Discard…' })).toBeInTheDocument()
@@ -155,8 +171,10 @@ describe('WorktreeControls — Discard', () => {
   })
 
   it('a busy session cannot be discarded yet, and says why', async () => {
+    // The card's answer was idle; the dialog's fresh one finds a turn running.
+    mount()
+    await screen.findByRole('button', { name: 'Discard…' })
     preflight = { ...PF, busy: true, canDiscard: false }
-    mount(true)
     const dialog = await openDiscard()
     expect(within(dialog).getByTestId('discard-refusal')).toHaveTextContent(WORKTREE_ERROR_MESSAGES.WORKTREE_SESSION_BUSY)
     expect(within(dialog).getByLabelText('End the session and delete its worktree')).toBeDisabled()
@@ -199,5 +217,72 @@ describe('WorktreeControls — Discard', () => {
     expect(refs).toHaveTextContent('refs/viberpit/recovery/s1-discard')
     expect(within(refs).getByRole('button', { name: 'git worktree add x refs/viberpit/recovery/s1-discard' })).toBeInTheDocument()
     expect(within(dialog).getByTestId('discard-refusal')).toHaveTextContent(WORKTREE_ERROR_MESSAGES.WORKTREE_REMOVE_FAILED)
+  })
+
+  it('the outcome survives the card unmounting mid-request: toast with the refs, and the page leaves', async () => {
+    const pending = deferred<unknown>()
+    vi.mocked(api.post).mockImplementation(async (path: string, body?: unknown) => {
+      posts.push({ path, body })
+      return pending.promise
+    })
+    const { onDiscarded, dropControls } = mount()
+    const dialog = await openDiscard()
+    await userEvent.click(within(dialog).getByLabelText('End the session and delete its worktree'))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Discard' }))
+    await waitFor(() => expect(posts).toHaveLength(1))
+    dropControls()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    pending.resolve(DISCARDED)
+    await waitFor(() => expect(onDiscarded).toHaveBeenCalledTimes(1))
+    expect(toast.success).toHaveBeenCalledWith('Discarded — worktree and branch viberpit/s1 removed',
+      expect.objectContaining({ duration: Infinity }))
+  })
+
+  it('a failure after the card unmounted still says why, with the refs', async () => {
+    const pending = deferred<unknown>()
+    vi.mocked(api.post).mockImplementation(async () => pending.promise)
+    const { onDiscarded, dropControls } = mount()
+    const dialog = await openDiscard()
+    await userEvent.click(within(dialog).getByLabelText('End the session and delete its worktree'))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Discard' }))
+    dropControls()
+    pending.reject(new ApiRequestError(500, { detail: {
+      code: 'WORKTREE_REMOVE_FAILED', message: 's', recoveryRefs: ['refs/viberpit/recovery/s1-discard'], restoreCommand: 'git x',
+    } }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(WORKTREE_ERROR_MESSAGES.WORKTREE_REMOVE_FAILED,
+      expect.objectContaining({ duration: Infinity })))
+    expect(onDiscarded).not.toHaveBeenCalled()
+  })
+
+  it('the dialog stays open while a refetch briefly leaves the card without data', async () => {
+    const { qc } = mount()
+    const dialog = await openDiscard()
+    // The card's own reading goes away (a refetch answering "not managed" stands in
+    // for any gap); the open dialog must not go with it.
+    preflight = { ...PF, managed: false, state: 'not_a_worktree', canDiscard: false }
+    await qc.invalidateQueries({ queryKey: ['worktree-preflight', 's1'] })
+    await within(dialog).findByText(WORKTREE_ERROR_MESSAGES.WORKTREE_NOT_MANAGED)
+    expect(screen.getByRole('dialog', { name: 'Discard this worktree?' })).toBe(dialog)
+  })
+
+  it('a tick does not outlive the facts it was given: disabled while checking, cleared when they change', async () => {
+    let answer = deferred<unknown>()
+    vi.mocked(api.get).mockImplementation(async () => answer.promise)
+    answer.resolve({ ...PF, dirty: 0 })
+    const { qc } = mount()
+    const dialog = await openDiscard()
+    const tick = within(dialog).getByLabelText('End the session and delete its worktree')
+    await waitFor(() => expect(tick).toBeEnabled())
+    await userEvent.click(tick)
+    expect(tick).toBeChecked()
+
+    answer = deferred<unknown>()
+    void qc.refetchQueries({ queryKey: ['worktree-preflight', 's1'] })
+    await waitFor(() => expect(tick).toBeDisabled())
+    answer.resolve({ ...PF, dirty: 5 })
+    await within(dialog).findByText('5 uncommitted files')
+    await waitFor(() => expect(tick).toBeEnabled())
+    expect(tick).not.toBeChecked()
+    expect(within(dialog).getByRole('button', { name: 'Discard' })).toBeDisabled()
   })
 })

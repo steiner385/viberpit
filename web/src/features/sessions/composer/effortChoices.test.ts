@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentCapabilities, ModelOption } from '@/api/types'
-import { effortChoices, lowerEffort } from './effortChoices'
+import { effortChoices, effortStep } from './effortChoices'
 
 const CLAUDE = { reasoningEffort: false, flagSettings: true } as AgentCapabilities
 const CODEX = { reasoningEffort: true, flagSettings: false } as AgentCapabilities
@@ -24,16 +24,20 @@ describe('effortChoices', () => {
   })
 })
 
-describe('lowerEffort', () => {
-  it('is one level down', () => {
-    expect(lowerEffort(['low', 'medium', 'high'], 'high')).toBe('medium')
-    expect(lowerEffort(['low', 'medium', 'high'], 'medium')).toBe('low')
+describe('effortStep', () => {
+  it('a known level steps one down', () => {
+    expect(effortStep(['low', 'medium', 'high'], 'high')).toEqual({ to: 'medium' })
+    expect(effortStep(['low', 'medium', 'high'], 'medium')).toEqual({ to: 'low' })
   })
 
-  it('is null at the floor, with no levels, or when the level in force is unknown', () => {
-    expect(lowerEffort(['low', 'medium', 'high'], 'low')).toBeNull()
-    expect(lowerEffort([], 'high')).toBeNull()
-    expect(lowerEffort(['low', 'high'], null)).toBeNull()
-    expect(lowerEffort(['low', 'high'], 'max')).toBeNull()
+  it('is null at the floor or with no levels', () => {
+    expect(effortStep(['low', 'medium', 'high'], 'low')).toBeNull()
+    expect(effortStep([], 'high')).toBeNull()
+    expect(effortStep([], null)).toBeNull()
+  })
+
+  it("an unknown level with levels offered is 'pick' — open the picker, never guess", () => {
+    expect(effortStep(['low', 'high'], null)).toBe('pick')
+    expect(effortStep(['low', 'high'], 'max')).toBe('pick')
   })
 })

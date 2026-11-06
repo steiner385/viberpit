@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react'
 import type { ModelOption, Session } from '@/api/types'
+import type { EffortStep } from '@/features/sessions/composer/effortChoices'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 
 /**
@@ -14,11 +15,11 @@ export interface ErrorRecovery {
   /** A turn is running: an effort change lands after it, never restarts it. */
   busy: boolean
   session?: Session
-  /** One level below the effort in force (`effortChoices` + `lowerEffort`, the prompt
-   *  row's reading) for this model catalog; null at the floor or with no levels. A
-   *  function so the lazy actions fetch the catalog and the eager side keeps the
-   *  helper — importing it from the lazy chunk split it into a preloaded chunk. */
-  lowerEffort: (models: readonly ModelOption[]) => string | null
+  /** What Lower effort does for this model catalog (`effortChoices` + `effortStep`, the
+   *  prompt row's reading). A function so the lazy actions fetch the catalog and the
+   *  eager side keeps the helper — importing it from the lazy chunk split it into a
+   *  preloaded chunk. */
+  effortStep: (models: readonly ModelOption[]) => EffortStep
 }
 
 export const ErrorRecoveryContext = createContext<ErrorRecovery | null>(null)
@@ -28,4 +29,4 @@ export function useErrorRecovery(): ErrorRecovery | null {
 }
 
 /** One style for every action on the card, eager and lazy alike. */
-export const ERROR_ACTION_CLASS = 'rounded px-1.5 py-0.5 text-xs font-medium text-danger hover:bg-danger/10 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+export const ERROR_ACTION_CLASS = 'rounded px-1.5 py-0.5 text-xs font-medium text-danger hover:bg-danger/10 disabled:opacity-50 pointer-coarse:min-h-target focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent'

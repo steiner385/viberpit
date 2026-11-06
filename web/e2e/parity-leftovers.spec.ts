@@ -43,7 +43,7 @@ const failed = (kind: string, code: string, message: string): SessionEvent[] => 
   { type: 'turnEnd', turnId: 't1' },
 ]
 
-interface Opts { history?: SessionEvent[]; preflight?: Record<string, unknown>; effort?: string }
+interface Opts { history?: SessionEvent[]; preflight?: Record<string, unknown>; effort?: string | null }
 
 async function openSession(page: Page, width: number, opts: Opts = {}) {
   const { history = failed('rate_limit', 'api_429', 'Rate limited — try again shortly'), preflight = PREFLIGHT } = opts
@@ -52,7 +52,7 @@ async function openSession(page: Page, width: number, opts: Opts = {}) {
   await page.route('**/api/**', (route) => route.fulfill({ json: [] }))
   await page.route('**/api/sessions', (route) => route.fulfill({ json: [{
     id: sid, name: 'Parity me', accountName: 'alice', engine: 'claude_code', status: 'idle', model: 'opus',
-    reasoningEffort: opts.effort ?? 'high', supportedEffortLevels: ['low', 'medium', 'high'],
+    reasoningEffort: opts.effort === undefined ? 'high' : opts.effort, supportedEffortLevels: ['low', 'medium', 'high'],
     repo: 'acme/rocket', branch: 'viberpit/parity-session', cwd: CWD,
     createdAt: '2026-11-05T10:00:00Z', updatedAt: '2026-11-05T10:00:00Z', prs: [],
   }] }))
@@ -124,6 +124,15 @@ for (const width of [1440, 390]) {
     await openSession(page, width, { effort: 'low', history: failed('model_unavailable', 'api_404', 'The selected model does not exist') })
     const card = page.getByTestId('transcript-scroll').getByRole('alert').filter({ hasText: 'does not exist' })
     await expect(card.getByRole('button')).toHaveText(['Switch model'])
+  })
+
+  test(`${width}px: with the effort unknown (a default Claude session), "Lower effort…" opens the effort picker`, async ({ page }) => {
+    const { posts } = await openSession(page, width, { effort: null })
+    const card = page.getByTestId('transcript-scroll').getByRole('alert').filter({ hasText: 'Rate limited' })
+    await expect(card.getByRole('button')).toHaveText(['Switch model', 'Lower effort…', 'Rewind & retry'])
+    await card.getByRole('button', { name: 'Lower effort…' }).click()
+    await expect(page.getByRole('menu', { name: 'Reasoning effort' })).toBeVisible()
+    expect(posts).toHaveLength(0)
   })
 
   test(`${width}px: Discard confirms with the facts, leaves the session, and keeps the refs in a toast`, async ({ page }) => {
@@ -207,3 +216,26 @@ for (const width of [1440, 390]) {
     await noOverflow(page)
   })
 }
+
+test.describe('touch targets — phone, coarse pointer', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+
+  test('the error-card actions and the worktree actions are at least 44px tall', async ({ page }) => {
+    await openSession(page, 390)
+    const card = page.getByTestId('transcript-scroll').getByRole('alert').filter({ hasText: 'Rate limited' })
+    for (const name of ['Switch model', 'Lower effort', 'Rewind & retry']) {
+      const box = await card.getByRole('button', { name, exact: true }).boundingBox()
+      expect(box!.height, name).toBeGreaterThanOrEqual(44)
+    }
+    await page.getByRole('tab', { name: 'Details' }).click()
+    const discard = await page.getByRole('region', { name: 'Environment' }).getByRole('button', { name: 'Discard…' }).boundingBox()
+    expect(discard!.height).toBeGreaterThanOrEqual(44)
+  })
+
+  test('Repair is at least 44px tall', async ({ page }) => {
+    await openSession(page, 390, { preflight: { ...PREFLIGHT, present: false, state: 'missing', canDiscard: false, canRepair: true } })
+    await page.getByRole('tab', { name: 'Details' }).click()
+    const repair = await page.getByRole('region', { name: 'Environment' }).getByRole('button', { name: 'Repair' }).boundingBox()
+    expect(repair!.height).toBeGreaterThanOrEqual(44)
+  })
+})

@@ -13,7 +13,7 @@
  * the refs were written lists them in place, the same way. Paths, branches and refs
  * are untrusted text, never markup.
  */
-import { useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -28,8 +28,6 @@ import {
 
 export interface DiscardWorktreeDialogProps {
   sessionId: string
-  /** The live status says a turn is running (the preflight re-checks it). */
-  busy: boolean
   onClose: () => void
   /** The session was archived: the host leaves it. */
   onDiscarded?: () => void
@@ -72,6 +70,16 @@ function Refs({ refs, restore }: { refs: readonly string[]; restore: string | nu
   )
 }
 
+/** A failure that arrives after the dialog is gone (the card unmounted mid-request)
+ *  still says why, with the refs — up until dismissed when there are any. */
+function toastFailure(f: ReturnType<typeof worktreeError>) {
+  const kept = f.refs.length > 0 || f.restore !== null
+  toast.error(f.text, {
+    description: kept ? <span className="block"><Refs refs={f.refs} restore={f.restore} /></span> : undefined,
+    duration: kept ? Infinity : 8000,
+  })
+}
+
 /** The page is about to leave the session, so the outcome rides a toast that stays
  *  until dismissed whenever there is something to restore. */
 function toastDiscarded(res: WorktreeDiscardResult) {
@@ -92,15 +100,23 @@ function toastDiscarded(res: WorktreeDiscardResult) {
   })
 }
 
-export default function DiscardWorktreeDialog({ sessionId, busy, onClose, onDiscarded }: DiscardWorktreeDialogProps) {
+export default function DiscardWorktreeDialog({ sessionId, onClose, onDiscarded }: DiscardWorktreeDialogProps) {
   const ackId = useId()
-  const preflight = useWorktreePreflight(sessionId, busy, { fresh: true })
+  const preflight = useWorktreePreflight(sessionId, { fresh: true })
   const discard = useDiscardWorktree()
-  const [ack, setAck] = useState(false)
   const [failure, setFailure] = useState<ReturnType<typeof worktreeError> | null>(null)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
 
   const pf = preflight.data
   const checking = preflight.isFetching
+  // The tick answers the facts it was given: it is held against that preflight answer
+  // (structurally shared, so an identical refetch keeps it) and lapses when they change.
+  const [ackFor, setAckFor] = useState<WorktreePreflight | null>(null)
+  const ack = pf !== undefined && ackFor === pf && !checking
   const blocked = preflight.isError
     ? worktreeError(preflight.error, DISCARD_FAILED_FALLBACK).text
     : pf && !pf.canDiscard ? refusal(pf) : null
@@ -110,14 +126,21 @@ export default function DiscardWorktreeDialog({ sessionId, busy, onClose, onDisc
   function submit() {
     if (!canDiscard) return
     setFailure(null)
-    discard.mutate(sessionId, {
-      onSuccess: (res) => {
-        onClose()
+    // `mutateAsync`, not `mutate`'s callbacks, which React Query drops on unmount: the
+    // archive can drop the session from the list (and this dialog with the rail)
+    // before the response lands, and the refs must still reach the user.
+    discard.mutateAsync(sessionId).then(
+      (res) => {
+        if (mounted.current) onClose()
         onDiscarded?.()
         toastDiscarded(res)
       },
-      onError: (err) => setFailure(worktreeError(err, DISCARD_FAILED_FALLBACK)),
-    })
+      (err: unknown) => {
+        const f = worktreeError(err, DISCARD_FAILED_FALLBACK)
+        if (mounted.current) setFailure(f)
+        else toastFailure(f)
+      },
+    )
   }
 
   return (
@@ -165,13 +188,14 @@ export default function DiscardWorktreeDialog({ sessionId, busy, onClose, onDisc
         )}
         {failure && (failure.refs.length > 0 || failure.restore) && <Refs refs={failure.refs} restore={failure.restore} />}
 
-        <label htmlFor={ackId} className={cn('flex items-start gap-2 min-h-target text-ink cursor-pointer', blocked && 'opacity-50')}>
+        <label htmlFor={ackId} className={cn('flex items-start gap-2 min-h-target text-ink cursor-pointer', (blocked || checking) && 'opacity-50')}>
           <input
             id={ackId}
             type="checkbox"
             checked={ack}
-            disabled={blocked !== null || pending}
-            onChange={(e) => setAck(e.target.checked)}
+            // Not while a fresh answer is on its way: a tick must answer the facts shown.
+            disabled={blocked !== null || pending || checking}
+            onChange={(e) => setAckFor(e.target.checked ? pf ?? null : null)}
             className="mt-0.5 h-4 w-4 flex-shrink-0 rounded-sm border-edge-strong accent-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           />
           <span className="min-w-0">End the session and delete its worktree</span>

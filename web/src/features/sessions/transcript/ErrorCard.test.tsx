@@ -12,7 +12,7 @@ import type { Turn } from '@/session/reducer'
 import type { ErrorKind } from '@/session/events'
 import { SessionGestureProvider, usePromptRowMenusRegistration } from '@/shell/sessionGestures'
 import { RewindProvider } from '@/features/sessions/rewind/RewindProvider'
-import { lowerEffort } from '@/features/sessions/composer/effortChoices'
+import { effortStep } from '@/features/sessions/composer/effortChoices'
 import { ErrorCard } from './ErrorCard'
 import { ErrorRecoveryContext, type ErrorRecovery } from './errorRecoveryContext'
 
@@ -229,6 +229,7 @@ describe('ErrorCard — Rewind & retry', () => {
 
 describe('ErrorCard recovery actions', () => {
   const openModel = vi.fn()
+  const openEffort = vi.fn()
   const onSetModel = vi.fn()
   const onPlainPrompt = vi.fn()
   const LEVELS = ['low', 'medium', 'high']
@@ -236,7 +237,7 @@ describe('ErrorCard recovery actions', () => {
   /** Registers a prompt row's menus the way the dock composer does. */
   function Menus({ children }: { children: ReactNode }) {
     const ref = usePromptRowMenusRegistration()
-    if (ref) ref.current = { openMode: vi.fn(), openModel, openEffort: vi.fn() }
+    if (ref) ref.current = { openMode: vi.fn(), openModel, openEffort }
     return <>{children}</>
   }
 
@@ -246,7 +247,7 @@ describe('ErrorCard recovery actions', () => {
       rt: { model: 'opus', onSetModel, onPlainPrompt, commands: compact ? [{ name: 'compact', description: '' }] as never : [] },
       busy,
       session: { id: 's1', engine: 'claude_code', accountName: 'a' } as never,
-      lowerEffort: () => lowerEffort(levels, effort),
+      effortStep: () => effortStep(levels, effort),
     }
   }
 
@@ -270,7 +271,7 @@ describe('ErrorCard recovery actions', () => {
 
   const actions = () => screen.queryAllByRole('button').map((b) => b.textContent?.trim())
 
-  beforeEach(() => { openModel.mockReset(); onSetModel.mockReset(); onPlainPrompt.mockReset() })
+  beforeEach(() => { openModel.mockReset(); openEffort.mockReset(); onSetModel.mockReset(); onPlainPrompt.mockReset() })
 
   it('a rate limit offers Switch model, Lower effort and Rewind & retry', async () => {
     renderKind('rate_limit')
@@ -303,11 +304,19 @@ describe('ErrorCard recovery actions', () => {
     expect(onSetModel).toHaveBeenCalledWith('opus', 'after_turn', 'medium')
   })
 
-  it('Lower effort is hidden at the lowest level, with no levels, and when the level is unknown', async () => {
-    for (const over of [{ effort: 'low' }, { levels: [] }, { effort: null }]) {
+  it('with the level unknown (a default Claude session) "Lower effort…" opens the effort picker, picking nothing', async () => {
+    renderKind('rate_limit', recovery({ effort: null }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Lower effort…' }))
+    expect(openEffort).toHaveBeenCalledTimes(1)
+    expect(onSetModel).not.toHaveBeenCalled()
+    expect(actions()).toEqual(['Switch model', 'Lower effort…', RETRY])
+  })
+
+  it('Lower effort is hidden at the lowest level and with no levels', async () => {
+    for (const over of [{ effort: 'low' }, { levels: [] }, { levels: [], effort: null }]) {
       const { unmount } = renderKind('rate_limit', recovery(over))
       await screen.findByRole('button', { name: 'Switch model' })
-      expect(screen.queryByRole('button', { name: 'Lower effort' })).toBeNull()
+      expect(screen.queryByRole('button', { name: /Lower effort/ })).toBeNull()
       unmount()
     }
   })

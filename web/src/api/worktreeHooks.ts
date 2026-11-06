@@ -14,22 +14,27 @@ const path = (sessionId: string, leaf: string) => `/sessions/${encodeURIComponen
 /**
  * What Discard and Repair would do (`git status` + an unpushed count on the owning
  * daemon). Person-only: a token caller's 403 is an answer — the controls hide — so
- * it is never retried. `busy` is in the key so a turn ending re-asks; `fresh` (the
- * Discard dialog) always re-reads on open rather than trusting the card's answer.
+ * it is never retried. The card asks only while the session is idle (`enabled`) and
+ * keeps an answer a minute, so a turn starting or ending costs the daemon nothing;
+ * `fresh` (the Discard dialog) always re-reads on open rather than trusting it.
  */
-export function useWorktreePreflight(sessionId: string, busy: boolean, { fresh = false } = {}) {
+export function useWorktreePreflight(sessionId: string, { enabled = true, fresh = false } = {}) {
   return useQuery<WorktreePreflight, ApiRequestError>({
-    queryKey: [...worktreePreflightKey(sessionId), busy],
+    queryKey: worktreePreflightKey(sessionId),
     queryFn: () => api.get<WorktreePreflight>(path(sessionId, 'preflight')),
+    enabled,
     retry: false,
     refetchOnWindowFocus: false,
-    staleTime: 15_000,
+    staleTime: 60_000,
     ...(fresh ? { refetchOnMount: 'always' as const } : {}),
   })
 }
 
 /** The mutations render their own failure (dialog / toast), so the global toast is
- *  suppressed; either outcome refetches the list (a discard archives the session). */
+ *  suppressed; either outcome refetches the list (a discard archives the session).
+ *  Callers read the outcome from `mutateAsync`'s promise, not `mutate`'s callbacks:
+ *  React Query drops those once the caller unmounts, and a discard's archive can
+ *  unmount the card mid-request. */
 function useWorktreeMutation<T>(leaf: 'discard' | 'repair', body?: unknown) {
   const qc = useQueryClient()
   return useMutation<T, ApiRequestError, string>({

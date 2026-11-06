@@ -22,23 +22,25 @@ export interface WorktreeControlsProps {
   onDiscarded?: () => void
 }
 
-const ACTION = 'rounded px-1.5 py-0.5 text-xs font-medium hover:bg-edge disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+const ACTION = 'rounded px-1.5 py-0.5 text-xs font-medium hover:bg-edge disabled:opacity-50 pointer-coarse:min-h-target pointer-coarse:px-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent'
 
 export function WorktreeControls({ sessionId, busy, onDiscarded }: WorktreeControlsProps) {
-  const { data: pf } = useWorktreePreflight(sessionId, busy)
+  const { data: pf } = useWorktreePreflight(sessionId, { enabled: !busy })
   const repair = useRepairWorktree()
   const [discardOpen, setDiscardOpen] = useState(false)
-  if (!pf?.managed) return null
-
-  const canOpenDiscard = pf.state === 'present'
-  const repairable = (pf.state === 'missing' || pf.state === 'empty') && pf.canRepair
+  // An open dialog outlives the card's own reading: a refetch or a gap in it must
+  // never unmount the confirm (or a discard in flight) under the user.
+  const managed = pf?.managed === true
+  const canOpenDiscard = managed && pf.state === 'present'
+  const repairable = managed && (pf.state === 'missing' || pf.state === 'empty') && pf.canRepair
   if (!canOpenDiscard && !repairable && !discardOpen) return null
 
+  // `mutateAsync`, not `mutate`'s callbacks: the result toasts even if the card has gone.
   function runRepair() {
-    repair.mutate(sessionId, {
-      onSuccess: (res) => toast.success(res.branch ? `Worktree recreated on ${res.branch}` : 'Worktree recreated'),
-      onError: (err) => toast.error(worktreeError(err, REPAIR_FAILED_FALLBACK).text),
-    })
+    repair.mutateAsync(sessionId).then(
+      (res) => { toast.success(res.branch ? `Worktree recreated on ${res.branch}` : 'Worktree recreated') },
+      (err: unknown) => { toast.error(worktreeError(err, REPAIR_FAILED_FALLBACK).text) },
+    )
   }
 
   return (
@@ -64,7 +66,6 @@ export function WorktreeControls({ sessionId, busy, onDiscarded }: WorktreeContr
         <Suspense fallback={null}>
           <DiscardWorktreeDialog
             sessionId={sessionId}
-            busy={busy}
             onClose={() => setDiscardOpen(false)}
             onDiscarded={onDiscarded}
           />

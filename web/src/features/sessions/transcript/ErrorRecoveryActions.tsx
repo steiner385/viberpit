@@ -5,9 +5,10 @@
  * - Switch model (rate limit, overloaded, model unavailable) opens the prompt row's
  *   model picker — the same opener as Alt+Shift+M. It never picks a model itself.
  * - Lower effort (rate limit, overloaded) steps one level down the efforts the
- *   prompt row's picker offers (`ErrorRecovery.lowerEffort`), through the same switch
- *   the picker uses. Absent at the floor, with no efforts, or when the level in force
- *   is unknown.
+ *   prompt row's picker offers (`ErrorRecovery.effortStep`), through the same switch
+ *   the picker uses. With the level in force unknown (a default Claude session) it is
+ *   "Lower effort…" and opens that picker instead — never a guessed level. Absent at
+ *   the floor or with no efforts.
  * - Compact (context too long) sends `/compact`, where the command exists.
  */
 import { ChevronsDown } from 'lucide-react'
@@ -26,21 +27,24 @@ export default function ErrorRecoveryActions({ kind, recovery, className }: {
   const { rt, session } = recovery
   const { data: models = [] } = useModels(session?.engine, session?.accountName)
   const limited = kind === 'rate_limit' || kind === 'overloaded'
-  const lower = limited ? recovery.lowerEffort(models) : null
+  const step = limited ? recovery.effortStep(models) : null
   return (
     <>
       {(limited || kind === 'model_unavailable') && (
         // The live session's dock composer always holds the prompt row.
         <button type="button" className={className} onClick={() => menus.current?.openModel()}>Switch model</button>
       )}
-      {lower !== null && (
+      {step !== null && (
         <button
           type="button"
           className={cn(className, 'inline-flex items-center gap-0.5')}
-          title={`Set reasoning effort to ${lower}`}
-          onClick={() => rt.onSetModel(rt.model ?? 'default', recovery.busy ? 'after_turn' : 'now', lower)}
+          title={step === 'pick' ? 'Choose a lower reasoning effort' : `Set reasoning effort to ${step.to}`}
+          onClick={() => {
+            if (step === 'pick') menus.current?.openEffort()
+            else rt.onSetModel(rt.model ?? 'default', recovery.busy ? 'after_turn' : 'now', step.to)
+          }}
         >
-          <ChevronsDown size={12} aria-hidden="true" className="inline" /> Lower effort
+          <ChevronsDown size={12} aria-hidden="true" /> {step === 'pick' ? 'Lower effort…' : 'Lower effort'}
         </button>
       )}
       {kind === 'context_too_long' && rt.commands.some((c) => c.name === 'compact') && (

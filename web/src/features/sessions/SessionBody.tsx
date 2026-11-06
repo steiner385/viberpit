@@ -38,7 +38,7 @@ import { useComposerAttach } from '@/shell/sessionGestures'
 import { ForkProvider } from '@/features/sessions/fork/ForkProvider'
 import { RewindProvider } from '@/features/sessions/rewind/RewindProvider'
 import { ErrorRecoveryContext, type ErrorRecovery } from '@/features/sessions/transcript/errorRecoveryContext'
-import { effortChoices, lowerEffort } from '@/features/sessions/composer/effortChoices'
+import { effortChoices, effortStep } from '@/features/sessions/composer/effortChoices'
 import { useAutoMarkViewed } from './useAutoMarkViewed'
 
 /** The Changes pane is off the entry path (D-4): only the header chip ships eagerly. */
@@ -163,9 +163,9 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
   // An error card's Switch model / Lower effort / Compact (D-19).
   const recovery: ErrorRecovery = {
     rt, busy, session: sessionRecord,
-    lowerEffort: (models) => {
+    effortStep: (models) => {
       const { efforts, effort } = effortChoices(rt.model, sessionRecord, caps, models)
-      return lowerEffort(efforts, effort)
+      return effortStep(efforts, effort)
     },
   }
 

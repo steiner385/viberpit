@@ -30,9 +30,16 @@ export function effortChoices(
   return { efforts, effort: session?.reasoningEffort ?? chosen?.defaultReasoningEffort ?? null }
 }
 
-/** The level one below `effort` in `efforts`; null at the floor, or when the
- *  current level is unknown or not offered (nothing honest to step down from). */
-export function lowerEffort(efforts: readonly string[], effort: string | null): string | null {
+/** What "Lower effort" does (D-19): `{to}` steps one level down from the level in
+ *  force; `'pick'` opens the picker when levels exist but the level in force is unknown
+ *  (a default Claude session) or not offered — never a guess; null at the floor or
+ *  with no levels. Both sources list levels lowest-first: the CLI filters its enum
+ *  `low…max` in order, and Codex steps "lowest"/"highest" over its own list. */
+export type EffortStep = { to: string } | 'pick' | null
+
+export function effortStep(efforts: readonly string[], effort: string | null): EffortStep {
+  if (efforts.length === 0) return null
   const i = effort === null ? -1 : efforts.indexOf(effort)
-  return i > 0 ? efforts[i - 1] : null
+  if (i < 0) return 'pick'
+  return i > 0 ? { to: efforts[i - 1] } : null
 }
