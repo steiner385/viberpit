@@ -91,6 +91,7 @@ from server.codex.redaction import scrub_exception
 from server.codex.translator import TRANSLATED_NOTIFICATIONS, CodexEventTranslator
 from server.obs.context import log_event
 from server.sessions import events as ev
+from server.sessions.failure import CODEX_RECOVERABLE_KINDS
 from server.sessions.background_tasks import OpenBgTask
 from server.sessions.automation_execution import AutomationExecutionFence
 from server.sessions.driver_stream import _STREAM_DONE, DriverStream
@@ -135,17 +136,6 @@ _ZIP_MIME: Final = "application/zip"
 #: ``claude_driver._TURN_CONTENT``: control/ephemeral events are re-emitted from
 #: authoritative state by the WS attach path, so buffering them double-emits.
 _TURN_CONTENT = TRANSCRIPT_EVENT_TYPES
-
-#: `codexErrorInfo` categories the orchestrator can actually recover from, and
-#: the ``server/sessions/failure.py`` kind each maps to. Anything else surfaces
-#: as a plain error: inventing a recovery kind for an unknown category would
-#: send the orchestrator rotating accounts over a bad request.
-_RECOVERABLE_ERROR_KINDS: Final[dict[str, str]] = {
-    "unauthorized": "auth_401",
-    "rateLimitExceeded": "rate_limit",
-    "usageLimitExceeded": "rate_limit",
-    "sessionBudgetExceeded": "rate_limit",
-}
 
 #: Fixed operator-facing text for an `error` notification. The native message is
 #: `Redacted` (Phase 2) and stays that way: it can carry a prompt, a path or
@@ -1995,7 +1985,9 @@ class CodexAgentDriver:
             return
         category = params.codex_error_info
         await self.emit_error(category or _ERROR_CODE, _ERROR_MESSAGE)
-        kind = _RECOVERABLE_ERROR_KINDS.get(category or "")
+        # Recoverable categories: failure.CODEX_RECOVERABLE_KINDS (one map, also read
+        # by the error card's kind).
+        kind = CODEX_RECOVERABLE_KINDS.get(category or "")
         if kind is None:
             return
         if kind == "auth_401":

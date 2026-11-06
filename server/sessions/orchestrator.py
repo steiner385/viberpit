@@ -6832,6 +6832,209 @@ class SessionOrchestrator:
         self._queue_prompt_preamble(session_id, note)
         return True
 
+    # ── Worktree controls (D-19): preflight / Discard / Repair ────────────────────────
+    # Run on the daemon that owns the session (per-session RPCs). The vocabulary —
+    # codes, the envelope-crossing error — is server/sessions/worktree_controls.py.
+
+    async def _worktree_control_facts(self, rec: SessionRecord) -> dict:
+        """What the Environment card's Discard / Repair would act on. Read-only."""
+        from viberpit import worktree_transfer as wtx
+        cwd = rec.cwd or ""
+        roots = await self._managed_roots() if cwd else set()
+        managed = (bool(cwd) and any(worktrees.is_managed_path(cwd, r) for r in roots)
+                   and not gitrepos.is_clone_path(cwd))
+        p = Path(cwd) if cwd else None
+        if p is None:
+            state = "none"
+        elif (p / ".git").exists():
+            state = "present"
+        elif not p.exists():
+            state = "missing"
+        elif p.is_dir() and not any(p.iterdir()):
+            state = "empty"
+        else:
+            state = "not_a_worktree"
+        dirty: int | None = 0
+        unpushed: int | None = 0
+        branch: str | None = None
+        refs: list[str] = []
+        if managed and state == "present":
+            try:
+                st = await asyncio.to_thread(wtx.inspect, cwd)
+                dirty, unpushed, branch = st.dirty_files, st.unpushed_commits, st.branch
+            except wtx.TransferError:
+                dirty = unpushed = None   # unreadable: Discard refuses (fails closed)
+            refs = await asyncio.to_thread(worktrees.recovery_refs, cwd, rec.id)
+        at_risk = bool(dirty) or bool(unpushed)
+        return {
+            "sessionId": rec.id, "path": cwd or None, "managed": managed,
+            "present": state == "present", "state": state, "branch": branch,
+            "sessionBranch": brand.is_session_branch(branch or ""),
+            "dirty": dirty, "unpushed": unpushed, "recoveryRefs": refs,
+            "restoreHint": (worktrees.restore_command("<recovery-ref>")
+                            if at_risk or dirty is None else None),
+        }
+
+    async def _worktree_control_busy(self, session_id: str, rec: SessionRecord) -> bool:
+        """Is anything running, or waiting on a person, in this session? The move's idle
+        predicate (``_transfer_export``) plus open background work, which runs in the
+        worktree too."""
+        from server.sessions.status import MID_TURN_STATUSES
+        driver = self._drivers.get(session_id)
+        queued = getattr(driver, "queued", None)
+        if (rec.status in MID_TURN_STATUSES or rec.status in ("working", "waiting_external")
+                or getattr(driver, "turn_active", False)
+                or getattr(driver, "drain_alive", False) or session_id in self._spawning
+                or (callable(queued) and bool(list(queued())))
+                or self._has_live_card(session_id)):
+            return True
+        return driver is not None and bool(await self._open_background_work(session_id))
+
+    def _worktree_shared(self, session_id: str, cwd: str) -> bool:
+        mine = os.path.realpath(cwd)
+        return any(r.id != session_id and r.cwd and os.path.realpath(r.cwd) == mine
+                   for r in self._records.values())
+
+    async def worktree_preflight(self, session_id: str) -> dict:
+        """The Discard / Repair dialog's facts (D-19): ``{sessionId, path, managed,
+        present, state, branch, sessionBranch, dirty, unpushed, recoveryRefs,
+        restoreHint, busy, canDiscard, canRepair}``. ``KeyError`` for an unknown session.
+        ``dirty``/``unpushed`` are None when the tree could not be read."""
+        rec = self._worktree_record(session_id)
+        facts = await self._worktree_control_facts(rec)
+        busy = await self._worktree_control_busy(session_id, rec)
+        facts.update(
+            busy=busy,
+            canDiscard=(not busy and facts["managed"] and facts["present"]
+                        and facts["dirty"] is not None
+                        and (Path(rec.cwd or "") / ".git").is_file()
+                        and not self._worktree_shared(session_id, rec.cwd or "")),
+            canRepair=(not busy and facts["managed"]
+                       and facts["state"] in ("missing", "empty")),
+        )
+        return facts
+
+    def _worktree_refusal(self, session_id: str, action: str, code: str,
+                          extra: dict | None = None):
+        from server.sessions.worktree_controls import WorktreeControlError
+        log_event(log, logging.INFO, f"session.worktree_{action}_refused",
+                  session_id=session_id, code=code)
+        return WorktreeControlError(code, extra)
+
+    @contextlib.asynccontextmanager
+    async def _worktree_control_slot(self, session_id: str, action: str):
+        """The move's ``_transfer_slot``: no prompt lands and no driver builds while a
+        Discard / Repair runs. A swap that will not finish is a busy session."""
+        from server.sessions import session_move as sm
+        from server.sessions import worktree_controls as wc
+        try:
+            async with self._transfer_slot(session_id):
+                yield
+        except sm.MoveError as exc:
+            if exc.code != sm.MOVE_MID_TURN:
+                raise
+            raise self._worktree_refusal(session_id, action,
+                                         wc.WORKTREE_SESSION_BUSY) from exc
+
+    async def discard_worktree(self, session_id: str) -> dict:
+        """End the session and remove its managed worktree (D-19 Discard), keeping every
+        dirty tree and every commit the removal would leave unreferenced as a recovery
+        ref FIRST. Idle sessions only. Steps, each refusing before anything is touched
+        until the refs exist: idle → managed linked worktree here, not shared →
+        ``snapshot_before_discard`` → driver closed → ``archive_session`` →
+        ``remove_worktree(force=True)`` (which deletes only a session branch). A failure
+        after the snapshot keeps it and names it. Returns ``{discarded, recoveryRefs,
+        restoreCommand, branch, branchDeleted, path}``. Runs to completion even if the
+        caller goes away. ``KeyError`` unknown; ``WorktreeControlError`` otherwise."""
+        rec = self._worktree_record(session_id)
+        return await run_to_completion(self._discard_worktree(session_id, rec),
+                                       name=f"worktree-discard-{session_id}")
+
+    async def _discard_worktree(self, session_id: str, rec: SessionRecord) -> dict:
+        from server.sessions import worktree_controls as wc
+        async with self._worktree_control_slot(session_id, "discard"):
+            rec = self._records.get(session_id) or rec
+            if await self._worktree_control_busy(session_id, rec):
+                raise self._worktree_refusal(session_id, "discard", wc.WORKTREE_SESSION_BUSY)
+            facts = await self._worktree_control_facts(rec)
+            cwd = facts["path"] or ""
+            if not facts["managed"]:
+                raise self._worktree_refusal(session_id, "discard", wc.WORKTREE_NOT_MANAGED)
+            if not facts["present"]:
+                raise self._worktree_refusal(session_id, "discard", wc.WORKTREE_MISSING)
+            if not (Path(cwd) / ".git").is_file():
+                # A managed path whose .git is a directory is a full checkout, never a
+                # session's linked worktree: removing it is not ours to do.
+                raise self._worktree_refusal(session_id, "discard", wc.WORKTREE_NOT_MANAGED)
+            if self._worktree_shared(session_id, cwd):
+                raise self._worktree_refusal(session_id, "discard", wc.WORKTREE_SHARED)
+            refs = await asyncio.to_thread(worktrees.snapshot_before_discard, cwd, session_id)
+            if refs is None:
+                log_event(log, logging.WARNING, "session.worktree_discard_snapshot_failed",
+                          session_id=session_id, path=cwd)
+                raise wc.WorktreeControlError(wc.WORKTREE_SNAPSHOT_FAILED)
+            kept = {"recoveryRefs": refs,
+                    "restoreCommand": worktrees.restore_command(refs[0]) if refs else None}
+            log_event(log, logging.INFO, "session.worktree_discard_snapshot",
+                      session_id=session_id, path=cwd, recovery_refs=refs)
+            # ── from here on the refs exist; every failure names them ──
+            try:
+                # Closed inline, bounded, as close_session does: the CLI must be gone
+                # before its working directory is.
+                driver = await self._teardown_driver_state(session_id)
+                if driver is not None:
+                    await bounded_wait(self._close_automation_driver(driver, session_id),
+                                       timeout=DRIVER_RELEASE_WAIT_S,
+                                       phase=f"worktree.discard.close:{session_id}")
+                await self.archive_session(session_id, archived_by="user")
+            except Exception as exc:
+                log_event(log, logging.WARNING, "session.worktree_discard_failed",
+                          session_id=session_id, step="archive", error=repr(exc),
+                          recovery_refs=refs)
+                raise wc.WorktreeControlError(wc.WORKTREE_DISCARD_FAILED, kept) from exc
+            branch = facts["branch"]
+            removed = await asyncio.to_thread(worktrees.remove_worktree, cwd, True,
+                                              session_id=session_id)
+            if not removed:
+                log_event(log, logging.WARNING, "session.worktree_discard_failed",
+                          session_id=session_id, step="remove", path=cwd,
+                          recovery_refs=refs)
+                raise wc.WorktreeControlError(wc.WORKTREE_REMOVE_FAILED, kept)
+            log_event(log, logging.INFO, "session.worktree_discarded", session_id=session_id,
+                      path=cwd, branch=branch, recovery_refs=refs)
+            return {"discarded": True, **kept, "path": cwd, "branch": branch,
+                    "branchDeleted": brand.is_session_branch(branch or "")}
+
+    async def repair_worktree(self, session_id: str) -> dict:
+        """Recreate a missing or EMPTY managed worktree from the session's branch, on
+        demand (D-19 Repair), through ``_ensure_session_cwd`` — the gate every driver
+        build uses, so its audit, notice and refusals apply unchanged. A present tree,
+        or a path holding anything else, is refused untouched. Returns ``{repaired,
+        path, branch, recoveryRefs}``. ``KeyError`` unknown; ``WorktreeControlError``."""
+        from server.sessions import worktree_controls as wc
+        rec = self._worktree_record(session_id)
+        async with self._worktree_control_slot(session_id, "repair"):
+            rec = self._records.get(session_id) or rec
+            if await self._worktree_control_busy(session_id, rec):
+                raise self._worktree_refusal(session_id, "repair", wc.WORKTREE_SESSION_BUSY)
+            facts = await self._worktree_control_facts(rec)
+            if not facts["managed"]:
+                raise self._worktree_refusal(session_id, "repair", wc.WORKTREE_NOT_MANAGED)
+            if facts["state"] == "present":
+                raise self._worktree_refusal(session_id, "repair", wc.WORKTREE_PRESENT)
+            if facts["state"] not in ("missing", "empty"):
+                raise self._worktree_refusal(session_id, "repair", wc.WORKTREE_NOT_EMPTY)
+            cwd = facts["path"] or ""
+            if not await self._ensure_session_cwd(
+                    session_id, cwd, repo=getattr(rec, "repo", None),
+                    branch=getattr(rec, "branch", None), host=getattr(rec, "host", None)):
+                raise self._worktree_refusal(session_id, "repair", wc.WORKTREE_REPAIR_FAILED)
+            clone_refs: list[str] = []
+            if (Path(cwd) / ".git").exists():
+                clone_refs = await asyncio.to_thread(worktrees.recovery_refs, cwd, session_id)
+            return {"repaired": True, "path": cwd, "branch": getattr(rec, "branch", None),
+                    "recoveryRefs": clone_refs}
+
     async def _cleanup_session_paths(
         self, session_id: str, record: SessionRecord | None,
     ) -> None:

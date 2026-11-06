@@ -1133,8 +1133,10 @@ RECOVERY_DRAIN = "drain"
 RECOVERY_DELETE = "delete"
 RECOVERY_FORCED = "forced"
 RECOVERY_BRANCH = "branch"
+#: A person's Discard (D-19): the session ends and its worktree is removed.
+RECOVERY_DISCARD = "discard"
 RECOVERY_REASONS: frozenset[str] = frozenset(
-    {RECOVERY_DRAIN, RECOVERY_DELETE, RECOVERY_FORCED, RECOVERY_BRANCH})
+    {RECOVERY_DRAIN, RECOVERY_DELETE, RECOVERY_FORCED, RECOVERY_BRANCH, RECOVERY_DISCARD})
 #: Newest ``drain`` refs kept per session.
 RECOVERY_KEEP = 5
 #: Per-git-call ceiling inside a snapshot. A huge untracked tree must not hang a
@@ -1172,16 +1174,22 @@ def recovery_refs(repo_path: str, session_id: str) -> list[str]:
     return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
 
 
-def _newest_ref_matching(repo_path: str, session_id: str, rev_suffix: str,
-                         value: str) -> str | None:
-    """The newest existing recovery ref iff ``<ref><rev_suffix>`` resolves to
-    *value* — i.e. what we are about to keep is already kept."""
-    refs = recovery_refs(repo_path, session_id)
-    if not refs:
-        return None
-    r = _run(["git", "-C", repo_path, "rev-parse", "--verify", "--quiet",
-              f"{refs[0]}{rev_suffix}"])
-    return refs[0] if r.returncode == 0 and r.stdout.strip() == value else None
+def _kept_ref_matching(repo_path: str, session_id: str, rev_suffix: str,
+                       value: str) -> str | None:
+    """An existing recovery ref whose ``<ref><rev_suffix>`` resolves to *value* —
+    i.e. what we are about to keep is already kept. The newest ref of any reason
+    counts; an older one only when it is never pruned (not ``drain``), so a match can
+    never rotate out from under the caller. Checking past the newest is what keeps a
+    Discard's own refs (dirty tree, then branch tip) from being written a second time
+    by the ``remove_worktree`` that follows it."""
+    for i, ref in enumerate(recovery_refs(repo_path, session_id)):
+        if i and ref.endswith(f"-{RECOVERY_DRAIN}"):
+            continue
+        r = _run(["git", "-C", repo_path, "rev-parse", "--verify", "--quiet",
+                  f"{ref}{rev_suffix}"])
+        if r.returncode == 0 and r.stdout.strip() == value:
+            return ref
+    return None
 
 
 def _write_recovery_ref(repo_path: str, session_id: str, commit: str,
@@ -1209,7 +1217,7 @@ def snapshot_recovery_ref(worktree: str, session_id: str, *, reason: str) -> str
     under ``refs/viberpit/recovery/<short-sid>/<utc-ts>-<reason>`` without touching
     the user's index or files: ``git add -A`` runs against a temp copy of the index.
 
-    *reason* is one of ``drain`` / ``delete`` / ``forced`` (it names the ref and
+    *reason* is one of ``drain`` / ``delete`` / ``forced`` / ``discard`` (it names the ref and
     decides pruning). Returns the ref; the newest existing ref when it already holds
     this exact tree (nothing new is written, so repeated drains never rotate the one
     copy out); or None when the tree is clean (equals ``HEAD^{tree}``) or the
@@ -1259,7 +1267,7 @@ def snapshot_recovery_ref(worktree: str, session_id: str, *, reason: str) -> str
             listed = _git_timed(["git", "-C", worktree, "ls-tree", tree])
             if listed.returncode == 0 and not listed.stdout.strip():
                 return None
-        same = _newest_ref_matching(worktree, session_id, "^{tree}", tree)
+        same = _kept_ref_matching(worktree, session_id, "^{tree}", tree)
         if same is not None:
             return same
         cmd = ["git", "-C", worktree, "commit-tree", tree]
@@ -1303,13 +1311,73 @@ def snapshot_branch_tip(repo_top: str, branch: str, session_id: str) -> str | No
         if tip.returncode != 0:
             return None
         sha = tip.stdout.strip()
-        same = _newest_ref_matching(repo_top, session_id, "", sha)
+        same = _kept_ref_matching(repo_top, session_id, "", sha)
         if same is not None:
             return same
         return _write_recovery_ref(repo_top, session_id, sha, RECOVERY_BRANCH)
     except Exception:
         log.warning("worktree.recovery_branch_failed session=%s branch=%s",
                     session_id, branch, exc_info=True)
+        return None
+
+
+def snapshot_before_discard(worktree: str, session_id: str) -> list[str] | None:
+    """Keep everything a Discard (D-19) would destroy, BEFORE anything is touched.
+
+    A Discard force-removes the worktree and ``branch -D``'s its session branch
+    (``remove_worktree``), so three things can be lost, and each gets a recovery ref:
+
+    * a dirty tree (staged, unstaged, untracked) — ``snapshot_recovery_ref`` with
+      reason ``discard``;
+    * a session branch's commits reachable from no remote and no other branch —
+      ``snapshot_branch_tip``;
+    * a DETACHED HEAD's commits on no branch and no remote — the HEAD commit, reason
+      ``discard``.
+
+    A user's own branch is never deleted, so its commits are not at risk. Returns the
+    refs now holding the work (dirty tree first), ``[]`` when nothing would be lost,
+    or None when something WOULD be lost and could not be kept, or the tree could not
+    be read — the caller must then refuse the discard. Fails closed; never raises.
+    """
+    try:
+        if not os.path.isdir(worktree):
+            return None
+        status = _git_timed(["git", "-C", worktree, "status", "--porcelain"])
+        common = _git_timed(["git", "-C", worktree, "rev-parse", "--path-format=absolute",
+                             "--git-common-dir"])
+        head_r = _git_timed(["git", "-C", worktree, "rev-parse", "--verify", "--quiet", "HEAD"])
+        if status.returncode != 0 or common.returncode != 0 or head_r.returncode != 0:
+            return None
+        repo_top = os.path.dirname(common.stdout.strip().rstrip("/"))
+        head = head_r.stdout.strip()
+        refs: list[str] = []
+        if status.stdout.strip():
+            ref = snapshot_recovery_ref(worktree, session_id, reason=RECOVERY_DISCARD)
+            if ref is None:
+                return None
+            refs.append(ref)
+        branch = current_branch(worktree)
+        if branch is not None and brand.is_session_branch(branch):
+            if _branch_has_unpushed_commits(repo_top, branch):
+                ref = snapshot_branch_tip(repo_top, branch, session_id)
+                if ref is None:
+                    return None
+                refs.append(ref)
+        elif branch is None:
+            orphan = _git_timed(["git", "-C", repo_top, "rev-list", "--count", head,
+                                 "--not", "--remotes", "--branches"])
+            if orphan.returncode != 0:
+                return None
+            if int(orphan.stdout.strip() or "0") > 0:
+                ref = (_kept_ref_matching(repo_top, session_id, "", head)
+                       or _write_recovery_ref(repo_top, session_id, head, RECOVERY_DISCARD))
+                if ref is None:
+                    return None
+                refs.append(ref)
+        return list(dict.fromkeys(refs))
+    except Exception:
+        log.warning("worktree.discard_snapshot_failed session=%s path=%s",
+                    session_id, worktree, exc_info=True)
         return None
 
 
