@@ -59,18 +59,18 @@ Full inventories, with an evidence tag on every item:
 
 | Dimension | ViberPit score | Parity |
 |---|---:|---:|
-| 1 Shell & IA | 11.5 / 16 | 72% |
+| 1 Shell & IA | 12.5 / 16 | 78% |
 | 2 Transcript | 21 / 21 | 100% |
-| 3 Composer | 27.5 / 29 | 95% |
+| 3 Composer | 28.5 / 29 | 98% |
 | 4 Commands & config | 15 / 15 | 100% |
 | 5 Settings | 5.5 / 8 | 69% |
-| 6 User feedback | 18 / 19 | 95% |
-| 7 Lifecycle & branching | 23 / 25 | 92% |
+| 6 User feedback | 19 / 19 | 100% |
+| 7 Lifecycle & branching | 24 / 25 | 96% |
 | 8 Code review & dev | 9.5 / 12 | 79% |
 | 9 Shortcuts & a11y | 8 / 8 | 100% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **147 / 161** | **91%** |
-| **Target completion** (excl. rejected rows) | **144.5 / 151** | **96%** |
+| **Overall (weighted)** | **151 / 161** | **94%** |
+| **Target completion** (excl. rejected rows) | **148.5 / 151** | **98%** |
 
 ### 1 Shell & IA
 
@@ -80,7 +80,7 @@ Full inventories, with an evidence tag on every item:
 | Group/sort by project, folder, branch, status, env, date, PR | 2 | ✅ | repo, status, branch, host (env), date, PR; folder = repo |
 | Pin / star sessions | 1 | ❌ |  · *rejected for target* |
 | Read / unread marking | 1 | ✅ | per-viewer bold + card menu, live and archived; no ⌘⌥U chord |
-| ⌘K palette over sessions + branches | 2 | ◐ | sessions, actions, nav, settings, repos, branches; repo/branch drill down inside the palette (no branch checkout or start-on-branch); keyboard-only on phone |
+| ⌘K palette over sessions + branches | 2 | ✅ | sessions, actions, nav, settings, repos, branches; repo/branch drill down inside the palette; each branch a session has on a repo offers "New session on repo@branch", opening the dispatch bar on it (D-19; nothing created until sent; no checkout, not a Desktop feature); keyboard-only on phone |
 | Split view / tiled panes | 2 | ❌ | umbrella spec non-goal · *rejected for target* |
 | Pop session into own window | 1 | ◐ | every session is a URL; no layout restore · *rejected for target* |
 | Archived view + unarchive | 2 | ✅ |  |
@@ -113,7 +113,7 @@ Full inventories, with an evidence tag on every item:
 | @-file mentions | 3 | ✅ |  |
 | Slash-command palette | 3 | ✅ | catalog pushed per session |
 | Model picker in prompt row | 2 | ✅ |  |
-| Effort picker in session | 2 | ◐ | Codex: the catalog's levels; Claude: live mid-session through apply_flag_settings (D-14), offering the CLI's full level list — per-model supportedEffortLevels is #3260 |
+| Effort picker in session | 2 | ✅ | Codex: the catalog's levels; Claude: the current model's supportedEffortLevels, live mid-session through apply_flag_settings (D-14, #3269) |
 | Permission-mode picker (5 modes) in session | 3 | ✅ |  |
 | Fast-mode toggle | 1 | ✅ | toggle + cost note; state shown is the stored choice (#3254) |
 | Prompt history (↑/↓ + Ctrl+R search) | 1 | ◐ | ↑/↓ only · *rejected for target* |
@@ -158,14 +158,14 @@ Full inventories, with an evidence tag on every item:
 | OS / push notifications with actions | 2 | ✅ | Web Push |
 | Context meter + 'auto-compacts soon' | 2 | ✅ |  |
 | Plan-usage meter | 2 | ✅ | per-window quota |
-| Error recovery actions (switch model, lower effort, rewind & retry) | 2 | ◐ | auto-resend, rotate, rewind & retry |
+| Error recovery actions (switch model, lower effort, rewind & retry) | 2 | ✅ | switch model, lower effort (step down, or picker when unknown), rewind & retry; actions by error kind (D-19) |
 
 ### 7 Lifecycle & branching
 
 | Desktop capability | Weight | ViberPit | Notes |
 |---|:-:|:-:|---|
 | New session pre-flight (folder/env/model/effort) | 3 | ✅ | plus account + host |
-| Worktree visible + controls (branch, enter, discard) | 2 | ◐ | branch + path shown; discard/repair → D-14 |
+| Worktree visible + controls (branch, enter, discard) | 2 | ✅ | branch + path; discard with recovery refs; repair (D-19) |
 | Resume / continue | 3 | ✅ |  |
 | Import CLI sessions | 1 | ✅ | Adopt |
 | Fork session (from here) | 3 | ✅ | Claude; files start from current worktree |
@@ -215,19 +215,15 @@ Full inventories, with an evidence tag on every item:
 | 1 | Split view / tiled panes | 1 Shell & IA | 2 |
 | 2 | Integrated terminal | 8 Code review & dev | 2 |
 | 3 | Pin / star sessions | 1 Shell & IA | 1 |
-| 4 | ⌘K palette over sessions + branches | 1 Shell & IA | 1 |
-| 5 | Effort picker in session | 3 Composer | 1 |
-| 6 | Sandbox settings | 5 Settings | 1 |
-| 7 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
-| 8 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
-| 9 | Pop session into own window | 1 Shell & IA | 0.5 |
-| 10 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
-| 11 | Worktree location / policy | 5 Settings | 0.5 |
-| 12 | Notification levels per event type | 5 Settings | 0.5 |
-| 13 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
-| 14 | Move session to cloud / other host | 7 Lifecycle & branching | 0.5 |
-| 15 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
-| 16 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
+| 4 | Sandbox settings | 5 Settings | 1 |
+| 5 | Pop session into own window | 1 Shell & IA | 0.5 |
+| 6 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
+| 7 | Worktree location / policy | 5 Settings | 0.5 |
+| 8 | Notification levels per event type | 5 Settings | 0.5 |
+| 9 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 10 | Move session to cloud / other host | 7 Lifecycle & branching | 0.5 |
+| 11 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 12 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 

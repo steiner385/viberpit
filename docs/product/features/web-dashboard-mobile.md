@@ -143,6 +143,10 @@ close it. It works while typing in the composer.
   filter. Any other repo, and every branch, turns the query into `repo:owner/name` or `branch:name`, which
   matches that exact repo or branch, so you pick the session from there. You can type these facets
   yourself, and combine them with each other and with words.
+- **Start a session on a branch.** Each branch a live session has on a repo also lists **New session on
+  repo@branch**, which opens the new-session bar with that repo and branch chosen. Nothing is created
+  until you send; if the branch can't be switched to, the bar says so and keeps your draft. The kiosk
+  doesn't offer it.
 - Opening a live session from the palette clears list filters or search that would hide it (except for a
   session that has not started yet).
 - **Phone:** the palette needs a hardware keyboard; there is no touch button for it. It fits a 390 px
@@ -203,7 +207,16 @@ right-hand session rail (20rem, collapsible, remembered per browser) shows four 
   server list with a Manage link, the loaded memory files (see below), always-allow rules, and
   quota.
 - **Environment** — engine, account switch and Unpin, host, display mode, branch, worktree
-  path, and PR pills.
+  path, and PR pills. For a session in a managed worktree it also has **Discard…** and **Repair**
+  (people only; hidden for automation or when the worktree state can't be read).
+  - **Discard…** ends the session and removes its worktree. It works only while the session is idle
+    and asks you to tick a confirmation. The dialog shows the uncommitted and unpushed counts and
+    whether the branch will be deleted (only a branch ViberPit created is deleted; yours is kept).
+    Uncommitted or unpushed work is saved to a recovery ref first, and if git can't say whether
+    work would be lost, nothing is touched. **Files git ignores (such as `.env` and build output)
+    are not saved.** The session is archived, and a toast that stays up lists the recovery refs and a
+    copyable restore command.
+  - **Repair** recreates a worktree that is missing or empty. It never touches one that is present.
 - **Tasks** — sub-agents and background work.
 
 When the session pane is narrower than 64rem (phones, tablets, or desktop with the assistant
@@ -265,6 +278,11 @@ message.
   sends it again unchanged, through the normal send path. It is offered only on the latest prompt's own
   failure. It is not offered for a prompt with an image, a nudge, or a prompt with no text. Because the resend
   is a new prompt, this rewind can't be undone, and the confirmation says so.
+- **Other error-card actions** depend on the kind of error, in a live session. A rate limit or an
+  overload offers **Switch model** (opens the model picker; it never picks for you) and **Lower
+  effort** (one step down from the current level; when the level isn't known it opens the effort
+  picker instead). A missing model offers Switch model only and no Rewind & retry. A context
+  overflow offers **Compact**, plus Rewind & retry.
 - **Confirmation:** every rewind first asks. The dialog lists the files that will change, marks the ones that
   will be deleted, and shows the total `+insertions −deletions`. It always says: *Changes made by shell
   commands are not restored, and edits made outside Claude since that message are overwritten.*
