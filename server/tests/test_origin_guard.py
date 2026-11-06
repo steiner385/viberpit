@@ -157,3 +157,21 @@ def test_reads_are_not_checked():
     with patch.dict(os.environ, _ENV):
         r = client.get("/api/x11/metrics", headers={**_ID, "Origin": "https://evil.example"})
     assert r.status_code == 200, r.text
+
+
+def test_public_origin_port_mismatch_warns_once(monkeypatch, caplog):
+    import logging
+    from server.auth import origin as o
+    monkeypatch.setenv("VIBERPIT_PUBLIC_ORIGIN", "https://h.ts.net")
+    from server.config import get_settings
+    get_settings.cache_clear() if hasattr(get_settings, "cache_clear") else None
+    o._warned_mismatch.clear()
+    scope = {"type": "http", "method": "POST", "headers": [
+        (b"origin", b"https://h.ts.net"), (b"host", b"h.ts.net:8443")]}
+    with caplog.at_level(logging.WARNING, logger="server.auth.origin"):
+        assert o.scope_refusal(scope) is None
+        assert o.scope_refusal(scope) is None
+    assert [r.message for r in caplog.records].count(
+        next(m.message for m in caplog.records)) == 1
+    assert "port_mismatch" in caplog.text
+    o._warned_mismatch.clear()
