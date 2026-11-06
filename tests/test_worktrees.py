@@ -146,6 +146,14 @@ class WorktreeTests(unittest.TestCase):
         self.assertTrue(worktrees.remove_worktree(info.path, owned_branch=lambda b: True))
         self.assertFalse(self._branch_exists("feature"))
 
+    def test_branch_presence_tells_absent_from_unknown(self) -> None:
+        self.assertIs(worktrees.branch_presence(str(self.repo), "feature"), True)
+        self.assertIs(worktrees.branch_presence(str(self.repo), "nope"), False)
+        not_a_repo = self.root / "plain"
+        not_a_repo.mkdir()
+        self.assertIsNone(worktrees.branch_presence(str(not_a_repo), "feature"))
+        self.assertFalse(worktrees.local_branch_exists(str(not_a_repo), "feature"))
+
     def test_a_predicate_that_raises_keeps_the_branch(self) -> None:
         info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
 

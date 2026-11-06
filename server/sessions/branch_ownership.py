@@ -287,18 +287,19 @@ class OwnedBranchGate:
         return ok
 
     async def settle(self) -> list[str]:
-        """The approved branches that no longer exist (deleted), each record forgotten.
-        Never raises; a branch whose existence cannot be read is left recorded."""
+        """The approved branches git PROVES no longer exist (deleted), each record
+        forgotten. Never raises; a branch whose existence cannot be read is neither
+        reported deleted nor forgotten."""
         deleted: list[str] = []
         if self.clone is None:
             return deleted
         for branch in dict.fromkeys(self.approved):
             try:
-                gone = not await asyncio.to_thread(worktrees.local_branch_exists,
+                presence = await asyncio.to_thread(worktrees.branch_presence,
                                                    self.clone, branch)
             except Exception:
                 continue
-            if gone:
+            if presence is False:      # proof of absence only — a git error is unknown
                 deleted.append(branch)
                 await forget_branch(self.host, self.clone, branch)
         return deleted
@@ -326,9 +327,9 @@ async def forget_if_gone(host: str, path: str, branch: str | None) -> None:
         return
     try:
         clone = await asyncio.to_thread(clone_key, path)
-        if clone is None or await asyncio.to_thread(worktrees.local_branch_exists,
-                                                    clone, branch):
-            return
+        if clone is None or await asyncio.to_thread(worktrees.branch_presence,
+                                                    clone, branch) is not False:
+            return      # present, or git could not say: keep the record
     except Exception:
         return
     await forget_branch(host, clone, branch)

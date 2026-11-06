@@ -122,6 +122,60 @@ def test_a_failed_ownership_read_keeps_even_the_legacy_shape(env, monkeypatch): 
     assert _outcome(env, env["branch"]) is False
 
 
+def test_a_git_failure_after_removal_is_not_reported_as_a_deletion(env, monkeypatch):  # noqa: F811 — pytest fixture
+    """branchDeleted, and forgetting the record, need git's PROOF of absence: a branch
+    whose existence cannot be read after the removal is neither."""
+    _switch(env, "viberpit/custom")
+    monkeypatch.setattr(worktrees, "branch_presence", lambda clone, branch: None)
+    facts, res = asyncio.run(_discard(env, branch="viberpit/custom", record_host=HOST))
+    assert facts["sessionBranch"] is True
+    assert res["branchDeleted"] is False
+    assert {r.branch for r in asyncio.run(_records())} == {"viberpit/custom"}
+
+
+@pytest.mark.asyncio
+async def test_settle_keeps_the_record_when_git_cannot_read_the_clone(
+        isolated_db, tmp_path):
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "init", "-q", str(clone)], check=True)
+    await bo.record_branch(session_id=SID, host=HOST, path=str(clone), branch="viberpit/x",
+                           source=bo.SOURCE_CREATE)
+    gate = await bo.owned_branch_predicate(HOST, str(clone), SID)
+    assert gate("viberpit/x") is True
+    os.rename(clone / ".git", clone / ".git-away")      # git now fails (exit 128)
+    assert await gate.settle() == []
+    await bo.forget_if_gone(HOST, str(clone), "viberpit/x")
+    os.rename(clone / ".git-away", clone / ".git")
+    assert {r.branch for r in await _records()} == {"viberpit/x"}
+
+
+def test_a_gate_whose_predicate_raises_owns_nothing():
+    def boom(_b: str) -> bool:
+        raise RuntimeError("db down")
+    gate = bo.OwnedBranchGate(HOST, None, boom)
+    assert gate.owns("viberpit/x") is False
+    assert gate("viberpit/x") is False and gate.approved == []
+
+
+def test_the_janitor_maps_a_shared_cwd_to_no_session(tmp_path):
+    """Two rows on one cwd: neither session's backfill record or legacy shape can
+    vouch for the branch there — only a creation record could."""
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "init", "-q", str(clone)], check=True)
+    key = bo.clone_key(str(clone))
+    assert key is not None
+    records = {key: frozenset({bo.BranchRecord("viberpit/x", bo.SOURCE_BACKFILL, SID)})}
+    facts = bo._SessionFacts(SID, None, "viberpit/x")
+    alone = bo.JanitorOwnership(HOST, records, [(str(clone), facts)])
+    assert alone.owned_branch_for(str(clone))("viberpit/x") is True
+    # SID's row last, so a "last row wins" mapping would wrongly pick SID.
+    shared = bo.JanitorOwnership(HOST, records, [
+        (str(clone), bo._SessionFacts(OTHER, None, "viberpit/x")), (str(clone), facts)])
+    assert shared.owned_branch_for(str(clone))("viberpit/x") is False
+    own = worktrees._child_branch("main", SID)
+    assert shared.owned_branch_for(str(clone))(own) is False   # no legacy rule either
+
+
 # ── close / spawn rollback / fork rollback ─────────────────────────────────────
 
 def test_close_cleanup_deletes_a_recorded_branch_and_forgets_it(env):  # noqa: F811 — pytest fixture

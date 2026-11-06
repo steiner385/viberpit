@@ -1349,12 +1349,27 @@ def snapshot_recovery_ref(worktree: str, session_id: str, *, reason: str) -> str
         return None
 
 
-def local_branch_exists(repo_path: str, branch: str) -> bool:
-    """Whether ``refs/heads/<branch>`` exists in *repo_path*'s clone."""
+def branch_presence(repo_path: str, branch: str) -> bool | None:
+    """Whether ``refs/heads/<branch>`` exists in *repo_path*'s clone: True, False, or
+    None when git could not say. Only ``rev-parse --verify --quiet``'s exit 1 with no
+    stderr is proof of absence — a missing repo, a lock or any other failure is
+    unknown, never "absent" (a caller that forgets or reports a deletion on False
+    must not do it on a git error)."""
     if not branch:
         return False
-    return _run(["git", "-C", repo_path, "rev-parse", "--verify", "--quiet",
-                 f"refs/heads/{branch}"]).returncode == 0
+    r = _run(["git", "-C", repo_path, "rev-parse", "--verify", "--quiet",
+              f"refs/heads/{branch}"])
+    if r.returncode == 0:
+        return True
+    if r.returncode == 1 and not r.stderr.strip():
+        return False
+    return None
+
+
+def local_branch_exists(repo_path: str, branch: str) -> bool:
+    """Whether ``refs/heads/<branch>`` is known to exist in *repo_path*'s clone. False
+    means absent OR unknown — use :func:`branch_presence` when the difference matters."""
+    return branch_presence(repo_path, branch) is True
 
 
 def _branch_has_unpushed_commits(repo_top: str, branch: str) -> bool | None:

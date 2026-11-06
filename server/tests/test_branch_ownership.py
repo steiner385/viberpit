@@ -334,6 +334,47 @@ async def test_a_fork_rollback_forgets_the_fork_branch_record(env) -> None:  # n
     assert _fork_git(clone, "branch", "--list", "*fork-*").strip() == ""
 
 
+@pytest.mark.asyncio
+async def test_a_failed_prespawn_rollback_keeps_the_users_own_branch(
+        env, monkeypatch) -> None:  # noqa: F811 — pytest fixture
+    """Path 2 checks out the USER's branch (is_child False): a spawn that fails after the
+    worktree exists removes the tree but never takes the user's branch with it."""
+    orch, _spawns, _src, _root, clone = env
+    _fork_git(clone, "branch", "feature")
+    import server.sessions.orchestrator as mod
+
+    def busy(*a, **k):
+        raise RuntimeError("all accounts busy")
+    monkeypatch.setattr(mod, "select_account", busy)
+    with pytest.raises(RuntimeError):
+        await orch.create_session("Own", cwd=str(clone), branch="feature")
+    assert worktrees.local_branch_exists(str(clone), "feature")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_driver_start_rollback_keeps_the_users_own_branch(
+        env) -> None:  # noqa: F811 — pytest fixture
+    """The driver-rollback site (after the record is pre-seeded) has the same guard."""
+    orch, spawns, _src, _root, clone = env
+    _fork_git(clone, "branch", "feature")
+
+    def failing(*a, **k):
+        client = spawns(*a, **k)
+
+        async def boom():
+            raise RuntimeError("cli exited")
+        client.__aenter__ = boom  # type: ignore[method-assign]
+        return client
+    orch._sdk_factory = failing
+    with pytest.raises(Exception):
+        await orch.create_session("Own", cwd=str(clone), branch="feature")
+    assert worktrees.local_branch_exists(str(clone), "feature")
+    # ...while the same failure on a child branch still deletes what the spawn made.
+    with pytest.raises(Exception):
+        await orch.create_session("Child", cwd=str(clone), branch="main")
+    assert _fork_git(clone, "branch", "--list", "viberpit/main-*").strip() == ""
+
+
 # ── recording at move import ───────────────────────────────────────────────────
 
 @pytest.mark.asyncio
