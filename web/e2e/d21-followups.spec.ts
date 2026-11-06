@@ -25,7 +25,6 @@ const REFS = {
     { ref: 'refs/viberpit/recovery/arc-21/close', reason: 'close', sha: 'fedcba9876543210',
       createdAt: '2026-11-01T09:00:00Z', restoreCommand: OLDER_RESTORE },
   ],
-  restoreCommand: RESTORE,
 }
 
 const LIVE = [
@@ -126,7 +125,7 @@ for (const width of [1440, 390]) {
       await expect(page.getByRole('region', { name: 'Recovery snapshots' })).toHaveCount(0)
       await page.unroute(`**/api/sessions/${ARCHIVED.id}/recovery-refs`)
       await page.route(`**/api/sessions/${ARCHIVED.id}/recovery-refs`,
-        (route) => route.fulfill({ json: { refs: [], restoreCommand: null } }))
+        (route) => route.fulfill({ json: { refs: [] } }))
       await page.reload()
       await expect(page.getByText('Tried it')).toBeVisible()
       await expect(page.getByRole('region', { name: 'Recovery snapshots' })).toHaveCount(0)

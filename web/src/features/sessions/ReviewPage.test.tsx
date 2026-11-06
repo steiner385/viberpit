@@ -86,7 +86,6 @@ describe('ArchivedReviewPage', () => {
         ref: 'refs/viberpit/recovery/arc-99/discard', reason: 'discard', sha: 'abcdef1234',
         createdAt: '2026-11-05T14:30:00Z', restoreCommand: 'git restore-me',
       }],
-      restoreCommand: 'git restore-me',
     }) as never)
     renderPage()
     expect(await screen.findByRole('region', { name: 'Recovery snapshots' })).toHaveTextContent('abcdef1')

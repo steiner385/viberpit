@@ -34,7 +34,7 @@ SID = "abcd1234-5678-0000-0000-000000000000"
 OTHER = "eeee9999-5678-0000-0000-000000000000"
 # Shares SID's short id as a PREFIX: a prefix match would leak SID's refs into it.
 PREFIX_TWIN = "abcd12345-678-0000-0000-000000000000"
-EMPTY: dict[str, object] = {"refs": [], "restoreCommand": None}
+EMPTY: dict[str, object] = {"refs": []}
 
 
 def _git(*args: str, cwd: str | Path) -> str:
@@ -119,7 +119,7 @@ def test_a_live_session_lists_its_refs_newest_first_with_the_newest_restore(env)
     assert out["refs"][0]["sha"] == _git("rev-parse", second, cwd=env["clone"])
     created = [datetime.fromisoformat(r["createdAt"]) for r in out["refs"]]
     assert created[0] >= created[1]
-    assert out["restoreCommand"] == worktrees.restore_command(second)
+    assert "restoreCommand" not in out  # per entry only: no top-level duplicate
     assert [r["restoreCommand"] for r in out["refs"]] == [
         f"git restore --source={second} --worktree --staged -- . && git reset",
         f"git restore --source={first} --worktree --staged -- . && git reset"]
@@ -141,7 +141,7 @@ def test_an_archived_session_whose_worktree_is_gone_lists_refs_through_the_clone
     out = asyncio.run(run())
     assert [r["ref"] for r in out["refs"]] == kept
     assert out["refs"][0]["reason"] == worktrees.RECOVERY_FORCED
-    assert out["restoreCommand"] == worktrees.restore_command(kept[0])
+    assert out["refs"][0]["restoreCommand"] == worktrees.restore_command(kept[0])
 
 
 def test_a_live_record_whose_worktree_is_gone_also_falls_back_to_the_clone(env):
@@ -220,8 +220,9 @@ def test_a_planted_ref_is_never_listed_or_the_restore_source(env):
 
     out = asyncio.run(run())
     assert [r["ref"] for r in out["refs"]] == [good]
-    assert out["restoreCommand"] == worktrees.restore_command(good)
-    assert "curl" not in out["restoreCommand"] and "$(" not in out["restoreCommand"]
+    assert [r["restoreCommand"] for r in out["refs"]] == [worktrees.restore_command(good)]
+    assert not any("curl" in r["restoreCommand"] or "$(" in r["restoreCommand"]
+                   for r in out["refs"])
     assert worktrees.recovery_refs(str(env["clone"]), SID) == [good]
 
 
@@ -272,7 +273,6 @@ def test_every_entrys_restore_command_is_built_by_restore_command_and_quoted(env
     assert f"--source={shlex.quote(odd.ref)} " in first["restoreCommand"]
     assert second["restoreCommand"] == (
         f"git restore --source={plain.ref} --worktree --staged -- . && git reset")
-    assert out["restoreCommand"] == first["restoreCommand"]
 
 
 def test_the_read_writes_nothing(env):
@@ -318,8 +318,8 @@ def _route_client(result=None, error: Exception | None = None):
 
 def test_route_returns_the_daemons_answer_and_writes_no_audit():
     body = {"refs": [{"ref": "refs/viberpit/recovery/abcd1234/x-drain", "reason": "drain",
-                      "sha": "a" * 40, "createdAt": None}],
-            "restoreCommand": "git restore …"}
+                      "sha": "a" * 40, "createdAt": None,
+                      "restoreCommand": "git restore …"}]}
     client, calls = _route_client(result=body)
     with patch.dict(os.environ, _ENV), client:
         r = client.get(f"/api/sessions/{SID}/recovery-refs", headers=_H)
@@ -402,7 +402,7 @@ def test_an_archived_row_crosses_the_real_daemon_envelope(env):
 
     out = asyncio.run(run())
     assert [r["ref"] for r in out["refs"]] == kept
-    assert out["restoreCommand"] == worktrees.restore_command(kept[0])
+    assert out["refs"][0]["restoreCommand"] == worktrees.restore_command(kept[0])
 
 
 class _HostOrch:

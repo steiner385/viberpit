@@ -23,7 +23,6 @@ const REFS = {
     { ref: NEWEST, reason: 'discard', sha: '0123456789abcdef0123', createdAt: '2026-11-05T14:30:00Z', restoreCommand: CMD(NEWEST) },
     { ref: OLDER, reason: 'close', sha: 'fedcba9876543210fedc', createdAt: '2026-11-01T09:00:00Z', restoreCommand: CMD(OLDER) },
   ],
-  restoreCommand: CMD(NEWEST),
 }
 
 const respond = (value: unknown) => vi.mocked(hooks.useSessionRecoveryRefs).mockReturnValue(value as never)
@@ -43,7 +42,7 @@ describe('RecoveryRefsCard', () => {
   it.each([
     ['loading', { data: undefined, isLoading: true }],
     ['an error (404 / 409 daemon_outdated)', { data: undefined, isError: true, error: new Error('409') }],
-    ['no refs', queryResult({ refs: [], restoreCommand: null })],
+    ['no refs', queryResult({ refs: [] })],
     ['a body with no refs array (a catch-all answer)', queryResult([])],
   ])('renders nothing while %s', (_label, value) => {
     respond(value)
@@ -83,16 +82,6 @@ describe('RecoveryRefsCard', () => {
     expect(copyText).toHaveBeenCalledWith(CMD(NEWEST))
   })
 
-  it('a ref with no restore command shows its full name as text and offers no copy', () => {
-    respond(queryResult({
-      refs: [{ ...REFS.refs[0] }, { ...REFS.refs[1], restoreCommand: undefined }],
-      restoreCommand: CMD(NEWEST),
-    }))
-    render(<RecoveryRefsCard sessionId="arc-99" />)
-    expect(card()).toBeInTheDocument()
-    expect(restoreControls()).toHaveLength(1)
-    expect(screen.getAllByRole('listitem')[1]).toHaveTextContent(OLDER)
-  })
 
   it('the hint does not assume a pointer', () => {
     respond(queryResult(REFS))
@@ -107,14 +96,13 @@ describe('RecoveryRefsCard', () => {
       refs: [
         { ref: 'refs/viberpit/recovery/x/<i>r</i>', reason: '<script>bad()</script>', sha: 'aaaaaaaaaa',
           createdAt: '2026-11-05T14:30:00Z', restoreCommand: hostile },
-        { ref: 'refs/viberpit/recovery/x/<u>u</u>', reason: 'close', sha: 'bbbbbbbbbb', createdAt: '2026-11-05T14:30:00Z' },
+        { ref: 'refs/viberpit/recovery/x/u', reason: 'close', sha: 'bbbbbbbbbb', createdAt: '2026-11-05T14:30:00Z', restoreCommand: 'git restore <u>u</u>' },
       ],
-      restoreCommand: hostile,
     }))
     const { container } = render(<RecoveryRefsCard sessionId="arc-99" />)
     expect(restoreControls()[0].textContent).toBe(hostile)
     expect(screen.getAllByRole('listitem')[0]).toHaveTextContent('<script>bad()</script>')
-    expect(screen.getAllByRole('listitem')[1]).toHaveTextContent('refs/viberpit/recovery/x/<u>u</u>')
+    expect(screen.getAllByRole('listitem')[1]).toHaveTextContent('git restore <u>u</u>')
     expect(container.querySelector('img, b, script, i, u')).toBeNull()
     await user.click(restoreControls()[0])
     expect(copyText).toHaveBeenCalledWith(hostile)

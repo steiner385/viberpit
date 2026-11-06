@@ -382,11 +382,12 @@ ways into it from the composer and the transcript.
   Identifiers, versions, `host:port`, Windows paths and paths outside the worktree stay copy-only, as do
   the archived reader, sub-agent page and assistant.
 - **Recovery snapshots on an archived session.** When ViberPit saved work to a recovery ref before
-  removing a session's worktree (Discard, close, a deploy drain, the archive cap purge, a forced
-  removal or a move), the archived page lists each snapshot with its reason, short SHA and date, and
+  removing a session's worktree (Discard, close, a deploy drain, the archive cap purge or a forced
+  removal), the archived page lists each snapshot with its reason, short SHA and date, and
   a copyable `git restore` command for each one. It is read on the session's host, from the
   worktree if it survives and otherwise from the repo's clone. Only well-formed ViberPit refs are
-  listed, and the command quotes the ref.
+  listed, and the command quotes the ref. A session that moved hosts shows only the refs on its current host;
+  a move's own snapshot stays on the host it left.
 - **Server:** `GET /api/sessions/{id}/files?q=&limit=` and `GET /api/sessions/{id}/files/content?path=`
   are computed on the session's host. Paths are relative to the session's cwd, as the CLI resolves `@path`,
   so a session started in a subdirectory sees only the files beneath it. Reads are capped at 512 KiB,

@@ -43,7 +43,9 @@ export default function RecoveryRefsCard({ sessionId }: { sessionId: string }) {
       <p className="text-xs text-ink-muted">
         Work saved when this session&apos;s worktree was removed. Select a restore command to copy it.
       </p>
-      <ul className="space-y-2">
+      {/* Capped and scrolled: up to RECOVERY_KEEP drain refs plus a discard's, wrapped at
+          phone width, must never push the transcript below off screen. */}
+      <ul className="max-h-48 space-y-2 overflow-y-auto overscroll-contain">
         {data.refs.map((r) => (
           <li key={r.ref} className="min-w-0 space-y-0.5">
             <p className="flex flex-wrap items-baseline gap-x-2 text-sm">
@@ -54,9 +56,7 @@ export default function RecoveryRefsCard({ sessionId }: { sessionId: string }) {
               )}
             </p>
             <p className="min-w-0 break-all font-mono text-xs text-ink">
-              {r.restoreCommand
-                ? <CopyablePath text={r.restoreCommand} title="Copy restore command" />
-                : <code className="text-ink-muted">{r.ref}</code>}
+              <CopyablePath text={r.restoreCommand} title="Copy restore command" />
             </p>
           </li>
         ))}

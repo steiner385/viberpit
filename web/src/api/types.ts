@@ -1343,20 +1343,19 @@ export interface WorktreeDiscardResult {
 }
 
 /** One recovery ref kept for a session (D-21), decoded from its name. `restoreCommand`
- *  restores this ref; absent from an edge that predates the per-entry field. */
+ *  (shell-quoted) restores this ref. */
 export interface RecoveryRef {
   ref: string
   reason: string
   sha: string
   createdAt: string
-  restoreCommand?: string | null
+  restoreCommand: string
 }
 
-/** `GET /sessions/{id}/recovery-refs` (D-21) — live or archived. `restoreCommand`
- *  restores the newest ref; empty `refs` when there is nothing (or no clone). */
+/** `GET /sessions/{id}/recovery-refs` (D-21) — live or archived, newest first; empty
+ *  `refs` when there is nothing (or no clone). */
 export interface SessionRecoveryRefs {
   refs: RecoveryRef[]
-  restoreCommand: string | null
 }
 
 /** `POST /sessions/{id}/worktree/repair`. */
