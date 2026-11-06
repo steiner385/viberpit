@@ -200,6 +200,16 @@ async def test_launch_browser_honours_cap(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_launch_browser_cap_counts_live_browsers_only(tmp_path):
+    nd, _ = _mk(tmp_path)
+    assert await nd.launch_browser("s1", None) is None
+    assert await nd.launch_browser("s1", None) is None
+    assert await nd.launch_browser("s1", None) == "cap"
+    nd._browsers["s1"][0].returncode = 0  # the user closed one window
+    assert await nd.launch_browser("s1", None) is None
+
+
+@pytest.mark.asyncio
 async def test_launch_browser_missing_binary_is_launch_failed(tmp_path):
     nd, _ = _mk(tmp_path)
     async def boom(*a, **k): raise FileNotFoundError("chromium")
