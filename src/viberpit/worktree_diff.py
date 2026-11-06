@@ -142,15 +142,19 @@ _READ_CHUNK = 65536
 
 
 def stream_git(cwd: str, args: Sequence[str], consume: Callable[[bytes], bool],
-               read_size: Callable[[], int] = lambda: _READ_CHUNK) -> str:
+               read_size: Callable[[], int] = lambda: _READ_CHUNK,
+               timeout: float = GIT_TIMEOUT_S,
+               ok_codes: Sequence[int] = (0,)) -> str:
     """Run hardened git in ``cwd`` and feed its stdout to ``consume`` chunk by chunk.
 
     The one streaming loop behind every bounded git read (the diff patch fetch, the
     D-7 file listing): a selector wait against a single ``GIT_TIMEOUT_S`` deadline,
     reads of at most ``read_size()`` bytes, and git killed and reaped however it ends.
-    ``consume`` returns True to stop early.
+    ``consume`` returns True to stop early. ``timeout`` replaces ``GIT_TIMEOUT_S`` for a
+    caller with a tighter budget; ``ok_codes`` are the exit codes that count as success
+    (``git grep`` exits 1 for "no match").
 
-    Returns ``"ok"`` (EOF and exit 0), ``"cut"`` (``consume`` stopped it; git is
+    Returns ``"ok"`` (EOF and an exit code in ``ok_codes``), ``"cut"`` (``consume`` stopped it; git is
     killed), ``"timeout"`` (the deadline passed, while reading or waiting for exit),
     or ``"failed"`` (spawn error or non-zero exit).
     """
@@ -163,7 +167,7 @@ def stream_git(cwd: str, args: Sequence[str], consume: Callable[[bytes], bool],
         return "failed"
     assert proc.stdout is not None
     status = "ok"
-    deadline = time.monotonic() + GIT_TIMEOUT_S
+    deadline = time.monotonic() + timeout
     sel = selectors.DefaultSelector()
     sel.register(proc.stdout, selectors.EVENT_READ)
     try:
@@ -180,7 +184,7 @@ def stream_git(cwd: str, args: Sequence[str], consume: Callable[[bytes], bool],
                 break
         if status == "ok":
             try:
-                if proc.wait(timeout=max(deadline - time.monotonic(), 0)) != 0:
+                if proc.wait(timeout=max(deadline - time.monotonic(), 0)) not in ok_codes:
                     status = "failed"
             except subprocess.TimeoutExpired:
                 status = "timeout"

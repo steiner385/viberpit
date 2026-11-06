@@ -211,7 +211,7 @@ _PER_SESSION: frozenset[str] = frozenset({
     # The diff reads the session's worktree, which lives on its owning host.
     "session_diff",
     # So do the D-7 file list and file read.
-    "session_files", "session_file",
+    "session_files", "session_file", "session_file_search",
     # The D-13 memory-file read: the loaded set, worktree and config dir are its host's.
     "memory_file",
     # D-18: a session's dev servers are its host's processes, and the preview opens on

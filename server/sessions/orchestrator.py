@@ -22415,6 +22415,16 @@ class SessionOrchestrator:
         rec = self._worktree_record(session_id)
         return await asyncio.to_thread(worktree_files.read_file, rec.cwd or "", path)
 
+    async def session_file_search(self, session_id: str, *, q: str, regex: bool = False,
+                                  limit: int = worktree_files.MAX_SEARCH_MATCHES) -> dict:
+        """``{matches, truncated, timedOut}`` for ``q`` in the session's worktree (D-20
+        Files tab content search). ``KeyError`` for an unknown session;
+        ``FileAccessError`` (``FILE_NOT_FOUND`` / ``BAD_REGEX``) for a refused search.
+        Runs off the event loop."""
+        rec = self._worktree_record(session_id)
+        return await asyncio.to_thread(worktree_files.search_files, rec.cwd or "", q,
+                                       regex=regex, limit=limit)
+
     async def memory_file(self, session_id: str, *, path: str) -> dict:
         """``{path, type, text, truncated, editable}`` of one of the session's loaded
         memory files (D-13 viewer), read on this — the owning — host. ``KeyError`` for an
