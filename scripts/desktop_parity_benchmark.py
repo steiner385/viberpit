@@ -62,12 +62,12 @@ D=[
 ]),
 ("5 Settings",[
  ("PR behaviour: auto-fix, auto-archive on merge, branch prefix",1,"Y","per-session PR auto-fix switch in the Environment card (D-14) + auto-archive + autopilot; branch prefix shown read-only (fixed viberpit/)"),
- ("Worktree location / policy",1,"P","repo/worktree root editable in Settings › Sessions (D-14); branch prefix deferred — it is the guard on automatic branch deletion, so a configurable prefix needs a validated history first"),
+ ("Worktree location / policy",1,"P","repo/worktree root editable in Settings › Sessions (D-14); configurable branch prefix adopted (2026-11-06, D22b) behind a recorded-ownership guard on automatic deletion — not built yet"),
  ("Default transcript view",1,"Y",""),
  ("Notification levels per event type",1,"P","quiet hours, channels, routing rules"),
  ("Appearance: theme, font + transcript size",1,"P","theme + widths"),
  ("Presets / environments selectable at new session",2,"Y","dispatch bar + menu (removable chip) and ⌘K \"New session from preset\"; no chord — every digit family is taken (D-14)"),
- ("Sandbox settings",1,"N","deferred by the owner (2026-11-04): fails open on hosts without socat, auto-allows Bash past permission cards, and blocks the sockets gh/push need"),
+ ("Sandbox settings",1,"N","adopted (2026-11-06, D22a): opt-in, fail-closed — offered only where the host preflight passes, Bash auto-allow off so permission cards still show, gh/git sockets and GitHub hosts allowed; spike first, not built yet"),
 ]),
 ("6 User feedback",[
  ("Permission card: once / this session / always / deny",3,"Y",""),
@@ -91,7 +91,7 @@ D=[
  ("Spin off parallel / child sessions",1,"Y",""),
  ("Archive / unarchive / auto-archive",2,"Y",""),
  ("Rename + AI titles",1,"Y",""),
- ("Move session to cloud / other host",1,"P","other fleet host, idle Claude sessions (D-17); no cloud, no Codex"),
+ ("Move session to cloud / other host",1,"Y","other fleet host, idle Claude sessions (D-17); the self-hosted fleet stands in for Desktop's cloud (owner, 2026-11-06, D22c); moving Codex sessions tracked in #3347"),
  ("Scheduled tasks / routines",1,"P","Delivery automations"),
 ]),
 ("8 Code review & dev",[
