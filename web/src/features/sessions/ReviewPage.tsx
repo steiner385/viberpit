@@ -14,7 +14,7 @@
  * payload carries none); until the list arrives — or if the row is gone, as
  * after a permanent delete with a stale link — the id's first 8 characters.
  */
-import { useReducer, useEffect, useRef, useCallback } from 'react'
+import { Suspense, lazy, useReducer, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Archive } from 'lucide-react'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
@@ -29,8 +29,9 @@ import { Skeleton } from '@/ui/Skeleton'
 import { EmptyState } from '@/ui/EmptyState'
 import { Button } from '@/ui/Button'
 import { useAutoMarkViewed } from './useAutoMarkViewed'
-import { useSessionRecoveryRefs } from '@/api/worktreeHooks'
-import { RecoveryRefs } from './rail/RecoveryRefs'
+
+// Lazy: this page is in the eager route table, and the notice is rare (discarded sessions only).
+const ArchivedRecovery = lazy(() => import('./ArchivedRecovery'))
 
 /** Initial payload cap: the last N turns; older history pages in on scroll-up. */
 const INITIAL_TURN_LIMIT = 100
@@ -41,7 +42,6 @@ export function ArchivedReviewPage({ sessionId }: { sessionId: string }) {
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
   const unarchive = useUnarchiveSession()
   const record = useArchivedSessions().data?.find((s) => s.id === sessionId)
-  const recovery = useSessionRecoveryRefs(sessionId).data
   const title = record?.name || sessionId.slice(0, 8)
   // Opening the Reader marks it read, so the archived card's bold clears (D-10).
   // An archived session takes no new turns: there is no `updatedAt` to follow.
@@ -93,15 +93,9 @@ export function ArchivedReviewPage({ sessionId }: { sessionId: string }) {
           </Button>
         }
       />
-      {/* Optional-chained: a payload without `recoveryRefs` must not crash the reader. */}
-      {recovery && (recovery.recoveryRefs?.length ?? 0) > 0 && (
-        <div className="border-b border-edge px-4 py-3 md:px-6" data-testid="archived-recovery">
-          <p className="mb-1 text-sm text-ink">
-            This session's worktree was discarded{recovery.branch ? ` (branch ${recovery.branch})` : ''}; its work is kept in git.
-          </p>
-          <RecoveryRefs refs={recovery.recoveryRefs} restore={recovery.restoreCommand} />
-        </div>
-      )}
+      <Suspense fallback={null}>
+        <ArchivedRecovery sessionId={sessionId} />
+      </Suspense>
       <PageContent scroll={false} busy={isLoading}>
         {isLoading ? (
           <Skeleton lines={8} className="px-4 py-4 md:px-6" />
