@@ -142,6 +142,32 @@ def test_snapshot_never_raises(tmp_path):
     assert worktrees.snapshot_recovery_ref(str(tmp_path / "nope"), S1, reason="drain") is None
 
 
+def test_recovery_ref_entries_decode_reason_sha_and_time_from_the_name(wt, repo):
+    """D-21: each ref's reason and creation time come from its ``<ts>-<reason>`` name
+    and its sha from the same for-each-ref pass; ``recovery_refs`` lists the same refs
+    in the same order."""
+    from datetime import datetime, timezone
+    _dirty(Path(wt.path))
+    before = datetime.now(timezone.utc)
+    ref = worktrees.snapshot_recovery_ref(wt.path, S1, reason="drain")
+    assert ref is not None
+    entries = worktrees.recovery_ref_entries(str(repo), S1)
+    assert [e.ref for e in entries] == worktrees.recovery_refs(str(repo), S1) == [ref]
+    (entry,) = entries
+    assert entry.reason == "drain"
+    assert entry.sha == _git("rev-parse", ref, cwd=repo)
+    assert entry.created_at is not None
+    assert before.replace(microsecond=0) <= entry.created_at <= datetime.now(timezone.utc)
+
+
+def test_recovery_ref_entry_with_an_unrecognised_name_has_no_reason_or_time(repo):
+    head = _git("rev-parse", "HEAD", cwd=repo)
+    odd = f"{worktrees.RECOVERY_REF_NS}/aaaa0001/legacy"
+    _git("update-ref", odd, head, cwd=repo)
+    (entry,) = worktrees.recovery_ref_entries(str(repo), S1)
+    assert (entry.ref, entry.reason, entry.sha, entry.created_at) == (odd, None, head, None)
+
+
 def test_refs_are_keyed_on_the_short_session_id(wt, repo):
     """Janitor/default callers only know the worktree dir name (the short id);
     every writer and reader must land in the same namespace."""

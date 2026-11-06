@@ -32,6 +32,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import brand, gh_credential, paths
@@ -1170,13 +1171,49 @@ def _git_timed(args: list[str], env: dict[str, str] | None = None
                           timeout=_RECOVERY_GIT_TIMEOUT_S)
 
 
-def recovery_refs(repo_path: str, session_id: str) -> list[str]:
-    """Recovery refs recorded for *session_id* in *repo_path*'s clone, newest first."""
+#: The ``<utc-ts>`` half of a recovery ref's leaf name (``_write_recovery_ref``).
+_RECOVERY_STAMP_FMT = "%Y%m%dT%H%M%S%fZ"
+
+
+@dataclass(frozen=True)
+class RecoveryRef:
+    """One recovery ref as its name and object encode it. ``reason`` / ``created_at``
+    are None when the leaf is not ``<utc-ts>-<known reason>``."""
+    ref: str
+    sha: str
+    reason: str | None
+    created_at: datetime | None
+
+
+def _decode_recovery_leaf(ref: str) -> tuple[str | None, datetime | None]:
+    stamp, _, reason = ref.rsplit("/", 1)[-1].rpartition("-")
+    try:
+        created = datetime.strptime(stamp, _RECOVERY_STAMP_FMT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None, None
+    return (reason if reason in RECOVERY_REASONS else None), created
+
+
+def recovery_ref_entries(repo_path: str, session_id: str) -> list[RecoveryRef]:
+    """Recovery refs recorded for *session_id* in *repo_path*'s clone (or any of its
+    worktrees — the refs live in the common git dir), newest first, with each ref's
+    sha and what its name encodes. One ``for-each-ref``; [] when git cannot list."""
     r = _run(["git", "-C", repo_path, "for-each-ref", "--sort=-refname",
-              "--format=%(refname)", f"{_recovery_ns(session_id)}/"])
+              "--format=%(refname) %(objectname)", f"{_recovery_ns(session_id)}/"])
     if r.returncode != 0:
         return []
-    return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    out: list[RecoveryRef] = []
+    for ln in r.stdout.splitlines():
+        ref, _, sha = ln.strip().partition(" ")
+        if ref:
+            reason, created = _decode_recovery_leaf(ref)
+            out.append(RecoveryRef(ref=ref, sha=sha, reason=reason, created_at=created))
+    return out
+
+
+def recovery_refs(repo_path: str, session_id: str) -> list[str]:
+    """Recovery refs recorded for *session_id* in *repo_path*'s clone, newest first."""
+    return [e.ref for e in recovery_ref_entries(repo_path, session_id)]
 
 
 def _kept_ref_matching(repo_path: str, session_id: str, rev_suffix: str,
@@ -1200,8 +1237,7 @@ def _kept_ref_matching(repo_path: str, session_id: str, rev_suffix: str,
 def _write_recovery_ref(repo_path: str, session_id: str, commit: str,
                         reason: str) -> str | None:
     """Point a fresh ``<ts>-<reason>`` recovery ref at *commit*; prune drain refs."""
-    from datetime import datetime, timezone
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    stamp = datetime.now(timezone.utc).strftime(_RECOVERY_STAMP_FMT)
     ref = f"{_recovery_ns(session_id)}/{stamp}-{reason}"
     r = _git_timed(["git", "-C", repo_path, "update-ref", ref, commit])
     if r.returncode != 0:

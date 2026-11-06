@@ -342,6 +342,9 @@ def register_orchestrator_rpc(app, orch) -> None:
         # owning daemon; FileAccessError (FILE_NOT_FOUND / BAD_REGEX / BAD_QUERY /
         # SEARCH_FAILED) as above.
         "session_file_search",
+        # D-21: {refs: [{ref, reason, sha, createdAt}], restoreCommand} — a live or
+        # archived session's recovery refs, read from the clone on the owning daemon.
+        "session_recovery_refs",
         # D-13 memory-file viewer: {path, type, text, truncated, editable}, read on the
         # daemon that owns the session's loaded set. A refusal raises MemoryFileError,
         # whose error_data carries its code.

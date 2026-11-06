@@ -629,6 +629,29 @@ def _stamp_is_this_host(host: str | None) -> bool:
     return host is None or host == self_host_name() or host == DEFAULT_HOST_NAME
 
 
+def _recovery_refs_wire(session_id: str, cwd: str, repo: str | None, root: str) -> dict:
+    """``session_recovery_refs``'s blocking half: pick the git dir that holds the
+    session's recovery refs — its worktree while present (a worktree sees the clone's
+    common refs), else its repo's clone here — and list them."""
+    repo_top: str | None = cwd if cwd and (Path(cwd) / ".git").exists() else None
+    if repo_top is None and repo:
+        try:
+            clone = gitrepos.clone_path(root, repo)
+        except ValueError:
+            clone = None
+        if clone is not None and clone.is_dir():
+            repo_top = str(clone)
+    if repo_top is None:
+        return {"refs": [], "restoreCommand": None}
+    entries = worktrees.recovery_ref_entries(repo_top, session_id)
+    return {
+        "refs": [{"ref": e.ref, "reason": e.reason, "sha": e.sha,
+                  "createdAt": e.created_at.isoformat() if e.created_at else None}
+                 for e in entries],
+        "restoreCommand": worktrees.restore_command(entries[0].ref) if entries else None,
+    }
+
+
 class SessionWorktreeMissing(RuntimeError):
     """A session's managed worktree is gone and cannot be recreated from its branch
     (#2913). Raised by ``_reassign``; ``ensure_driver`` returns None instead. The
@@ -22425,6 +22448,29 @@ class SessionOrchestrator:
         rec = self._worktree_record(session_id)
         return await asyncio.to_thread(worktree_files.search_files, rec.cwd or "", q,
                                        regex=regex, limit=limit)
+
+    async def session_recovery_refs(self, session_id: str) -> dict:
+        """``{refs: [{ref, reason, sha, createdAt}], restoreCommand}`` — the recovery
+        refs kept for this session (D-21), newest first; ``restoreCommand`` restores the
+        newest, or is None. Works for a live session and for an archived one whose
+        worktree is gone: the refs live in the clone's common git dir, read from the
+        worktree while it is present, else from ``clone_path(root, repo)`` on this — the
+        owning — host; no repo or no clone answers no refs. Keyed on the session's own
+        short id (``worktrees._recovery_ns``, as every writer). A pure read: no DB write,
+        audit row, lock or ref change. ``KeyError`` (an expected refusal) for an unknown
+        session."""
+        rec = self._records.get(session_id)
+        if rec is not None:
+            cwd, repo = rec.cwd, rec.repo
+        else:
+            row = await self._read_session_row(session_id)
+            if row is None:
+                exc = KeyError(f"No session with id {session_id}")
+                exc.error_data = {"code": worktree_files.SESSION_NOT_FOUND}  # type: ignore[attr-defined]
+                raise exc
+            cwd, repo = row.cwd, row.repo
+        root = await self._effective_repo_root() if repo else ""
+        return await asyncio.to_thread(_recovery_refs_wire, session_id, cwd or "", repo, root)
 
     async def memory_file(self, session_id: str, *, path: str) -> dict:
         """``{path, type, text, truncated, editable}`` of one of the session's loaded

@@ -212,6 +212,9 @@ _PER_SESSION: frozenset[str] = frozenset({
     "session_diff",
     # So do the D-7 file list and file read.
     "session_files", "session_file", "session_file_search",
+    # D-21: a session's recovery refs live in its host's clone. An archived row routes
+    # by its stamp too (`_host_for` reads row.host whatever the status).
+    "session_recovery_refs",
     # The D-13 memory-file read: the loaded set, worktree and config dir are its host's.
     "memory_file",
     # D-18: a session's dev servers are its host's processes, and the preview opens on

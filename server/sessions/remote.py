@@ -1078,6 +1078,11 @@ class RemoteOrchestrator:
         return await self._worktree_read("session_file_search", session_id, q=q,
                                          regex=regex, limit=limit)
 
+    async def session_recovery_refs(self, session_id) -> dict:
+        """Proxy session_recovery_refs (D-21) to the daemon that owns the session's
+        clone; an unknown session is re-raised as KeyError, as :meth:`session_file`."""
+        return await self._worktree_read("session_recovery_refs", session_id)
+
     async def _worktree_read(self, method: str, session_id, **params) -> dict:
         try:
             return await self._client.call(method, timeout=WORKTREE_RPC_TIMEOUT,

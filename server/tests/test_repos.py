@@ -203,6 +203,65 @@ def test_list_github_branches(tmp_path):
     assert data["branches"] == ["main", "feature-x"]
 
 
+def _age_branches_cache(app, repo: str, seconds: float) -> None:
+    value, at = app.state.github_branches_cache[repo]
+    app.state.github_branches_cache[repo] = (value, at - seconds)
+
+
+def test_list_github_branches_is_cached_per_repo_for_a_short_ttl(tmp_path):
+    """D-21: the ⌘K palette asks per focused repo; a repeat inside the TTL is served
+    from the cache, another repo or an expired entry asks GitHub again."""
+    from server.api import repos as repos_api
+    with temp_env():
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            with patch("ccswitch.gitrepos.list_remote_branches",
+                       side_effect=lambda r: {"default": "main", "branches": [r]}) as gh:
+                app, client = _make_app_and_client()
+                with client:
+                    def get(r):
+                        return client.get(f"/api/github/branches?repo={r}",
+                                          headers=IDENTITY_HEADERS)
+                    assert get("acme/widget").json()["branches"] == ["acme/widget"]
+                    assert get("Acme/Widget").json()["branches"] == ["acme/widget"]
+                    assert gh.call_count == 1
+                    assert get("acme/other").json()["branches"] == ["acme/other"]
+                    assert gh.call_count == 2
+                    _age_branches_cache(app, "acme/widget",
+                                        repos_api._BRANCHES_TTL_SECONDS + 1)
+                    assert get("acme/widget").status_code == 200
+                    assert gh.call_count == 3
+
+
+def test_list_github_branches_serves_stale_on_gh_error_then_502s_past_max_stale(tmp_path):
+    from viberpit.gitrepos import GhError
+    from server.api import repos as repos_api
+    answers: list = [{"default": "main", "branches": ["main"]}, GhError("rate limit"),
+                     GhError("rate limit")]
+
+    def fake(_repo):
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    with temp_env():
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            with patch("ccswitch.gitrepos.list_remote_branches", side_effect=fake):
+                app, client = _make_app_and_client()
+                with client:
+                    url = "/api/github/branches?repo=acme/widget"
+                    first = client.get(url, headers=IDENTITY_HEADERS)
+                    _age_branches_cache(app, "acme/widget",
+                                        repos_api._BRANCHES_TTL_SECONDS + 1)
+                    stale = client.get(url, headers=IDENTITY_HEADERS)
+                    _age_branches_cache(app, "acme/widget",
+                                        repos_api._REPOS_MAX_STALE_SECONDS)
+                    expired = client.get(url, headers=IDENTITY_HEADERS)
+    assert first.status_code == stale.status_code == 200
+    assert stale.json() == {"default": "main", "branches": ["main"]}
+    assert expired.status_code == 502
+
+
 def test_list_github_branches_bad_name_400(tmp_path):
     """A malformed repo name (no slash) → 400."""
     with temp_env():
