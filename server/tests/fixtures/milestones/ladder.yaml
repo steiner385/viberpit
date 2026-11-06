@@ -54,7 +54,7 @@ milestones:
     name: Community cohort
     label: Phase 2
     audience: One ND-parent community, batches of ≤25, Plus checkout live at founder pricing
-    platforms: [Web, PWA, Android, Kiosk (any browser, paired)]
+    platforms: [Web, PWA, Android, "Kiosk (any browser, paired)"]
     epics: ['#20193']
     gate:
       - key: paying

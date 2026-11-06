@@ -30,6 +30,9 @@ def test_parses_fixture_ladder():
     assert (nightly.kind, nightly.target, nightly.op) == ("workflow_streak", 3, "ge")
     assert lad.milestones[1].platforms[-1] == Platform("Kiosk", True, "not yet")
     assert [c.key for c in lad.milestones[2].gate] == ["paying", "week-four", "support", "crash-free", "p0"]
+    # A comma inside an unquoted flow-list item splits it into two chips.
+    assert [p.name for p in lad.milestones[2].platforms] == [
+        "Web", "PWA", "Android", "Kiosk (any browser, paired)"]
     assert [c.key for c in lad.numbers] == ["rubric-gap", "leaves", "outside-families", "defects-by-ci"]
     refs = hh.gate[3].measure.params["refs"]
     assert refs[0] == Ref(PRIMARY, 20234)
