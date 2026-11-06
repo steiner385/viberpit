@@ -14,6 +14,8 @@ links:
     - web/src/vnc/useZoom.ts
     - server/sessions/native_display.py
     - server/sessions/display_policy.py
+    - server/sessions/dev_servers.py
+    - web/src/features/sessions/browser/DevServers.tsx
   prs: [130, 331, 332, 427, 428, 399, 341, 204, 339, 373]
 ---
 
@@ -113,3 +115,38 @@ from a runner's own desktop. In fleet mode an explicit `display: "native"` from 
 requester skips the locality proof but not placement, so under auto placement its windows
 land on whichever desktop-capable host ranks first, not necessarily the one the requester
 expected — pin `host` to be sure. Kill switch: `VIBERPIT_NATIVE_DISPLAY_ENABLED=false`.
+
+## Dev servers (D-18)
+
+When a session starts a dev server (Vite, Next, `python -m http.server`, and so on), the **Browser tab** lists it
+under "Dev servers" with its port, the command that started it and the page title. Pick **Open** and the page
+opens in the way that works for where you are:
+
+- **You are on the session's own computer.** The page opens as a normal link in your browser, at the address the
+  server listens on (e.g. `http://127.0.0.1:<port>/`).
+- **The server is open to the network** (it listens on `0.0.0.0`, for example `vite --host`). The link uses the
+  host's tailnet IP address, so any device on your tailnet can open it directly.
+- **Anything else** (a loopback-only server on another host, or your phone). ViberPit starts a browser on a
+  virtual display on the session's host, opens the page there, and switches the tab to the live VNC view. This
+  works for sessions started from the host's own desktop too: the preview gets its own virtual display, and the
+  session itself is left alone. When the session's host has no virtual displays (X11 is off there), there is no
+  way to show such a server on this device: the row says "Not available from this device" and has no Open.
+
+A server that listens on `0.0.0.0` is reachable from your whole network, not only from this computer. The list
+marks it "Also reachable from your network", so you can tell it was not meant to be private.
+
+**What gets listed.** Only servers that belong to the session: its own processes, plus servers started from the
+session's own worktree by a process outside it. Ports below 1024, MCP and debug ports, and anything that does not
+answer with an HTML page are left out. The list refreshes while the tab is open and again just after a turn ends.
+
+**The preview window.** Each Open replaces the previous preview window for that session, and opens are handled one
+at a time. A preview display started for a native-desktop session is released when you close its window, or once
+nobody has watched it for 30 minutes in a row.
+
+**Safety.** Opening a preview is for people only (the assistant and API tokens cannot do it), is recorded in the
+audit log, and refuses requests from other websites. The address is built on the server, never from page text.
+
+**Not included yet.** No proxied preview, so a server on another host that is bound to loopback is seen through
+VNC rather than as a link; no element picker; ports published by Docker are not detected.
+
+Kill switch: `VIBERPIT_DEV_SERVER_DETECT_ENABLED=false` hides the list and stops the scan.

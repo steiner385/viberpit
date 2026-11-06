@@ -35,6 +35,9 @@ vi.mock('@/features/sessions/transcript/TranscriptView', () => ({
 const { sessionsHook, toastError } = vi.hoisted(() => ({ sessionsHook: vi.fn(), toastError: vi.fn() }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: toastError }) }))
 
+// Dev-server presence (D-18) lists the Browser tab; none here.
+vi.mock('@/api/devServers', () => ({ useSessionDevServers: () => ({ servers: null, refetch: () => {} }) }))
+
 vi.mock('@/api/hooks', () => ({
   useSessionMcp: vi.fn(() => ({ data: undefined })),
   usePermissionRules: vi.fn(() => ({ data: [] })),

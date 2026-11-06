@@ -66,11 +66,11 @@ Full inventories, with an evidence tag on every item:
 | 5 Settings | 5.5 / 8 | 69% |
 | 6 User feedback | 18 / 19 | 95% |
 | 7 Lifecycle & branching | 23 / 25 | 92% |
-| 8 Code review & dev | 8.5 / 12 | 71% |
+| 8 Code review & dev | 9.5 / 12 | 79% |
 | 9 Shortcuts & a11y | 8 / 8 | 100% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **146 / 161** | **91%** |
-| **Target completion** (excl. rejected rows) | **143.5 / 151** | **95%** |
+| **Overall (weighted)** | **147 / 161** | **91%** |
+| **Target completion** (excl. rejected rows) | **144.5 / 151** | **96%** |
 
 ### 1 Shell & IA
 
@@ -186,7 +186,7 @@ Full inventories, with an evidence tag on every item:
 | Inline tool diffs | 2 | ✅ | shared DiffRenderer, highlighted; MultiEdit edits[] not rendered |
 | Files pane (view / edit) | 1 | ◐ | read-only viewer; edit rejected (D1), content search not yet |
 | PR viewer: checks, threads, merge, auto-merge | 2 | ✅ | PR tab (checks, review threads, merge / auto-merge; merge queue read-only) |
-| Preview browser with dev-server detection | 2 | ◐ | VNC Browser tab, no dev-server detect |
+| Preview browser with dev-server detection | 2 | ✅ | detection + per-viewer open (local link / tailnet IP / VNC on demand); no proxy, no element select (D-18) |
 | Integrated terminal | 2 | ❌ |  · *rejected for target* |
 
 ### 9 Shortcuts & a11y
@@ -220,15 +220,14 @@ Full inventories, with an evidence tag on every item:
 | 6 | Sandbox settings | 5 Settings | 1 |
 | 7 | Error recovery actions (switch model, lower effort, rewind & retry) | 6 User feedback | 1 |
 | 8 | Worktree visible + controls (branch, enter, discard) | 7 Lifecycle & branching | 1 |
-| 9 | Preview browser with dev-server detection | 8 Code review & dev | 1 |
-| 10 | Pop session into own window | 1 Shell & IA | 0.5 |
-| 11 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
-| 12 | Worktree location / policy | 5 Settings | 0.5 |
-| 13 | Notification levels per event type | 5 Settings | 0.5 |
-| 14 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
-| 15 | Move session to cloud / other host | 7 Lifecycle & branching | 0.5 |
-| 16 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
-| 17 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
+| 9 | Pop session into own window | 1 Shell & IA | 0.5 |
+| 10 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
+| 11 | Worktree location / policy | 5 Settings | 0.5 |
+| 12 | Notification levels per event type | 5 Settings | 0.5 |
+| 13 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 14 | Move session to cloud / other host | 7 Lifecycle & branching | 0.5 |
+| 15 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 16 | Files pane (view / edit) | 8 Code review & dev | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 

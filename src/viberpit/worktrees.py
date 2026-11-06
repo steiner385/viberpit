@@ -483,6 +483,29 @@ def session_worktree_dir(repo_root: str, repo_top: str, session_id: str) -> Path
     return worktrees_base(repo_root) / os.path.basename(repo_top.rstrip("/")) / _short(session_id)
 
 
+#: Path components below a worktrees base in ``session_worktree_dir``'s layout:
+#: ``<clone name>/<short id>``.
+_WORKTREE_DEPTH = 2
+
+
+def session_worktree_root(path: str, repo_root: str) -> Path | None:
+    """The managed session worktree (``session_worktree_dir``'s
+    ``<worktrees_base>/<clone>/<short id>``, either namespace spelling) that contains
+    *path*, resolved — or None for a path outside every worktrees base or above the
+    worktree depth (the base itself, or a ``<clone>`` grouping dir). Resolves *path*
+    (stats it): call it on session cwds, not on arbitrary process cwds."""
+    resolved = Path(path).resolve()
+    for base in worktrees_bases(repo_root):
+        try:
+            rel = resolved.relative_to(base.resolve())
+        except ValueError:
+            continue
+        if len(rel.parts) >= _WORKTREE_DEPTH:
+            return base.resolve().joinpath(*rel.parts[:_WORKTREE_DEPTH])
+        return None
+    return None
+
+
 def _child_branch(base: str, session_id: str) -> str:
     """Name of the per-session child branch created off *base*.
 

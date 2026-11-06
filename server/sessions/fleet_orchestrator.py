@@ -214,6 +214,9 @@ _PER_SESSION: frozenset[str] = frozenset({
     "session_files", "session_file",
     # The D-13 memory-file read: the loaded set, worktree and config dir are its host's.
     "memory_file",
+    # D-18: a session's dev servers are its host's processes, and the preview opens on
+    # its host's virtual display.
+    "dev_servers", "open_dev_server",
     # A fork (D-8) is made from the source's transcript and worktree, on its host.
     "fork_session",
     # So is a rewind (D-9): the live client, transcript, worktree and undo backups.
@@ -260,7 +263,8 @@ _MOVE_BLOCKED: frozenset[str] = frozenset({
     "permanent_delete", "set_autopilot_paused", "mcp_reconnect", "mcp_toggle", "fork_session", "rewind_session", "undo_rewind",
     "set_fast_mode", "set_output_style", "set_mcp_tool", "set_permission_mode",
     "set_model_for_session", "resolve_permission", "answer_question", "run_command",
-    "request_pr_fix", "unarchive", "x11_open_browser", "resolve_model_approval",
+    "request_pr_fix", "unarchive", "x11_open_browser", "open_dev_server",
+    "resolve_model_approval",
     "resume_interrupted", "certify_harvested_complete", "reload_session",
     "rotate_to_best", "set_account_pin", "generate_suggestions_now",
     # Live-record writes on the source host: landed mid-move, they would be lost with

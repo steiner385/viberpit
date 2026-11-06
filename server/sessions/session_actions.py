@@ -153,6 +153,44 @@ async def move_preflight(orch, *, session_id: str, target: str | None, identity:
         raise ActionError(exc.code, exc.message, exc.http, extra=dict(exc.extra)) from exc
 
 
+# D-18 preview refusals: an undetected port is "not found"; the rest are a session or
+# host that cannot show one right now.
+# Detection switched off is a feature that is not there: 404, as the house's disabled
+# features answer.
+_PREVIEW_HTTP = {"DEV_SERVER_NOT_DETECTED": 404, "DEV_SERVER_DETECT_DISABLED": 404}
+_PREVIEW_MESSAGE = {
+    "DEV_SERVER_NOT_DETECTED": "That dev server is not running in this session any more.",
+    "DEV_SERVER_DETECT_DISABLED": "Dev server detection is switched off on this session's "
+                                  "host.",
+    "PREVIEW_SESSION_NOT_LIVE": "This session is not running, so it has no display to open "
+                                "the dev server in.",
+    "PREVIEW_NO_DISPLAY": "No virtual display is available for this session on its host.",
+    "PREVIEW_LAUNCH_FAILED": "The browser could not be started in the session's display.",
+}
+
+
+async def open_dev_server(orch, db, *, session_id: str, port: int, identity: str,
+                          via: str | None) -> dict:
+    """Open a detected dev server in the session's virtual display (D-18), on the host
+    that owns the session. Person-only: it starts a display and a browser on that host.
+    The owning daemon re-detects and refuses an undetected port, so the URL is always
+    built from detected data. Audited ``session.preview_open``; a refusal is expected
+    (logged at INFO) and becomes an ActionError carrying its code."""
+    from server.sessions.dev_servers import DevServerError
+    require_human(identity, via, action="open a session's dev server",
+                  code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+    try:
+        res = await orch.open_dev_server(session_id, port=port)
+    except DevServerError as exc:
+        log.info("session.preview_open_refused session=%s port=%s code=%s",
+                 session_id, port, exc.code)
+        raise ActionError(exc.code, _PREVIEW_MESSAGE.get(exc.code, exc.code),
+                          _PREVIEW_HTTP.get(exc.code, 409)) from exc
+    await _audit(db, "session.preview_open", identity,
+                 {"sessionId": session_id, "port": port, "url": res.get("url")}, via)
+    return res
+
+
 RULE_HUMAN_ONLY_CODE = "RULES_HUMAN_ONLY"
 
 

@@ -29,6 +29,7 @@ import { statusTier } from '@/session/statusTier'
 import { summaryOutcome } from '@/session/turnSummary'
 import { selectRunningSubAgentCount } from '@/session/selectors'
 import { DeferredBrowserTab } from '@/features/sessions/browser/DeferredBrowserTab'
+import { useSessionDevServers } from '@/api/devServers'
 import { useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities, useResolveSuspectedComplete, useSessionDiff, useSetPrAutofix } from '@/api/hooks'
 import { canUseEngine } from '@/session/engineCapabilities'
 import { useFileTarget, useSessionView, type SessionView } from './sessionView'
@@ -93,6 +94,11 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
   // The PR tab (D-15) reads the session payload's PRs, so it needs one.
   const prs = sessionRecord?.prs ?? []
   const hasPrs = prs.length > 0
+  // The Browser tab (D-18) is also listed for a session with a detected dev server,
+  // even where the edge has no X11, so a viewer at the desk can still open its links.
+  // Polled only while the Browser tab is shown; the tab renders the same list.
+  const devServers = useSessionDevServers(rt.sessionId, busy, requestedView === 'browser', browserEnabled)
+  const hasBrowser = browserEnabled || (devServers.servers?.length ?? 0) > 0
   // Transcript paths under the cwd open the Files tab and attach to the dock
   // composer (D-7, `transcript/PathRef`); without a cwd they stay click-to-copy.
   const attachMention = useComposerAttach()
@@ -115,10 +121,10 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
   // A view that is not listed falls back to the conversation. Details is listed
   // only where there is no rail column to hold the cards.
   const listed: Record<SessionView, boolean> = {
-    conversation: true, changes: hasChanges, pr: hasPrs, files: hasFiles, browser: browserEnabled, details: !wide,
+    conversation: true, changes: hasChanges, pr: hasPrs, files: hasFiles, browser: hasBrowser, details: !wide,
   }
   const view: SessionView = listed[requestedView] ? requestedView : 'conversation'
-  const showTabs = hasChanges || hasPrs || hasFiles || browserEnabled || !wide
+  const showTabs = hasChanges || hasPrs || hasFiles || hasBrowser || !wide
 
   // Opening the tab refreshes the summary too (the pane itself fetches the full diff).
   // Keyed on the REQUESTED view changing to Changes after mount — a click on the tab
@@ -215,7 +221,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
           {/* Conversation | Changes | PR | Files | Browser | Details — Changes once the
               worktree differs from its base, PR when the session has opened one,
               Files when the session has a cwd, Browser
-              when the X display is available, Details on a pane too narrow for the
+              when the X display is available or the session has a dev server, Details on a pane too narrow for the
               rail; no strip for the conversation alone. */}
           {showTabs && (
             <Tabs
@@ -225,7 +231,7 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
                 ...(hasChanges ? [{ id: 'changes', label: 'Changes' }] : []),
                 ...(hasPrs ? [{ id: 'pr', label: 'PR' }] : []),
                 ...(hasFiles ? [{ id: 'files', label: 'Files' }] : []),
-                ...(browserEnabled ? [{ id: 'browser', label: 'Browser' }] : []),
+                ...(hasBrowser ? [{ id: 'browser', label: 'Browser' }] : []),
                 ...(!wide ? [{ id: 'details', label: 'Details', attention: railAttention }] : []),
               ]}
               value={view}
@@ -416,7 +422,8 @@ export function SessionBody({ rt }: { rt: SessionRuntime }) {
               return (
                 <div id="tab-panel-browser" role="tabpanel" aria-labelledby="tab-browser" className="flex-1 min-h-0">
                   <DeferredBrowserTab sessionId={rt.sessionId} statusState={rt.state.status.state}
-                                      displayMode={sessionRecord?.displayMode} host={sessionRecord?.host} />
+                                      displayMode={sessionRecord?.displayMode} host={sessionRecord?.host}
+                                      x11Enabled={browserEnabled} devServers={devServers} />
                 </div>
               )
             }

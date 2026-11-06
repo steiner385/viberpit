@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import time
 import uuid
+import weakref
 from pathlib import Path
 from dataclasses import dataclass, field, replace as dataclass_replace
 from collections.abc import Awaitable, Coroutine, Iterable, Sequence
@@ -107,6 +108,8 @@ from server.sessions import session_lease
 from server.sessions import push as push_mod
 from server.sessions import worktree_files
 from server.sessions import memory_files
+from server.sessions import dev_servers as _dev_servers
+from server.sessions.memory_watch import SessionKey
 from server.sessions import flag_settings
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
@@ -560,6 +563,12 @@ class SessionLeaseHeld(RuntimeError):
         super().__init__(
             f"session {session_id} is leased to another host — refusing to start a "
             f"second CLI for it (see #1379)")
+
+
+def _dev_server_detect_enabled() -> bool:
+    """The D-18 kill switch, read on the daemon that owns the session."""
+    from server.config import get_settings
+    return bool(get_settings().dev_server_detect_enabled)
 
 
 async def effective_repo_root(fallback: str) -> str:
@@ -6700,7 +6709,8 @@ class SessionOrchestrator:
                 log.exception("session.native_display_cleanup_failed id=%s", session_id)
         return driver
 
-    async def open_browser(self, session_id: str, url: str | None) -> dict:
+    async def open_browser(self, session_id: str, url: str | None, *,
+                           force_virtual: bool = False) -> dict:
         """Launch a managed Chromium for this session on whichever display it owns.
 
         Returns {"ok", "reason"}; reasons: no_display (no such live session / no lease),
@@ -6710,7 +6720,9 @@ class SessionOrchestrator:
         this, so the native/virtual branch exists exactly once.
         """
         rec = self._records.get(session_id)
-        if rec is not None and rec.display_mode == DISPLAY_NATIVE:
+        # force_virtual: the D-18 dev-server preview, which always opens on the session's
+        # virtual display (started on demand) — the one launch path either way.
+        if not force_virtual and rec is not None and rec.display_mode == DISPLAY_NATIVE:
             await self._refresh_native()
             if self._native is None or not self._native.available():
                 return {"ok": False, "reason": "native_unavailable"}
@@ -21641,6 +21653,12 @@ class SessionOrchestrator:
                 log.warning("pr_branch_monitor.refresh_failed", exc_info=True)
             await asyncio.sleep(60)
 
+    def session_keys(self) -> list[SessionKey]:
+        """What ``memory_watch.match_session`` needs to tell which session a process on
+        this host belongs to: one key per in-memory record. The daemon's memory sampler
+        and dev-server detection (D-18) both match through it."""
+        return [SessionKey(r.id, r.engine_session_id, r.cwd) for r in self.list_sessions()]
+
     def record(self, session_id: str) -> SessionRecord:
         """Return the in-memory SessionRecord for session_id (KeyError if missing)."""
         try:
@@ -22082,6 +22100,114 @@ class SessionOrchestrator:
         return await asyncio.to_thread(memory_files.read_memory_file, path,
                                        loaded=rec.memory_files, cwd=rec.cwd or "",
                                        config_dirs=config_dirs)
+
+    def _dev_server_detector(self) -> _dev_servers.DevServerDetector:
+        # getattr: some harnesses build the orchestrator via __new__.
+        det = getattr(self, "_dev_server_det", None)
+        if det is None:
+            det = self._dev_server_det = _dev_servers.DevServerDetector()
+        return det
+
+    async def _detect_dev_servers(self, session_id: str, *, fresh: bool) -> list[dict]:
+        """This host's detection for one session (``dev_servers`` module rules). Matched
+        against the LIVE sessions only — a closed record has no process tree, and its
+        cwd must not make a live session's cwd look shared — plus the session asked
+        about, whose escaped servers can outlive its driver."""
+        keys = [k for k in self.session_keys()
+                if k.session_id in self._drivers or k.session_id == session_id]
+
+        async def bg_commands() -> list[str]:
+            return [str(t.input.get("command")) for t in await self._open_background_work(session_id)
+                    if isinstance(t.input.get("command"), str)]
+        # Outside a session's own process subtree only a cwd inside its MANAGED worktree
+        # attributes, and only a session whose cwd IS a worktree root has one
+        # (worktrees.session_worktree_root over the same managed roots as
+        # _ensure_session_cwd). Resolved inside the detector's one bounded scan: it
+        # stats the session cwds, which can block on a stalled mount.
+        return await self._dev_server_detector().detect(
+            session_id, keys, bg_commands=bg_commands, fresh=fresh,
+            repo_roots=await self._managed_roots())
+
+    async def dev_servers(self, session_id: str) -> dict:
+        """``{host, enabled, x11, tailnetIp, servers}``: the dev servers this session
+        started, detected on this — the owning — host (D-18), the host's fleet name, which
+        the edge compares with the viewer's tailnet node to route "Open", and its tailnet
+        IP (or None). ``KeyError`` for an unknown session. Cached for a few seconds per
+        session, so polling stays cheap. ``enabled`` is the kill switch
+        (``VIBERPIT_DEV_SERVER_DETECT_ENABLED``): off, nothing is detected and the UI
+        hides the section. ``x11``: whether this host can show a ``vnc`` preview at all,
+        so the edge never offers one that always refuses."""
+        self.record(session_id)
+        host = self_host_name()
+        x11 = self._x11 is not None
+        if not _dev_server_detect_enabled():
+            return {"host": host, "enabled": False, "x11": x11, "tailnetIp": None,
+                    "servers": []}
+        servers = await self._detect_dev_servers(session_id, fresh=False)
+        # ``tailnetIp``: this host's own tailnet address, for the edge's tailnet-link —
+        # only needed (and only looked up) when a server is bound to every address.
+        ip = (await asyncio.to_thread(_dev_servers.self_tailnet_ip)
+              if any(s.get("bind") == "all" for s in servers) else None)
+        return {"host": host, "enabled": True, "x11": x11, "tailnetIp": ip,
+                "servers": servers}
+
+    async def open_dev_server(self, session_id: str, *, port: int) -> dict:
+        """Open a detected dev server in the session's virtual display (D-18 "vnc").
+
+        Re-detects (never the cache) and refuses a port that is not detected now
+        (``DEV_SERVER_NOT_DETECTED``), so the URL can only ever be
+        ``http://<detected address>:<port>/``. The display is started on demand, also for
+        a native session (preview only: ``display_mode`` is unchanged), and only while
+        the session has a live driver (``PREVIEW_SESSION_NOT_LIVE``): the driver teardown
+        is what stops a session's display, so a display started without one would leak.
+        Each Open replaces the previous preview Chromium (one live preview per session);
+        a native session's on-demand display is released when its preview browser exits
+        or sits unwatched for the VNC idle timeout (``X11Manager.track_preview``)."""
+        rec = self.record(session_id)
+        native = rec.display_mode == DISPLAY_NATIVE
+        if not _dev_server_detect_enabled():
+            raise _dev_servers.DevServerError(_dev_servers.DEV_SERVER_DETECT_DISABLED)
+        servers = await self._detect_dev_servers(session_id, fresh=True)
+        server = next((s for s in servers if s["port"] == port), None)
+        if server is None:
+            raise _dev_servers.DevServerError(_dev_servers.DEV_SERVER_NOT_DETECTED)
+        if session_id not in self._drivers:
+            raise _dev_servers.DevServerError(_dev_servers.PREVIEW_SESSION_NOT_LIVE)
+        # One Open at a time per session, from the display start to tracking the new
+        # preview: two concurrent Opens would otherwise both launch, leaving one
+        # Chromium no Open ever replaces. Weak values: the entry lives while in use.
+        locks: weakref.WeakValueDictionary[str, asyncio.Lock] | None = getattr(
+            self, "_preview_locks", None)
+        if locks is None:
+            locks = weakref.WeakValueDictionary()
+            self._preview_locks = locks
+        lock = locks.get(session_id)
+        if lock is None:
+            lock = locks[session_id] = asyncio.Lock()
+        async with lock:
+            x11 = self._x11
+            if x11 is None or await x11.start_display(session_id) is None:
+                raise _dev_servers.DevServerError(_dev_servers.PREVIEW_NO_DISPLAY)
+            if session_id not in self._drivers:
+                # Torn down while the display started: its teardown already ran, so this
+                # display is ours to reap.
+                await x11.stop_display(session_id)
+                raise _dev_servers.DevServerError(_dev_servers.PREVIEW_SESSION_NOT_LIVE)
+            url = _dev_servers.server_url(server)
+            await x11.stop_preview(session_id)
+            x11.prune_browsers(session_id)  # the per-session cap counts live browsers only
+            res = await self.open_browser(session_id, url, force_virtual=True)
+            if not res.get("ok"):
+                spec = x11.display_for(session_id)
+                if native and spec is not None:
+                    x11.prune_browsers(session_id)
+                    if not spec.browsers:  # nothing left on a preview-only display
+                        await x11.stop_display(session_id)
+                raise _dev_servers.DevServerError(
+                    _dev_servers.PREVIEW_NO_DISPLAY if res.get("reason") == "no_display"
+                    else _dev_servers.PREVIEW_LAUNCH_FAILED)
+            x11.track_preview(session_id, release_display=native)
+            return {"ok": True, "port": port, "url": url}
 
     async def mcp_reconnect(self, session_id: str, server: str) -> list[dict]:
         """Reconnect one MCP server in a live session. ``LookupError`` when not live,

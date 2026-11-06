@@ -39,14 +39,25 @@ export class VncClient {
     // reconnected onto a different canvas) while it was in flight. Attaching
     // here anyway would leak an RFB nothing holds a reference to.
     if (this.destroyed || this.canvas !== canvas) return
-    this.rfb = new RFBImpl(canvas, this.url, {})
+    // noVNC's `disconnect` event carries only `{clean}`, never the close code, so
+    // the socket is ours: open it here, hand it to the RFB, and read the code off
+    // its own `close` event. Registered before noVNC sets `onclose`, this listener
+    // runs first, so the code is known by the time `disconnect` fires.
+    const ws = new WebSocket(this.url)
+    let closeCode: number | null = null
+    ws.addEventListener('close', (e) => { closeCode = e.code })
+    this.rfb = new RFBImpl(canvas, ws, {})
     this.rfb.scaleViewport = true            // mobile-first: fit to viewport
     this.rfb.addEventListener('connect', () => {
       this.reconnectAttempt = 0
       this.emit('connect', 'connected')
     })
     this.rfb.addEventListener('disconnect', (e) => {
-      const kind = classifyClose(e?.detail?.clean ? (e.detail.code ?? 1000) : 1006)
+      // This RFB is finished: never call `disconnect()` on it again (noVNC logs
+      // an error for a second disconnect), and key/focus calls no-op until a
+      // reconnect builds the next one.
+      this.rfb = null
+      const kind = classifyClose(closeCode ?? (e?.detail?.clean ? 1000 : 1006))
       if (kind === 'disabled') this.emit('disconnect', 'disabled')
       else if (kind === 'nodisplay') this.emit('disconnect', 'nodisplay')
       else this.scheduleReconnect()

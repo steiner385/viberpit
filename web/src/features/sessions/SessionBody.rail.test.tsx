@@ -17,6 +17,9 @@ const { diffHook, mcpHook, sessionsHook, prAutofix } = vi.hoisted(() => ({
   diffHook: vi.fn(), mcpHook: vi.fn(), sessionsHook: vi.fn(), prAutofix: vi.fn(),
 }))
 
+// Dev-server presence (D-18) lists the Browser tab; none here.
+vi.mock('@/api/devServers', () => ({ useSessionDevServers: () => ({ servers: null, refetch: () => {} }) }))
+
 vi.mock('@/api/hooks', () => ({
   useSessionMcp: mcpHook,
   usePermissionRules: vi.fn(() => ({ data: [] })),

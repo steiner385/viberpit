@@ -286,9 +286,8 @@ async def daemon_lifespan(app, orchestrator):
     )
     # Per-session memory attribution (#2739): names the session whose process subtree
     # is ballooning BEFORE the kernel's OOM line, which only carries a bare pid.
-    from server.sessions.memory_watch import SessionKey, memory_watch_from_env
-    memory_watch = memory_watch_from_env(lambda: [
-        SessionKey(r.id, r.engine_session_id, r.cwd) for r in orchestrator.list_sessions()])
+    from server.sessions.memory_watch import memory_watch_from_env
+    memory_watch = memory_watch_from_env(lambda: orchestrator.session_keys())
     app.state.memory_watch_task = None if memory_watch is None else supervise(
         asyncio.create_task(memory_watch.run(), name="session-memory-watch"),
         name="session-memory-watch",

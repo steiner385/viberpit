@@ -6,11 +6,13 @@ import os
 import secrets
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from server.aio import cancel_and_reap
 from server.sessions.desktop_session import probe_x11, socket_owner
-from server.sessions.adopt import _proc_lister, terminate_process_tree
+from server.sessions.adopt import _proc_lister, read_start_time, terminate_process_tree
 
 log = logging.getLogger("server.x11")
 
@@ -146,8 +148,20 @@ class DisplaySpec:
     x11vnc: object | None = None
     browsers: list = field(default_factory=list)   # managed Chromium procs
     browser_profiles: list = field(default_factory=list)  # auto-minted --user-data-dir dirs to rm on teardown
+    # Each managed browser's /proc start time by pid (None: unreadable at launch): a
+    # pid plus its start time names ONE process, so teardown never signals a reused pid.
+    browser_starts: dict = field(default_factory=dict)
     vnc_clients: int = 0
+    # When the last VNC viewer detached (monotonic), None while one is attached: the
+    # preview reaper releases a display unwatched for the WHOLE idle timeout.
+    unwatched_since: float | None = None
     debug_port: int | None = None
+    # D-18 dev-server preview: the one Chromium the session's "Open" drives (replaced on
+    # every Open), its auto profile, and a generation that retires a stale reaper.
+    preview: object | None = None
+    preview_profile: str | None = None
+    preview_start: int | None = None  # its /proc start time: guards against pid reuse
+    preview_gen: int = 0
 
 
 async def _terminate(proc, timeout: float = 5.0) -> None:
@@ -328,8 +342,11 @@ class X11Manager:
         for b in list(spec.browsers):
             try:
                 pid = getattr(b, "pid", None)
-                if pid:
-                    await asyncio.to_thread(terminate_process_tree, pid)
+                # Only a browser not yet reaped (an exited one's pid may name another
+                # process by now), and only while its recorded start time still matches.
+                if pid and getattr(b, "returncode", None) is None:
+                    await asyncio.to_thread(terminate_process_tree, pid,
+                                            start_time=spec.browser_starts.get(pid))
             except Exception:
                 log.exception("x11: browser tree kill failed")
         for prof in spec.browser_profiles:
@@ -344,6 +361,94 @@ class X11Manager:
             except OSError:
                 pass
         await self._allocator.release(spec.lease)
+
+    def prune_browsers(self, session_id: str) -> None:
+        """Forget managed browsers that already exited (the user closed the window), so
+        the per-session cap counts live ones only."""
+        spec = self._specs.get(session_id)
+        if spec is not None:
+            spec.browsers = [b for b in spec.browsers if getattr(b, "returncode", None) is None]
+            live = {getattr(b, "pid", None) for b in spec.browsers}
+            spec.browser_starts = {p: t for p, t in spec.browser_starts.items() if p in live}
+
+    async def stop_preview(self, session_id: str) -> None:
+        """Close the session's dev-server preview browser (its process tree and profile),
+        if any — the next Open replaces it rather than stacking another Chromium."""
+        spec = self._specs.get(session_id)
+        if spec is None or spec.preview is None:
+            return
+        proc, profile, start = spec.preview, spec.preview_profile, spec.preview_start
+        spec.preview, spec.preview_profile, spec.preview_start = None, None, None
+        spec.preview_gen += 1  # retire its reaper before the kill wakes it
+        # Signal only a process still running AND still the one launched: an exited
+        # (reaped) preview's pid may already name an unrelated process, and
+        # terminate_process_tree re-checks the recorded start time before each signal.
+        pid = getattr(proc, "pid", None)
+        running = getattr(proc, "returncode", None) is None
+        if running and start is None:
+            # Its start time could not be read at launch, so it cannot be signalled by
+            # pid safely. Keep it in spec.browsers: stop_display still reaps it.
+            log.info("x11: previous preview kept for display teardown session=%s "
+                     "(no start time recorded)", session_id)
+            return
+        if pid and running:
+            try:
+                if await asyncio.to_thread(terminate_process_tree, pid, start_time=start):
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)  # type: ignore[attr-defined]
+            except Exception:
+                log.exception("x11: preview browser kill failed session=%s", session_id)
+        if proc in spec.browsers:
+            spec.browsers.remove(proc)
+            spec.browser_starts.pop(pid, None)
+        if profile is not None and profile in spec.browser_profiles:
+            spec.browser_profiles.remove(profile)
+            self._cleanup_profile(profile)
+
+    def track_preview(self, session_id: str, *, release_display: bool) -> None:
+        """Mark the browser just launched as the session's dev-server preview.
+
+        ``release_display``: the display exists only for this preview (a native session's
+        on-demand one), so it is stopped — Xvfb, pool lease and all — when the preview
+        browser exits, or once no VNC viewer has been attached for the WHOLE VNC idle
+        timeout, counted from the last detach (the bound that stops an unwatched
+        x11vnc)."""
+        spec = self._specs.get(session_id)
+        if spec is None or not spec.browsers:
+            return
+        spec.preview = spec.browsers[-1]
+        spec.preview_profile = spec.browser_profiles[-1] if spec.browser_profiles else None
+        pid = getattr(spec.preview, "pid", None)
+        spec.preview_start = spec.browser_starts.get(pid) if pid else None
+        spec.preview_gen += 1
+        if spec.vnc_clients == 0 and spec.unwatched_since is None:
+            spec.unwatched_since = time.monotonic()
+        if release_display:
+            t = asyncio.create_task(
+                self._reap_preview_display(session_id, spec.preview_gen, spec.preview))
+            self._idle_tasks.add(t)
+            t.add_done_callback(self._idle_tasks.discard)
+
+    async def _reap_preview_display(self, session_id: str, gen: int, proc) -> None:
+        exited = asyncio.ensure_future(proc.wait())
+        wait = self._vnc_idle_timeout_s
+        try:
+            while True:
+                await asyncio.wait({exited}, timeout=wait)
+                spec = self._specs.get(session_id)
+                if spec is None or spec.preview_gen != gen:
+                    return  # torn down, or a newer preview owns the display now
+                since = spec.unwatched_since if spec.vnc_clients == 0 else None
+                unwatched = 0.0 if since is None else time.monotonic() - since
+                if exited.done() or unwatched >= self._vnc_idle_timeout_s:
+                    log.info("x11: releasing preview display session=%s (%s)", session_id,
+                             "browser exited" if exited.done() else "idle")
+                    await self.stop_display(session_id)
+                    return
+                # Watched now, or unwatched for less than the bound: wait out the rest.
+                wait = self._vnc_idle_timeout_s - unwatched
+        finally:
+            if not exited.done():
+                await cancel_and_reap(exited, phase="x11.preview_reap")
 
     async def stop_all(self) -> None:
         """Concurrently tear down every tracked display — the shutdown sweep (issue #206).
@@ -400,6 +505,7 @@ class X11Manager:
             return None
         port = await self.ensure_vnc(session_id)
         spec.vnc_clients += 1
+        spec.unwatched_since = None
         return port
 
     def detach(self, session_id: str) -> None:
@@ -408,6 +514,7 @@ class X11Manager:
             return
         spec.vnc_clients = max(0, spec.vnc_clients - 1)
         if spec.vnc_clients == 0:
+            spec.unwatched_since = time.monotonic()
             t = asyncio.create_task(self._idle_teardown(session_id))
             self._idle_tasks.add(t)
             t.add_done_callback(self._idle_tasks.discard)
@@ -478,6 +585,8 @@ class X11Manager:
             self._cleanup_profile(auto_profile)
             return False
         spec.browsers.append(proc)
+        if getattr(proc, "pid", None):
+            spec.browser_starts[proc.pid] = read_start_time(proc.pid)
         if auto_profile is not None:
             spec.browser_profiles.append(auto_profile)
         return True

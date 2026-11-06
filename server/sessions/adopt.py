@@ -104,8 +104,8 @@ def _read_ppid(base: str) -> int:
         return 0
 
 
-def _read_proc(pid: int) -> ProcInfo | None:
-    base = f"/proc/{pid}"
+def _read_proc(pid: int, proc_root: str = "/proc") -> ProcInfo | None:
+    base = f"{proc_root}/{pid}"
     try:
         with open(f"{base}/cmdline", "rb") as fh:
             raw = fh.read()
@@ -300,13 +300,33 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def terminate_process_tree(pid: int, killer=os.kill, alive=_pid_alive, grace: float = 1.5) -> bool:
+def read_start_time(pid: int, proc_root: str = "/proc") -> int | None:
+    """The process's start time (``/proc/<pid>/stat`` field 22, clock ticks after boot),
+    or None when it is gone or unreadable. A pid plus this value names ONE process: a
+    reused pid has a different start time."""
+    try:
+        with open(f"{proc_root}/{pid}/stat", encoding="utf-8", errors="replace") as fh:
+            raw = fh.read()
+        return int(raw[raw.rindex(")") + 1:].split()[19])  # after comm: state=3 … 22
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def terminate_process_tree(pid: int, killer=os.kill, alive=_pid_alive, grace: float = 1.5,
+                           *, start_time: int | None = None,
+                           read_start=read_start_time) -> bool:
     """SIGTERM, wait a grace period for a clean flush, then SIGKILL if still alive.
 
     Returns True if any signal was sent. A PID that is already gone is a no-op
-    success (returns False — nothing to terminate).
+    success (returns False — nothing to terminate). With ``start_time`` (from
+    :func:`read_start_time` when the process was started), a pid whose start time no
+    longer matches — it exited and the pid was reused — is never signalled; the check
+    is repeated before the SIGKILL.
     """
-    if not alive(pid):
+    def same() -> bool:
+        return start_time is None or read_start(pid) == start_time
+
+    if not alive(pid) or not same():
         return False
     killer(pid, _signal.SIGTERM)
     deadline = _time.monotonic() + grace
@@ -314,6 +334,6 @@ def terminate_process_tree(pid: int, killer=os.kill, alive=_pid_alive, grace: fl
         if not alive(pid):
             return True
         _time.sleep(0.05)
-    if alive(pid):
+    if alive(pid) and same():
         killer(pid, _signal.SIGKILL)
     return True
