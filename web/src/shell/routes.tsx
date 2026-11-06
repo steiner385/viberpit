@@ -81,6 +81,7 @@ import {
 } from '@/features/delivery/deliveryNavState'
 import { Skeleton } from '@/ui/Skeleton'
 import { PageContent } from '@/ui/PageContent'
+import { RouteErrorFallback } from './RouteErrorFallback'
 
 /**
  * ## Which pages are code-split, and why not all of them (#1411)
@@ -400,7 +401,17 @@ export function buildRoutes(layout: ReactElement): RouteObject[] {
   return [
     {
       element: <SettingsDialogRedirect />,
-      children: [{ element: layout, children: PAGES }],
+      // Two containment levels (#1418). The layout route's own errorElement
+      // catches a crash in the layout itself; each PAGE carries its own, so a
+      // page that throws (render, failed chunk, bad response shape) replaces
+      // only the page slot and the shell's nav stays usable. Per page rather
+      // than a pathless wrapper route so the tree keeps the shape its
+      // consumers (PageHost, the matrix tests) walk.
+      errorElement: <RouteErrorFallback />,
+      children: [{
+        element: layout,
+        children: PAGES.map((page) => ({ ...page, errorElement: <RouteErrorFallback /> })),
+      }],
     },
   ]
 }

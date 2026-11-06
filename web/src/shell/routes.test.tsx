@@ -674,6 +674,7 @@ describe('every route renders in every layout mode', () => {
     await waitFor(() => {
       expect(screen.queryByText('Something went wrong.'), `${mode} ${path} — boundary`).toBeNull()
       expect(screen.queryByText(/Unexpected Application Error/i), `${mode} ${path} — router`).toBeNull()
+      expect(screen.queryByTestId('route-error-id'), `${mode} ${path} — route fallback`).toBeNull()
       expect(screen.queryByTestId(testid), `${mode} ${path} — page`).not.toBeNull()
     })
 
