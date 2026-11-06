@@ -2420,7 +2420,6 @@ async def discard_session_worktree(
     body: DiscardWorktreeRequest,
     request: Request,
     identity: str = Depends(current_identity),
-    db=Depends(get_db),
 ) -> Any:
     """End the session and remove its worktree (D-19 Discard), after its dirty tree and
     unpushed commits are kept as recovery refs. 200 ``{discarded, recoveryRefs,
@@ -2430,10 +2429,10 @@ async def discard_session_worktree(
     ``WORKTREE_SHARED`` / ``SESSION_MOVING``; 500 ``WORKTREE_SNAPSHOT_FAILED`` (nothing
     touched), ``WORKTREE_DISCARD_FAILED`` / ``WORKTREE_REMOVE_FAILED`` (``recoveryRefs``
     and ``restoreCommand`` in the detail); 404 unknown session; 409 ``daemon_outdated``.
-    Audited ``session.worktree_discard``."""
+    Audited ``session.worktree_discard`` by the owning daemon."""
     try:
         return await session_actions.discard_worktree(
-            _get_orchestrator(request), db, session_id=session_id, confirm=body.confirm,
+            _get_orchestrator(request), session_id=session_id, confirm=body.confirm,
             identity=identity, via=human_gate_via(request))
     except ActionError as exc:
         return _action_error_response(exc)
@@ -2448,17 +2447,17 @@ async def repair_session_worktree(
     session_id: str,
     request: Request,
     identity: str = Depends(current_identity),
-    db=Depends(get_db),
 ) -> Any:
     """Recreate a missing or empty managed worktree from the session's branch (D-19
     Repair); a present tree is never touched. 200 ``{repaired, path, branch,
     recoveryRefs}``. Person-only (403 ``SESSION_CONTROL_HUMAN_ONLY``); 409
     ``WORKTREE_SESSION_BUSY`` / ``WORKTREE_NOT_MANAGED`` / ``WORKTREE_PRESENT`` /
     ``WORKTREE_NOT_EMPTY`` / ``WORKTREE_REPAIR_FAILED`` / ``SESSION_MOVING``; 404 unknown
-    session; 409 ``daemon_outdated``. Audited ``session.worktree_repair``."""
+    session; 409 ``daemon_outdated``. Audited ``session.worktree_repair`` by the owning
+    daemon."""
     try:
         return await session_actions.repair_worktree(
-            _get_orchestrator(request), db, session_id=session_id, identity=identity,
+            _get_orchestrator(request), session_id=session_id, identity=identity,
             via=human_gate_via(request))
     except ActionError as exc:
         return _action_error_response(exc)

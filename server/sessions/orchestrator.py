@@ -6741,23 +6741,27 @@ class SessionOrchestrator:
         effective_root = await self._effective_repo_root()
         return {effective_root, getattr(self, "_repo_root", effective_root)}
 
-    def _note_worktree_missing(self, session_id: str, cwd: str, **fields) -> None:
+    def _note_worktree_missing(self, session_id: str, cwd: str, *,
+                               level: int | None = None, **fields) -> None:
         """WARNING the first time this process sees (session, path) missing, INFO
-        after: every retry and attach re-detects it, and each WARNING files an issue."""
+        after: every retry and attach re-detects it, and each WARNING files an issue.
+        *level* overrides it — a person's Repair (D-19) refusing is expected, INFO."""
         # getattr: some harnesses build the orchestrator via __new__.
         warned: set[tuple[str, str]] | None = getattr(self, "_worktree_missing_warned", None)
         if warned is None:
             warned = set()
             self._worktree_missing_warned = warned
         key = (session_id, cwd)
-        level = logging.INFO if key in warned else logging.WARNING
-        warned.add(key)
+        if level is None:
+            level = logging.INFO if key in warned else logging.WARNING
+            warned.add(key)
         log_event(log, level, "worktree.missing", session_id=session_id, path=cwd,
                   **fields)
 
     async def _ensure_session_cwd(self, session_id: str, cwd: str, *,
                                   repo: str | None, branch: str | None,
-                                  host: str | None = None) -> bool:
+                                  host: str | None = None,
+                                  refusal_level: int | None = None) -> bool:
         """Make *cwd* usable for a driver build WITHOUT ever fabricating lost work.
 
         THE single gate every driver-build site routes its working directory
@@ -6789,11 +6793,13 @@ class SessionOrchestrator:
             p.mkdir(parents=True, exist_ok=True)
             return True
         if p.exists() and (not p.is_dir() or any(p.iterdir())):
-            self._note_worktree_missing(session_id, cwd, branch=branch, repo=repo,
+            self._note_worktree_missing(session_id, cwd, level=refusal_level,
+                                        branch=branch, repo=repo,
                                         host=host, reason="not_a_worktree")
             return False
         if not _stamp_is_this_host(host):
-            self._note_worktree_missing(session_id, cwd, branch=branch, repo=repo,
+            self._note_worktree_missing(session_id, cwd, level=refusal_level,
+                                        branch=branch, repo=repo,
                                         host=host, reason="foreign_host")
             return False
         effective_root = await self._effective_repo_root()
@@ -6806,7 +6812,7 @@ class SessionOrchestrator:
         if clone is None or not branch or not clone.is_dir() or not await asyncio.to_thread(
                 worktrees.recreate_worktree, str(clone), cwd, branch):
             self._note_worktree_missing(
-                session_id, cwd, branch=branch, repo=repo, host=host,
+                session_id, cwd, level=refusal_level, branch=branch, repo=repo, host=host,
                 reason="branch_unavailable",
                 clone=str(clone) if clone is not None else None)
             return False
@@ -6936,21 +6942,42 @@ class SessionOrchestrator:
             raise self._worktree_refusal(session_id, action,
                                          wc.WORKTREE_SESSION_BUSY) from exc
 
-    async def discard_worktree(self, session_id: str) -> dict:
+    async def _audit_worktree_control(self, type_: str, identity: str, via: str | None,
+                                      detail: dict) -> None:
+        """The control's audit row, written HERE on the owning daemon (as
+        ``_ensure_session_cwd`` writes ``session.worktree_recreated``): a discard runs to
+        completion after its edge has gone, so only the daemon sees every outcome. The
+        edge writes none. Best-effort: an audit failure never fails the action."""
+        try:
+            async with db_session() as db:
+                await record_audit(db, type_, identity, detail, via=via)
+                await db.commit()
+        except Exception:
+            log.warning("%s audit write failed session=%s", type_, detail.get("sessionId"),
+                        exc_info=True)
+
+    async def discard_worktree(self, session_id: str, *, identity: str = SYSTEM_IDENTITY,
+                               via: str | None = None) -> dict:
         """End the session and remove its managed worktree (D-19 Discard), keeping every
         dirty tree and every commit the removal would leave unreferenced as a recovery
         ref FIRST. Idle sessions only. Steps, each refusing before anything is touched
         until the refs exist: idle → managed linked worktree here, not shared →
-        ``snapshot_before_discard`` → driver closed → ``archive_session`` →
-        ``remove_worktree(force=True)`` (which deletes only a session branch). A failure
-        after the snapshot keeps it and names it. Returns ``{discarded, recoveryRefs,
-        restoreCommand, branch, branchDeleted, path}``. Runs to completion even if the
-        caller goes away. ``KeyError`` unknown; ``WorktreeControlError`` otherwise."""
+        ``snapshot_before_discard`` → driver closed (a CLI that will not close stops it)
+        → ``archive_session`` → ``remove_worktree(force=True)`` (which deletes only a
+        session branch, and only when nothing on it would be lost). A failure after the
+        snapshot keeps it and names it. Returns ``{discarded, recoveryRefs,
+        restoreCommand, branch, branchDeleted, path}`` — ``recoveryRefs`` is every ref
+        the session has once the removal is done. Runs to completion even if the caller
+        goes away, and writes ``session.worktree_discard`` itself for every outcome
+        after the snapshot (*identity*/*via* are the edge's verified caller).
+        ``KeyError`` unknown; ``WorktreeControlError`` otherwise."""
         rec = self._worktree_record(session_id)
-        return await run_to_completion(self._discard_worktree(session_id, rec),
-                                       name=f"worktree-discard-{session_id}")
+        return await run_to_completion(
+            self._discard_worktree(session_id, rec, identity=identity, via=via),
+            name=f"worktree-discard-{session_id}")
 
-    async def _discard_worktree(self, session_id: str, rec: SessionRecord) -> dict:
+    async def _discard_worktree(self, session_id: str, rec: SessionRecord, *,
+                                identity: str, via: str | None) -> dict:
         from server.sessions import worktree_controls as wc
         async with self._worktree_control_slot(session_id, "discard"):
             rec = self._records.get(session_id) or rec
@@ -6968,49 +6995,89 @@ class SessionOrchestrator:
                 raise self._worktree_refusal(session_id, "discard", wc.WORKTREE_NOT_MANAGED)
             if self._worktree_shared(session_id, cwd):
                 raise self._worktree_refusal(session_id, "discard", wc.WORKTREE_SHARED)
-            refs = await asyncio.to_thread(worktrees.snapshot_before_discard, cwd, session_id)
-            if refs is None:
+            repo_top = await asyncio.to_thread(_resolve_git_common_dir, cwd)
+            try:
+                refs = await asyncio.to_thread(worktrees.snapshot_before_discard, cwd,
+                                               session_id)
+            except worktrees.RecoveryUnknown as exc:
+                raise self._worktree_refusal(session_id, "discard",
+                                             wc.WORKTREE_DISCARD_UNSAFE) from exc
+            if refs is None or repo_top is None:
                 log_event(log, logging.WARNING, "session.worktree_discard_snapshot_failed",
                           session_id=session_id, path=cwd)
                 raise wc.WorktreeControlError(wc.WORKTREE_SNAPSHOT_FAILED)
-            kept = {"recoveryRefs": refs,
-                    "restoreCommand": worktrees.restore_command(refs[0]) if refs else None}
             log_event(log, logging.INFO, "session.worktree_discard_snapshot",
                       session_id=session_id, path=cwd, recovery_refs=refs)
+            branch = facts["branch"]
+
+            async def kept() -> dict:
+                # Every ref the session now has, the removal's own included — re-read,
+                # not the list the snapshot returned.
+                listed = await asyncio.to_thread(worktrees.recovery_refs, repo_top,
+                                                 session_id)
+                # The discard's own refs first (dirty tree, then branch tip), then the
+                # rest newest first.
+                every = [*refs, *(r for r in listed if r not in refs)]
+                head = every[0] if every else None
+                return {"recoveryRefs": every,
+                        "restoreCommand": worktrees.restore_command(head) if head else None}
+
+            async def failed(code: str, step: str, error: str | None = None):
+                extra = await kept()
+                log_event(log, logging.WARNING, "session.worktree_discard_failed",
+                          session_id=session_id, step=step, path=cwd, error=error,
+                          recovery_refs=extra["recoveryRefs"])
+                await self._audit_worktree_control(
+                    "session.worktree_discard", identity, via,
+                    {"sessionId": session_id, "outcome": code, "path": cwd,
+                     "branch": branch, "recoveryRefs": extra["recoveryRefs"]})
+                return wc.WorktreeControlError(code, extra)
+
             # ── from here on the refs exist; every failure names them ──
             try:
                 # Closed inline, bounded, as close_session does: the CLI must be gone
-                # before its working directory is.
+                # before its working directory is — one that will not close stops here.
                 driver = await self._teardown_driver_state(session_id)
-                if driver is not None:
-                    await bounded_wait(self._close_automation_driver(driver, session_id),
-                                       timeout=DRIVER_RELEASE_WAIT_S,
-                                       phase=f"worktree.discard.close:{session_id}")
+                if driver is not None and not await bounded_wait(
+                        self._close_automation_driver(driver, session_id),
+                        timeout=DRIVER_RELEASE_WAIT_S,
+                        phase=f"worktree.discard.close:{session_id}"):
+                    raise await failed(wc.WORKTREE_DISCARD_FAILED, "close",
+                                       "the CLI did not close in time")
                 await self.archive_session(session_id, archived_by="user")
+            except wc.WorktreeControlError:
+                raise
             except Exception as exc:
-                log_event(log, logging.WARNING, "session.worktree_discard_failed",
-                          session_id=session_id, step="archive", error=repr(exc),
-                          recovery_refs=refs)
-                raise wc.WorktreeControlError(wc.WORKTREE_DISCARD_FAILED, kept) from exc
-            branch = facts["branch"]
+                raise await failed(wc.WORKTREE_DISCARD_FAILED, "archive",
+                                   repr(exc)) from exc
             removed = await asyncio.to_thread(worktrees.remove_worktree, cwd, True,
                                               session_id=session_id)
             if not removed:
-                log_event(log, logging.WARNING, "session.worktree_discard_failed",
-                          session_id=session_id, step="remove", path=cwd,
-                          recovery_refs=refs)
-                raise wc.WorktreeControlError(wc.WORKTREE_REMOVE_FAILED, kept)
+                raise await failed(wc.WORKTREE_REMOVE_FAILED, "remove")
+            extra = await kept()
+            deleted = (brand.is_session_branch(branch or "") and not await asyncio.to_thread(
+                worktrees.local_branch_exists, repo_top, branch or ""))
             log_event(log, logging.INFO, "session.worktree_discarded", session_id=session_id,
-                      path=cwd, branch=branch, recovery_refs=refs)
-            return {"discarded": True, **kept, "path": cwd, "branch": branch,
-                    "branchDeleted": brand.is_session_branch(branch or "")}
+                      path=cwd, branch=branch, branch_deleted=deleted,
+                      recovery_refs=extra["recoveryRefs"])
+            res = {"discarded": True, **extra, "path": cwd, "branch": branch,
+                   "branchDeleted": deleted}
+            await self._audit_worktree_control(
+                "session.worktree_discard", identity, via,
+                {"sessionId": session_id, "outcome": "discarded", "path": cwd,
+                 "branch": branch, "branchDeleted": deleted,
+                 "recoveryRefs": extra["recoveryRefs"]})
+            return res
 
-    async def repair_worktree(self, session_id: str) -> dict:
+    async def repair_worktree(self, session_id: str, *, identity: str = SYSTEM_IDENTITY,
+                              via: str | None = None) -> dict:
         """Recreate a missing or EMPTY managed worktree from the session's branch, on
         demand (D-19 Repair), through ``_ensure_session_cwd`` — the gate every driver
-        build uses, so its audit, notice and refusals apply unchanged. A present tree,
-        or a path holding anything else, is refused untouched. Returns ``{repaired,
-        path, branch, recoveryRefs}``. ``KeyError`` unknown; ``WorktreeControlError``."""
+        build uses, so its audit, notice and refusals apply unchanged (a refusal it
+        reaches logs at INFO here: a person asked, nothing broke). A present tree, or a
+        path holding anything else, is refused untouched. Returns ``{repaired, path,
+        branch, recoveryRefs}`` and writes ``session.worktree_repair`` here on the
+        owning daemon. ``KeyError`` unknown; ``WorktreeControlError``."""
         from server.sessions import worktree_controls as wc
         rec = self._worktree_record(session_id)
         async with self._worktree_control_slot(session_id, "repair"):
@@ -7025,14 +7092,18 @@ class SessionOrchestrator:
             if facts["state"] not in ("missing", "empty"):
                 raise self._worktree_refusal(session_id, "repair", wc.WORKTREE_NOT_EMPTY)
             cwd = facts["path"] or ""
+            branch = getattr(rec, "branch", None)
             if not await self._ensure_session_cwd(
-                    session_id, cwd, repo=getattr(rec, "repo", None),
-                    branch=getattr(rec, "branch", None), host=getattr(rec, "host", None)):
+                    session_id, cwd, repo=getattr(rec, "repo", None), branch=branch,
+                    host=getattr(rec, "host", None), refusal_level=logging.INFO):
                 raise self._worktree_refusal(session_id, "repair", wc.WORKTREE_REPAIR_FAILED)
             clone_refs: list[str] = []
             if (Path(cwd) / ".git").exists():
                 clone_refs = await asyncio.to_thread(worktrees.recovery_refs, cwd, session_id)
-            return {"repaired": True, "path": cwd, "branch": getattr(rec, "branch", None),
+            await self._audit_worktree_control(
+                "session.worktree_repair", identity, via,
+                {"sessionId": session_id, "path": cwd, "branch": branch})
+            return {"repaired": True, "path": cwd, "branch": branch,
                     "recoveryRefs": clone_refs}
 
     async def _cleanup_session_paths(
@@ -23801,6 +23872,19 @@ class SessionOrchestrator:
             release_task = self._releasing.get(session_id)
             if release_task is not None and release_task is not waited_release:
                 await self._await_driver_release(session_id, release_task)
+
+            # Re-read the record: `rec` was looked up BEFORE `_ensure_lock` and the
+            # swap wait above, and a close / archive / D-19 Discard that ran meanwhile
+            # pops it. Building from the stale copy would resume an ended session and —
+            # its worktree just removed — let _ensure_session_cwd recreate it. (Not a
+            # status test: the assistant idle reap keeps an "ended" record on purpose,
+            # and resuming it is resume-on-reopen.)
+            current = self._records.get(session_id)
+            if current is None:
+                log.info("ensure_driver: session %s ended while this attach waited — "
+                         "not resuming it", session_id)
+                return None
+            rec = current
 
             # Claim the session before spawning anything (#1379). This is the choke
             # point the duplicate-owner bug went through: after a fleet-wide daemon

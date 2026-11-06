@@ -353,3 +353,60 @@ def test_discard_then_force_remove_loses_nothing(repo, tmp_path):
     files = _ls_tree(repo, refs[0])
     assert files["untracked.txt"] == "untracked" and files["work.txt"]
     assert _git("merge-base", "--is-ancestor", tip, refs[1], cwd=repo) == ""
+
+
+# ---------------------------------------------------------------------------
+# fail-closed removal (D-19 fix round 1)
+# ---------------------------------------------------------------------------
+
+S6 = "aaaa0006-1111-2222-3333-444455556666"
+
+
+def _fail_unpushed_check(monkeypatch):
+    real = worktrees._run
+
+    def run(args, *a, **k):
+        if "rev-list" in args and any(str(x).startswith("--exclude=") for x in args):
+            return subprocess.CompletedProcess(args, 128, "", "fatal: simulated")
+        return real(args, *a, **k)
+    monkeypatch.setattr(worktrees, "_run", run)
+
+
+def test_unpushed_check_is_unknown_when_rev_list_fails(repo, tmp_path, monkeypatch):
+    info = _child_session_worktree(repo, tmp_path, S6)
+    _fail_unpushed_check(monkeypatch)
+    assert worktrees._branch_has_unpushed_commits(str(repo), info.branch) is None
+
+
+def test_an_unknown_unpushed_state_keeps_the_branch_on_removal(repo, tmp_path,
+                                                               monkeypatch):
+    """It used to read as "nothing unpushed" and `branch -D` ran anyway."""
+    info = _child_session_worktree(repo, tmp_path, S6)
+    tip = _commit(Path(info.path))
+    _fail_unpushed_check(monkeypatch)
+    assert worktrees.remove_worktree(info.path, session_id=S6)
+    assert _git("rev-parse", f"refs/heads/{info.branch}", cwd=repo) == tip
+
+
+def test_an_unknown_unpushed_state_raises_before_discard(repo, tmp_path, monkeypatch):
+    info = _child_session_worktree(repo, tmp_path, S6)
+    _commit(Path(info.path))
+    _fail_unpushed_check(monkeypatch)
+    with pytest.raises(worktrees.RecoveryUnknown):
+        worktrees.snapshot_before_discard(info.path, S6)
+    assert worktrees.recovery_refs(str(repo), S6) == []
+
+
+def test_a_failed_branch_snapshot_keeps_the_branch(repo, tmp_path, monkeypatch):
+    info = _child_session_worktree(repo, tmp_path, S6)
+    tip = _commit(Path(info.path))
+    monkeypatch.setattr(worktrees, "snapshot_branch_tip", lambda *a, **k: None)
+    assert worktrees.remove_worktree(info.path, session_id=S6)
+    assert _git("rev-parse", f"refs/heads/{info.branch}", cwd=repo) == tip
+
+
+def test_a_failed_forced_snapshot_stops_the_removal(wt, monkeypatch):
+    _dirty(Path(wt.path))
+    monkeypatch.setattr(worktrees, "snapshot_recovery_ref", lambda *a, **k: None)
+    assert worktrees.remove_worktree(wt.path, force=True, session_id=S6) is False
+    assert (Path(wt.path) / "untracked.txt").read_text() == "untracked\n"

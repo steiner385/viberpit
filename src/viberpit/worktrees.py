@@ -1286,23 +1286,39 @@ def snapshot_recovery_ref(worktree: str, session_id: str, *, reason: str) -> str
         return None
 
 
-def _branch_has_unpushed_commits(repo_top: str, branch: str) -> bool:
+def local_branch_exists(repo_path: str, branch: str) -> bool:
+    """Whether ``refs/heads/<branch>`` exists in *repo_path*'s clone."""
+    if not branch:
+        return False
+    return _run(["git", "-C", repo_path, "rev-parse", "--verify", "--quiet",
+                 f"refs/heads/{branch}"]).returncode == 0
+
+
+def _branch_has_unpushed_commits(repo_top: str, branch: str) -> bool | None:
     """True when *branch* holds commits reachable from no remote-tracking ref and no
-    OTHER local branch — work that ``git branch -D`` would leave unreferenced."""
+    OTHER local branch — work that ``git branch -D`` would leave unreferenced. None
+    when git cannot say: every caller must treat that as "at risk, cannot be kept"
+    and keep the branch (it used to read as False, and the branch was deleted)."""
     r = _run(["git", "-C", repo_top, "rev-list", "--count", f"refs/heads/{branch}",
               "--not", "--remotes", f"--exclude={branch}", "--branches"])
     if r.returncode != 0:
-        return False
+        return None
     try:
         return int(r.stdout.strip() or "0") > 0
     except ValueError:
-        return False
+        return None
+
+
+class RecoveryUnknown(Exception):
+    """Whether a removal would lose commits could not be determined (git failed), so
+    nothing may be removed on the assumption that it would not."""
 
 
 def snapshot_branch_tip(repo_top: str, branch: str, session_id: str) -> str | None:
     """Before a session branch is deleted, keep its tip as
     ``refs/viberpit/recovery/<short-sid>/<ts>-branch`` iff it has unpushed commits.
-    Never raises."""
+    None also when that cannot be determined — callers that delete the branch check
+    ``_branch_has_unpushed_commits`` themselves first. Never raises."""
     try:
         if not _branch_has_unpushed_commits(repo_top, branch):
             return None
@@ -1337,7 +1353,8 @@ def snapshot_before_discard(worktree: str, session_id: str) -> list[str] | None:
     A user's own branch is never deleted, so its commits are not at risk. Returns the
     refs now holding the work (dirty tree first), ``[]`` when nothing would be lost,
     or None when something WOULD be lost and could not be kept, or the tree could not
-    be read — the caller must then refuse the discard. Fails closed; never raises.
+    be read — the caller must then refuse the discard. Raises ``RecoveryUnknown`` when
+    git cannot say whether commits would be lost (also a refusal). Fails closed.
     """
     try:
         if not os.path.isdir(worktree):
@@ -1358,7 +1375,10 @@ def snapshot_before_discard(worktree: str, session_id: str) -> list[str] | None:
             refs.append(ref)
         branch = current_branch(worktree)
         if branch is not None and brand.is_session_branch(branch):
-            if _branch_has_unpushed_commits(repo_top, branch):
+            at_risk = _branch_has_unpushed_commits(repo_top, branch)
+            if at_risk is None:
+                raise RecoveryUnknown(f"unpushed commits on {branch} unknown")
+            if at_risk:
                 ref = snapshot_branch_tip(repo_top, branch, session_id)
                 if ref is None:
                     return None
@@ -1367,7 +1387,7 @@ def snapshot_before_discard(worktree: str, session_id: str) -> list[str] | None:
             orphan = _git_timed(["git", "-C", repo_top, "rev-list", "--count", head,
                                  "--not", "--remotes", "--branches"])
             if orphan.returncode != 0:
-                return None
+                raise RecoveryUnknown("commits on the detached HEAD unknown")
             if int(orphan.stdout.strip() or "0") > 0:
                 ref = (_kept_ref_matching(repo_top, session_id, "", head)
                        or _write_recovery_ref(repo_top, session_id, head, RECOVERY_DISCARD))
@@ -1375,6 +1395,8 @@ def snapshot_before_discard(worktree: str, session_id: str) -> list[str] | None:
                     return None
                 refs.append(ref)
         return list(dict.fromkeys(refs))
+    except RecoveryUnknown:
+        raise
     except Exception:
         log.warning("worktree.discard_snapshot_failed session=%s path=%s",
                     session_id, worktree, exc_info=True)
@@ -1437,7 +1459,9 @@ def remove_worktree(worktree_path: str, force: bool = False, *,
     removal of a dirty tree snapshots it, and a session branch about to be
     ``branch -D``'d keeps its tip when it holds unpushed commits. *session_id*
     names the refs; it defaults to the worktree's directory name (the session's
-    short id, which is how managed worktrees are named).
+    short id, which is how managed worktrees are named). Both fail closed: a dirty tree
+    whose snapshot fails is not removed (False), and a branch whose unpushed state
+    is unknown, or whose tip could not be kept, is not deleted.
 
     Every ``False`` leaves a journal line naming why.  The two pre-flight
     refusals below used to return silently, which is what made the janitor's
@@ -1478,8 +1502,10 @@ def remove_worktree(worktree_path: str, force: bool = False, *,
         log.info("worktree.keep_dirty path=%s", wt)
         return False
     sid = session_id or os.path.basename(wt.rstrip("/"))
-    if is_dirty:
-        snapshot_recovery_ref(wt, sid, reason=RECOVERY_FORCED)
+    if is_dirty and snapshot_recovery_ref(wt, sid, reason=RECOVERY_FORCED) is None:
+        # No copy of the dirty tree exists: a forced removal would destroy the only one.
+        log.info("worktree.keep_dirty path=%s reason=snapshot_failed", wt)
+        return False
 
     branch_r = _run(["git", "-C", wt, "rev-parse", "--abbrev-ref", "HEAD"])
     branch = branch_r.stdout.strip() if branch_r.returncode == 0 else ""
@@ -1502,8 +1528,18 @@ def remove_worktree(worktree_path: str, force: bool = False, *,
     # prefix would leak every legacy child branch into the clone permanently.
     # `remove` already deregisters this worktree; no global prune (it could reap a
     # sibling session's live worktree — #177).
+    # The branch is deleted only when nothing on it would be lost: no unpushed commits,
+    # or their tip is kept as a recovery ref. Unknown (git failed) or a failed snapshot
+    # keeps the branch — it used to be deleted either way.
     if brand.is_session_branch(branch):
-        snapshot_branch_tip(repo_top, branch, sid)
-        _run(["git", "-C", repo_top, "branch", "-D", branch])
+        at_risk = _branch_has_unpushed_commits(repo_top, branch)
+        if at_risk is None:
+            log.info("worktree.keep_branch path=%s branch=%s reason=unpushed_unknown",
+                     wt, branch)
+        elif at_risk and snapshot_branch_tip(repo_top, branch, sid) is None:
+            log.warning("worktree.keep_branch path=%s branch=%s reason=snapshot_failed",
+                        wt, branch)
+        else:
+            _run(["git", "-C", repo_top, "branch", "-D", branch])
     log.info("worktree.remove path=%s branch=%s force=%s", wt, branch, force)
     return True

@@ -206,13 +206,14 @@ def _worktree_action_error(exc) -> ActionError:
                        wc.http_status(exc.code), extra=dict(exc.extra) or None)
 
 
-async def discard_worktree(orch, db, *, session_id: str, confirm: bool, identity: str,
+async def discard_worktree(orch, *, session_id: str, confirm: bool, identity: str,
                            via: str | None) -> dict:
     """End the session and remove its worktree (D-19 Discard), on the daemon that owns
     it, after its dirty tree and unpushed commits are kept as recovery refs. Person-only
-    and confirmed. Audited ``session.worktree_discard`` — also when the session was
-    archived but the removal failed, since the refs exist then. A refusal is logged at
-    INFO by the daemon and becomes an ActionError carrying its code."""
+    and confirmed. The owning daemon writes ``session.worktree_discard`` (it alone sees
+    an outcome whose edge went away mid-call), so *identity*/*via* travel with the
+    call and nothing is audited here. A refusal is logged at INFO by the daemon and
+    becomes an ActionError carrying its code."""
     from server.sessions import worktree_controls as wc
     require_human(identity, via, action="discard a session's worktree",
                   code=SESSION_CONTROL_HUMAN_ONLY_CODE)
@@ -222,36 +223,23 @@ async def discard_worktree(orch, db, *, session_id: str, confirm: bool, identity
         raise ActionError(wc.WORKTREE_CONFIRM_REQUIRED,
                           wc.MESSAGES[wc.WORKTREE_CONFIRM_REQUIRED], 400)
     try:
-        res = await orch.discard_worktree(session_id)
+        return await orch.discard_worktree(session_id, identity=identity, via=via)
     except wc.WorktreeControlError as exc:
-        if exc.code in (wc.WORKTREE_REMOVE_FAILED, wc.WORKTREE_DISCARD_FAILED):
-            await _audit(db, "session.worktree_discard", identity,
-                         {"sessionId": session_id, "outcome": exc.code,
-                          "recoveryRefs": exc.extra.get("recoveryRefs") or []}, via)
         raise _worktree_action_error(exc) from exc
-    await _audit(db, "session.worktree_discard", identity,
-                 {"sessionId": session_id, "outcome": "discarded", "path": res.get("path"),
-                  "branch": res.get("branch"), "branchDeleted": res.get("branchDeleted"),
-                  "recoveryRefs": res.get("recoveryRefs") or []}, via)
-    return res
 
 
-async def repair_worktree(orch, db, *, session_id: str, identity: str,
+async def repair_worktree(orch, *, session_id: str, identity: str,
                           via: str | None) -> dict:
     """Recreate a missing or empty managed worktree from its branch (D-19 Repair), on
-    the daemon that owns the session. Person-only; audited ``session.worktree_repair``
-    (the daemon also writes its own ``session.worktree_recreated``)."""
+    the daemon that owns the session. Person-only; the daemon writes
+    ``session.worktree_repair`` (and its own ``session.worktree_recreated``)."""
     from server.sessions import worktree_controls as wc
     require_human(identity, via, action="repair a session's worktree",
                   code=SESSION_CONTROL_HUMAN_ONLY_CODE)
     try:
-        res = await orch.repair_worktree(session_id)
+        return await orch.repair_worktree(session_id, identity=identity, via=via)
     except wc.WorktreeControlError as exc:
         raise _worktree_action_error(exc) from exc
-    await _audit(db, "session.worktree_repair", identity,
-                 {"sessionId": session_id, "path": res.get("path"),
-                  "branch": res.get("branch")}, via)
-    return res
 
 
 RULE_HUMAN_ONLY_CODE = "RULES_HUMAN_ONLY"

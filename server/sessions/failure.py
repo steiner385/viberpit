@@ -258,16 +258,14 @@ _CODEX_CARD_KINDS: dict[str, str] = {
 ERROR_KINDS: tuple[str, ...] = ("rate_limit", "overloaded", "context_too_long",
                                 "model_unavailable", "other")
 
-# ``context_too_long`` is matched on the CLI's own wording only (CLI 2.1.318,
-# byte-grepped): its API-error text starts with ``WF = "Prompt is too long"`` (bare,
-# ``: …``, or ``· automatic compaction failed: …``); the API body it parses is
-# ``/^prompt is too long: \d+ tokens > \d+ maximum$/``; its error table also names
-# "Input is too long for requested model" ("either status": a 400 or a 413). A
-# sentence that merely mentions a long prompt never qualifies.
-_CONTEXT_SENTENCE = re.compile(
-    r"(?:prompt is too long|input is too long for requested model)(?:$|[\s:.·])",
-    re.IGNORECASE)
-_CONTEXT_API_BODY = re.compile(r"prompt is too long: \d+ tokens > \d+ maximum", re.IGNORECASE)
+# ``context_too_long`` uses the CLI's own test (2.1.318, byte-grepped):
+# ``e.toLowerCase().includes("prompt is too long") || …includes("input is too long
+# for requested model")``, anywhere in the text, so a wrapped envelope ("API Error: 400
+# {…"message":"prompt is too long: N tokens > M maximum"…}") qualifies too. Only on the
+# codes an API refusal arrives with: a 400 or a 413 ("either status", per the CLI's
+# error table) or an error result with no status. ``execution_error`` is not one: the
+# CLI writes ``error_during_execution`` for startup failures and interrupts.
+_CONTEXT_PHRASES = ("prompt is too long", "input is too long for requested model")
 _CONTEXT_CODES = frozenset({"api_400", "api_413", "agent_error"})
 
 # ``model_unavailable``: a 404, or the CLI's sentence for a model the account cannot
@@ -279,11 +277,8 @@ _MODEL_MISSING_SENTENCE = re.compile(
 
 
 def _is_context_too_long(code: str, text: str) -> bool:
-    if code not in _CONTEXT_CODES:
-        return False
-    stripped = text.strip()
-    return (_CONTEXT_SENTENCE.match(stripped) is not None
-            or _CONTEXT_API_BODY.search(stripped) is not None)
+    low = text.lower()
+    return code in _CONTEXT_CODES and any(p in low for p in _CONTEXT_PHRASES)
 
 
 def error_kind(code: str | None, message: str = "") -> str:

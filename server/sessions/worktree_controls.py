@@ -23,6 +23,7 @@ WORKTREE_NOT_MANAGED = "WORKTREE_NOT_MANAGED"
 WORKTREE_MISSING = "WORKTREE_MISSING"
 WORKTREE_SHARED = "WORKTREE_SHARED"
 WORKTREE_SNAPSHOT_FAILED = "WORKTREE_SNAPSHOT_FAILED"
+WORKTREE_DISCARD_UNSAFE = "WORKTREE_DISCARD_UNSAFE"
 WORKTREE_DISCARD_FAILED = "WORKTREE_DISCARD_FAILED"
 WORKTREE_REMOVE_FAILED = "WORKTREE_REMOVE_FAILED"
 WORKTREE_PRESENT = "WORKTREE_PRESENT"
@@ -32,8 +33,8 @@ WORKTREE_REPAIR_FAILED = "WORKTREE_REPAIR_FAILED"
 #: Every code a daemon may raise; a remote edge rebuilds only these.
 WORKTREE_CONTROL_CODES: frozenset[str] = frozenset({
     WORKTREE_SESSION_BUSY, WORKTREE_NOT_MANAGED, WORKTREE_MISSING, WORKTREE_SHARED,
-    WORKTREE_SNAPSHOT_FAILED, WORKTREE_DISCARD_FAILED, WORKTREE_REMOVE_FAILED,
-    WORKTREE_PRESENT, WORKTREE_NOT_EMPTY, WORKTREE_REPAIR_FAILED,
+    WORKTREE_SNAPSHOT_FAILED, WORKTREE_DISCARD_UNSAFE, WORKTREE_DISCARD_FAILED,
+    WORKTREE_REMOVE_FAILED, WORKTREE_PRESENT, WORKTREE_NOT_EMPTY, WORKTREE_REPAIR_FAILED,
 })
 
 #: Failures after the recovery refs were written: the refs are kept and returned.
@@ -52,6 +53,9 @@ MESSAGES: dict[str, str] = {
     WORKTREE_SHARED: "Another session runs in this worktree, so it cannot be removed.",
     WORKTREE_SNAPSHOT_FAILED: "The worktree's changes could not be saved to a recovery "
                               "ref, so nothing was discarded.",
+    WORKTREE_DISCARD_UNSAFE: "Git could not tell whether removing the worktree would lose "
+                             "commits, so nothing was discarded. Try again, or push the "
+                             "branch first.",
     WORKTREE_DISCARD_FAILED: "The session could not be ended. Its changes are saved in "
                              "the recovery refs listed.",
     WORKTREE_REMOVE_FAILED: "The session was archived, but its worktree could not be "

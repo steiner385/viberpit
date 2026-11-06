@@ -1137,13 +1137,13 @@ class RemoteOrchestrator:
                 raise KeyError(exc.message) from exc
             raise
 
-    async def _worktree_control(self, method: str, session_id) -> dict:
+    async def _worktree_control(self, method: str, session_id, **kwargs) -> dict:
         """Discard / Repair (D-19) on the owning daemon. An unknown session is re-raised
         as KeyError and a refusal as WorktreeControlError with the envelope's code and
         extras (known codes only); anything else stays a DaemonError."""
         try:
             return await self._client.call(method, timeout=WORKTREE_CONTROL_RPC_TIMEOUT,
-                                           session_id=session_id)
+                                           session_id=session_id, **kwargs)
         except DaemonError as exc:
             if exc.err_type == "KeyError":
                 raise KeyError(exc.message) from exc
@@ -1154,11 +1154,17 @@ class RemoteOrchestrator:
                 raise worktree_controls.WorktreeControlError(code, data) from exc
             raise
 
-    async def discard_worktree(self, session_id) -> dict:
-        return await self._worktree_control("discard_worktree", session_id)
+    async def discard_worktree(self, session_id, *, identity: str = SYSTEM_IDENTITY,
+                               via: str | None = None) -> dict:
+        """The verified caller travels with the call: the owning daemon writes the audit
+        row, because a discard it finishes after this edge is gone has no other writer."""
+        return await self._worktree_control("discard_worktree", session_id,
+                                            identity=identity, via=via)
 
-    async def repair_worktree(self, session_id) -> dict:
-        return await self._worktree_control("repair_worktree", session_id)
+    async def repair_worktree(self, session_id, *, identity: str = SYSTEM_IDENTITY,
+                              via: str | None = None) -> dict:
+        return await self._worktree_control("repair_worktree", session_id,
+                                            identity=identity, via=via)
 
     async def fork_session(self, session_id, *, at_turn_id: str | None, mode: str,
                            request_id: str, prefill: str | None = None,

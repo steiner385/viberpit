@@ -457,21 +457,24 @@ def test_repair_without_the_branch_fails_and_fabricates_nothing(env):
 class _Orch:
     def __init__(self, error: Exception | None = None):
         self.calls: list[tuple[str, str]] = []
+        self.callers: list[tuple[str, str | None]] = []
         self.error = error
 
     async def worktree_preflight(self, sid):
         self.calls.append(("preflight", sid))
         return {"sessionId": sid}
 
-    async def discard_worktree(self, sid):
+    async def discard_worktree(self, sid, *, identity, via):
         self.calls.append(("discard", sid))
+        self.callers.append((identity, via))
         if self.error is not None:
             raise self.error
         return {"discarded": True, "recoveryRefs": ["refs/x"], "restoreCommand": "r",
                 "path": "/p", "branch": "viberpit/b", "branchDeleted": True}
 
-    async def repair_worktree(self, sid):
+    async def repair_worktree(self, sid, *, identity, via):
         self.calls.append(("repair", sid))
+        self.callers.append((identity, via))
         if self.error is not None:
             raise self.error
         return {"repaired": True, "path": "/p", "branch": "b", "recoveryRefs": []}
@@ -492,10 +495,10 @@ def test_every_control_is_person_only(call, identity, via):
             await session_actions.worktree_preflight(orch, session_id=SID, identity=identity,
                                                      via=via)
         elif call == "discard":
-            await session_actions.discard_worktree(orch, None, session_id=SID, confirm=True,
+            await session_actions.discard_worktree(orch, session_id=SID, confirm=True,
                                                    identity=identity, via=via)
         else:
-            await session_actions.repair_worktree(orch, None, session_id=SID,
+            await session_actions.repair_worktree(orch, session_id=SID,
                                                   identity=identity, via=via)
 
     with pytest.raises(ActionError) as ei:
@@ -508,7 +511,7 @@ def test_discard_needs_confirm(caplog):
     orch = _Orch()
 
     async def run():
-        await session_actions.discard_worktree(orch, None, session_id=SID, confirm=False,
+        await session_actions.discard_worktree(orch, session_id=SID, confirm=False,
                                                identity="u@x", via=None)
 
     with caplog.at_level("INFO"), pytest.raises(ActionError) as ei:
@@ -521,6 +524,7 @@ def test_discard_needs_confirm(caplog):
     (wc.WORKTREE_SESSION_BUSY, 409), (wc.WORKTREE_NOT_MANAGED, 409),
     (wc.WORKTREE_MISSING, 409), (wc.WORKTREE_SHARED, 409),
     (wc.WORKTREE_SNAPSHOT_FAILED, 500), (wc.WORKTREE_DISCARD_FAILED, 500),
+    (wc.WORKTREE_DISCARD_UNSAFE, 409),
     (wc.WORKTREE_REMOVE_FAILED, 500), (wc.WORKTREE_PRESENT, 409),
     (wc.WORKTREE_NOT_EMPTY, 409), (wc.WORKTREE_REPAIR_FAILED, 409),
 ])
@@ -541,7 +545,9 @@ def _route_client(error: Exception | None = None):
     return client, orch
 
 
-def test_discard_route_runs_and_audits():
+def test_discard_route_hands_the_caller_to_the_daemon_and_writes_no_audit():
+    """One writer: the owning daemon audits (it sees outcomes the edge never does), so
+    the edge passes the verified caller along and writes nothing itself."""
     client, orch = _route_client()
     with patch.dict(os.environ, _ENV), client:
         r = client.post(f"/api/sessions/{SID}/worktree/discard", json={"confirm": True},
@@ -550,10 +556,8 @@ def test_discard_route_runs_and_audits():
     assert r.status_code == 200, r.text
     assert r.json()["recoveryRefs"] == ["refs/x"]
     assert orch.calls == [("discard", SID)]
-    audits = [e[2] for e in events if e[0] == "session.worktree_discard"]
-    assert audits == [{"sessionId": SID, "outcome": "discarded", "path": "/p",
-                       "branch": "viberpit/b", "branchDeleted": True,
-                       "recoveryRefs": ["refs/x"]}]
+    assert orch.callers[0][0] == "testuser@example.com"
+    assert not [e for e in events if e[0] == "session.worktree_discard"]
 
 
 def test_discard_route_without_confirm_is_400():
@@ -565,7 +569,7 @@ def test_discard_route_without_confirm_is_400():
     assert orch.calls == []
 
 
-def test_discard_route_failure_after_snapshot_names_the_refs_and_audits():
+def test_discard_route_failure_after_snapshot_names_the_refs():
     err = wc.WorktreeControlError(wc.WORKTREE_REMOVE_FAILED,
                                   {"recoveryRefs": ["refs/a"], "restoreCommand": "r"})
     client, _ = _route_client(err)
@@ -577,8 +581,7 @@ def test_discard_route_failure_after_snapshot_names_the_refs_and_audits():
     detail = r.json()["detail"]
     assert detail["code"] == wc.WORKTREE_REMOVE_FAILED
     assert detail["recoveryRefs"] == ["refs/a"] and detail["restoreCommand"] == "r"
-    assert [e[2]["outcome"] for e in events if e[0] == "session.worktree_discard"] == [
-        wc.WORKTREE_REMOVE_FAILED]
+    assert not [e for e in events if e[0] == "session.worktree_discard"]
 
 
 def test_discard_route_refusal_writes_no_audit():
@@ -591,15 +594,15 @@ def test_discard_route_refusal_writes_no_audit():
     assert not [e for e in events if e[0] == "session.worktree_discard"]
 
 
-def test_repair_route_runs_and_audits():
+def test_repair_route_hands_the_caller_to_the_daemon_and_writes_no_audit():
     client, orch = _route_client()
     with patch.dict(os.environ, _ENV), client:
         r = client.post(f"/api/sessions/{SID}/worktree/repair", headers=_H)
         events = client.portal.call(_audit_events)
     assert r.status_code == 200, r.text
     assert orch.calls == [("repair", SID)]
-    assert [e[2] for e in events if e[0] == "session.worktree_repair"] == [
-        {"sessionId": SID, "path": "/p", "branch": "b"}]
+    assert orch.callers[0][0] == "testuser@example.com"
+    assert not [e for e in events if e[0] == "session.worktree_repair"]
 
 
 def test_preflight_route():
@@ -662,11 +665,13 @@ async def test_remote_forwards_and_rebuilds_refusals_with_their_refs():
     client = _RecordingClient(result={"ok": 1})
     ro = RemoteOrchestrator(client)
     await ro.worktree_preflight(SID)
-    await ro.discard_worktree(SID)
-    await ro.repair_worktree(SID)
+    await ro.discard_worktree(SID, identity="u@x", via="tailnet")
+    await ro.repair_worktree(SID, identity="u@x", via="tailnet")
     assert [c[0] for c in client.calls] == ["worktree_preflight", "discard_worktree",
                                            "repair_worktree"]
-    assert all(c[1] == {"session_id": SID} for c in client.calls)
+    assert client.calls[0][1] == {"session_id": SID}
+    assert all(c[1] == {"session_id": SID, "identity": "u@x", "via": "tailnet"}
+               for c in client.calls[1:])
     with pytest.raises(wc.WorktreeControlError) as ei:
         await RemoteOrchestrator(_RecordingClient(error=DaemonError(
             "WorktreeControlError", wc.WORKTREE_REMOVE_FAILED,
@@ -690,7 +695,7 @@ async def test_a_refusal_crosses_the_real_daemon_envelope(tmp_path):
     from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 
     class _O(SessionOrchestrator):
-        async def discard_worktree(self, session_id):
+        async def discard_worktree(self, session_id, *, identity="system", via=None):
             raise wc.WorktreeControlError(wc.WORKTREE_REMOVE_FAILED,
                                           {"recoveryRefs": ["refs/a"]})
 
@@ -727,11 +732,11 @@ async def test_fleet_routes_to_the_owner_and_blocks_mutations_during_a_move():
             self.calls.append("preflight")
             return {"host": self.name}
 
-        async def discard_worktree(self, sid):
+        async def discard_worktree(self, sid, **kw):
             self.calls.append("discard")
             return {"host": self.name}
 
-        async def repair_worktree(self, sid):
+        async def repair_worktree(self, sid, **kw):
             self.calls.append("repair")
             return {"host": self.name}
 
@@ -760,3 +765,288 @@ async def test_fleet_routes_to_the_owner_and_blocks_mutations_during_a_move():
     assert rocky.calls == ["preflight", "discard", "repair", "preflight"]
     adapter = InProcessOrchestratorAdapter(dobby)  # type: ignore[arg-type]
     assert (await adapter.discard_worktree(SID))["host"] == "dobby"
+
+
+# ── fix round 1 ──────────────────────────────────────────────────────────────
+
+import logging  # noqa: E402
+import threading  # noqa: E402
+
+import server.sessions.orchestrator as orch_mod  # noqa: E402
+
+
+async def _audits(type_: str) -> list[tuple[str, dict, str | None]]:
+    async with db_session() as db:
+        rows = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == type_))).scalars().all()
+        return [(r.identity, r.detail, r.via) for r in rows]
+
+
+def _block_snapshot(monkeypatch):
+    """Hold snapshot_before_discard (it runs in a worker thread) until released, so a
+    test can act while the discard holds the session's slot."""
+    started, release = threading.Event(), threading.Event()
+    real = worktrees.snapshot_before_discard
+
+    def slow(*a, **k):
+        started.set()
+        release.wait(10)
+        return real(*a, **k)
+    monkeypatch.setattr(worktrees, "snapshot_before_discard", slow)
+    return started, release
+
+
+async def _until(pred, timeout: float = 10.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        got = await pred()
+        if got:
+            return got
+        await asyncio.sleep(0.05)
+    return await pred()
+
+
+def test_the_daemon_audits_a_discard_whose_rpc_was_cut(env, monkeypatch):
+    """Item 1: the edge's call is cancelled mid-discard (restart, dropped RPC). The
+    discard runs to completion on the daemon, and the daemon writes the row."""
+    _dirty_and_commit(env)
+    started, release = _block_snapshot(monkeypatch)
+
+    async def run():
+        orch = await _orch(env)
+        call = asyncio.create_task(orch.discard_worktree(SID, identity="u@x",
+                                                         via="tailnet"))
+        await asyncio.to_thread(started.wait, 10)
+        call.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        return await _until(lambda: _audits("session.worktree_discard"))
+
+    rows = asyncio.run(run())
+    assert len(rows) == 1
+    identity, detail, via = rows[0]
+    assert identity == "u@x" and via == "tailnet" and detail["outcome"] == "discarded"
+    assert len(detail["recoveryRefs"]) == 2
+    assert not Path(env["cwd"]).exists()
+
+
+def test_the_daemon_audits_every_discard_outcome_after_the_snapshot(env, monkeypatch):
+    _dirty_and_commit(env)
+    monkeypatch.setattr(worktrees, "remove_worktree", lambda *a, **k: False)
+
+    async def run():
+        orch = await _orch(env)
+        with pytest.raises(wc.WorktreeControlError):
+            await orch.discard_worktree(SID, identity="u@x", via=None)
+        return await _audits("session.worktree_discard")
+
+    rows = asyncio.run(run())
+    assert [r[1]["outcome"] for r in rows] == [wc.WORKTREE_REMOVE_FAILED]
+    assert len(rows[0][1]["recoveryRefs"]) == 2
+
+
+def test_a_discard_refusal_writes_no_audit(env):
+    async def run():
+        orch = await _orch(env, status="in_progress")
+        with pytest.raises(wc.WorktreeControlError):
+            await orch.discard_worktree(SID, identity="u@x", via=None)
+        return await _audits("session.worktree_discard")
+
+    assert asyncio.run(run()) == []
+
+
+def test_the_daemon_audits_a_repair(env):
+    shutil.rmtree(env["cwd"])
+
+    async def run():
+        orch = await _orch(env)
+        await orch.repair_worktree(SID, identity="u@x", via="tailnet")
+        return await _audits("session.worktree_repair")
+
+    rows = asyncio.run(run())
+    assert rows == [("u@x", {"sessionId": SID, "path": env["cwd"],
+                             "branch": env["branch"]}, "tailnet")]
+
+
+def _fail_unpushed_check(monkeypatch):
+    """Make the `rev-list --count … --exclude=<branch> --branches` probe fail."""
+    real = worktrees._run
+
+    def run(args, *a, **k):
+        if "rev-list" in args and any(str(x).startswith("--exclude=") for x in args):
+            return subprocess.CompletedProcess(args, 128, "", "fatal: simulated")
+        return real(args, *a, **k)
+    monkeypatch.setattr(worktrees, "_run", run)
+
+
+def test_an_unknown_unpushed_state_refuses_the_discard_and_keeps_the_branch(
+        env, monkeypatch, caplog):
+    """Item 2: rev-list fails → "unknown", never "nothing at risk"."""
+    _dirty_and_commit(env)
+    _fail_unpushed_check(monkeypatch)
+
+    async def run():
+        orch = await _orch(env)
+        await orch.discard_worktree(SID)
+
+    with caplog.at_level("INFO"), pytest.raises(wc.WorktreeControlError) as ei:
+        asyncio.run(run())
+    assert ei.value.code == wc.WORKTREE_DISCARD_UNSAFE
+    assert _branch_exists(env["clone"], env["branch"])
+    assert (Path(env["cwd"]) / "untracked.txt").exists()
+    assert _row_status() != "archived"
+    refused = [r for r in caplog.records if "worktree_discard_refused" in r.getMessage()]
+    assert refused and all(r.levelno == logging.INFO for r in refused)
+
+
+def test_a_cli_that_will_not_close_stops_the_discard(env, monkeypatch):
+    """Item 4: the worktree is never removed under a live CLI."""
+    _dirty_and_commit(env)
+    monkeypatch.setattr(orch_mod, "DRIVER_RELEASE_WAIT_S", 0.2)
+
+    class _Idle:
+        turn_active = drain_alive = awaiting_user_input = False
+        engine_session_id = None
+
+    async def run():
+        orch = await _orch(env)
+        orch._drivers[SID] = _Idle()
+
+        async def never(*a, **k):
+            await asyncio.sleep(3600)
+        monkeypatch.setattr(orch, "_close_automation_driver", never)
+        with pytest.raises(wc.WorktreeControlError) as ei:
+            await orch.discard_worktree(SID, identity="u@x", via=None)
+        return ei.value, await _audits("session.worktree_discard")
+
+    err, rows = asyncio.run(run())
+    assert err.code == wc.WORKTREE_DISCARD_FAILED
+    assert len(err.extra["recoveryRefs"]) == 2
+    assert (Path(env["cwd"]) / "untracked.txt").exists()
+    assert _branch_exists(env["clone"], env["branch"])
+    assert _row_status() != "archived"
+    assert [r[1]["outcome"] for r in rows] == [wc.WORKTREE_DISCARD_FAILED]
+
+
+def test_recovery_refs_are_re_read_after_the_removal(env, monkeypatch):
+    """Item 5: the response names every ref the session has — here the removal's own
+    ``forced`` snapshot, which the discard snapshot (stubbed) did not write."""
+    (Path(env["cwd"]) / "late.txt").write_text("written after the snapshot\n")
+    monkeypatch.setattr(worktrees, "snapshot_before_discard", lambda *a, **k: [])
+
+    async def run():
+        orch = await _orch(env)
+        res = await orch.discard_worktree(SID, identity="u@x", via=None)
+        return res, await _audits("session.worktree_discard")
+
+    res, rows = asyncio.run(run())
+    refs = res["recoveryRefs"]
+    assert len(refs) == 1 and refs[0].endswith("-forced")
+    assert "late.txt" in _git("ls-tree", "-r", "--name-only", refs[0], cwd=env["clone"])
+    assert res["restoreCommand"] == worktrees.restore_command(refs[0])
+    assert rows[0][1]["recoveryRefs"] == refs
+
+
+def test_a_repair_refusal_logs_at_info(env, caplog):
+    """Item 6: a person's Repair that cannot recreate the tree is expected, not filed."""
+    shutil.rmtree(env["cwd"])
+
+    async def run():
+        orch = await _orch(env, branch="gone-branch")
+        await orch.repair_worktree(SID)
+
+    with caplog.at_level("INFO"), pytest.raises(wc.WorktreeControlError):
+        asyncio.run(run())
+    missing = [r for r in caplog.records if "worktree.missing" in r.getMessage()]
+    assert missing and all(r.levelno == logging.INFO for r in missing)
+
+
+@pytest.fixture
+def user_env(tmp_path):
+    """A session worktree directly on the user's own branch `feature` (not checked out
+    in the clone, so no session child branch is made)."""
+    root = tmp_path / "root"
+    clone = gitrepos.clone_path(str(root), REPO)
+    clone.parent.mkdir(parents=True)
+    subprocess.run(["git", "init", str(clone), "-b", "main"], check=True, capture_output=True)
+    _git("config", "user.email", "t@example.com", cwd=clone)
+    _git("config", "user.name", "Test", cwd=clone)
+    (clone / "README.md").write_text("hi\n")
+    _git("add", "-A", cwd=clone)
+    _git("commit", "-m", "init", cwd=clone)
+    _git("branch", "feature", cwd=clone)
+    info = worktrees.create_worktree(str(clone), "feature", SID, str(root))
+    assert not info.is_child and info.branch == "feature"
+    return {"root": root, "clone": clone, "cwd": info.path, "branch": "feature",
+            "db_url": f"sqlite+aiosqlite:///{tmp_path / 'test.db'}", "tmp": tmp_path}
+
+
+def test_discard_on_a_user_branch_keeps_the_branch(user_env):
+    """Item 7: the user's own branch is never deleted."""
+    cwd = Path(user_env["cwd"])
+    (cwd / "work.txt").write_text("x\n")
+    _git("add", "-A", cwd=cwd)
+    _git("-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "w", cwd=cwd)
+    tip = _git("rev-parse", "HEAD", cwd=cwd)
+
+    async def run():
+        orch = await _orch(user_env)
+        return await orch.discard_worktree(SID)
+
+    res = asyncio.run(run())
+    assert res["discarded"] is True and res["branchDeleted"] is False
+    assert res["branch"] == "feature"
+    assert _branch_exists(user_env["clone"], "feature")
+    assert _git("rev-parse", "feature", cwd=user_env["clone"]) == tip
+    assert not cwd.exists()
+
+
+def test_a_prompt_during_the_discard_is_refused_cleanly(env, monkeypatch):
+    """Item 7: a prompt that lands while the discard holds the slot is not delivered."""
+    started, release = _block_snapshot(monkeypatch)
+
+    async def run():
+        orch = await _orch(env)
+        discard = asyncio.create_task(orch.discard_worktree(SID))
+        await asyncio.to_thread(started.wait, 10)
+        prompt = asyncio.create_task(orch.send_prompt(SID, "hello"))
+        await asyncio.sleep(0.1)
+        release.set()
+        return await discard, await prompt, orch
+
+    res, sent, orch = asyncio.run(run())
+    assert res["discarded"] is True
+    assert sent != "sent"
+    assert SID not in orch._drivers
+    assert not Path(env["cwd"]).exists()
+
+
+def test_an_attach_waiting_out_the_discard_never_recreates_the_worktree(user_env):
+    """Item 8: an ensure_driver that looked the record up before the discard took the
+    slot (then queued on _ensure_lock) must not resume the archived session — on a
+    user branch _ensure_session_cwd would recreate the removed tree."""
+    env = user_env
+    env["cfg"] = env["tmp"] / "cfg"
+    env["cfg"].mkdir()
+
+    async def run():
+        orch = await _orch(env)
+        await orch._ensure_lock.acquire()
+        attach = asyncio.create_task(orch.ensure_driver(SID))
+        await asyncio.sleep(0.2)          # past its pre-lock checks, queued on the lock
+        assert not attach.done()
+        res = await orch.discard_worktree(SID)
+        orch._ensure_lock.release()
+        drv = await attach
+        if drv is not None:
+            orch._drivers.pop(SID, None)
+            await drv.aclose()
+        return res, drv
+
+    with patch("server.sessions.orchestrator.compose", return_value=env["cfg"]), \
+         patch("server.sessions.orchestrator.configdir"):
+        res, drv = asyncio.run(run())
+    assert res["discarded"] is True
+    assert drv is None
+    assert not Path(env["cwd"]).exists(), "the discarded worktree was recreated"

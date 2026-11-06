@@ -47,8 +47,13 @@ CLI_MODEL_MISSING = ("There's an issue with the selected model (claude-nope-9). 
                 f'"message":"{API_PROMPT_TOO_LONG}"}}}}', "context_too_long"),
     # An error result with no status whose text IS the CLI sentence.
     ("agent_error", CLI_PROMPT_TOO_LONG, "context_too_long"),
-    # Strict: prose that merely mentions a long prompt is not the condition.
-    ("api_400", "The prompt is too long to summarize nicely, try again", "other"),
+    # The CLI's own rule: a case-insensitive substring, anywhere in the text.
+    ("api_400", 'API Error: 413 {"error":{"message":"Input is too long for requested '
+                'model."}}', "context_too_long"),
+    ("api_413", "Request failed: PROMPT IS TOO LONG", "context_too_long"),
+    # Only on the codes an API refusal arrives with.
+    ("api_429", "prompt is too long", "rate_limit"),
+    ("execution_error", "prompt is too long", "other"),
     ("api_400", "messages.3.content: text is too long", "other"),
     ("api_400", "The model API returned an error (HTTP 400).", "other"),
     ("driver_error", "RuntimeError: prompt is too long somewhere", "other"),
