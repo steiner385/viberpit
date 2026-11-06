@@ -27,6 +27,15 @@ describe('CopyablePath', () => {
     )
   })
 
+  it('announces the copy through a polite live region', async () => {
+    render(<CopyablePath text="foo.py" />)
+    const region = document.querySelector('[aria-live="polite"]')!
+    expect(region).toHaveClass('sr-only')
+    expect(region).toHaveTextContent('')
+    fireEvent.click(screen.getByText('foo.py'))
+    await waitFor(() => expect(region).toHaveTextContent('Copied'))
+  })
+
   it('copies on Enter key', async () => {
     render(<CopyablePath text="foo.py" />)
     fireEvent.keyDown(screen.getByText('foo.py'), { key: 'Enter' })
@@ -49,5 +58,6 @@ describe('CopyablePath', () => {
     // feedback must not appear on failure
     await Promise.resolve()
     expect(el).toHaveAttribute('title', 'Copy path')
+    expect(document.querySelector('[aria-live="polite"]')).toHaveTextContent('')
   })
 })

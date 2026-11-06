@@ -2303,6 +2303,28 @@ async def session_file_search(
         _raise_daemon_outdated_or_reraise(exc, "search session files")
 
 
+@router.get("/{session_id}/recovery-refs")
+async def session_recovery_refs(
+    session_id: str,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """``{refs: [{ref, reason, sha, createdAt, restoreCommand}]}`` —
+    the session's recovery snapshots (D-21), newest first, live or archived, read from
+    its clone on the daemon that owns it. Only refs named ``<utc-ts>-<reason>`` in safe
+    characters are listed, so ``reason`` and ``createdAt`` (ISO 8601 UTC) are always
+    set. Each entry's ``restoreCommand`` (shell-quoted) restores that ref. No repo or no clone is 200 with
+    no refs. Read-only: identity only, no audit row. Unknown session 404; an old daemon
+    409 ``daemon_outdated``."""
+    try:
+        return await _get_orchestrator(request).session_recovery_refs(session_id)
+    except KeyError:
+        log.info("recovery refs refused for %s: session not found", session_id)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "list recovery refs")
+
+
 @router.get("/{session_id}/files/content")
 async def session_file_content(
     session_id: str,

@@ -66,7 +66,7 @@ function Restore({ command }: { command: string }) {
   return (
     <span className="block min-w-0 break-all font-mono text-xs" data-testid="restore-command">
       <CopyablePath text={command} title="Copy restore command" />
-      <span className="ml-1 font-sans text-ink-muted">(click to copy)</span>
+      <span className="ml-1 font-sans text-ink-muted">(select to copy)</span>
     </span>
   )
 }

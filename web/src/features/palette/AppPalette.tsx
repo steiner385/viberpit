@@ -25,8 +25,8 @@ const PALETTE_ROW = SHORTCUTS.find((s) => s.id === 'app.palette')
  * restore; `layer="palette"` lifts it over every other dialog.
  */
 export function AppPalette({ host }: { host: PaletteHost }) {
-  const prepared = usePaletteEntries(host)
   const [query, setQuery] = React.useState('')
+  const prepared = usePaletteEntries(host, query)
   const [active, setActive] = React.useState(0)
   const inputRef = React.useRef<HTMLInputElement>(null)
   const listId = React.useId()

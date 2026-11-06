@@ -41,6 +41,11 @@ const ARCHIVED: ArchivedSession[] = [{
   engineSessionId: null, permissionMode: 'default', createdAt: '2026-09-01T10:00:00Z', archivedAt: '2026-09-02T10:00:00Z',
 }]
 
+// `/github/branches` answers (D-21): a repo absent here fails, like a GitHub error.
+const BRANCHES: Record<string, { default: string; branches: string[] }> = {
+  'acme/lonely': { default: 'main', branches: ['dev', 'main'] },
+}
+
 const REPOS = ['acme/rocket', 'acme/lonely', 'acme/bots'].map((nameWithOwner) => ({
   nameWithOwner, name: nameWithOwner.split('/')[1], owner: 'acme', isPrivate: false, url: '',
   defaultBranch: 'main', pushedAt: null, cloned: true,
@@ -55,6 +60,11 @@ vi.mock('@/api/client', async (importOriginal) => {
         if (path === '/sessions' || path === '/sessions?viewing=1') return SESSIONS
         if (path === '/sessions/archived') return ARCHIVED
         if (path === '/github/repos') return REPOS
+        if (typeof path === 'string' && path.startsWith('/github/branches?')) {
+          const repo = new URLSearchParams(path.split('?')[1]).get('repo') ?? ''
+          if (BRANCHES[repo]) return BRANCHES[repo]
+          throw new Error('GitHub unavailable')
+        }
         if (path === '/fleet/hosts') return { hosts: [] }
         if (path === '/config') return { adoptionEnabled: false }
         if (path === '/settings') return { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }
@@ -105,6 +115,7 @@ vi.mock('./paletteSearch', async (importOriginal) => {
   }
 })
 
+import { api } from '@/api/client'
 import { renderApp } from '@/test/renderApp'
 import { resetOverlayState } from '@/shell/useOverlayState'
 
@@ -398,5 +409,57 @@ describe('the list', () => {
     // The session it opened is in the list it sits beside, not filtered out of it.
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Project' })).toHaveValue(''))
     expect(screen.getByLabelText('Open session Two')).toBeInTheDocument()
+  })
+})
+
+describe('repo branches (D-21)', () => {
+  const branchCalls = () => vi.mocked(api.get).mock.calls.map(([p]) => p).filter((p) => typeof p === 'string' && p.startsWith('/github/branches'))
+  const branchOptions = () => {
+    const group = within(palette()!).queryAllByRole('group').find((g) => g.getAttribute('aria-labelledby')
+      && document.getElementById(g.getAttribute('aria-labelledby')!)?.textContent === 'Branches')
+    return group ? within(group).getAllByRole('option').map((o) => o.textContent) : []
+  }
+  beforeEach(() => vi.mocked(api.get).mockClear())
+
+  it('fetches nothing on open; a repo drill fetches that repo only, and lists its branches default-first', async () => {
+    const user = userEvent.setup()
+    await renderList()
+    await openFromRail(user)
+    await user.keyboard('acme/lonely')
+    await within(palette()!).findByRole('option', { name: /^acme\/lonely$/ })
+    expect(branchCalls()).toEqual([])
+    await chooseOption(user, /^acme\/lonely$/)
+    await waitFor(() => expect(branchOptions()).toEqual([
+      'New session on acme/lonely@main', 'New session on acme/lonely@dev',
+    ]))
+    expect(branchCalls()).toEqual(['/github/branches?repo=acme%2Flonely'])
+  })
+
+  it('a failed fetch keeps the live-session branches, quietly', async () => {
+    const user = userEvent.setup()
+    await renderList()
+    await openFromRail(user)
+    await user.keyboard('acme/rocket@')
+    await waitFor(() => expect(branchCalls()).toContain('/github/branches?repo=acme%2Frocket'))
+    expect(branchOptions()).toEqual(['New session on acme/rocket@feat/thrust'])
+    expect(document.querySelector('[data-sonner-toast]')).toBeNull()
+  })
+
+  it('typing on after the `@` keeps the one request: the focus, not the query, is the key', async () => {
+    const user = userEvent.setup()
+    BRANCHES['acme/rocket'] = { default: 'main', branches: ['feat/thrust', 'main'] }
+    try {
+      await renderList()
+      await openFromRail(user)
+      await user.keyboard('acme/rocket@')
+      await waitFor(() => expect(branchOptions()).toContain('New session on acme/rocket@main'))
+      await user.keyboard('f')
+      await waitFor(() => expect(paletteInput()).toHaveValue('acme/rocket@f'))
+      await user.keyboard('e')
+      await waitFor(() => expect(branchOptions()).toEqual(['New session on acme/rocket@feat/thrust']))
+      expect(branchCalls()).toEqual(['/github/branches?repo=acme%2Frocket'])
+    } finally {
+      delete BRANCHES['acme/rocket']
+    }
   })
 })

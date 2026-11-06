@@ -10,11 +10,14 @@
  * (`readerRouteForPath`), and `PageContent scroll={false}` because the
  * virtualizer inside `TranscriptView` owns the scroll region.
  *
+ * Between the header and the transcript, the session's recovery snapshots
+ * (D-21, `RecoveryRefsCard`) when it has any.
+ *
  * The title is the session's name from the archived list (the transcript
  * payload carries none); until the list arrives — or if the row is gone, as
  * after a permanent delete with a stale link — the id's first 8 characters.
  */
-import { useReducer, useEffect, useRef, useCallback } from 'react'
+import { lazy, Suspense, useReducer, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Archive } from 'lucide-react'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
@@ -29,6 +32,9 @@ import { Skeleton } from '@/ui/Skeleton'
 import { EmptyState } from '@/ui/EmptyState'
 import { Button } from '@/ui/Button'
 import { useAutoMarkViewed } from './useAutoMarkViewed'
+
+/** Lazy: the archived route is eager, so the card (and its fetch) loads only here. */
+const RecoveryRefsCard = lazy(() => import('./RecoveryRefsCard'))
 
 /** Initial payload cap: the last N turns; older history pages in on scroll-up. */
 const INITIAL_TURN_LIMIT = 100
@@ -90,6 +96,9 @@ export function ArchivedReviewPage({ sessionId }: { sessionId: string }) {
           </Button>
         }
       />
+      <Suspense fallback={null}>
+        <RecoveryRefsCard sessionId={sessionId} />
+      </Suspense>
       <PageContent scroll={false} busy={isLoading}>
         {isLoading ? (
           <Skeleton lines={8} className="px-4 py-4 md:px-6" />

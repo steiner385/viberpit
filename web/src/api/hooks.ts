@@ -23,7 +23,7 @@ import type {
   LibrarySkill, LibraryCommand, PluginBrowseQuery,
   LibraryMcpServer, McpServerConfig, LibraryContent, MemoryFileContent, UserMemory, UserMemorySaved,
   SessionPreset, PromptTemplate, PermissionProfile, AssessResponse, RuleWire,
-  PrDetail, PrMutationResult, PrArmResult,
+  PrDetail, PrMutationResult, PrArmResult, SessionRecoveryRefs,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import {
@@ -104,6 +104,8 @@ export const QK = {
   adoptable: ['adoptable-sessions'] as const,
   config: ['config'] as const,
   githubRepos: ['github-repos'] as const,
+  /** One remote repo's branches (D-21 ⌘K): `repo` is `owner/name`. */
+  repoBranches: (repo: string) => ['repo-branches', repo] as const,
   settings: ['settings'] as const,
   sessionSearch: (q: string, scope: string = 'live') => ['session-search', scope, q] as const,
   prs: ['prs'] as const,
@@ -176,6 +178,8 @@ export const QK = {
   sessionFile: (id: string, path: string) => ['session-file', id, path] as const,
   /** One content search of a session's worktree (D-20). */
   sessionFileSearch: (id: string, q: string, regex: boolean) => ['session-file-search', id, q, regex] as const,
+  /** A session's recovery refs (D-21), live or archived. */
+  sessionRecoveryRefs: (id: string) => ['session-recovery-refs', id] as const,
   /** One PR's detail (D-15 PR tab): `repo` is `owner/name`. */
   prDetail: (repo: string, number: number) => ['pr-detail', repo, number] as const,
   /** One loaded memory file of a session (D-13). */
@@ -372,6 +376,29 @@ export function useGithubRepos() {
     // refetch-on-focus and multiple tabs into a request storm.
     retry: 1,
     refetchInterval: reposRefetchInterval,
+  })
+}
+
+/** `GET /github/branches` — a remote repo's branches, from the GitHub API on the edge. */
+export interface RepoBranches {
+  default: string | null
+  branches: string[]
+}
+
+/**
+ * One repo's real branches for ⌘K's "New session on repo@branch" (D-21). Off until
+ * the palette focuses a repo (`enabled`) — never one fetch per repo on open. A
+ * minute's answer is reused and a failure retries once; the palette keeps its
+ * live-session branches either way, so an error is a quiet degradation.
+ */
+export function useRepoBranches(repo: string, enabled: boolean) {
+  return useQuery<RepoBranches>({
+    queryKey: QK.repoBranches(repo),
+    queryFn: () => api.get<RepoBranches>(`/github/branches?repo=${encodeURIComponent(repo)}`),
+    enabled: enabled && !!repo,
+    staleTime: 60_000,
+    retry: 1,
+    refetchOnWindowFocus: false,
   })
 }
 
@@ -1578,6 +1605,22 @@ export function useSessionFileSearch(id: string, q: string, regex: boolean) {
     enabled: !!id && !!q,
     refetchOnWindowFocus: false,
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === id ? prev : undefined),
+  })
+}
+
+/**
+ * The recovery refs kept for a session (D-21): `{refs, restoreCommand}`, read on the
+ * owning host — for an archived session too, once its worktree is gone. Supplementary
+ * on a read-only page, so any refusal (404 unknown session, 409 `daemon_outdated`)
+ * is never retried and the caller just shows nothing. No refetch on window focus.
+ */
+export function useSessionRecoveryRefs(id: string) {
+  return useQuery<SessionRecoveryRefs>({
+    queryKey: QK.sessionRecoveryRefs(id),
+    queryFn: () => api.get<SessionRecoveryRefs>(`/sessions/${encodeURIComponent(id)}/recovery-refs`),
+    enabled: !!id,
+    retry: false,
+    refetchOnWindowFocus: false,
   })
 }
 

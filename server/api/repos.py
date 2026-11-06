@@ -29,6 +29,10 @@ log = logging.getLogger(__name__)
 # otherwise 502 on every poll, and the dashboard retries hard enough to turn a brief
 # outage into a request storm. The repo list changes rarely, so stale beats an error.
 _REPOS_MAX_STALE_SECONDS = 3600.0
+# A repo's branch list is served from cache this long before GitHub is asked again.
+_BRANCHES_TTL_SECONDS = 60.0
+# At most this many repos' branch lists are kept; the oldest is evicted past it.
+_BRANCHES_CACHE_MAX = 256
 
 
 async def _fetch_repos(state) -> list[dict]:  # noqa: ANN001
@@ -98,16 +102,40 @@ async def list_github_repos(
 
 @router.get("/branches")
 async def list_github_branches(
+    request: Request,
     repo: str = Query(..., description="nameWithOwner, e.g. owner/name"),
     _identity: str = Depends(current_identity),
 ) -> dict:
-    """Return ``{"default": str|None, "branches": [str]}`` for a remote repo."""
+    """Return ``{"default": str|None, "branches": [str]}`` for a remote repo.
+
+    Cached per repo for ``_BRANCHES_TTL_SECONDS`` (the ⌘K palette asks each time a repo
+    is focused), and — as ``_fetch_repos`` — a GitHub failure serves the last-good
+    answer within ``_REPOS_MAX_STALE_SECONDS`` instead of a 502."""
+    state = request.app.state
+    cache: dict[str, tuple[dict, float]] = getattr(state, "github_branches_cache", None) or {}
+    state.github_branches_cache = cache
+    key = repo.lower()
+    hit = cache.get(key)
+    if hit is not None and time.monotonic() - hit[1] < _BRANCHES_TTL_SECONDS:
+        return hit[0]
     try:
-        return await asyncio.to_thread(gitrepos.list_remote_branches, repo)
+        result = await asyncio.to_thread(gitrepos.list_remote_branches, repo)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except gitrepos.GhError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if hit is None or time.monotonic() - hit[1] > _REPOS_MAX_STALE_SECONDS:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        log.info("github/branches: gh failed for %s (%s) — serving cached list (%.0fs old)",
+                 repo, exc, time.monotonic() - hit[1])
+        return hit[0]
+    now = time.monotonic()
+    cache[key] = (result, now)
+    for stale in [k for k, (_, at) in cache.items() if now - at > _REPOS_MAX_STALE_SECONDS]:
+        del cache[stale]
+    excess = len(cache) - _BRANCHES_CACHE_MAX
+    for oldest in sorted(cache, key=lambda k: cache[k][1])[:max(0, excess)]:
+        del cache[oldest]
+    return result
 
 
 class CreateIssueBody(BaseModel):

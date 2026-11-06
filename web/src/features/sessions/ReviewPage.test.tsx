@@ -21,6 +21,7 @@ vi.mock('@/api/hooks', () => ({
   useUnarchiveSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useArchivedSessions: vi.fn(() => ({ data: undefined })),
   useMarkSessionViewed: vi.fn(() => ({ mutate: markViewed })),
+  useSessionRecoveryRefs: vi.fn(() => ({ data: undefined })),
 }))
 vi.mock('@/api/transcript', () => ({ fetchOlderTurns: vi.fn() }))
 
@@ -68,6 +69,7 @@ describe('ArchivedReviewPage', () => {
     vi.clearAllMocks()
     resetDocumentTitle()
     vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult(ARCHIVED) as never)
+    vi.mocked(hooks.useSessionRecoveryRefs).mockReturnValue({ data: undefined } as never)
   })
 
   it('marks the archived session read for this viewer on the auto path (D-10)', () => {
@@ -75,6 +77,19 @@ describe('ArchivedReviewPage', () => {
     renderPage()
     expect(hooks.useMarkSessionViewed).toHaveBeenCalledWith({ auto: true })
     expect(markViewed).toHaveBeenCalledWith('arc-99')
+  })
+
+  it('shows the session\'s recovery snapshots under the header when it has any (D-21)', async () => {
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue(queryResult({ events: [] }) as never)
+    vi.mocked(hooks.useSessionRecoveryRefs).mockReturnValue(queryResult({
+      refs: [{
+        ref: 'refs/viberpit/recovery/arc-99/discard', reason: 'discard', sha: 'abcdef1234',
+        createdAt: '2026-11-05T14:30:00Z', restoreCommand: 'git restore-me',
+      }],
+    }) as never)
+    renderPage()
+    expect(await screen.findByRole('region', { name: 'Recovery snapshots' })).toHaveTextContent('abcdef1')
+    expect(hooks.useSessionRecoveryRefs).toHaveBeenCalledWith('arc-99')
   })
 
   it('is a Reader page: h1 = session name, document.title, variant, Back link', async () => {

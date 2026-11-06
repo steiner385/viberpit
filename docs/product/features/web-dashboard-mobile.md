@@ -144,7 +144,10 @@ close it. It works while typing in the composer.
   matches that exact repo or branch, so you pick the session from there. You can type these facets
   yourself, and combine them with each other and with words.
 - **Start a session on a branch.** Each branch a live session has on a repo also lists **New session on
-  repo@branch**, which opens the new-session bar with that repo and branch chosen. Nothing is created
+  repo@branch**, which opens the new-session bar with that repo and branch chosen. Once the query
+  names a known repo (`repo:<name>`, or `<name>@`), the palette also lists that repo's branches from
+  GitHub, default branch first; nothing is fetched for free text or when the palette opens, and a
+  failed fetch just leaves the live sessions' branches. Nothing is created
   until you send; if the branch can't be switched to, the bar says so and keeps your draft. The kiosk
   doesn't offer it.
 - Opening a live session from the palette clears list filters or search that would hide it (except for a
@@ -215,7 +218,7 @@ right-hand session rail (20rem, collapsible, remembered per browser) shows four 
     Uncommitted or unpushed work is saved to a recovery ref first, and if git can't say whether
     work would be lost, nothing is touched. **Files git ignores (such as `.env` and build output)
     are not saved.** The session is archived, and a toast that stays up lists the recovery refs and a
-    copyable restore command.
+    copyable restore command. The refs stay listed on the archived session's page (see below).
   - **Repair** recreates a worktree that is missing or empty. It never touches one that is present.
 - **Tasks** — sub-agents and background work.
 
@@ -378,6 +381,13 @@ ways into it from the composer and the transcript.
   `:line`) open the Files tab at that line. A small menu offers **Copy path** and **Attach as @**.
   Identifiers, versions, `host:port`, Windows paths and paths outside the worktree stay copy-only, as do
   the archived reader, sub-agent page and assistant.
+- **Recovery snapshots on an archived session.** When ViberPit saved work to a recovery ref before
+  removing a session's worktree (Discard, close, a deploy drain, the archive cap purge or a forced
+  removal), the archived page lists each snapshot with its reason, short SHA and date, and
+  a copyable `git restore` command for each one. It is read on the session's host, from the
+  worktree if it survives and otherwise from the repo's clone. Only well-formed ViberPit refs are
+  listed, and the command quotes the ref. A session that moved hosts shows only the refs on its current host;
+  a move's own snapshot stays on the host it left.
 - **Server:** `GET /api/sessions/{id}/files?q=&limit=` and `GET /api/sessions/{id}/files/content?path=`
   are computed on the session's host. Paths are relative to the session's cwd, as the CLI resolves `@path`,
   so a session started in a subdirectory sees only the files beneath it. Reads are capped at 512 KiB,
