@@ -134,13 +134,19 @@ def test_stream_git_survives_a_nul_argument(repo: Path) -> None:
     assert stream_git(str(repo), ["grep", "-e", "a\x00b"], lambda c: False) == "failed"
 
 
-def test_other_git_failures_are_search_failed_not_bad_regex(repo: Path) -> None:
+def test_other_git_failures_are_search_failed_not_bad_regex(
+        repo: Path, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="server.sessions.worktree_files")
     _git(repo, "config", "core.bigFileThreshold", "bogus")  # harmless; real failure below
     (repo / ".git" / "index").write_bytes(b"garbage")  # git cannot read the index
     for regex in (False, True):
         with pytest.raises(wf.FileAccessError) as ei:
             wf.search_files(str(repo), "hello", regex)
         assert ei.value.code == wf.SEARCH_FAILED == "SEARCH_FAILED"
+    # A real git failure is not a refusal: one WARNING per search, under one fixed name.
+    failed = [r for r in caplog.records if r.name == "server.sessions.worktree_files"
+              and r.levelno == logging.WARNING]
+    assert [r.getMessage() for r in failed] == ["file_search.git_failed"] * 2
 
 
 def test_submodule_recurse_is_pinned_off(repo: Path) -> None:
@@ -280,7 +286,8 @@ def test_per_file_cap_keeps_one_noisy_file_from_eating_the_budget(repo: Path) ->
     (repo / "noisy.txt").write_text("needle\n" * 500)
     _commit(repo)
     res = wf.search_files(str(repo), "needle")
-    assert len(res["matches"]) == wf.MAX_MATCHES_PER_FILE and res["truncated"] is False
+    assert len(res["matches"]) == wf.MAX_MATCHES_PER_FILE
+    assert res["truncated"] is True  # that file was cut at --max-count: say so
 
 
 def test_long_line_is_truncated_around_the_match(repo: Path) -> None:

@@ -22419,7 +22419,8 @@ class SessionOrchestrator:
                                   limit: int = worktree_files.MAX_SEARCH_MATCHES) -> dict:
         """``{matches, truncated, timedOut}`` for ``q`` in the session's worktree (D-20
         Files tab content search). ``KeyError`` for an unknown session;
-        ``FileAccessError`` (``FILE_NOT_FOUND`` / ``BAD_REGEX``) for a refused search.
+        ``FileAccessError`` (``FILE_NOT_FOUND`` / ``BAD_REGEX`` / ``BAD_QUERY`` /
+        ``SEARCH_FAILED``) for a refused or failed search.
         Runs off the event loop."""
         rec = self._worktree_record(session_id)
         return await asyncio.to_thread(worktree_files.search_files, rec.cwd or "", q,

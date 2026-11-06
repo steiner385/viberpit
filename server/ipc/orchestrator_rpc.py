@@ -339,7 +339,8 @@ def register_orchestrator_rpc(app, orch) -> None:
         # error_data carries its code across the envelope.
         "session_files", "session_file",
         # D-20 content search: {matches, truncated, timedOut} from `git grep` on the
-        # owning daemon; FileAccessError (FILE_NOT_FOUND / BAD_REGEX) as above.
+        # owning daemon; FileAccessError (FILE_NOT_FOUND / BAD_REGEX / BAD_QUERY /
+        # SEARCH_FAILED) as above.
         "session_file_search",
         # D-13 memory-file viewer: {path, type, text, truncated, editable}, read on the
         # daemon that owns the session's loaded set. A refusal raises MemoryFileError,

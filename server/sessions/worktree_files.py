@@ -39,6 +39,7 @@ import stat
 import time
 from typing import Any
 
+from server.obs.context import log_event
 from server.permission_rules.patterns import worktree_rel
 from viberpit.fs_beneath import SymlinkInPath, open_beneath
 from viberpit.worktree_diff import (
@@ -457,6 +458,8 @@ def search_files(cwd: str, q: str, regex: bool = False,
         cache = (path, lines, cut)
         return lines, cut
 
+    per_file: dict[str, int] = {}  # git-reported hits per path
+
     def take(path_b: bytes, lineno_b: bytes, col_b: bytes) -> bool:
         nonlocal capped, out_of_time
         if time.monotonic() > deadline:
@@ -467,6 +470,10 @@ def search_files(cwd: str, q: str, regex: bool = False,
             lineno, col = int(lineno_b), int(col_b)
         except (UnicodeDecodeError, ValueError):
             return False  # not valid UTF-8 cannot round-trip through JSON to a read
+        # git stops a file at ``--max-count``: reaching it means that file may have more.
+        per_file[path] = per_file.get(path, 0) + 1
+        if per_file[path] >= MAX_MATCHES_PER_FILE:
+            capped = True
         if _is_git_internal(path) or _unsafe_rel(path):
             return False
         lines, cut = lines_of(path)
@@ -547,7 +554,10 @@ def search_files(cwd: str, q: str, regex: bool = False,
         # git words a rejected ``-e`` pattern ``fatal: -e option, '<pat>': <regcomp msg>``.
         if regex and "-e option, " in reason:
             raise FileAccessError(BAD_REGEX)
-        log.info("file search failed in %s: %s", cwd, reason[-300:] or "no output")
+        # Not a refusal: git itself failed (corrupt index, missing binary). WARNING so
+        # it auto-files; a bare event name keeps the fingerprint stable.
+        log_event(log, logging.WARNING, "file_search.git_failed", cwd=cwd,
+                  stderr_tail=reason[-300:] or "no output")
         raise FileAccessError(SEARCH_FAILED)
     return {"matches": matches, "truncated": capped,
             "timedOut": status == "timeout" or out_of_time}
