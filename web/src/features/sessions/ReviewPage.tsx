@@ -93,7 +93,8 @@ export function ArchivedReviewPage({ sessionId }: { sessionId: string }) {
           </Button>
         }
       />
-      {recovery && recovery.recoveryRefs.length > 0 && (
+      {/* Optional-chained: a payload without `recoveryRefs` must not crash the reader. */}
+      {recovery && (recovery.recoveryRefs?.length ?? 0) > 0 && (
         <div className="border-b border-edge px-4 py-3 md:px-6" data-testid="archived-recovery">
           <p className="mb-1 text-sm text-ink">
             This session's worktree was discarded{recovery.branch ? ` (branch ${recovery.branch})` : ''}; its work is kept in git.
