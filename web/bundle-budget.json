@@ -5,8 +5,8 @@
     "initialJs": 250
   },
   "ceilingsKb": {
-    "entryJs": 111.6,
-    "initialJs": 308.8,
+    "entryJs": 111.8,
+    "initialJs": 309.1,
     "initialCss": 15.6
   }
 }
