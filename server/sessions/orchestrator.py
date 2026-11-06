@@ -630,24 +630,22 @@ def _stamp_is_this_host(host: str | None) -> bool:
 
 
 def _recovery_refs_wire(session_id: str, cwd: str, repo: str | None, root: str) -> dict:
-    """``session_recovery_refs``'s blocking half: pick the git dir that holds the
-    session's recovery refs — its worktree while present (a worktree sees the clone's
-    common refs), else its repo's clone here — and list them."""
-    repo_top: str | None = cwd if cwd and (Path(cwd) / ".git").exists() else None
-    if repo_top is None and repo:
+    """``session_recovery_refs``'s blocking half: list the session's recovery refs from
+    its worktree while present (a worktree sees the clone's common refs); when there is
+    none, or git cannot read it (a dangling gitdir), from its repo's clone here."""
+    entries = (worktrees.recovery_ref_entries(cwd, session_id)
+               if cwd and (Path(cwd) / ".git").exists() else None)
+    if entries is None and repo:
         try:
             clone = gitrepos.clone_path(root, repo)
         except ValueError:
             clone = None
         if clone is not None and clone.is_dir():
-            repo_top = str(clone)
-    if repo_top is None:
-        return {"refs": [], "restoreCommand": None}
-    entries = worktrees.recovery_ref_entries(repo_top, session_id)
+            entries = worktrees.recovery_ref_entries(str(clone), session_id)
+    entries = entries or []
     return {
         "refs": [{"ref": e.ref, "reason": e.reason, "sha": e.sha,
-                  "createdAt": e.created_at.isoformat() if e.created_at else None}
-                 for e in entries],
+                  "createdAt": e.created_at.isoformat()} for e in entries],
         "restoreCommand": worktrees.restore_command(entries[0].ref) if entries else None,
     }
 

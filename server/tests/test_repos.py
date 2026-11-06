@@ -214,7 +214,7 @@ def test_list_github_branches_is_cached_per_repo_for_a_short_ttl(tmp_path):
     from server.api import repos as repos_api
     with temp_env():
         with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            with patch("ccswitch.gitrepos.list_remote_branches",
+            with patch("viberpit.gitrepos.list_remote_branches",
                        side_effect=lambda r: {"default": "main", "branches": [r]}) as gh:
                 app, client = _make_app_and_client()
                 with client:
@@ -246,7 +246,7 @@ def test_list_github_branches_serves_stale_on_gh_error_then_502s_past_max_stale(
 
     with temp_env():
         with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            with patch("ccswitch.gitrepos.list_remote_branches", side_effect=fake):
+            with patch("viberpit.gitrepos.list_remote_branches", side_effect=fake):
                 app, client = _make_app_and_client()
                 with client:
                     url = "/api/github/branches?repo=acme/widget"
@@ -260,6 +260,32 @@ def test_list_github_branches_serves_stale_on_gh_error_then_502s_past_max_stale(
     assert first.status_code == stale.status_code == 200
     assert stale.json() == {"default": "main", "branches": ["main"]}
     assert expired.status_code == 502
+
+
+def test_list_github_branches_cache_is_bounded(tmp_path):
+    """Entries past the max-stale window are pruned on write, and past
+    ``_BRANCHES_CACHE_MAX`` the oldest is evicted."""
+    from server.api import repos as repos_api
+    with temp_env():
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            with patch("viberpit.gitrepos.list_remote_branches",
+                       side_effect=lambda r: {"default": "main", "branches": [r]}), \
+                    patch.object(repos_api, "_BRANCHES_CACHE_MAX", 2):
+                app, client = _make_app_and_client()
+                with client:
+                    def get(r):
+                        return client.get(f"/api/github/branches?repo={r}",
+                                          headers=IDENTITY_HEADERS)
+                    get("acme/old")
+                    _age_branches_cache(app, "acme/old",
+                                        repos_api._REPOS_MAX_STALE_SECONDS + 1)
+                    get("acme/a")
+                    cache = app.state.github_branches_cache
+                    assert set(cache) == {"acme/a"}, "an expired entry is pruned on write"
+                    get("acme/b")
+                    _age_branches_cache(app, "acme/a", 5)
+                    get("acme/c")
+                    assert set(cache) == {"acme/b", "acme/c"}, "the oldest is evicted"
 
 
 def test_list_github_branches_bad_name_400(tmp_path):

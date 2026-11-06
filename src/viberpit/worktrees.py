@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -1160,8 +1161,9 @@ def _recovery_ns(session_id: str) -> str:
 
 
 def restore_command(ref: str) -> str:
-    """The manual restore a human runs inside the worktree (spec rule 4)."""
-    return f"git restore --source={ref} --worktree --staged -- . && git reset"
+    """The manual restore a human runs inside the worktree (spec rule 4). The ref is
+    shell-quoted: the line is copied and pasted into a shell."""
+    return f"git restore --source={shlex.quote(ref)} --worktree --staged -- . && git reset"
 
 
 def _git_timed(args: list[str], env: dict[str, str] | None = None
@@ -1173,47 +1175,66 @@ def _git_timed(args: list[str], env: dict[str, str] | None = None
 
 #: The ``<utc-ts>`` half of a recovery ref's leaf name (``_write_recovery_ref``).
 _RECOVERY_STAMP_FMT = "%Y%m%dT%H%M%S%fZ"
+#: A leaf ``_write_recovery_ref`` writes: ``<_RECOVERY_STAMP_FMT>-<reason>`` (strftime
+#: pads ``%f`` to six digits). Anything else under the namespace was not written by us.
+_RECOVERY_LEAF_RE = re.compile(
+    r"(\d{8}T\d{12}Z)-(" + "|".join(sorted(RECOVERY_REASONS)) + r")")
+#: Characters a listed ref may carry. Git allows ``;``, ``$``, backticks, ``|`` … in a
+#: refname, and a listed ref is pasted into a shell (``restore_command``).
+_RECOVERY_REFNAME_RE = re.compile(r"[A-Za-z0-9._/-]+")
+_OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
 class RecoveryRef:
-    """One recovery ref as its name and object encode it. ``reason`` / ``created_at``
-    are None when the leaf is not ``<utc-ts>-<known reason>``."""
+    """One recovery ref as its (well-formed) name and object encode it."""
     ref: str
     sha: str
-    reason: str | None
-    created_at: datetime | None
+    reason: str
+    created_at: datetime
 
 
-def _decode_recovery_leaf(ref: str) -> tuple[str | None, datetime | None]:
-    stamp, _, reason = ref.rsplit("/", 1)[-1].rpartition("-")
+def _parse_recovery_ref(ns: str, ref: str, sha: str) -> RecoveryRef | None:
+    """The entry for a ref exactly ``<ns>/<utc-ts>-<reason>`` of safe characters
+    pointing at an object id, else None — never listed, never a restore source."""
+    if not _RECOVERY_REFNAME_RE.fullmatch(ref) or not _OBJECT_ID_RE.fullmatch(sha):
+        return None
+    head, _, leaf = ref.rpartition("/")
+    m = _RECOVERY_LEAF_RE.fullmatch(leaf)
+    if head != ns or m is None:
+        return None
     try:
-        created = datetime.strptime(stamp, _RECOVERY_STAMP_FMT).replace(tzinfo=timezone.utc)
+        created = datetime.strptime(m.group(1), _RECOVERY_STAMP_FMT).replace(
+            tzinfo=timezone.utc)
     except ValueError:
-        return None, None
-    return (reason if reason in RECOVERY_REASONS else None), created
+        return None
+    return RecoveryRef(ref=ref, sha=sha, reason=m.group(2), created_at=created)
 
 
-def recovery_ref_entries(repo_path: str, session_id: str) -> list[RecoveryRef]:
+def recovery_ref_entries(repo_path: str, session_id: str) -> list[RecoveryRef] | None:
     """Recovery refs recorded for *session_id* in *repo_path*'s clone (or any of its
     worktrees — the refs live in the common git dir), newest first, with each ref's
-    sha and what its name encodes. One ``for-each-ref``; [] when git cannot list."""
+    sha and what its name encodes. Only well-formed names are listed (see
+    ``_parse_recovery_ref``): a ref someone planted under the namespace is skipped.
+    One ``for-each-ref``; None when git cannot list (not a repo, dangling gitdir)."""
+    ns = _recovery_ns(session_id)
     r = _run(["git", "-C", repo_path, "for-each-ref", "--sort=-refname",
-              "--format=%(refname) %(objectname)", f"{_recovery_ns(session_id)}/"])
+              "--format=%(refname) %(objectname)", f"{ns}/"])
     if r.returncode != 0:
-        return []
+        return None
     out: list[RecoveryRef] = []
     for ln in r.stdout.splitlines():
         ref, _, sha = ln.strip().partition(" ")
-        if ref:
-            reason, created = _decode_recovery_leaf(ref)
-            out.append(RecoveryRef(ref=ref, sha=sha, reason=reason, created_at=created))
+        entry = _parse_recovery_ref(ns, ref, sha.strip())
+        if entry is not None:
+            out.append(entry)
     return out
 
 
 def recovery_refs(repo_path: str, session_id: str) -> list[str]:
-    """Recovery refs recorded for *session_id* in *repo_path*'s clone, newest first."""
-    return [e.ref for e in recovery_ref_entries(repo_path, session_id)]
+    """Recovery refs recorded for *session_id* in *repo_path*'s clone, newest first
+    (well-formed names only; [] when git cannot list)."""
+    return [e.ref for e in recovery_ref_entries(repo_path, session_id) or []]
 
 
 def _kept_ref_matching(repo_path: str, session_id: str, rev_suffix: str,
