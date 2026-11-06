@@ -63,6 +63,15 @@ describe('DevServers', () => {
     expect(screen.getByRole('heading', { name: 'Dev servers' })).toBeInTheDocument()
   })
 
+  it('a bind to one specific address carries the reachable note too', async () => {
+    renderList([
+      server(),
+      server({ port: 5500, address: '100.1.2.3', bind: 'address', label: 'node vite --host 100.1.2.3', open: { kind: 'vnc' } }),
+    ])
+    expect(await screen.findByText(':5500')).toBeInTheDocument()
+    expect(screen.getAllByText(DEV_SERVERS_COPY.reachable)).toHaveLength(1)
+  })
+
   it('renders an untrusted label and title as text, never markup (Review Focus 5)', async () => {
     const evil = '<img src=x onerror="window.pwned=1">'
     const { container } = renderList([server({ label: evil, title: `<b>${evil}</b>` })])

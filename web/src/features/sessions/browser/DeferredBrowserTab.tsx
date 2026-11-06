@@ -23,8 +23,10 @@ export function DeferredBrowserTab(props: ComponentProps<typeof BrowserTabType>)
     // arrives, so an empty box is what the next frame looks like anyway —
     // a spinner here would be a flash of something the connect immediately
     // replaces.
+    // Keyed by session: the viewer's local state (an open preview, its notice, the
+    // no-display backoff) belongs to one session and must not carry to the next.
     <Suspense fallback={<div className="h-full w-full" aria-busy="true" />}>
-      <BrowserTab {...props} />
+      <BrowserTab key={props.sessionId} {...props} />
     </Suspense>
   )
 }

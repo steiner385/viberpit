@@ -8487,10 +8487,12 @@ class SessionOrchestrator:
         never to a partial one the restart would present as complete.
         """
         if self._engine_of(session_id) is AgentEngine.CLAUDE_CODE:
-            path = await asyncio.to_thread(self.transcript_path, session_id)
-            if not path:
-                return []
-            return await asyncio.to_thread(scan_open_background_tasks, path)
+            # One hop on the shared executor, not two: a dev-server poll's labels and
+            # the turn-end write both come through here.
+            def read() -> list[OpenBgTask]:
+                path = self.transcript_path(session_id)
+                return scan_open_background_tasks(path) if path else []
+            return await asyncio.to_thread(read)
         driver = self._drivers.get(session_id)
         reader = getattr(driver, "open_background_work", None)
         if reader is None:
@@ -22553,9 +22555,9 @@ class SessionOrchestrator:
                     "servers": []}
         servers = await self._detect_dev_servers(session_id, fresh=False)
         # ``tailnetIp``: this host's own tailnet address, for the edge's tailnet-link —
-        # only needed (and only looked up) when a server is bound to every address.
+        # only needed (and only looked up) when a server is reachable off loopback.
         ip = (await asyncio.to_thread(_dev_servers.self_tailnet_ip)
-              if any(s.get("bind") == "all" for s in servers) else None)
+              if any(s.get("bind") != "loopback" for s in servers) else None)
         return {"host": host, "enabled": True, "x11": x11, "tailnetIp": ip,
                 "servers": servers}
 

@@ -124,6 +124,20 @@ describe('BrowserTab dev servers (D-18)', () => {
       expect(screen.queryByText(/isn't running|No virtual display/i)).toBeNull()
     })
 
+    it('the immediate reconnect on a status change is not a retry: the next wait is 5 s, not 10 s', () => {
+      const { rerender } = render(<BrowserTab sessionId="S" statusState="idle" devServers={LIST} />)
+      emit('disconnect', 'nodisplay')
+      rerender(<ViewportProvider kiosk={null}><BrowserTab sessionId="S" statusState="working" devServers={LIST} /></ViewportProvider>)
+      act(() => { vi.advanceTimersByTime(0) })
+      expect(clients).toHaveLength(2)
+      // The display is not up yet: the first slow retry starts the backoff at 5 s.
+      emit('disconnect', 'nodisplay')
+      act(() => { vi.advanceTimersByTime(4_999) })
+      expect(clients).toHaveLength(2)
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(clients).toHaveLength(3)
+    })
+
     it('without a status change (driver swap) it retries slowly, backing off to 30 s', () => {
       render(<BrowserTab sessionId="S" statusState="idle" devServers={LIST} />)
       emit('disconnect', 'nodisplay')

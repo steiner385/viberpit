@@ -7,9 +7,9 @@ and the session match are ``memory_watch``'s (``scan_proc``, ``_subtree``,
 
 **Which listeners count** (a port is never entered by hand):
 
-1. A LISTEN row of ``/proc/net/tcp`` or ``tcp6`` on port >= 1024, bound to loopback or to
-   every address (``0.0.0.0`` / ``::``). A bind to one specific non-loopback address is
-   not offered.
+1. A LISTEN row of ``/proc/net/tcp`` or ``tcp6`` on port >= 1024, bound to loopback, to
+   every address (``0.0.0.0`` / ``::``) or to one specific non-loopback address (the
+   tailnet IP, a LAN IP; reached at that address).
 2. Owned by a process attributed to the session:
    - **subtree**: it descends from a direct child of the daemon (a *root*) that is this
      session by ``--resume`` id or an EXACT cwd (:func:`root_session_of`) — or that is
@@ -17,12 +17,16 @@ and the session match are ``memory_watch``'s (``scan_proc``, ``_subtree``,
      daemon helper), in which case the process's OWN cwd must be inside the session's
      MANAGED worktree (:func:`worktree_session_of`). A process whose own cwd matches
      ANOTHER session is never claimed, whatever its root. A root itself (the CLI, x11vnc, a proxy) is never a dev server,
-     and neither is anything below a non-shell direct child of a root whose command line
-     names MCP (the session's MCP servers).
+     and neither is anything below a direct child of a root that launches MCP (the
+     session's MCP servers): a non-shell child whose command line names MCP, or a shell
+     wrapper (``bash -c "npx …-mcp"``) whose first non-shell program does. A tool shell's
+     command is judged by that program alone, so a dev server whose paths name MCP stays.
    - **escaped**: outside every root (``setsid``/``nohup`` reparent to pid 1), it must be
      in the daemon's cgroup and its cwd inside the session's MANAGED worktree.
-   A session whose cwd is not exactly a managed worktree root (``~``, a plain checkout,
-   a ``<clone>`` grouping dir) claims only its own subtree. Session cwds are compared
+   A session whose cwd is inside a managed worktree (its root or any subdirectory)
+   claims that whole worktree; one outside every managed worktree (``~``, a plain
+   checkout, a ``<clone>`` grouping dir) claims only its own subtree. A Codex session
+   there has no subtree of its own (its app-server is shared), so it is offered nothing. Session cwds are compared
    by realpath; process cwds as the kernel reports them (already canonical).
    ``match_session``'s cwd rule is made strict here: when another live session has the
    same cwd and no ``--resume`` id decides, the process is unattributed.
@@ -31,11 +35,13 @@ and the session match are ``memory_watch``'s (``scan_proc``, ``_subtree``,
    stays ``::1``; ``0.0.0.0`` is reached over ``127.0.0.1``), answered with a non-error
    ``text/html`` within :data:`PROBE_TIMEOUT_S`. Nothing outside the session is probed.
 
-Each entry: ``{port, address, bind: "loopback"|"all", pid, label, title?, note?}``.
+Each entry: ``{port, address, bind: "loopback"|"all"|"address", pid, label, title?,
+note?}``.
 ``address`` is where the server is reached on its host; ``label`` is the background
 task's command when the listener descends from that task's shell, else the listener's
 command line; ``title`` is the page's ``<title>`` — untrusted text, capped.
-``note`` (:data:`EXPOSED_NOTE`) marks a bind every interface can reach.
+``note`` (:data:`EXPOSED_NOTE`) marks a bind reachable from the network (``all`` or
+``address``).
 
 The edge adds the per-viewer ``open`` route (:func:`open_route`); it is never computed
 here, because only the edge knows who is looking.
@@ -206,20 +212,24 @@ class Candidate:
     """An attributed listener, before the probe."""
     port: int
     address: str          # where to connect (the detected address; 0.0.0.0 → 127.0.0.1)
-    bind: str             # "loopback" | "all"
+    bind: str             # "loopback" | "all" | "address"
     pid: int
     cmdline: tuple[str, ...]
     shells: tuple[str, ...]  # the command lines of tool shells above the listener
 
 
-def _bind_kind(addr: _Address) -> str | None:
+#: How far a bind reaches, narrowest first: two binds of one port merge to the wider.
+_BIND_REACH = {"loopback": 0, "address": 1, "all": 2}
+
+
+def _bind_kind(addr: _Address) -> str:
     mapped = getattr(addr, "ipv4_mapped", None)
     addr = mapped or addr
     if addr.is_loopback:
         return "loopback"
     if addr.is_unspecified:
         return "all"
-    return None  # one specific non-loopback address: not offered
+    return "address"  # one specific non-loopback address: reached there
 
 
 def _connect_address(addr: _Address) -> str:
@@ -264,27 +274,35 @@ def _inside(path: str, base: str) -> bool:
 
 def managed_worktree_roots(sessions: list[SessionKey], repo_roots: Collection[str]
                            ) -> frozenset[str]:
-    """The realpath cwds of the *sessions* that are exactly a managed session worktree
-    root (``worktrees.session_worktree_root``) under one of *repo_roots*. Stats every
-    session cwd, so it runs inside the bounded scan (:class:`DevServerDetector`)."""
+    """The managed session worktree roots (``worktrees.session_worktree_root``, under
+    one of *repo_roots*) that contain a *sessions* cwd — at the root or in any
+    subdirectory. Stats every session cwd, so it runs inside the bounded scan
+    (:class:`DevServerDetector`)."""
     out: set[str] = set()
     for k in sessions:
         if not k.cwd:
             continue
-        real = os.path.realpath(k.cwd)
-        if any(str(worktrees.session_worktree_root(k.cwd, r) or "") == real
-               for r in repo_roots):
-            out.add(real)
+        for r in repo_roots:
+            root = worktrees.session_worktree_root(k.cwd, r)
+            if root is not None:
+                out.add(str(root))
+                break
     return frozenset(out)
 
 
 def managed_sessions(sessions: list[SessionKey], managed_worktrees: frozenset[str]
                      ) -> list[SessionKey]:
-    """The sessions whose (realpath) cwd IS a managed worktree root —
-    ``managed_worktrees``, from ``worktrees.session_worktree_root`` on the daemon. Only
-    these may claim a process outside their own subtree; ``~``, a plain checkout, a
-    scratch dir or a ``<clone>`` grouping dir above the worktrees never do."""
-    return [s for s in sessions if s.cwd and s.cwd in managed_worktrees]
+    """The sessions whose (realpath) cwd is inside a managed worktree root —
+    ``managed_worktrees``, from ``worktrees.session_worktree_root`` on the daemon — each
+    keyed by that ROOT, so a session started in ``<worktree>/web`` claims its whole
+    worktree. Only these may claim a process outside their own subtree; ``~``, a plain
+    checkout, a scratch dir or a ``<clone>`` grouping dir above the worktrees never do."""
+    out: list[SessionKey] = []
+    for s in sessions:
+        roots = [r for r in managed_worktrees if s.cwd and _inside(s.cwd, r)]
+        if roots:
+            out.append(SessionKey(s.session_id, s.engine_session_id, max(roots, key=len)))
+    return out
 
 
 def worktree_session_of(cwd: str | None, managed: list[SessionKey]) -> str | None:
@@ -326,10 +344,37 @@ def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
                     ) -> list[Candidate]:
     """Every listener attributed to ``session_id`` by the module rules 1–3. Reads only;
     probes nothing."""
-    listeners = {ino: lst for ino, lst in fs.listeners().items()
-                 if lst.port >= MIN_PORT and _bind_kind(lst.address) is not None}
-    if not listeners or not any(s.session_id == session_id for s in sessions):
+    if not any(s.session_id == session_id for s in sessions):
         return []
+    return find_all_candidates(sessions, fs=fs, daemon_pid=daemon_pid,
+                               managed_worktrees=managed_worktrees)[session_id]
+
+
+def _launches_mcp(chain: list[int], info: Callable[[int], ProcInfo | None],
+                  by_pid: dict[int, ProcRow]) -> bool:
+    """Whether the root's direct child ``chain[1]`` launches an MCP server: a non-shell
+    whose command line names MCP, or a shell wrapper whose first non-shell program on
+    the way down to the listener does. A tool shell is judged by the program it runs
+    (``npm run dev``), never by its own script or paths."""
+    for p in chain[1:]:
+        pi = info(p)
+        if pi is None:
+            return False
+        if _exe(pi, by_pid.get(p)) not in _SHELLS:
+            return bool(_MCP.search(" ".join(pi.cmdline)))
+    return False
+
+
+def find_all_candidates(sessions: list[SessionKey], *, fs: ProcFs, daemon_pid: int,
+                        managed_worktrees: frozenset[str] = frozenset()
+                        ) -> dict[str, list[Candidate]]:
+    """The module rules 1–3 for every session in ONE ``/proc`` pass: each session id ->
+    its listeners (a key for every session, ``[]`` when none). A process is owned by at
+    most one session. Reads only; probes nothing."""
+    out: dict[str, list[Candidate]] = {s.session_id: [] for s in sessions}
+    listeners = {ino: lst for ino, lst in fs.listeners().items() if lst.port >= MIN_PORT}
+    if not listeners or not sessions:
+        return out
     # A session's recorded cwd may be a symlink: resolve it. A process cwd is NOT
     # resolved — the kernel's /proc/<pid>/cwd link is already canonical, and a realpath
     # would stat every component (a stalled FUSE mount would hang the scan).
@@ -346,7 +391,7 @@ def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
         for member in _subtree(top.pid, children, by_pid):
             root_of[member.pid] = top.pid
     infos: dict[int, ProcInfo | None] = {}
-    owners: dict[int, str | None] = {}
+    root_owners: dict[int, str | None] = {}
 
     def info(pid: int) -> ProcInfo | None:
         if pid not in infos:
@@ -357,22 +402,15 @@ def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
         pi = info(pid)
         return worktree_session_of(pi.cwd if pi is not None else None, managed)
 
-    def owner(pid: int) -> str | None:
-        if pid not in owners:
-            owners[pid] = session_of(info(pid), sessions)
-        return owners[pid]
-
-    root_owners: dict[int, str | None] = {}
-
     def root_owner_of(pid: int) -> str | None:
         if pid not in root_owners:
             root_owners[pid] = root_session_of(info(pid), sessions)
         return root_owners[pid]
 
     daemon_cgroup = fs.cgroup(daemon_pid)
-    # pid -> the tool shells' command lines above it (subtree), or () (escaped).
-    eligible: dict[int, tuple[str, ...]] = {}
-    depth: dict[int, int] = {}
+    # pid -> (its session, the tool shells' command lines above it (subtree) or ()
+    # (escaped), its depth below the root).
+    eligible: dict[int, tuple[str, tuple[str, ...], int]] = {}
     for row in rows:
         pid = row.pid
         if pid == daemon_pid:
@@ -381,17 +419,19 @@ def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
         if root is None:
             if daemon_cgroup is None or fs.cgroup(pid) != daemon_cgroup:
                 continue
-            if managed_owner(pid) != session_id:
-                continue  # escaped: only a cwd inside the session's managed worktree
-            eligible[pid], depth[pid] = (), 0
+            sid = managed_owner(pid)  # escaped: only a cwd inside a managed worktree
+            if sid is not None:
+                eligible[pid] = (sid, (), 0)
             continue
         if pid == root:
             continue  # the agent itself, or the daemon's own helper
-        root_owner = root_owner_of(root)
-        if root_owner is not None and root_owner != session_id:
+        # A shared root (the Codex app-server) names nobody: the process's own cwd
+        # decides, and only inside a managed worktree.
+        sid = root_owner_of(root) or managed_owner(pid)
+        if sid is None:
             continue
-        own = owner(pid)
-        if own is not None and own != session_id:
+        own = session_of(info(pid), sessions)
+        if own is not None and own != sid:
             continue  # another session's, whatever tree it sits in
         chain = [pid]
         while chain[-1] != root:
@@ -402,47 +442,44 @@ def find_candidates(session_id: str, sessions: list[SessionKey], *, fs: ProcFs,
         if chain[-1] != root:
             continue
         chain.reverse()  # root … pid
-        branch = chain[1]
-        branch_info = info(branch)
-        if _exe(branch_info, by_pid.get(branch)) not in _SHELLS and branch_info is not None \
-                and _MCP.search(" ".join(branch_info.cmdline)):
+        if _launches_mcp(chain, info, by_pid):
             continue  # one of the session's MCP servers
-        if root_owner is None and managed_owner(pid) != session_id:
-            continue  # a shared root (Codex app-server): the process's own cwd decides
         shells = []
         for p in chain[1:]:
             pi = info(p)
             if pi is not None and _exe(pi, by_pid.get(p)) in _SHELLS:
                 shells.append(" ".join(pi.cmdline))
-        eligible[pid], depth[pid] = tuple(shells), len(chain)
+        eligible[pid] = (sid, tuple(shells), len(chain))
 
-    holders: dict[int, int] = {}  # inode -> the outermost eligible pid holding it
-    for pid in eligible:
+    # (session, inode) -> the outermost of that session's eligible pids holding it.
+    holders: dict[tuple[str, int], int] = {}
+    for pid, (sid, _, depth) in eligible.items():
         for ino in fs.socket_inodes(pid):
-            if ino in listeners and (ino not in holders or depth[pid] < depth[holders[ino]]):
-                holders[ino] = pid
-    by_port: dict[int, Candidate] = {}
-    for ino, pid in holders.items():
+            key = (sid, ino)
+            if ino in listeners and (key not in holders or depth < eligible[holders[key]][2]):
+                holders[key] = pid
+    by_port: dict[tuple[str, int], Candidate] = {}
+    for (sid, ino), pid in holders.items():
         pi = info(pid)
         cmdline = tuple(pi.cmdline) if pi is not None else ()
         if any(arg.startswith(_DEBUG_PORT) for arg in cmdline):
             continue
         lst = listeners[ino]
-        bind = _bind_kind(lst.address)
-        assert bind is not None
-        cand = Candidate(lst.port, _connect_address(lst.address), bind, pid, cmdline,
-                         eligible[pid])
-        prev = by_port.get(lst.port)
+        cand = Candidate(lst.port, _connect_address(lst.address), _bind_kind(lst.address),
+                         pid, cmdline, eligible[pid][1])
+        prev = by_port.get((sid, lst.port))
         if prev is None:
-            by_port[lst.port] = cand
-        else:
-            # One server on both families (``localhost`` → 127.0.0.1 and ::1): one entry,
-            # IPv4 preferred, exposed if either bind is.
-            v4 = cand if ":" not in cand.address else prev
-            by_port[lst.port] = Candidate(
-                lst.port, v4.address, "all" if "all" in (prev.bind, cand.bind) else "loopback",
-                v4.pid, v4.cmdline, v4.shells)
-    return [by_port[p] for p in sorted(by_port)]
+            by_port[(sid, lst.port)] = cand
+            continue
+        # One server on several binds (``localhost`` → 127.0.0.1 and ::1): one entry,
+        # reached at IPv4 first, then at the wider bind; reachable as the widest is.
+        pick = min((prev, cand), key=lambda c: (":" in c.address, -_BIND_REACH[c.bind]))
+        bind = max(prev.bind, cand.bind, key=_BIND_REACH.__getitem__)
+        by_port[(sid, lst.port)] = Candidate(lst.port, pick.address, bind, pick.pid,
+                                             pick.cmdline, pick.shells)
+    for (sid, port) in sorted(by_port, key=lambda k: k[1]):
+        out[sid].append(by_port[(sid, port)])
+    return out
 
 
 def _host_literal(address: str) -> str:
@@ -532,12 +569,16 @@ def open_route(server: dict, *, client_node: str | None, runner: str,
 
     ``local-link`` is the detected address itself (``127.0.0.2`` is not ``localhost``).
     ``tailnet-link`` is the host's tailnet IP, never its MagicDNS name: Vite >= 6
-    refuses an unlisted ``Host`` name but accepts an IP literal. No valid IP → ``vnc``,
-    or ``{kind: "none", reason}`` when the owning host reports no X11 (``x11``)."""
+    refuses an unlisted ``Host`` name but accepts an IP literal. A bind to one address
+    is reachable over the tailnet only when that address IS the tailnet IP. No valid IP
+    → ``vnc``, or ``{kind: "none", reason}`` when the owning host reports no X11
+    (``x11``)."""
     ip = _ip_or_none(tailnet_ip)
+    bind = server.get("bind")
+    reachable = ip is not None and (bind == "all" or _ip_or_none(server.get("address")) == ip)
     kind = resolve_preview_route(client_node=client_node, runner=runner,
-                                 exposed=server.get("bind") == "all",
-                                 tailnet_reachable=ip is not None, vnc_available=x11)
+                                 exposed=bind in ("all", "address"),
+                                 tailnet_reachable=reachable, vnc_available=x11)
     if kind == PREVIEW_NONE:
         return {"kind": kind, "reason": NO_ROUTE_NO_DISPLAY}
     port = int(server["port"])
@@ -554,13 +595,16 @@ class DevServerDetector:
     """Per-daemon detection with a short per-session cache. ``fs``, ``daemon_pid``,
     ``probe`` and ``clock`` are injectable for tests.
 
-    **One scan at a time per host.** The ``/proc`` pass and the session-cwd
+    **One scan at a time per host, shared.** The ``/proc`` pass and the session-cwd
     ``realpath``s run on ONE dedicated daemon thread, never the loop's shared default
-    executor, bounded by ``scan_timeout``. A read blocked on a stalled mount cannot be
-    cancelled, so while that thread is still running no second one is started: every
-    poll answers at once with the session's last good result (``[]`` for a fresh
-    detection, which an Open must never trust stale). One stuck mount therefore costs
-    one thread, not one per poll."""
+    executor, and attribute every session at once (:func:`find_all_candidates`). A poll
+    that arrives while a scan runs joins it rather than queueing behind it, so N
+    sessions' polls cost one scan, not N back to back. Every poll waits at most
+    ``scan_timeout`` in all. A scan running longer than that is stuck: a read blocked on
+    a stalled mount cannot be cancelled, so no second thread is started while it runs,
+    and every poll answers at once with the session's last good result (``[]`` for a
+    fresh detection, which an Open must never trust stale). One stuck mount therefore
+    costs one thread, not one per poll."""
 
     def __init__(self, *, fs: ProcFs | None = None, daemon_pid: int | None = None,
                  probe: Callable[[str, int], Awaitable[ProbeResult | None]] | None = None,
@@ -575,8 +619,9 @@ class DevServerDetector:
         self._cache: dict[str, tuple[float, list[dict]]] = {}
         self._last_good: dict[str, tuple[float, list[dict]]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
-        self._scan_lock = asyncio.Lock()
-        self._scan_future: asyncio.Future[list[Candidate]] | None = None
+        self._scan_future: asyncio.Future[dict[str, list[Candidate]]] | None = None
+        self._scan_started = 0.0
+        self._scan_covers: frozenset[str] = frozenset()
 
     async def detect(self, session_id: str, sessions: list[SessionKey], *,
                      bg_commands: Callable[[], Awaitable[list[str]]],
@@ -605,24 +650,26 @@ class DevServerDetector:
             self._cache[session_id] = (self._clock(), servers)
             return [dict(s) for s in servers]
 
-    def _start_scan(self, fn: Callable[[], list[Candidate]]) -> asyncio.Future[list[Candidate]]:
+    def _start_scan(self, fn: Callable[[], dict[str, list[Candidate]]]
+                    ) -> asyncio.Future[dict[str, list[Candidate]]]:
         """Run *fn* on a new daemon thread (a blocked one never holds up process exit)
         and resolve the returned future on this loop."""
         loop = asyncio.get_running_loop()
-        fut: asyncio.Future[list[Candidate]] = loop.create_future()
+        fut: asyncio.Future[dict[str, list[Candidate]]] = loop.create_future()
         # A scan that outlives its waiter may still fail: mark it retrieved.
         fut.add_done_callback(lambda f: f.cancelled() or f.exception())
 
-        def settle(result: list[Candidate] | None, exc: BaseException | None) -> None:
+        def settle(result: dict[str, list[Candidate]] | None,
+                   exc: BaseException | None) -> None:
             if fut.done():
                 return
             if exc is not None:
                 fut.set_exception(exc)
             else:
-                fut.set_result(result or [])
+                fut.set_result(result or {})
 
         def run() -> None:
-            result: list[Candidate] | None = None
+            result: dict[str, list[Candidate]] | None = None
             exc: BaseException | None = None
             try:
                 result = fn()
@@ -635,33 +682,44 @@ class DevServerDetector:
         threading.Thread(target=run, name=_SCAN_THREAD, daemon=True).start()
         return fut
 
-    async def _scan(self, session_id: str, fn: Callable[[], list[Candidate]]
-                    ) -> list[Candidate] | None:
-        """The candidates, or None when the host's scan is stuck (this poll timed out,
-        or an earlier scan's thread is still blocked)."""
-        async with self._scan_lock:
+    async def _scan(self, session_id: str, sessions: list[SessionKey],
+                    fn: Callable[[], dict[str, list[Candidate]]]) -> list[Candidate] | None:
+        """``session_id``'s candidates, or None when the host's scan is stuck (this poll
+        ran out of time, or a running scan is already past ``scan_timeout``). Joins a
+        running scan that covers the session; waits out one that does not (a session
+        newer than it), then starts its own — all within one ``scan_timeout``."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._scan_timeout
+        covers = frozenset(s.session_id for s in sessions)
+        while True:
             fut = self._scan_future
-            if fut is not None and not fut.done():
+            if fut is None or fut.done():
+                fut = self._scan_future = self._start_scan(fn)
+                self._scan_started, self._scan_covers = loop.time(), covers
+            elif loop.time() - self._scan_started >= self._scan_timeout:
                 return None  # never a second thread while one is blocked
-            fut = self._scan_future = self._start_scan(fn)
+            joined = session_id in self._scan_covers
             try:
-                return await asyncio.wait_for(asyncio.shield(fut), self._scan_timeout)
+                result = await asyncio.wait_for(asyncio.shield(fut),
+                                                max(0.0, deadline - loop.time()))
             except TimeoutError:
                 log.info("dev_servers.scan_timeout session=%s after=%.1fs", session_id,
                          self._scan_timeout)
                 return None
+            if joined:
+                return result.get(session_id, [])
 
     async def _detect(self, session_id: str, sessions: list[SessionKey],
                       bg_commands: Callable[[], Awaitable[list[str]]],
                       managed_worktrees: frozenset[str], repo_roots: tuple[str, ...], *,
                       fresh: bool) -> list[dict]:
-        def scan() -> list[Candidate]:
+        def scan() -> dict[str, list[Candidate]]:
             managed = managed_worktrees
             if repo_roots:
                 managed = managed | managed_worktree_roots(sessions, repo_roots)
-            return find_candidates(session_id, sessions, fs=self._fs,
-                                   daemon_pid=self._daemon_pid, managed_worktrees=managed)
-        cands = await self._scan(session_id, scan)
+            return find_all_candidates(sessions, fs=self._fs, daemon_pid=self._daemon_pid,
+                                       managed_worktrees=managed)
+        cands = await self._scan(session_id, sessions, scan)
         if cands is None:
             if fresh:
                 return []
@@ -690,7 +748,7 @@ class DevServerDetector:
                                      "label": _label(cand, cmds)}
             if probe.title:
                 entry["title"] = probe.title
-            if cand.bind == "all":
+            if cand.bind != "loopback":
                 entry["note"] = EXPOSED_NOTE
             out.append(entry)
         return out

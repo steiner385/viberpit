@@ -1429,7 +1429,8 @@ export type DevServerOpen =
 export interface DevServer {
   port: number
   address: string
-  bind: 'loopback' | 'all'
+  /** `address`: bound to one non-loopback address (the tailnet IP, a LAN IP). */
+  bind: 'loopback' | 'all' | 'address'
   pid: number
   label: string
   title?: string
