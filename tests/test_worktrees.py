@@ -115,9 +115,48 @@ class WorktreeTests(unittest.TestCase):
         self.assertTrue(info.branch.startswith("viberpit/main-"))
         self.assertTrue(os.path.isdir(info.path))
 
+    def _branch_exists(self, branch: str) -> bool:
+        return worktrees.local_branch_exists(str(self.repo), branch)
+
+    def test_remove_requires_an_ownership_predicate(self) -> None:
+        """D-22: no default — a caller cannot skip the ownership question."""
+        import inspect
+        param = inspect.signature(worktrees.remove_worktree).parameters["owned_branch"]
+        self.assertIs(param.kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertIs(param.default, inspect.Parameter.empty)
+        info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
+        with self.assertRaises(TypeError):
+            worktrees.remove_worktree(info.path)  # type: ignore[call-arg]
+        self.assertTrue(os.path.isdir(info.path))
+
+    def test_an_unowned_session_shaped_branch_is_kept(self) -> None:
+        """A name match is not proof: the predicate's no keeps even a viberpit/ branch."""
+        info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
+        asked: list[str] = []
+        self.assertTrue(worktrees.remove_worktree(
+            info.path, owned_branch=lambda b: asked.append(b) or False))
+        self.assertFalse(os.path.isdir(info.path))
+        self.assertEqual(asked, [info.branch])
+        self.assertTrue(self._branch_exists(info.branch))
+
+    def test_an_owned_branch_is_deleted_whatever_its_name(self) -> None:
+        info = worktrees.create_worktree(str(self.repo), "feature", "abc12345-0000",
+                                         str(self.root))
+        self.assertEqual(info.branch, "feature")
+        self.assertTrue(worktrees.remove_worktree(info.path, owned_branch=lambda b: True))
+        self.assertFalse(self._branch_exists("feature"))
+
+    def test_a_predicate_that_raises_keeps_the_branch(self) -> None:
+        info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
+
+        def boom(_b: str) -> bool:
+            raise RuntimeError("db down")
+        self.assertTrue(worktrees.remove_worktree(info.path, owned_branch=boom))
+        self.assertTrue(self._branch_exists(info.branch))
+
     def test_remove_clean_worktree_and_child_branch(self) -> None:
         info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
-        self.assertTrue(worktrees.remove_worktree(info.path))
+        self.assertTrue(worktrees.remove_worktree(info.path, owned_branch=brand.is_session_branch))
         self.assertFalse(os.path.isdir(info.path))
         # the per-session child branch was deleted too
         branches = subprocess.run(
@@ -145,7 +184,7 @@ class WorktreeTests(unittest.TestCase):
         _git("branch", "-m", info.branch, legacy, cwd=info.path)
         self.assertIn(legacy, self._branches())
 
-        self.assertTrue(worktrees.remove_worktree(info.path))
+        self.assertTrue(worktrees.remove_worktree(info.path, owned_branch=brand.is_session_branch))
         self.assertNotIn(legacy, self._branches())
 
     def test_remove_keeps_a_branch_that_is_not_ours(self) -> None:
@@ -157,7 +196,7 @@ class WorktreeTests(unittest.TestCase):
         info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
         _git("branch", "-m", info.branch, "my-own-work", cwd=info.path)
 
-        self.assertTrue(worktrees.remove_worktree(info.path))
+        self.assertTrue(worktrees.remove_worktree(info.path, owned_branch=brand.is_session_branch))
         self.assertIn("my-own-work", self._branches())
 
     def test_remove_ignores_leftover_codex_attachment_staging(self) -> None:
@@ -173,13 +212,13 @@ class WorktreeTests(unittest.TestCase):
                 staging = Path(info.path) / dirname
                 staging.mkdir()
                 (staging / "deadbeef.png").write_bytes(b"staged")
-                self.assertTrue(worktrees.remove_worktree(info.path))
+                self.assertTrue(worktrees.remove_worktree(info.path, owned_branch=brand.is_session_branch))
                 self.assertFalse(os.path.isdir(info.path))
 
     def test_remove_keeps_dirty_worktree(self) -> None:
         info = worktrees.create_worktree(str(self.repo), "feature", "abc12345-0000", str(self.root))
         (Path(info.path) / "scratch.txt").write_text("uncommitted work\n")
-        self.assertFalse(worktrees.remove_worktree(info.path))  # left in place
+        self.assertFalse(worktrees.remove_worktree(info.path, owned_branch=brand.is_session_branch))  # left in place
         self.assertTrue(os.path.isdir(info.path))               # work preserved
 
     def test_non_git_dir_raises(self) -> None:
@@ -287,7 +326,7 @@ class WorktreeLockingTests(unittest.TestCase):
     def test_remove_unlocks_and_removes_locked_worktree(self) -> None:
         """Teardown must unlock the (now-locked) worktree before removing it."""
         info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
-        self.assertTrue(worktrees.remove_worktree(info.path))
+        self.assertTrue(worktrees.remove_worktree(info.path, owned_branch=brand.is_session_branch))
         self.assertFalse(os.path.isdir(info.path))
         self.assertFalse(self._is_registered(info.path))
 

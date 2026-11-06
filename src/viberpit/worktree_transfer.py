@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .gitrepos import git_env_for_remote
@@ -358,7 +359,8 @@ class Finalized:
 
 
 def finalize(bundle: Bundle | None, worktree_path: str, *,
-             session_id: str | None = None) -> Finalized:
+             session_id: str | None = None,
+             owned_branch: Callable[[str], bool]) -> Finalized:
     """Drop this host's copy of a session worktree that now lives on another host:
     the source after a successful move, or a target whose import was abandoned.
 
@@ -367,6 +369,8 @@ def finalize(bundle: Bundle | None, worktree_path: str, *,
     full tree (``refs/viberpit/recovery/<sid>/…``, local) BEFORE the forced removal,
     so a bad move stays recoverable here. *bundle* may be None (crash reconcile); the
     WIP is then found by its subject and *session_id* is required. Safe to call twice.
+    *owned_branch* is ``remove_worktree``'s required ownership predicate (D-22): the
+    branch is deleted only when it says ViberPit created it.
     """
     sid = bundle.session_id if bundle is not None else session_id
     if not sid:
@@ -385,7 +389,8 @@ def finalize(bundle: Bundle | None, worktree_path: str, *,
                         "uncommitted changes and no recovery snapshot could be taken; "
                         "leaving it in place", sid, worktree_path)
             return Finalized(False)
-    removed = remove_worktree(worktree_path, force=True, session_id=sid)
+    removed = remove_worktree(worktree_path, force=True, session_id=sid,
+                              owned_branch=owned_branch)
     log.info("transfer.finalize session=%s removed=%s path=%s recovery_ref=%s",
              sid, removed, worktree_path, ref)
     return Finalized(removed, ref)

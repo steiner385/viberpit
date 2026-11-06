@@ -6465,7 +6465,13 @@ class SessionOrchestrator:
                         # dirty copy remove_worktree would keep).
                         self._worktrees.pop(session_id, None)
                     else:
-                        await self._cleanup_session_paths(session_id, rollback_record)
+                        # This spawn made worktree_info's child branch: undoing it needs
+                        # no ownership record (D-22).
+                        await self._cleanup_session_paths(
+                            session_id, rollback_record,
+                            created_branch=(worktree_info.branch
+                                            if worktree_info is not None
+                                            and worktree_info.is_child else None))
 
                 await self._run_rollback_shielded(
                     _rollback(), name=f"session-spawn-rollback-{session_id}")
@@ -6498,11 +6504,14 @@ class SessionOrchestrator:
         worktree THIS spawn registered is removed (a fresh one is clean, so the
         dirty guard never keeps it); remove_worktree also deletes its child branch.
         """
+        # The child branch this spawn made: undoing it needs no record (D-22).
+        created = (worktree_info.branch
+                   if worktree_info is not None and worktree_info.is_child else None)
         if worktree_info is not None and self._worktrees.get(session_id) is worktree_info:
             if keep_paths:   # a fork worktree: the caller discards it (fork_session)
                 del self._worktrees[session_id]
             else:
-                await self._cleanup_session_paths(session_id, None)
+                await self._cleanup_session_paths(session_id, None, created_branch=created)
         if self._x11 is not None:
             try:
                 await self._x11.stop_display(session_id)
@@ -6961,6 +6970,7 @@ class SessionOrchestrator:
         unpushed: int | None = 0
         branch: str | None = None
         refs: list[str] = []
+        session_branch = False
         if managed and state == "present":
             try:
                 st = await asyncio.to_thread(wtx.inspect, cwd)
@@ -6968,11 +6978,15 @@ class SessionOrchestrator:
             except wtx.TransferError:
                 dirty = unpushed = None   # unreadable: Discard refuses (fails closed)
             refs = await asyncio.to_thread(worktrees.recovery_refs, cwd, rec.id)
+            # D-22: THE deletion predicate Discard hands remove_worktree, so the dialog's
+            # "will be deleted / kept" is the deletion's own answer.
+            if branch:
+                session_branch = (await self._owned_branch_gate(rec.id, cwd)).owns(branch)
         at_risk = bool(dirty) or bool(unpushed)
         return {
             "sessionId": rec.id, "path": cwd or None, "managed": managed,
             "present": state == "present", "state": state, "branch": branch,
-            "sessionBranch": brand.is_session_branch(branch or ""),
+            "sessionBranch": session_branch,
             "dirty": dirty, "unpushed": unpushed, "recoveryRefs": refs,
             "restoreHint": (worktrees.restore_command("<recovery-ref>")
                             if at_risk or dirty is None else None),
@@ -7122,6 +7136,9 @@ class SessionOrchestrator:
             log_event(log, logging.INFO, "session.worktree_discard_snapshot",
                       session_id=session_id, path=cwd, recovery_refs=refs)
             branch = facts["branch"]
+            # Built while the worktree still exists (it resolves the clone from it), and
+            # the same predicate the preflight's sessionBranch asked (D-22).
+            owned_branch = await self._owned_branch_gate(session_id, cwd)
 
             async def kept() -> dict:
                 # Every ref the session now has, the removal's own included — re-read,
@@ -7164,13 +7181,13 @@ class SessionOrchestrator:
             except Exception as exc:
                 raise await failed(wc.WORKTREE_DISCARD_FAILED, "archive",
                                    repr(exc)) from exc
-            removed = await asyncio.to_thread(worktrees.remove_worktree, cwd, True,
-                                              session_id=session_id)
+            removed = await asyncio.to_thread(functools.partial(
+                worktrees.remove_worktree, cwd, True, session_id=session_id,
+                owned_branch=owned_branch))
             if not removed:
                 raise await failed(wc.WORKTREE_REMOVE_FAILED, "remove")
             extra = await kept()
-            deleted = (brand.is_session_branch(branch or "") and not await asyncio.to_thread(
-                worktrees.local_branch_exists, repo_top, branch or ""))
+            deleted = bool(branch) and branch in await owned_branch.settle()
             log_event(log, logging.INFO, "session.worktree_discarded", session_id=session_id,
                       path=cwd, branch=branch, branch_deleted=deleted,
                       recovery_refs=extra["recoveryRefs"])
@@ -7221,9 +7238,12 @@ class SessionOrchestrator:
                     "recoveryRefs": clone_refs}
 
     async def _cleanup_session_paths(
-        self, session_id: str, record: SessionRecord | None,
+        self, session_id: str, record: SessionRecord | None, *,
+        created_branch: str | None = None,
     ) -> None:
-        """Release worktree/scratch paths owned by a session lifecycle."""
+        """Release worktree/scratch paths owned by a session lifecycle. The worktree's
+        branch is deleted only when ViberPit owns it (D-22) — or it is *created_branch*,
+        the child branch the failing spawn rolling back here made itself."""
         wt = self._worktrees.pop(session_id, None)
         wt_path = wt.path if wt else (
             record.cwd if record and worktrees.is_managed_path(record.cwd, self._repo_root)
@@ -7231,8 +7251,14 @@ class SessionOrchestrator:
         )
         if wt_path:
             try:
-                removed = await asyncio.to_thread(
-                    worktrees.remove_worktree, wt_path, session_id=session_id)
+                owned_branch = (await self._owned_branch_gate(session_id, wt_path)
+                                ).also_owning(created_branch)
+                removed = await asyncio.to_thread(functools.partial(
+                    worktrees.remove_worktree, wt_path, session_id=session_id,
+                    owned_branch=owned_branch))
+                # Forget the record of a branch the removal deleted — a spawn rollback's
+                # just-recorded child branch included (D-22).
+                await owned_branch.settle()
                 log.info("session.worktree id=%s removed=%s path=%s",
                          session_id, removed, wt_path)
             except Exception:
@@ -19557,7 +19583,7 @@ class SessionOrchestrator:
                 platform=await self._session_platform(session_id))
         except BaseException:
             await self._run_rollback_shielded(
-                asyncio.to_thread(worktrees.discard_fork_worktree, fork_wt),
+                self._discard_fork_and_record(fork_wt),
                 name=f"session-fork-rollback-{child_id}")
             raise
         log.info("session.fork source=%s child=%s mode=%s at=%s branch=%s",
@@ -19592,6 +19618,12 @@ class SessionOrchestrator:
         if anchor in facts.dangling:
             return "the turn ends in an unanswered tool use"
         return None
+
+    async def _discard_fork_and_record(self, fork_wt: worktrees.ForkWorktreeInfo) -> None:
+        """Discard a fork worktree nobody will run, and forget the fork branch's record
+        (written when the spawn began) once the branch is gone (D-22)."""
+        await asyncio.to_thread(worktrees.discard_fork_worktree, fork_wt)
+        await _branch_ownership.forget_if_gone(self_host_name(), fork_wt.repo, fork_wt.branch)
 
     async def _make_fork_worktree(self, source_cwd: str, source_id: str,
                                   dest: str) -> worktrees.ForkWorktreeInfo:
@@ -23230,6 +23262,14 @@ class SessionOrchestrator:
             return (await db.execute(
                 sa_select(DbSession).where(DbSession.id == session_id))).scalar_one_or_none()
 
+    async def _owned_branch_gate(self, session_id: str,
+                                 path: str) -> "_branch_ownership.OwnedBranchGate":
+        """THE ``owned_branch`` predicate for removing *session_id*'s worktree at *path*
+        on this host (D-22): every remove_worktree caller here, and the Discard
+        preflight, build it through this one call."""
+        return await _branch_ownership.owned_branch_predicate(
+            self_host_name(), path, session_id)
+
     def _row_stamped_here(self, host: str | None) -> bool:
         """``row_stamped_here`` (module level, shared with the branch backfill)."""
         return row_stamped_here(host)
@@ -23579,7 +23619,10 @@ class SessionOrchestrator:
             await self._close_for_transfer(session_id)
             self._retarget_record(session_id, source or "")
             if created and bundle is not None:
-                await asyncio.to_thread(wtx.finalize, bundle, cwd)
+                owned_branch = await self._owned_branch_gate(session_id, cwd)
+                await asyncio.to_thread(functools.partial(
+                    wtx.finalize, bundle, cwd, owned_branch=owned_branch))
+                await owned_branch.settle()
 
         try:
             async with self._transfer_slot(session_id):
@@ -23696,9 +23739,13 @@ class SessionOrchestrator:
                 except Exception:
                     log.info("session.move ref cleanup failed id=%s", session_id,
                              exc_info=True)
-            done = (await asyncio.to_thread(
-                        functools.partial(wtx.finalize, bundle, cwd, session_id=session_id))
-                    if cwd else wtx.Finalized(False))
+            done = wtx.Finalized(False)
+            if cwd:
+                owned_branch = await self._owned_branch_gate(session_id, cwd)
+                done = await asyncio.to_thread(functools.partial(
+                    wtx.finalize, bundle, cwd, session_id=session_id,
+                    owned_branch=owned_branch))
+                await owned_branch.settle()
         log.info("session.move_finalize id=%s owner=%s removed=%s recovery_ref=%s",
                  session_id, owner, done.removed, done.recovery_ref)
         return {"sessionId": session_id, "removed": done.removed,
@@ -29046,19 +29093,31 @@ class SessionOrchestrator:
         while True:
             if not self._shutting_down:
                 try:
-                    archived_cwds = await self._fetch_archived_cwds()
-                    await asyncio.to_thread(self._janitor_sweep_once, archived_cwds)
+                    await self._janitor_tick()
                 except Exception:
                     log.exception("worktree-janitor: sweep failed")
             await asyncio.sleep(interval)
 
-    def _janitor_sweep_once(self, archived_cwds: "frozenset[str] | None" = None) -> None:
+    async def _janitor_tick(self) -> None:
+        """One janitor pass: every DB read happens HERE, once per sweep, before the
+        sweep enters its thread — the archived cwds (#921) and the branch ownership
+        snapshot (D-22) — and the records of branches it deleted are forgotten after."""
+        archived_cwds = await self._fetch_archived_cwds()
+        ownership = await _branch_ownership.janitor_ownership(self_host_name())
+        await asyncio.to_thread(self._janitor_sweep_once, archived_cwds, ownership)
+        await ownership.settle()
+
+    def _janitor_sweep_once(
+        self, archived_cwds: "frozenset[str] | None" = None,
+        ownership: "_branch_ownership.JanitorOwnership | None" = None,
+    ) -> None:
         """Synchronous sweep — called inside ``asyncio.to_thread``.
 
         ``archived_cwds`` carries the absolute cwd paths of all archived sessions
         fetched from the DB before entering the thread, so their stay-in-place
         worktrees are protected even though archived sessions are absent from
-        ``_records`` (#921).
+        ``_records`` (#921). *ownership* is the branch ownership snapshot read with
+        them (D-22); without one (a direct call) no branch is owned, so none is deleted.
         """
         from viberpit.worktrees_janitor import sweep_orphaned_worktrees
 
@@ -29071,7 +29130,10 @@ class SessionOrchestrator:
             for wt in self._worktrees.values()
             if wt.path
         ) | (archived_cwds or frozenset())
-        counts = sweep_orphaned_worktrees(self._repo_root, live_cwds)
+        if ownership is None:
+            ownership = _branch_ownership.JanitorOwnership(self_host_name(), None, [])
+        counts = sweep_orphaned_worktrees(self._repo_root, live_cwds,
+                                          owned_branch_for=ownership.owned_branch_for)
         log.info(
             "worktree-janitor: scanned=%d removed=%d kept_live=%d "
             "kept_young=%d kept_dirty=%d kept_unpushed=%d kept_error=%d "

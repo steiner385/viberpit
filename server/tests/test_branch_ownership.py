@@ -307,6 +307,33 @@ async def test_a_spawn_whose_record_write_fails_still_starts_unrecorded(
                and r.levelno == logging.WARNING for r in caplog.records)
 
 
+# ── rollbacks forget what they deleted (D-22 Task 2) ───────────────────────────
+
+@pytest.mark.asyncio
+async def test_a_spawn_rollback_forgets_the_record_of_the_branch_it_deleted(
+        env, monkeypatch) -> None:  # noqa: F811 — pytest fixture
+    orch, _spawns, _src, _root, clone = env
+    import server.sessions.orchestrator as mod
+
+    def busy(*a, **k):
+        raise RuntimeError("all accounts busy")
+    monkeypatch.setattr(mod, "select_account", busy)
+    with pytest.raises(RuntimeError):
+        await orch.create_session("Child", cwd=str(clone), branch="main")
+    assert await _records() == []
+    assert _fork_git(clone, "branch", "--list", "viberpit/main-*").strip() == ""
+
+
+@pytest.mark.asyncio
+async def test_a_fork_rollback_forgets_the_fork_branch_record(env) -> None:  # noqa: F811 — pytest fixture
+    orch, spawns, src, _root, clone = env
+    spawns.fail_fork = True
+    with pytest.raises(Exception):
+        await _fork(orch, src.id, at_turn_id="t1", mode="reply")
+    assert await _records() == []
+    assert _fork_git(clone, "branch", "--list", "*fork-*").strip() == ""
+
+
 # ── recording at move import ───────────────────────────────────────────────────
 
 @pytest.mark.asyncio

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from viberpit import worktrees
+from viberpit import brand, worktrees
 
 
 def _git(*args: str, cwd: str | Path) -> str:
@@ -217,7 +217,7 @@ def test_refs_are_keyed_on_the_short_session_id(wt, repo):
 
 def test_force_remove_leaves_recovery_ref(wt, repo):
     _dirty(Path(wt.path))
-    assert worktrees.remove_worktree(wt.path, force=True, session_id=S2)
+    assert worktrees.remove_worktree(wt.path, force=True, session_id=S2, owned_branch=brand.is_session_branch)
     refs = worktrees.recovery_refs(str(repo), S2)
     assert refs and refs[-1].endswith("-forced"), \
         "a forced removal must snapshot the dirty tree first"
@@ -226,7 +226,7 @@ def test_force_remove_leaves_recovery_ref(wt, repo):
 
 def test_janitor_force_remove_without_session_id_uses_the_dir_name(wt, repo):
     _dirty(Path(wt.path))
-    assert worktrees.remove_worktree(wt.path, force=True)
+    assert worktrees.remove_worktree(wt.path, force=True, owned_branch=brand.is_session_branch)
     # The fixture's session id is "abcd1234-0000": the dir is "abcd1234".
     assert worktrees.recovery_refs(str(repo), "abcd1234-0000")
 
@@ -243,7 +243,7 @@ def test_clean_close_with_unpushed_commits_keeps_branch_tip(repo, tmp_path):
     _git("-c", "user.name=t", "-c", "user.email=t@e", "commit", "-m", "work", cwd=path)
     tip = _git("rev-parse", "HEAD", cwd=path)
 
-    assert worktrees.remove_worktree(info.path, session_id=S3)
+    assert worktrees.remove_worktree(info.path, session_id=S3, owned_branch=brand.is_session_branch)
     gone = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
                            f"refs/heads/{info.branch}"], capture_output=True)
     assert gone.returncode != 0, "the clean close still deletes the session branch"
@@ -256,7 +256,7 @@ def test_clean_close_without_new_commits_writes_no_ref(repo, tmp_path):
     _git("branch", "feature", cwd=repo)
     _git("checkout", "feature", cwd=repo)
     info = worktrees.create_worktree(str(repo), "feature", S4, str(tmp_path))
-    assert worktrees.remove_worktree(info.path, session_id=S4)
+    assert worktrees.remove_worktree(info.path, session_id=S4, owned_branch=brand.is_session_branch)
     assert worktrees.recovery_refs(str(repo), S4) == []
 
 
@@ -402,7 +402,7 @@ def test_discard_then_force_remove_loses_nothing(repo, tmp_path):
     tip = _commit(Path(info.path))
     _dirty(Path(info.path))
     refs = worktrees.snapshot_before_discard(info.path, S5)
-    assert worktrees.remove_worktree(info.path, force=True, session_id=S5)
+    assert worktrees.remove_worktree(info.path, force=True, session_id=S5, owned_branch=brand.is_session_branch)
     assert not Path(info.path).exists()
     gone = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
                            f"refs/heads/{info.branch}"], capture_output=True)
@@ -444,7 +444,7 @@ def test_an_unknown_unpushed_state_keeps_the_branch_on_removal(repo, tmp_path,
     info = _child_session_worktree(repo, tmp_path, S6)
     tip = _commit(Path(info.path))
     _fail_unpushed_check(monkeypatch)
-    assert worktrees.remove_worktree(info.path, session_id=S6)
+    assert worktrees.remove_worktree(info.path, session_id=S6, owned_branch=brand.is_session_branch)
     assert _git("rev-parse", f"refs/heads/{info.branch}", cwd=repo) == tip
 
 
@@ -461,14 +461,14 @@ def test_a_failed_branch_snapshot_keeps_the_branch(repo, tmp_path, monkeypatch):
     info = _child_session_worktree(repo, tmp_path, S6)
     tip = _commit(Path(info.path))
     monkeypatch.setattr(worktrees, "snapshot_branch_tip", lambda *a, **k: None)
-    assert worktrees.remove_worktree(info.path, session_id=S6)
+    assert worktrees.remove_worktree(info.path, session_id=S6, owned_branch=brand.is_session_branch)
     assert _git("rev-parse", f"refs/heads/{info.branch}", cwd=repo) == tip
 
 
 def test_a_failed_forced_snapshot_stops_the_removal(wt, monkeypatch):
     _dirty(Path(wt.path))
     monkeypatch.setattr(worktrees, "snapshot_recovery_ref", lambda *a, **k: None)
-    assert worktrees.remove_worktree(wt.path, force=True, session_id=S6) is False
+    assert worktrees.remove_worktree(wt.path, force=True, session_id=S6, owned_branch=brand.is_session_branch) is False
     assert (Path(wt.path) / "untracked.txt").read_text() == "untracked\n"
 
 
@@ -479,7 +479,7 @@ def test_keep_branch_warning_has_a_path_free_message(repo, tmp_path, monkeypatch
     _commit(Path(info.path))
     monkeypatch.setattr(worktrees, "snapshot_branch_tip", lambda *a, **k: None)
     with caplog.at_level(logging.WARNING):
-        assert worktrees.remove_worktree(info.path, session_id=S6)
+        assert worktrees.remove_worktree(info.path, session_id=S6, owned_branch=brand.is_session_branch)
     rec = next(r for r in caplog.records if r.getMessage() == "worktree.keep_branch")
     assert rec.levelno == logging.WARNING
     assert rec.fields["reason"] == "snapshot_failed"  # type: ignore[attr-defined]
@@ -520,7 +520,7 @@ def test_a_status_failure_is_not_clean_for_a_forced_removal(wt, repo, monkeypatc
     treated as dirty: the snapshot is taken, and the removal proceeds only with it."""
     _dirty(Path(wt.path))
     _fail_status(monkeypatch)
-    assert worktrees.remove_worktree(wt.path, force=True, session_id=S6) is True
+    assert worktrees.remove_worktree(wt.path, force=True, session_id=S6, owned_branch=brand.is_session_branch) is True
     refs = worktrees.recovery_refs(str(repo), S6)
     assert len(refs) == 1 and refs[0].endswith("-forced")
     assert _ls_tree(repo, refs[0])["untracked.txt"] == "untracked"
@@ -530,12 +530,12 @@ def test_a_status_failure_with_no_snapshot_keeps_the_tree(wt, monkeypatch):
     _dirty(Path(wt.path))
     _fail_status(monkeypatch)
     monkeypatch.setattr(worktrees, "snapshot_recovery_ref", lambda *a, **k: None)
-    assert worktrees.remove_worktree(wt.path, force=True, session_id=S6) is False
+    assert worktrees.remove_worktree(wt.path, force=True, session_id=S6, owned_branch=brand.is_session_branch) is False
     assert (Path(wt.path) / "untracked.txt").read_text() == "untracked\n"
 
 
 def test_a_status_failure_keeps_the_tree_for_a_normal_removal(wt, monkeypatch):
     """Unforced callers never remove a tree whose state they could not read."""
     _fail_status(monkeypatch)
-    assert worktrees.remove_worktree(wt.path, session_id=S6) is False
+    assert worktrees.remove_worktree(wt.path, session_id=S6, owned_branch=brand.is_session_branch) is False
     assert Path(wt.path).is_dir()

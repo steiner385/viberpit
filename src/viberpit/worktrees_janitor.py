@@ -45,8 +45,8 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Iterator
 
 from viberpit.clone_doctor import (
     clone_dir_from_gitdir,
@@ -190,8 +190,15 @@ def sweep_orphaned_worktrees(
     now: float | None = None,
     min_age: float = 86400.0,
     max_dirty_age: float = _MAX_DIRTY_AGE_DEFAULT,
+    *,
+    owned_branch_for: Callable[[str], Callable[[str], bool]],
 ) -> dict[str, int]:
     """Walk managed worktree dirs and remove those that are safe to reclaim.
+
+    *owned_branch_for(worktree)* returns ``remove_worktree``'s required ownership
+    predicate for that worktree (D-22). It is REQUIRED: the server builds it from ONE
+    snapshot of the branch ownership records read before the sweep enters its thread,
+    so a removed worktree's branch is deleted only when ViberPit recorded creating it.
 
     A dir is reclaimed only when ALL of the following hold:
     - Its absolute path is NOT in ``live_cwds`` (not a live session).
@@ -305,7 +312,7 @@ def sweep_orphaned_worktrees(
             if porcelain:
                 age = now - mtime
                 if age >= max_dirty_age:
-                    _evict_dirty(wt, age, counts)
+                    _evict_dirty(wt, age, counts, owned_branch_for(wt))
                 else:
                     log.info("worktree-janitor: keep_dirty path=%s", wt)
                     counts["kept_dirty"] += 1
@@ -316,7 +323,7 @@ def sweep_orphaned_worktrees(
                 counts["kept_unpushed"] += 1
                 continue
 
-            removed = remove_worktree(wt)
+            removed = remove_worktree(wt, owned_branch=owned_branch_for(wt))
             if removed:
                 counts["removed"] += 1
             else:
@@ -359,7 +366,8 @@ def _handle_stray(wt: str, counts: dict[str, int]) -> None:
     counts["removed"] += 1
 
 
-def _evict_dirty(wt: str, age_s: float, counts: dict[str, int]) -> None:
+def _evict_dirty(wt: str, age_s: float, counts: dict[str, int],
+                 owned_branch: Callable[[str], bool]) -> None:
     """Stash + force-remove a dirty worktree that has exceeded the max-age window.
 
     Every outcome is reported only once the removal has actually been attempted
@@ -386,7 +394,7 @@ def _evict_dirty(wt: str, age_s: float, counts: dict[str, int]) -> None:
 
     # After a successful stash the worktree is clean; after a failed stash we
     # use force=True to discard changes (7+ days with no active session).
-    if not remove_worktree(wt, force=(stash_sha is None)):
+    if not remove_worktree(wt, force=(stash_sha is None), owned_branch=owned_branch):
         log.info(
             "worktree-janitor: evict_failed path=%s stashed=%s age_days=%.1f",
             wt, stash_sha or "no", age_days,

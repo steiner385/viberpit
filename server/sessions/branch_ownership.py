@@ -42,7 +42,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import NamedTuple
 
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 
 from viberpit import brand, gitrepos, worktrees
 from server.db import db_session, dialect_insert
@@ -219,37 +219,133 @@ def _never(_branch: str) -> bool:
     return False
 
 
-def predicate_from(records: frozenset[BranchRecord] | None, session_id: str, *,
+def predicate_from(records: frozenset[BranchRecord] | None, session_id: str | None, *,
                    fork_parent_id: str | None = None,
                    row_branch: str | None = None) -> Callable[[str], bool]:
     """The ownership predicate over an already-read snapshot of one ``(host, clone)``'s
     records (the janitor reads once per sweep, then runs in a thread). Owned =
     a ``create``/``fork``/``import`` record, a ``backfill`` record for *session_id*
-    itself, or the strict legacy shape of *session_id*'s own branch. An unknown
+    itself, or the strict legacy shape of *session_id*'s own branch. With no session
+    (*session_id* None — a worktree no row maps to) only creation records count: the
+    backfill and legacy rules both need the session they vouch for. An unknown
     snapshot (None) owns nothing."""
     if records is None:
         return _never
-    proven = frozenset(r.branch for r in records
-                       if r.source != SOURCE_BACKFILL or r.session_id == session_id)
+    proven = frozenset(r.branch for r in records if r.source != SOURCE_BACKFILL
+                       or (session_id is not None and r.session_id == session_id))
+    if session_id is None:
+        return proven.__contains__
+    sid = session_id
 
     def owned(branch: str) -> bool:
         return branch in proven or legacy_session_branch(
-            branch, session_id, fork_parent_id=fork_parent_id, row_branch=row_branch)
+            branch, sid, fork_parent_id=fork_parent_id, row_branch=row_branch)
     return owned
 
 
-async def owned_branch_predicate(host: str, path: str,
-                                 session_id: str) -> Callable[[str], bool]:
+class OwnedBranchGate:
+    """``remove_worktree``'s ``owned_branch`` predicate for one worktree, which also
+    remembers what it approved, so that after the removal :meth:`settle` can forget
+    the record of every approved branch that is now gone.
+
+    :meth:`owns` is the pure question (the Discard preflight asks it, so the dialog's
+    "will be deleted / kept" is the deletion's own answer); calling the gate asks the
+    same question and notes a yes. A predicate that raises owns nothing."""
+
+    def __init__(self, host: str, clone: str | None, owns: Callable[[str], bool]) -> None:
+        self.host = host
+        self.clone = clone
+        self._owns = owns
+        self.approved: list[str] = []
+
+    def also_owning(self, created: str | None) -> "OwnedBranchGate":
+        """This gate, also owning *created*: a branch the caller ITSELF just made in this
+        operation (a spawn rollback undoing its own child branch). That needs no record —
+        it is the one deletion the plan allows without one — so a DB that is down cannot
+        strand it and wedge every retry of the same session id on "a branch named …
+        already exists" (#2255)."""
+        if not created:
+            return self
+        inner = self._owns
+        gate = OwnedBranchGate(self.host, self.clone,
+                               lambda b: b == created or bool(inner(b)))
+        gate.approved = self.approved
+        return gate
+
+    def owns(self, branch: str) -> bool:
+        if not branch:
+            return False
+        try:
+            return bool(self._owns(branch))
+        except Exception:
+            return False
+
+    def __call__(self, branch: str) -> bool:
+        ok = self.owns(branch)
+        if ok:
+            self.approved.append(branch)
+        return ok
+
+    async def settle(self) -> list[str]:
+        """The approved branches that no longer exist (deleted), each record forgotten.
+        Never raises; a branch whose existence cannot be read is left recorded."""
+        deleted: list[str] = []
+        if self.clone is None:
+            return deleted
+        for branch in dict.fromkeys(self.approved):
+            try:
+                gone = not await asyncio.to_thread(worktrees.local_branch_exists,
+                                                   self.clone, branch)
+            except Exception:
+                continue
+            if gone:
+                deleted.append(branch)
+                await forget_branch(self.host, self.clone, branch)
+        return deleted
+
+
+async def forget_branch(host: str, clone: str, branch: str) -> None:
+    """Drop the record of *branch* (deleted) for ``(host, clone)`` — *clone* is already a
+    :func:`clone_key`. Never raises: a record left behind for a deleted branch can only
+    vouch for a later same-named branch of the same session."""
+    try:
+        async with db_session() as db:
+            await db.execute(sa_delete(SessionBranch).where(
+                SessionBranch.host == host, SessionBranch.clone == clone,
+                SessionBranch.branch == branch))
+    except Exception as exc:
+        log_event(log, logging.INFO, "session_branch.forget_failed", host=host,
+                  error=type(exc).__name__)
+
+
+async def forget_if_gone(host: str, path: str, branch: str | None) -> None:
+    """Forget *branch*'s record in the clone *path* belongs to when the branch no longer
+    exists — for a rollback that deleted a branch it had just made and recorded (a
+    fork whose spawn failed). Never raises."""
+    if not branch:
+        return
+    try:
+        clone = await asyncio.to_thread(clone_key, path)
+        if clone is None or await asyncio.to_thread(worktrees.local_branch_exists,
+                                                    clone, branch):
+            return
+    except Exception:
+        return
+    await forget_branch(host, clone, branch)
+
+
+async def owned_branch_predicate(host: str, path: str, session_id: str) -> OwnedBranchGate:
     """``owned_branch(branch) -> bool`` for removing *session_id*'s worktree from the
     clone *path* belongs to on *host*: that ``(host, clone)``'s records (see
     :func:`predicate_from`), plus the legacy shape of the session's own branch (a
     fork's shape, at its own recorded ``n``, when its row says it is a fork). Any
-    failure to resolve the clone or read the DB returns a predicate that owns nothing
-    — the branch is kept."""
+    failure to resolve the clone or read the DB returns a gate that owns nothing —
+    the branch is kept. Build it BEFORE the removal: the clone is resolved from
+    *path*, which the removal deletes."""
     try:
         clone = await asyncio.to_thread(clone_key, path)
         if clone is None:
-            return _never
+            return OwnedBranchGate(host, None, _never)
         async with db_session() as db:
             records = await _records_for(db, host, clone)
             row = (await db.execute(
@@ -258,10 +354,91 @@ async def owned_branch_predicate(host: str, path: str,
     except Exception as exc:
         log_event(log, logging.INFO, "session_branch.lookup_failed", host=host,
                   error=type(exc).__name__)
-        return _never
+        return OwnedBranchGate(host, None, _never)
     fork_parent = row.parent_session_id if row is not None and row.is_fork else None
-    return predicate_from(records, session_id, fork_parent_id=fork_parent,
-                          row_branch=row.branch if row is not None else None)
+    return OwnedBranchGate(host, clone, predicate_from(
+        records, session_id, fork_parent_id=fork_parent,
+        row_branch=row.branch if row is not None else None))
+
+
+# ── the janitor's once-per-sweep snapshot ──────────────────────────────────────
+
+class _SessionFacts(NamedTuple):
+    session_id: str
+    fork_parent_id: str | None
+    row_branch: str | None
+
+
+class JanitorOwnership:
+    """ONE read of this host's records and the sessions' cwds, taken before the janitor
+    sweep enters its thread; :meth:`owned_branch_for` then answers per worktree with no
+    DB access. A worktree maps to the session whose ``cwd`` it is (ambiguous → none);
+    an unmapped worktree's branch is owned only through a creation record. A failed
+    read (``records_by_clone`` None) owns nothing."""
+
+    def __init__(self, host: str,
+                 records_by_clone: dict[str, frozenset[BranchRecord]] | None,
+                 sessions: list[tuple[str, _SessionFacts]]) -> None:
+        self.host = host
+        self.records_by_clone = records_by_clone
+        self._sessions = sessions
+        self._by_path: dict[str, _SessionFacts | None] | None = None
+        self.gates: list[OwnedBranchGate] = []
+
+    def _session_at(self, worktree: str) -> _SessionFacts | None:
+        if self._by_path is None:      # realpath is filesystem work: in the thread
+            by_path: dict[str, _SessionFacts | None] = {}
+            for cwd, facts in self._sessions:
+                key = os.path.realpath(cwd)
+                by_path[key] = None if key in by_path else facts
+            self._by_path = by_path
+        return self._by_path.get(os.path.realpath(worktree))
+
+    def owned_branch_for(self, worktree: str) -> OwnedBranchGate:
+        """Blocking (resolves the clone with git): the gate for *worktree*."""
+        if self.records_by_clone is None:
+            gate = OwnedBranchGate(self.host, None, _never)
+        else:
+            clone = clone_key(worktree)
+            if clone is None:
+                gate = OwnedBranchGate(self.host, None, _never)
+            else:
+                facts = self._session_at(worktree)
+                gate = OwnedBranchGate(self.host, clone, predicate_from(
+                    self.records_by_clone.get(clone, frozenset()),
+                    facts.session_id if facts else None,
+                    fork_parent_id=facts.fork_parent_id if facts else None,
+                    row_branch=facts.row_branch if facts else None))
+        self.gates.append(gate)
+        return gate
+
+    async def settle(self) -> None:
+        """Forget the records of every branch the sweep deleted."""
+        for gate in self.gates:
+            await gate.settle()
+
+
+async def janitor_ownership(host: str) -> JanitorOwnership:
+    """The janitor's snapshot for *host* (see :class:`JanitorOwnership`)."""
+    try:
+        async with db_session() as db:
+            recs = (await db.execute(
+                select(SessionBranch.clone, SessionBranch.branch, SessionBranch.source,
+                       SessionBranch.session_id).where(SessionBranch.host == host))).all()
+            rows = (await db.execute(
+                select(DbSession.id, DbSession.cwd, DbSession.is_fork,
+                       DbSession.parent_session_id, DbSession.branch)
+                .where(DbSession.cwd.is_not(None)))).all()
+    except Exception as exc:
+        log_event(log, logging.INFO, "session_branch.lookup_failed", host=host,
+                  error=type(exc).__name__)
+        return JanitorOwnership(host, None, [])
+    by_clone: dict[str, set[BranchRecord]] = {}
+    for r in recs:
+        by_clone.setdefault(r.clone, set()).add(BranchRecord(r.branch, r.source, r.session_id))
+    sessions = [(r.cwd, _SessionFacts(r.id, r.parent_session_id if r.is_fork else None,
+                                      r.branch)) for r in rows if r.cwd]
+    return JanitorOwnership(host, {c: frozenset(v) for c, v in by_clone.items()}, sessions)
 
 
 # ── the one-shot backfill ──────────────────────────────────────────────────────

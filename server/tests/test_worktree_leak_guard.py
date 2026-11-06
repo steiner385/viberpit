@@ -34,6 +34,15 @@ import pytest
 
 from viberpit import worktrees, worktrees_janitor
 
+
+def _UNOWNED_BRANCH(_branch: str) -> bool:
+    """remove_worktree's required ownership predicate (D-22): nothing owned."""
+    return False
+
+
+def _UNOWNED(_wt: str):
+    return _UNOWNED_BRANCH
+
 from server.tests.conftest import (
     _drain_real_worktree_violations,
     _fail_on_real_worktree_violations,
@@ -54,7 +63,8 @@ class TestGuardRefusesTheRealTree:
     def test_sweep_of_a_live_repo_root_raises(self):
         """The #1014 call itself: sweeping a live root must raise before walking it."""
         with pytest.raises(RuntimeError, match="sweep_orphaned_worktrees"):
-            worktrees_janitor.sweep_orphaned_worktrees(LIVE_REPO_ROOT, frozenset())
+            worktrees_janitor.sweep_orphaned_worktrees(LIVE_REPO_ROOT, frozenset(),
+                                                     owned_branch_for=_UNOWNED)
         assert _drain_real_worktree_violations()  # recorded, not just raised
 
     def test_remove_of_a_live_worktree_raises_before_running_any_git(self):
@@ -63,7 +73,7 @@ class TestGuardRefusesTheRealTree:
         force-removed on the way to the error."""
         with patch.object(worktrees, "_run") as mock_run:
             with pytest.raises(RuntimeError, match="remove_worktree"):
-                worktrees.remove_worktree(LIVE_WORKTREE)
+                worktrees.remove_worktree(LIVE_WORKTREE, owned_branch=_UNOWNED_BRANCH)
         mock_run.assert_not_called()
         assert _drain_real_worktree_violations()
 
@@ -71,7 +81,7 @@ class TestGuardRefusesTheRealTree:
         """``force=True`` is the janitor's max-age eviction path — the one that
         discards uncommitted work — so it must not slip past the guard."""
         with pytest.raises(RuntimeError, match="remove_worktree"):
-            worktrees.remove_worktree(LIVE_WORKTREE, force=True)
+            worktrees.remove_worktree(LIVE_WORKTREE, force=True, owned_branch=_UNOWNED_BRANCH)
         assert _drain_real_worktree_violations()
 
     def test_janitor_module_reference_is_guarded_too(self):
@@ -144,7 +154,8 @@ class TestGuardRefusesTheRealTree:
 
 class TestGuardLeavesLegitimateWorkAlone:
     def test_sweep_under_tmp_path_runs_normally(self, tmp_path):
-        counts = worktrees_janitor.sweep_orphaned_worktrees(str(tmp_path), frozenset())
+        counts = worktrees_janitor.sweep_orphaned_worktrees(str(tmp_path), frozenset(),
+                                                              owned_branch_for=_UNOWNED)
         assert counts["scanned"] == 0
         assert _drain_real_worktree_violations() == []
 
@@ -169,7 +180,7 @@ class TestGuardLeavesLegitimateWorkAlone:
         assert git("worktree", "add", str(wt), "-b", "side").returncode == 0
         assert wt.is_dir()
 
-        assert worktrees.remove_worktree(str(wt)) is True
+        assert worktrees.remove_worktree(str(wt), owned_branch=_UNOWNED_BRANCH) is True
         assert not wt.exists()
         assert _drain_real_worktree_violations() == []
 
@@ -213,7 +224,8 @@ def test_a_swallowed_refusal_still_fails_the_test():
     never swallow the resulting failure the way it swallows the RuntimeError.
     """
     try:
-        worktrees_janitor.sweep_orphaned_worktrees(LIVE_REPO_ROOT, frozenset())
+        worktrees_janitor.sweep_orphaned_worktrees(LIVE_REPO_ROOT, frozenset(),
+                                                     owned_branch_for=_UNOWNED)
     except Exception:
         pass  # exactly what the janitor loop does
 

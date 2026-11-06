@@ -9,8 +9,10 @@ status the edge answers with (``session_actions``).
 * **Discard** ends the session and removes its managed worktree. Idle only. Before
   anything is touched, every dirty tree and every commit the removal would leave
   unreferenced is kept as a recovery ref (``worktrees.snapshot_before_discard``); a
-  failure to keep one refuses the discard. Only a session branch
-  (``brand.is_session_branch``) is deleted — ``remove_worktree`` enforces it.
+  failure to keep one refuses the discard. Only a branch ViberPit recorded creating
+  (or the session's own legacy shape) is deleted — ``remove_worktree`` enforces it
+  through the ownership predicate (``branch_ownership``, D-22), the same one the
+  preflight's ``sessionBranch`` answers with.
 * **Repair** recreates a missing or empty managed worktree from the session's branch
   through the same gate a driver build uses (``_ensure_session_cwd``). A present
   tree is never touched.

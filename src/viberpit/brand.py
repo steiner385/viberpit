@@ -85,13 +85,15 @@ BRANCH_PREFIXES = (BRANCH_PREFIX, LEGACY_BRANCH_PREFIX)
 
 
 def is_session_branch(branch: str) -> bool:
-    """Whether *branch* is a per-session child branch we created, either spelling.
+    """Whether *branch* starts with a BUILT-IN session-branch prefix, either spelling.
 
-    The one place the branch dual-accept is spelled, for the same reason as
-    :func:`mcp_tool_stem`: the caller (``worktrees.remove_worktree``) deletes the
-    branch on this answer, so a second hand-typed ``startswith`` that missed a
-    prefix would leak one brand's branches into the repo forever while looking
-    exactly like the working code next to it.
+    A name match only — for display and for the strict legacy shape rule
+    (``server/sessions/branch_ownership.legacy_session_branch``). It is NOT the
+    deletion gate and must never become one again: ``worktrees.remove_worktree``
+    deletes a branch only when its required ``owned_branch`` predicate says ViberPit
+    recorded creating it (D-22). The one place the branch dual-accept is spelled, for
+    the same reason as :func:`mcp_tool_stem`: a second hand-typed ``startswith`` that
+    missed a prefix would silently drop one brand's legacy branches.
     """
     if not isinstance(branch, str):
         return False

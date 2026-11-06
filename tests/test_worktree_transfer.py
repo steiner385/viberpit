@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from viberpit import worktree_transfer as wt, worktrees
+from viberpit import brand, worktree_transfer as wt, worktrees
 
 
 def _git(*args: str, cwd: str) -> str:
@@ -369,7 +369,7 @@ class FinalizeTests(unittest.TestCase):
         base = _git("rev-parse", "HEAD", cwd=self.cwd)
         (Path(self.cwd) / "x.txt").write_text("x\n")
         b = wt.export(self.cwd, self.sid, carry_dirty=True, vetted=wt.inspect(self.cwd))
-        self.assertTrue(wt.finalize(b, self.cwd))
+        self.assertTrue(wt.finalize(b, self.cwd, owned_branch=brand.is_session_branch))
         self.assertFalse(os.path.isdir(self.cwd))
         # the child branch was deleted by remove_worktree; no ref may still point at the WIP
         r = subprocess.run(["git", "-C", str(self.clone), "branch", "--contains", b.head_sha],
@@ -379,13 +379,13 @@ class FinalizeTests(unittest.TestCase):
 
     def test_finalize_clean_removes_dir(self) -> None:
         b = wt.export(self.cwd, self.sid, carry_dirty=False)
-        self.assertTrue(wt.finalize(b, self.cwd))
+        self.assertTrue(wt.finalize(b, self.cwd, owned_branch=brand.is_session_branch))
         self.assertFalse(os.path.isdir(self.cwd))
 
     def test_finalize_is_idempotent(self) -> None:
         b = wt.export(self.cwd, self.sid, carry_dirty=False)
-        self.assertTrue(wt.finalize(b, self.cwd))
-        self.assertFalse(wt.finalize(b, self.cwd))
+        self.assertTrue(wt.finalize(b, self.cwd, owned_branch=brand.is_session_branch))
+        self.assertFalse(wt.finalize(b, self.cwd, owned_branch=brand.is_session_branch))
 
 
 class MoveSupportTests(unittest.TestCase):
@@ -446,7 +446,7 @@ class MoveSupportTests(unittest.TestCase):
     def test_finalize_snapshots_the_wip_before_removing(self) -> None:
         (Path(self.cwd) / "x.txt").write_text("precious\n")
         b = wt.export(self.cwd, self.sid, carry_dirty=True, vetted=wt.inspect(self.cwd))
-        done = wt.finalize(b, self.cwd)
+        done = wt.finalize(b, self.cwd, owned_branch=brand.is_session_branch)
         self.assertTrue(done)
         self.assertTrue(done.removed)
         self.assertIsNotNone(done.recovery_ref)
@@ -459,13 +459,13 @@ class MoveSupportTests(unittest.TestCase):
         """Crash reconcile knows no bundle: the WIP is found by its subject."""
         (Path(self.cwd) / "x.txt").write_text("precious\n")
         wt.export(self.cwd, self.sid, carry_dirty=True, vetted=wt.inspect(self.cwd))
-        done = wt.finalize(None, self.cwd, session_id=self.sid)
+        done = wt.finalize(None, self.cwd, session_id=self.sid, owned_branch=brand.is_session_branch)
         self.assertTrue(done.removed)
         self.assertIsNotNone(done.recovery_ref)
 
     def test_finalize_clean_tree_has_no_recovery_ref(self) -> None:
         b = wt.export(self.cwd, self.sid, carry_dirty=False)
-        done = wt.finalize(b, self.cwd)
+        done = wt.finalize(b, self.cwd, owned_branch=brand.is_session_branch)
         self.assertTrue(done.removed)
         self.assertIsNone(done.recovery_ref)
 
@@ -528,7 +528,7 @@ class FixRound1CoreTests(unittest.TestCase):
         (Path(self.cwd) / "x.txt").write_text("precious\n")
         b = wt.export(self.cwd, self.sid, carry_dirty=True, vetted=wt.inspect(self.cwd))
         with mock.patch.object(wt, "snapshot_recovery_ref", return_value=None):
-            done = wt.finalize(b, self.cwd)
+            done = wt.finalize(b, self.cwd, owned_branch=brand.is_session_branch)
         self.assertFalse(done.removed)
         self.assertTrue(os.path.isdir(self.cwd))
         self.assertEqual((Path(self.cwd) / "x.txt").read_text(), "precious\n")

@@ -32,6 +32,7 @@ import stat
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1513,12 +1514,16 @@ def recreate_worktree(repo_path: str, path: str, branch: str, *,
 
 
 def remove_worktree(worktree_path: str, force: bool = False, *,
-                    session_id: str | None = None) -> bool:
+                    session_id: str | None = None,
+                    owned_branch: Callable[[str], bool]) -> bool:
     """Remove a ViberPit worktree IFF it has no uncommitted changes.
 
     Returns True if removed, False if it was left in place (dirty — we never
-    destroy uncommitted work). Also deletes the per-session child branch when one
-    was created (either brand prefix), so the repo stays tidy.
+    destroy uncommitted work). Also deletes the branch it had checked out, but only
+    when *owned_branch* says ViberPit created it (D-22) — a name match is never proof.
+    *owned_branch* is REQUIRED, with no default, so no caller can skip the question:
+    the server builds it from the branch ownership records
+    (``server/sessions/branch_ownership.py``); a predicate that raises keeps the branch.
 
     ``force=True`` bypasses the dirty guard and uses ``git worktree remove
     --force``.  Only the janitor's max-age eviction path should set this —
@@ -1597,16 +1602,23 @@ def remove_worktree(worktree_path: str, force: bool = False, *,
         log.warning("worktree.remove_failed path=%s err=%s", wt, rm.stderr.strip())
         return False
 
-    # Tidy up the session child branch we created (only our own prefixes — a user's
-    # own branch is never deleted). BOTH spellings: a worktree created before the
-    # rebrand is torn down by the post-rebrand code, so matching only the emitted
-    # prefix would leak every legacy child branch into the clone permanently.
+    # Tidy up the branch ViberPit created for this session — only when the caller's
+    # ownership predicate (recorded creation, or the session's own legacy shape) says
+    # so; a user's own branch, or any branch nobody can vouch for, is kept (D-22).
     # `remove` already deregisters this worktree; no global prune (it could reap a
     # sibling session's live worktree — #177).
     # The branch is deleted only when nothing on it would be lost: no unpushed commits,
     # or their tip is kept as a recovery ref. Unknown (git failed) or a failed snapshot
     # keeps the branch — it used to be deleted either way.
-    if brand.is_session_branch(branch):
+    try:
+        owned = bool(branch) and branch != "HEAD" and bool(owned_branch(branch))
+    except Exception:
+        _log_fields(logging.WARNING, "worktree.keep_branch", path=wt, branch=branch,
+                    reason="ownership_unknown")
+        owned = False
+    if not owned and branch and branch != "HEAD":
+        log.info("worktree.keep_branch path=%s branch=%s reason=not_owned", wt, branch)
+    if owned:
         at_risk = _branch_has_unpushed_commits(repo_top, branch)
         if at_risk is None:
             log.info("worktree.keep_branch path=%s branch=%s reason=unpushed_unknown",
