@@ -57,3 +57,8 @@ export function countLine(n: number | null, one: string, many: string): string {
   if (n === null) return `${many}: couldn't be read`
   return `${n} ${n === 1 ? one : many}`
 }
+
+/** D-22 choice 3A: a session-looking branch cleanup will keep, because nothing vouches
+ *  that ViberPit created it. `(couldn't check)` when ownership could not be read. */
+export const BRANCH_KEPT_NOTE = 'Branch kept on cleanup — ViberPit has no record of creating it.'
+export const BRANCH_KEPT_UNKNOWN = "(couldn't check)"

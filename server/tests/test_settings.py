@@ -571,6 +571,7 @@ def test_get_settings_exposes_effective_defaults_and_accepted_modes(tmp_path):
         "modelApprovalAction": "block",
         "modelApprovalDenylist": "fable,opus",
         "globalCap": {"physical": None, "attention": None, "effective": 5, "binding": "default", "hosts": []},
+        "branchPrefix": "viberpit/",
     }
 
 

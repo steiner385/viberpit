@@ -407,6 +407,11 @@ async def init_db(db_url: str | None = None) -> None:
     # writes JSON columns and raw SQL for those is not portable across the two
     # dialects. Safe here — the session factory is bound above.
     await _repair_former_slugs()
+    # D-22: one-shot per host, records the pre-registry session branches this host's
+    # clones hold (strict legacy shape only). Never raises — a failure keeps them
+    # unrecorded, i.e. never auto-deleted, and retries at the next start.
+    from server.sessions.branch_ownership import backfill_session_branches
+    await backfill_session_branches(repo_root_fallback=settings.repo_root)
 
 
 async def _repair_former_slugs() -> None:

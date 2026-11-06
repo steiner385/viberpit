@@ -81,6 +81,8 @@ def _server_blocks(cap: GlobalCap) -> dict[str, object]:
             "modelApprovalAction": cfg.model_approval_action,
             "modelApprovalDenylist": cfg.model_approval_denylist,
             "globalCap": cap.to_wire(),
+            # What a NULL branch_prefix falls back to (D-22): the built-in prefix.
+            "branchPrefix": brand.BRANCH_PREFIX,
         },
         "managed": [
             {"key": env, "value": getattr(cfg, attr), "description": desc}
@@ -127,6 +129,10 @@ class SettingsBody(BaseModel):
     # (D-16a). Same three-state contract: explicit null clears to the CLI's `default`.
     # Validated against GET /api/settings/output-styles (built-ins + shared user dir).
     defaultOutputStyle: str | None = None
+    # Session-branch prefix (D-22). model_fields_set: explicit null or blank resets to
+    # the built-in; anything else is validated (server/sessions/branch_prefix.py) and
+    # refused with 400 BRANCH_PREFIX_INVALID + a reason.
+    branchPrefix: str | None = None
 
 
 async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | None) -> tuple[int, int, int]:
@@ -173,8 +179,35 @@ def _to_dict(s: AppSettings, cap: GlobalCap) -> dict:
         "assistantModel": s.assistant_model,
         "assistantOperatorTools": s.assistant_operator_tools,
         "defaultOutputStyle": s.default_output_style,
+        "branchPrefix": s.branch_prefix,
         **_server_blocks(cap),
     }
+
+
+async def _validated_branch_prefix(value: str | None, row: AppSettings) -> str | None:
+    """The stored form of a PUT ``branchPrefix``, or 400 ``BRANCH_PREFIX_INVALID``.
+    Blank/null resets to the built-in. The clash check reads this edge host's records
+    and its clones under the effective repo root; a records read that fails refuses
+    (it must not pass on records it could not see)."""
+    from server.sessions import branch_prefix as bp
+    prefix = bp.normalise(value)
+    if prefix is None:
+        return None
+
+    def refuse(reason: str) -> HTTPException:
+        return HTTPException(status_code=400, detail={
+            "code": bp.BRANCH_PREFIX_INVALID, "reason": reason})
+    try:
+        recorded = await bp.recorded_by_clone(self_host_name())
+    except Exception as exc:
+        log.info("settings: branch_prefix records read failed: %s", type(exc).__name__)
+        raise refuse("Existing branches could not be checked; try again.") from exc
+    repo_root = row.repo_root or get_settings().repo_root
+    try:
+        await asyncio.to_thread(bp.validate, prefix, repo_root, recorded)
+    except bp.BranchPrefixInvalid as exc:
+        raise refuse(exc.reason) from exc
+    return prefix
 
 
 @router.get("/output-styles")
@@ -262,6 +295,13 @@ async def put_settings_row(
         if style is not None and style not in {s["name"] for s in known}:
             raise HTTPException(status_code=422, detail="invalid defaultOutputStyle")
         row.default_output_style = style
+    if "branchPrefix" in body.model_fields_set:
+        from server.sessions import branch_prefix as bp
+        # Unchanged → nothing to validate (D-22): re-running the clash scan on every
+        # save would let one unrecorded branch, or one unreadable clone, fail every
+        # unrelated Settings › Sessions save on a field the user never touched.
+        if bp.normalise(body.branchPrefix) != row.branch_prefix:
+            row.branch_prefix = await _validated_branch_prefix(body.branchPrefix, row)
     # LAST, after every other field above has had its chance to raise: this
     # block commits (not merely flushes), which is this handler's one point of
     # no return. `get_db`'s deferred commit made the whole PUT atomic before

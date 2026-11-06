@@ -1,7 +1,7 @@
 """Unit tests for the orphaned-worktree janitor sweep logic."""
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 
 from viberpit.worktrees_janitor import sweep_orphaned_worktrees
@@ -11,6 +11,12 @@ from viberpit.worktrees_janitor import sweep_orphaned_worktrees
 _MOD = "viberpit.worktrees_janitor"
 _RUN = f"{_MOD}._run"
 _REMOVE = f"{_MOD}.remove_worktree"
+
+
+def _UNOWNED(_wt: str):
+    """The janitor's required ownership lookup (D-22) for sweeps whose branch outcome
+    is not under test: no branch is owned, so none is deleted."""
+    return lambda _branch: False
 
 
 def _age(wt: Path, age_s: float, now: float) -> Path:
@@ -54,19 +60,19 @@ class TestSweepSkips:
     def test_skips_live_cwd(self, tmp_path):
         wt = _make_wt(tmp_path, "s1", OLD, NOW)
         live = frozenset([str(wt.resolve())])
-        counts = sweep_orphaned_worktrees(str(tmp_path), live, now=NOW)
+        counts = sweep_orphaned_worktrees(str(tmp_path), live, now=NOW, owned_branch_for=_UNOWNED)
         assert counts["scanned"] == 1
         assert counts["kept_live"] == 1
         assert counts["removed"] == 0
 
     def test_skips_young_dir(self, tmp_path):
         wt = _make_wt(tmp_path, "s2", 3600.0, NOW)  # only 1 h old
-        counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["kept_young"] == 1
         assert counts["removed"] == 0
 
     def test_no_worktrees_dir(self, tmp_path):
-        counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["scanned"] == 0
 
     def test_scans_both_namespace_spellings(self, tmp_path):
@@ -77,13 +83,13 @@ class TestSweepSkips:
         fresh.mkdir(parents=True)
         _age(fresh, OLD, NOW)
         live = frozenset([str(legacy.resolve()), str(fresh.resolve())])
-        counts = sweep_orphaned_worktrees(str(tmp_path), live, now=NOW)
+        counts = sweep_orphaned_worktrees(str(tmp_path), live, now=NOW, owned_branch_for=_UNOWNED)
         assert counts["scanned"] == 2
         assert counts["kept_live"] == 2
 
     def test_empty_worktrees_dir(self, tmp_path):
         (tmp_path / ".ccswitch" / "worktrees").mkdir(parents=True)
-        counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["scanned"] == 0
 
 
@@ -92,7 +98,7 @@ class TestSweepKeepsDirty:
         wt = _make_wt(tmp_path, "dirty", OLD, NOW)
         responses = {"git -C": _cp(0, " M file.py")}
         with patch(_RUN, side_effect=_fake_run(responses)):
-            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["kept_dirty"] == 1
         assert counts["removed"] == 0
 
@@ -107,7 +113,7 @@ class TestSweepKeepsUnpushed:
             "rev-list": _cp(0, "abc123\n"),             # has unpushed commit
         }
         with patch(_RUN, side_effect=_fake_run(responses)):
-            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["kept_unpushed"] == 1
 
     def test_no_remotes_kept(self, tmp_path):
@@ -118,7 +124,7 @@ class TestSweepKeepsUnpushed:
             "remote": _cp(0, ""),  # no remotes
         }
         with patch(_RUN, side_effect=_fake_run(responses)):
-            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["kept_unpushed"] == 1
 
 
@@ -133,9 +139,9 @@ class TestSweepRemoves:
         }
         with patch(_RUN, side_effect=_fake_run(responses)):
             with patch(_REMOVE, return_value=True) as mock_rm:
-                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["removed"] == 1
-        mock_rm.assert_called_once_with(str(wt.resolve()))
+        mock_rm.assert_called_once_with(str(wt.resolve()), owned_branch=ANY)
 
     def test_removes_upstream_gone(self, tmp_path):
         wt = _make_wt(tmp_path, "gone", OLD, NOW)
@@ -145,7 +151,7 @@ class TestSweepRemoves:
         }
         with patch(_RUN, side_effect=_fake_run(responses)):
             with patch(_REMOVE, return_value=True):
-                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["removed"] == 1
 
 
@@ -160,7 +166,7 @@ class TestSweepErrors:
         }
         with patch(_RUN, side_effect=_fake_run(responses)):
             with patch(_REMOVE, return_value=False):
-                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["kept_error"] == 1
         assert counts["removed"] == 0
 
@@ -178,7 +184,7 @@ class TestSweepErrors:
 
         with patch(_RUN, side_effect=exploding_run):
             with patch(_REMOVE, return_value=True):
-                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["scanned"] == 2
         assert counts["kept_error"] == 1
 
@@ -195,7 +201,7 @@ class TestMaxAgeDirtyEviction:
         _make_wt(tmp_path, "young-dirty", OLD, NOW)  # 25 h — within 7-day grace
         responses = {"git -C": _cp(0, " M file.py")}
         with patch(_RUN, side_effect=_fake_run(responses)):
-            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["kept_dirty"] == 1
         assert counts["evicted_dirty"] == 0
 
@@ -209,12 +215,12 @@ class TestMaxAgeDirtyEviction:
         }
         with patch(_RUN, side_effect=_fake_run(dirty_responses)):
             with patch(_REMOVE, return_value=True) as mock_rm:
-                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["evicted_dirty"] == 1
         assert counts["removed"] == 1
         assert counts["kept_dirty"] == 0
         # remove_worktree called WITHOUT force (stash cleaned the tree)
-        mock_rm.assert_called_once_with(str(wt.resolve()), force=False)
+        mock_rm.assert_called_once_with(str(wt.resolve()), force=False, owned_branch=ANY)
 
     def test_dirty_exceeds_grace_stash_fails_force_evicts(self, tmp_path):
         """If stash fails the worktree is still force-removed (discard path)."""
@@ -226,13 +232,13 @@ class TestMaxAgeDirtyEviction:
         }
         with patch(_RUN, side_effect=_fake_run(dirty_responses)):
             with patch(_REMOVE, return_value=True) as mock_rm:
-                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["evicted_dirty"] == 1
         assert counts["evicted_dirty_unstashed"] == 1
         assert counts["removed"] == 1
         assert counts["kept_dirty"] == 0
         # remove_worktree called WITH force=True because stash failed
-        mock_rm.assert_called_once_with(str(wt.resolve()), force=True)
+        mock_rm.assert_called_once_with(str(wt.resolve()), force=True, owned_branch=ANY)
 
     def test_dirty_exceeds_grace_stash_succeeds_does_not_count_unstashed(self, tmp_path):
         """A successful stash must not be miscounted as a discard (#1652)."""
@@ -244,7 +250,7 @@ class TestMaxAgeDirtyEviction:
         }
         with patch(_RUN, side_effect=_fake_run(dirty_responses)):
             with patch(_REMOVE, return_value=True):
-                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["evicted_dirty_unstashed"] == 0
 
     def test_eviction_remove_failure_increments_kept_error(self, tmp_path):
@@ -257,7 +263,7 @@ class TestMaxAgeDirtyEviction:
         }
         with patch(_RUN, side_effect=_fake_run(dirty_responses)):
             with patch(_REMOVE, return_value=False):
-                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["evicted_dirty"] == 0
         assert counts["kept_error"] == 1
         assert counts["evict_failed"] == 1
@@ -292,7 +298,7 @@ class TestFailedEvictionIsNotReportedAsDiscarded:
         with patch(_RUN, side_effect=_fake_run(self.STASH_FAILS)):
             with patch(_REMOVE, return_value=False):
                 with ctx:
-                    return sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                    return sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
 
     def test_unremovable_worktree_is_not_counted_as_discarded(self, tmp_path):
         counts = self._stuck_sweep(tmp_path, ["stuck"])
@@ -353,7 +359,7 @@ class TestFailedEvictionIsNotReportedAsDiscarded:
         with patch(_RUN, side_effect=_fake_run(responses)):
             with patch(_REMOVE, return_value=False):
                 with caplog.at_level(logging.INFO, logger=_MOD):
-                    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["evict_failed"] == 1
         assert any("stash=deadbeef" in r.getMessage() for r in caplog.records)
 
@@ -363,7 +369,7 @@ class TestFailedEvictionIsNotReportedAsDiscarded:
         with patch(_RUN, side_effect=_fake_run(self.STASH_FAILS)):
             with patch(_REMOVE, return_value=True):
                 with caplog.at_level(logging.WARNING, logger=_MOD):
-                    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["evict_failed"] == 0
         assert not any("evict_failed" in r.getMessage() for r in caplog.records)
 
@@ -387,7 +393,7 @@ class TestUnstashedEvictionAlert:
         with patch(_RUN, side_effect=_fake_run(dirty_responses)):
             with patch(_REMOVE, return_value=True):
                 with caplog.at_level(logging.INFO, logger=_MOD):
-                    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         return wt, counts
 
     def test_stash_failure_is_never_logged_at_warning(self, tmp_path, caplog):
@@ -419,7 +425,7 @@ class TestUnstashedEvictionAlert:
         with patch(_RUN, side_effect=_fake_run(dirty_responses)):
             with patch(_REMOVE, return_value=True):
                 with caplog.at_level(logging.WARNING, logger=_MOD):
-                    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["evicted_dirty_unstashed"] == 3
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 1
@@ -445,7 +451,7 @@ class TestUnstashedEvictionAlert:
             with caplog.at_level(logging.WARNING, logger=_MOD):
                 with patch(_RUN, side_effect=_fake_run(dirty_responses)):
                     with patch(_REMOVE, return_value=True):
-                        sweep_orphaned_worktrees(str(base), frozenset(), now=NOW)
+                        sweep_orphaned_worktrees(str(base), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
             return next(r.getMessage() for r in caplog.records
                         if r.levelno == logging.WARNING)
 
@@ -465,7 +471,7 @@ class TestDirtyAlerts:
         dirty = {"git -C": _cp(0, " M f.py")}
         with patch(_RUN, side_effect=_fake_run(dirty)):
             with caplog.at_level(logging.INFO, logger=_MOD):
-                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["kept_dirty"] == 31
         hits = [r for r in caplog.records
                 if "kept_dirty" in r.message and "warning threshold" in r.message]
@@ -482,7 +488,7 @@ class TestDirtyAlerts:
         dirty = {"git -C": _cp(0, " M f.py")}
         with patch(_RUN, side_effect=_fake_run(dirty)):
             with caplog.at_level(logging.CRITICAL, logger=_MOD):
-                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["kept_dirty"] == 51
         assert any("kept_dirty" in r.message and "critical threshold" in r.message
                    for r in caplog.records)
@@ -510,7 +516,7 @@ class TestStrayDirs:
     def _sweep(self, tmp_path, live=frozenset()):
         with patch(_RUN, side_effect=_fake_run(self.NOT_A_REPO)):
             with patch(_REMOVE) as rm:
-                counts = sweep_orphaned_worktrees(str(tmp_path), live, now=NOW)
+                counts = sweep_orphaned_worktrees(str(tmp_path), live, now=NOW, owned_branch_for=_UNOWNED)
         return counts, rm
 
     def _stray_with_files(self, tmp_path, name, age_s=OLD):
@@ -617,7 +623,7 @@ class TestStrayDirs:
             with caplog.at_level(logging.WARNING, logger=_MOD):
                 with patch(_RUN,
                            side_effect=_fake_run(self.NOT_A_REPO)):
-                    sweep_orphaned_worktrees(str(base), frozenset(), now=NOW)
+                    sweep_orphaned_worktrees(str(base), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
             return next(r.getMessage() for r in caplog.records
                         if r.levelno == logging.WARNING)
 
@@ -641,7 +647,7 @@ class TestStrayDirs:
         _make_wt(tmp_path, "genuinely-dirty", OLD, NOW)
         with patch(_RUN,
                    side_effect=_fake_run({"status --porcelain": _cp(0, " M file.py")})):
-            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["kept_dirty"] == 1
         assert counts["kept_stray"] == 0
         assert counts["pruned_empty"] == 0
@@ -666,7 +672,7 @@ class TestOrphanedWorktrees:
     def test_orphan_is_counted_and_never_removed(self, tmp_path):
         self._orphan(tmp_path)
         with patch(_REMOVE) as rm:
-            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["orphaned"] == 1
         # Not miscounted as dirty — that alert would blame the wrong thing.
         assert counts["kept_dirty"] == 0
@@ -676,7 +682,7 @@ class TestOrphanedWorktrees:
     def test_orphan_is_reported_even_for_a_live_session(self, tmp_path):
         wt = self._orphan(tmp_path)
         counts = sweep_orphaned_worktrees(
-            str(tmp_path), frozenset([str(wt.resolve())]), now=NOW)
+            str(tmp_path), frozenset([str(wt.resolve())]), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["orphaned"] == 1
 
     def test_orphan_alert_is_one_aggregated_critical(self, tmp_path, caplog):
@@ -684,7 +690,7 @@ class TestOrphanedWorktrees:
         for i in range(3):
             self._orphan(tmp_path, f"orphan{i}", age=YOUNG)
         with caplog.at_level(logging.CRITICAL, logger=_MOD):
-            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["orphaned"] == 3
         criticals = [r for r in caplog.records if r.levelno == logging.CRITICAL]
         assert len(criticals) == 1
@@ -703,7 +709,7 @@ class TestOrphanedWorktrees:
         self._orphan(tmp_path, "fresh", age=YOUNG)
         self._orphan(tmp_path, "stale", age=OLD)
         with caplog.at_level(logging.INFO, logger=_MOD):
-            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["orphaned"] == 2
         assert counts["orphaned_active"] == 1
         criticals = [r for r in caplog.records if r.levelno == logging.CRITICAL]
@@ -727,7 +733,7 @@ class TestOrphanedWorktrees:
         for i in range(4):
             self._orphan(tmp_path, f"orphan{i}", age=OLD)
         with caplog.at_level(logging.INFO, logger=_MOD):
-            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["orphaned"] == 4
         assert counts["orphaned_active"] == 0
         assert not [r for r in caplog.records if r.levelno == logging.CRITICAL]
@@ -761,7 +767,7 @@ class TestOrphanedWorktrees:
                 _age(wt, age, NOW)
             caplog.clear()
             with caplog.at_level(logging.WARNING, logger=_MOD):
-                sweep_orphaned_worktrees(str(base), frozenset(), now=NOW)
+                sweep_orphaned_worktrees(str(base), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
             msg = next(r.getMessage() for r in caplog.records
                        if r.levelno >= logging.WARNING)
             # Asserted directly, not only through ``normalize``: that truncates
@@ -785,7 +791,7 @@ class TestOrphanedWorktrees:
         for i in range(2):
             self._orphan(tmp_path, f"orphan{i}")
         with caplog.at_level(logging.INFO, logger=_MOD):
-            sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+            sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         info = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
         assert any("orphaned_clone" in m and "clones/cairnea/KinDash" in m
                    and "worktrees=2" in m for m in info), info
@@ -804,7 +810,7 @@ class TestOrphanedWorktrees:
         (wt / ".git").write_text(f"gitdir: {elsewhere}/.git/worktrees/recordless\n")
         _age(wt, OLD, NOW)
         with patch(_REMOVE) as rm:
-            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["orphaned"] == 1
         assert counts["orphaned_unmanaged"] == 0
         rm.assert_not_called()
@@ -823,7 +829,7 @@ class TestOrphanedWorktrees:
         _age(wt, OLD, NOW)
         with patch(_REMOVE) as rm:
             with caplog.at_level(logging.INFO, logger=_MOD):
-                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["orphaned_unmanaged"] == 1
         assert counts["orphaned"] == 0
         assert counts["removed"] == 0
@@ -851,7 +857,7 @@ class TestOrphanedWorktrees:
         }
         with patch(_RUN, side_effect=_fake_run(clean)):
             with patch(_REMOVE, return_value=True):
-                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
         assert counts["orphaned"] == 0
         assert counts["removed"] == 1
 
@@ -879,6 +885,6 @@ def test_a_failed_forced_snapshot_keeps_the_tree_as_evict_failed(tmp_path, monke
     _age(wt, VERY_OLD, NOW)
     monkeypatch.setattr(jan, "_git_stash", lambda _wt: None)
     monkeypatch.setattr(worktrees, "snapshot_recovery_ref", lambda *a, **k: None)
-    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+    counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW, owned_branch_for=_UNOWNED)
     assert counts["evict_failed"] == 1 and counts["removed"] == 0, counts
     assert (wt / "precious.txt").read_text() == "unsaved\n"

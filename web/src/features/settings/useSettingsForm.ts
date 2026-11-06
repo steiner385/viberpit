@@ -63,6 +63,20 @@ function isArchiveMoveFailed(d: unknown): d is ArchiveMoveFailed {
   )
 }
 
+/**
+ * The 400 a refused session-branch prefix returns (D-22, `server/api/settings.py`):
+ * `{detail: {code: 'BRANCH_PREFIX_INVALID', reason}}`, the reason written for the
+ * user. Its reason, or null for any other error — Settings › Sessions shows it
+ * inline under the field instead of in the section banner.
+ */
+export function branchPrefixReason(err: unknown): string | null {
+  if (!(err instanceof ApiRequestError)) return null
+  const d = err.body.detail as { code?: unknown; reason?: unknown } | null | undefined
+  return d && typeof d === 'object' && d.code === 'BRANCH_PREFIX_INVALID' && typeof d.reason === 'string'
+    ? d.reason
+    : null
+}
+
 /** The one place a save failure becomes a sentence. Exported for its own table test. */
 export function messageOf(err: unknown): string {
   if (err instanceof ApiRequestError) {
@@ -70,6 +84,8 @@ export function messageOf(err: unknown): string {
     if (typeof d === 'string') return d
     // Specific before generic: a coded detail gets its own sentence, and only a
     // detail nobody here recognises falls through to `message` / the status.
+    const prefixReason = branchPrefixReason(err)
+    if (prefixReason) return prefixReason
     if (isArchiveMoveFailed(d)) {
       return `${d.moved} of ${d.total} archived sessions were moved before the copy failed; `
         + 'the path was not changed. Move the remaining files by hand or try again.'

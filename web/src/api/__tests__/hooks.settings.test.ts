@@ -72,7 +72,7 @@ describe('useSettings', () => {
         archiveHome: null,
         modelApprovalAction: 'block',
         modelApprovalDenylist: 'fable',
-        globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] },
+        branchPrefix: 'viberpit/', globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] },
       },
       managed: [{ key: 'VIBERPIT_ENABLE_COPILOT', value: false, description: 'Enable GitHub Copilot accounts' }],
       about: { gitSha: 'abc1234', hostName: 'dobby' },

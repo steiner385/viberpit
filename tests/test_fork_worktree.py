@@ -122,6 +122,23 @@ def test_next_fork_branch_takes_the_first_free_n(repo: Path) -> None:
     assert worktrees._next_fork_branch(str(repo), SID) == worktrees.fork_branch_name(SID, 2)
 
 
+def test_next_fork_branch_uses_the_prefix_and_skips_every_built_in_n(repo: Path) -> None:
+    """D-22: a configured prefix names the new fork, and an n an older fork holds under
+    ANY built-in prefix (or the configured one) is never reused."""
+    _git(repo, "branch", worktrees.fork_branch_name(SID, 1))                    # built-in
+    _git(repo, "branch", worktrees.fork_branch_name(SID, 2, brand.LEGACY_BRANCH_PREFIX))
+    _git(repo, "branch", worktrees.fork_branch_name(SID, 3, "agent/"))
+    assert (worktrees._next_fork_branch(str(repo), SID, "agent/")
+            == worktrees.fork_branch_name(SID, 4, "agent/") == "agent/fork-abcd1234-4")
+
+
+def test_fork_worktree_is_created_under_the_given_prefix(repo: Path, tmp_path: Path) -> None:
+    dest = str(tmp_path / "fork-dest")
+    info = worktrees.create_fork_worktree(str(repo), source_session_id=SID, dest=dest,
+                                          branch_prefix="agent/")
+    assert info.branch == "agent/fork-abcd1234-1"
+
+
 def test_fork_picks_past_an_existing_branch_and_leaves_it(repo: Path, tmp_path: Path) -> None:
     taken = worktrees.fork_branch_name(SID, 1)
     _git(repo, "branch", taken)

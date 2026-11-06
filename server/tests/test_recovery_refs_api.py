@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import func, select
 
-from viberpit import gitrepos, worktrees
+from viberpit import brand, gitrepos, worktrees
 from server.db import db_session, init_db
 from server.db.models import AuditEvent, Session as DbSession
 from server.ipc.client import DaemonError
@@ -128,7 +128,7 @@ def test_a_live_session_lists_its_refs_newest_first_with_the_newest_restore(env)
 
 def test_an_archived_session_whose_worktree_is_gone_lists_refs_through_the_clone(env):
     _dirty(env["cwd"])
-    assert worktrees.remove_worktree(env["cwd"], force=True, session_id=SID)
+    assert worktrees.remove_worktree(env["cwd"], force=True, session_id=SID, owned_branch=brand.is_session_branch)
     assert not Path(env["cwd"]).exists()
     kept = worktrees.recovery_refs(str(env["clone"]), SID)
     assert kept and kept[0].endswith(f"-{worktrees.RECOVERY_FORCED}")
@@ -146,7 +146,7 @@ def test_an_archived_session_whose_worktree_is_gone_lists_refs_through_the_clone
 
 def test_a_live_record_whose_worktree_is_gone_also_falls_back_to_the_clone(env):
     _dirty(env["cwd"])
-    assert worktrees.remove_worktree(env["cwd"], force=True, session_id=SID)
+    assert worktrees.remove_worktree(env["cwd"], force=True, session_id=SID, owned_branch=brand.is_session_branch)
 
     async def run():
         orch = await _orch(env, _row(SID, cwd=env["cwd"]))
@@ -381,7 +381,7 @@ def test_an_archived_row_crosses_the_real_daemon_envelope(env):
     from server.tests.ipc_harness import serve_daemon_uds
 
     _dirty(env["cwd"])
-    assert worktrees.remove_worktree(env["cwd"], force=True, session_id=SID)
+    assert worktrees.remove_worktree(env["cwd"], force=True, session_id=SID, owned_branch=brand.is_session_branch)
     kept = worktrees.recovery_refs(str(env["clone"]), SID)
 
     async def run():

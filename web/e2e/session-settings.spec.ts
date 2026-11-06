@@ -159,22 +159,23 @@ test('1440px: the Environment card PR auto-fix switch posts pr-autofix', async (
 })
 
 for (const width of [1440, 390]) {
-  test(`${width}px: Settings › Sessions shows the worktree location and the fixed branch prefix`, async ({ page }) => {
+  test(`${width}px: Settings › Sessions shows the worktree location and the branch prefix field`, async ({ page }) => {
     await mockApp(page, width)
     await page.route('**/api/settings', (route) => route.fulfill({ json: {
       defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null, defaultToolDetail: 'auto',
       autoArchiveEnabled: true, maxArchivedSessions: null, archiveHome: null, modelApprovalAction: null,
       modelApprovalDenylist: null, acceptedPermissionModes: ['interactive'],
       effectiveDefaults: { repoRoot: '/home/user/GitHub', archiveHome: null, modelApprovalAction: 'require_approval',
-        modelApprovalDenylist: 'fable', globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] } },
+        modelApprovalDenylist: 'fable', globalCap: { physical: null, attention: null, effective: 5, binding: 'default', hosts: [] },
+        branchPrefix: 'viberpit/' },
     } }))
     await page.goto('/settings/sessions')
     const root = page.getByLabel('Worktree location', { exact: true })
     await expect(root).toBeVisible()
     await expect(root).toHaveAttribute('placeholder', '/home/user/GitHub · server default')
     await expect(page.getByText(/Changing it doesn't move existing worktrees/)).toBeVisible()
-    await expect(page.getByText('viberpit/', { exact: true })).toBeVisible()
-    await expect(page.getByText('Fixed — it guards automatic branch cleanup.')).toBeVisible()
+    // D-22: the prefix is a setting now (its own flows: e2e/branch-prefix.spec.ts).
+    await expect(page.getByRole('textbox', { name: 'Branch prefix' })).toHaveAttribute('placeholder', 'viberpit/')
     await noSidewaysScroll(page)
   })
 }

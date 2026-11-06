@@ -548,6 +548,10 @@ class AppSettings(Base):
     default_permission_mode: Mapped[str] = mapped_column(String, nullable=False, default="interactive")
     thinking_collapsed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     repo_root: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Prefix new session and fork branches are created under (D-22). NULL = the built-in
+    # ``brand.BRANCH_PREFIX``. Validated on PUT (server/sessions/branch_prefix.py); it
+    # never gates deletion — recorded ownership does. Nullable for backfill.
+    branch_prefix: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     default_tool_detail: Mapped[str | None] = mapped_column(String, nullable=True)
     compaction_ewma_ms: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     compaction_samples: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
@@ -737,6 +741,32 @@ class SessionRewind(Base):
                                                  default=datetime.utcnow)
     undone_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class SessionBranch(Base):
+    """A branch ViberPit created, recorded so a ``git branch -D`` can require proof of
+    ownership rather than a name match (D-22, ``server/sessions/branch_ownership.py``).
+
+    Scoped by ``(host, clone)``: clones are per host while the DB is shared, so a record
+    on one host never vouches for a same-named branch in another clone. ``clone`` is the
+    realpath of the clone's toplevel (the common git dir's parent). ``session_id`` has no
+    FK on purpose: the record must outlive a hard-deleted session row for as long as the
+    branch exists. ``source`` is ``create | fork | import | backfill``. ``created_at`` is
+    naive UTC, written from ``db_utc_now()`` (server/db/clock.py)."""
+
+    __tablename__ = "session_branches"
+    __table_args__ = (
+        UniqueConstraint("host", "clone", "branch",
+                         name="uq_session_branches_host_clone_branch"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    session_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    host: Mapped[str] = mapped_column(String, nullable=False)
+    clone: Mapped[str] = mapped_column(String, nullable=False)
+    branch: Mapped[str] = mapped_column(String, nullable=False)
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
 class SessionView(Base):

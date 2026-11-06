@@ -14,7 +14,7 @@ import { api, ApiRequestError } from '@/api/client'
 import type { WorktreePreflight } from '@/api/types'
 import { sessionPath, subAgentPath } from '@/session/sessionNavState'
 import { WorktreeControls } from './WorktreeControls'
-import { IGNORED_FILES_LOST, SESSION_ENDED, WORKTREE_ERROR_MESSAGES } from './worktreeCopy'
+import { BRANCH_KEPT_NOTE, BRANCH_KEPT_UNKNOWN, IGNORED_FILES_LOST, SESSION_ENDED, WORKTREE_ERROR_MESSAGES } from './worktreeCopy'
 
 const PF: WorktreePreflight = {
   sessionId: 's1', path: '/home/u/worktrees/s1', managed: true, present: true, state: 'present',
@@ -320,5 +320,37 @@ describe('WorktreeControls — Discard', () => {
     await waitFor(() => expect(tick).toBeEnabled())
     expect(tick).not.toBeChecked()
     expect(within(dialog).getByRole('button', { name: 'Discard' })).toBeDisabled()
+  })
+})
+
+describe('WorktreeControls — a branch kept on cleanup (D-22 choice 3A)', () => {
+  it('an owned session branch gets no note', async () => {
+    preflight = { ...PF, branchOwnership: 'owned', branchPrefixed: true }
+    mount()
+    await screen.findByRole('button', { name: 'Discard…' })
+    expect(screen.queryByTestId('branch-kept-note')).toBeNull()
+  })
+
+  it('a session-looking branch nothing vouches for says it will be kept', async () => {
+    preflight = { ...PF, sessionBranch: false, branchOwnership: 'unowned', branchPrefixed: true }
+    mount()
+    const note = await screen.findByTestId('branch-kept-note')
+    expect(note).toHaveTextContent(BRANCH_KEPT_NOTE)
+    expect(note).not.toHaveTextContent(BRANCH_KEPT_UNKNOWN)
+  })
+
+  it("an unreadable ownership says it couldn't check", async () => {
+    preflight = { ...PF, sessionBranch: false, branchOwnership: 'unknown', branchPrefixed: true }
+    mount()
+    expect(await screen.findByTestId('branch-kept-note')).toHaveTextContent(
+      `${BRANCH_KEPT_NOTE} ${BRANCH_KEPT_UNKNOWN}`)
+  })
+
+  it("the user's own unprefixed branch gets no note", async () => {
+    preflight = { ...PF, branch: 'feature', sessionBranch: false, branchOwnership: 'unowned',
+      branchPrefixed: false }
+    mount()
+    await screen.findByRole('button', { name: 'Discard…' })
+    expect(screen.queryByTestId('branch-kept-note')).toBeNull()
   })
 })

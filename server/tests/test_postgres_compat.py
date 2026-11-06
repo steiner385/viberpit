@@ -220,6 +220,11 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     "session_rewinds": {"id": "dtcheck-rewind", "session_id": "dtcheck-session"},
     # session_views (D-10) joins the sweep via viewed_at; identity is half the PK.
     "session_views": {"identity": "dtcheck@example.invalid"},
+    # session_branches (D-22, 0109) joins the sweep via created_at; every key column is
+    # mandatory at INSERT (branch_ownership.record_branch) and has no default.
+    "session_branches": {"session_id": "dtcheck-session", "host": "dtcheck-host",
+                         "clone": "/tmp/dtcheck", "branch": "viberpit/dtcheck",
+                         "source": "create"},
     "audit_events": {"type": "dtcheck.event", "identity": "dtcheck@example.invalid"},
     "attachments": {"media_type": "image/png", "filename": "x.png", "byte_size": 1,
                      "sha256": "0" * 64, "uploaded_by": "dtcheck"},
@@ -1235,5 +1240,62 @@ async def test_session_read_state_writers_on_postgres(pg_engine, pg_url):
     finally:
         async with Session() as s:            # session-scoped fixture: clean up
             await s.execute(delete(SessionView).where(SessionView.session_id == sid))
+            await s.execute(delete(DbSession).where(DbSession.id == sid))
+            await s.commit()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_session_branch_writers_on_postgres(pg_engine, pg_url, tmp_path, monkeypatch):
+    """D-22: record_branch upserts through dialect_insert() with a db_utc_now() stamp,
+    and the per-host backfill writes its records plus its aware DataBackfill marker
+    with ON CONFLICT — all against a real Postgres connection."""
+    import subprocess
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import delete, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from server.db.models import DataBackfill, Session as DbSession, SessionBranch
+    from server.sessions import branch_ownership as bo
+
+    host = "dtcheck-branch-host"
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", host)
+    sid = "dc000001-0000-0000-0000-000000000000"
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "init", "-q", str(clone)], check=True)
+    subprocess.run(["git", "-C", str(clone), "-c", "user.name=t", "-c", "user.email=t@e",
+                    "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    # The backfill only records a branch that still exists in the clone.
+    subprocess.run(["git", "-C", str(clone), "branch", "viberpit/main-dc000001"], check=True)
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    marker = f"session_branches:{host}"
+    try:
+        async with _pg_module_engine(pg_url):     # its init_db already backfilled once
+            for _ in range(2):                    # the second is the ON CONFLICT path
+                assert await bo.record_branch(session_id=sid, host=host, path=str(clone),
+                                              branch="viberpit/x", source=bo.SOURCE_CREATE)
+            assert {r.branch for r in await bo.branch_records(host, str(clone)) or ()} == {
+                "viberpit/x"}
+            async with Session() as s:
+                (stamp,) = (await s.execute(select(SessionBranch.created_at).where(
+                    SessionBranch.host == host))).scalars().all()
+                s.add(DbSession(id=sid, name="dtcheck", account_name="dtcheck",
+                                cwd=str(clone), branch="viberpit/main-dc000001"))
+                await s.execute(delete(DataBackfill).where(DataBackfill.name == marker))
+                await s.commit()
+            assert stamp.tzinfo is None
+            assert abs(stamp - datetime.utcnow()) < timedelta(minutes=5)   # naive UTC
+            assert await bo.backfill_session_branches(repo_root_fallback=str(tmp_path)) == 1
+            assert await bo.backfill_session_branches(repo_root_fallback=str(tmp_path)) == 0
+            async with Session() as s:
+                applied = (await s.execute(select(DataBackfill.applied_at).where(
+                    DataBackfill.name == marker))).scalar_one()
+            assert applied.tzinfo is not None
+            assert {(r.branch, r.source) for r in await bo.branch_records(
+                host, str(clone)) or ()} == {("viberpit/x", "create"),
+                                             ("viberpit/main-dc000001", "backfill")}
+    finally:
+        async with Session() as s:            # session-scoped fixture: clean up
+            await s.execute(delete(SessionBranch).where(SessionBranch.host == host))
+            await s.execute(delete(DataBackfill).where(DataBackfill.name == marker))
             await s.execute(delete(DbSession).where(DbSession.id == sid))
             await s.commit()

@@ -276,7 +276,7 @@ describe('FleetSection — weight and cap', () => {
     vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({
       effectiveDefaults: {
         repoRoot: '/r', archiveHome: null, modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable',
-        globalCap: { physical: 10, attention: null, effective: 10, binding: 'physical', hosts: [{ name: 'dobby', cap: 4 }, { name: 'rocky', cap: 6 }] },
+        branchPrefix: 'viberpit/', globalCap: { physical: 10, attention: null, effective: 10, binding: 'physical', hosts: [{ name: 'dobby', cap: 4 }, { name: 'rocky', cap: 6 }] },
       },
     })))
     renderFleet([fleetHost({ name: 'rocky' })])

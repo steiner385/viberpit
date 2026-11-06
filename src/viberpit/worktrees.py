@@ -16,10 +16,11 @@ they were created in), and share the original repo's object store (cheap — no 
 
 If the selected branch is already checked out somewhere (commonly the user's real
 checkout sitting on `main`), git refuses to check it out twice, so we fall back to
-a per-session child branch ``viberpit/<branch>-<short>`` based on it — still
-isolated, still writable, and clearly named.  Branches created before the rebrand
-carry the ``ccswitch/`` prefix and are matched too (``brand.is_session_branch``);
-that accept side is permanent, because a pushed branch outlives the flip.
+a per-session child branch ``<prefix><branch>-<short>`` based on it — still
+isolated, still writable, and clearly named. ``<prefix>`` is the configured
+session-branch prefix (D-22; built-in ``viberpit/``). No name decides deletion:
+``remove_worktree`` deletes a branch only when its required ``owned_branch``
+predicate — the server's recorded-ownership check — says ViberPit created it.
 """
 from __future__ import annotations
 
@@ -32,6 +33,7 @@ import stat
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -133,7 +135,7 @@ def check_disk_headroom(
 class WorktreeInfo:
     path: str             # the worktree directory — use this as the session cwd
     branch: str | None    # the branch checked out, or None for a detached worktree
-    is_child: bool        # True if we created a child branch (selected branch was busy)
+    is_child: bool        # True if this call created the branch it checked out
     repo: str             # absolute toplevel of the main repo the worktree belongs to
 
 
@@ -516,14 +518,15 @@ def session_worktree_root(path: str, repo_root: str) -> Path | None:
     return None
 
 
-def _child_branch(base: str, session_id: str) -> str:
-    """Name of the per-session child branch created off *base*.
+def _child_branch(base: str, session_id: str, prefix: str = brand.BRANCH_PREFIX) -> str:
+    """Name of the per-session child branch created off *base*: ``<prefix><base>-<short>``.
 
     One function rather than the two identical f-strings create_worktree used to
-    carry: the name it emits must stay inside the set ``brand.is_session_branch``
-    recognises, and remove_worktree's ``git branch -D`` is what enforces that.
+    carry. *prefix* is the configured session-branch prefix (D-22; the server resolves
+    it), defaulting to the built-in one. The name is never the deletion gate — a
+    branch is deleted only through its recorded creation.
     """
-    return f"{brand.BRANCH_PREFIX}{base}-{_short(session_id)}"
+    return f"{prefix}{base}-{_short(session_id)}"
 
 
 def _registered_worktrees(repo_top: str) -> set[str]:
@@ -642,11 +645,13 @@ def pin_worktree_config(repo_top: str, dest: Path) -> None:
                         dest, key, r.stderr.strip())
 
 
-def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_root: str) -> WorktreeInfo:
+def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_root: str,
+                    *, branch_prefix: str | None = None) -> WorktreeInfo:
     """Create an isolated per-session worktree and return its info.
 
     When `branch` is given, checks it out directly; if it is already checked out
-    elsewhere, creates a child branch ``viberpit/<branch>-<short>`` instead. When
+    elsewhere, creates a child branch ``<branch_prefix><branch>-<short>`` instead (the
+    built-in ``viberpit/`` when *branch_prefix* is None). When
     `branch` is None, creates a DETACHED worktree off the repo's current HEAD — used
     for repo sessions that didn't pick a branch, so every session still gets its own
     isolated working directory (never sharing the clone) without needing a branch.
@@ -718,7 +723,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
         # remote tip origin/<branch>. This is the normal path (not just a fallback):
         # a fresh, writable, isolated branch without moving the user's local <branch>.
         if use_remote and _branch_on_origin(repo_top, branch):
-            child = _child_branch(branch, session_id)
+            child = _child_branch(branch, session_id, branch_prefix or brand.BRANCH_PREFIX)
             r = _run(["git", "-C", repo_top, "worktree", "add", "-b", child,
                       str(dest), "--", f"origin/{branch}"])
             if r.returncode == 0:
@@ -739,7 +744,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
             return WorktreeInfo(str(dest), branch, is_child=False, repo=repo_top)
 
         # 3) Branch is busy (checked out elsewhere) — make a session child branch off it.
-        child = _child_branch(branch, session_id)
+        child = _child_branch(branch, session_id, branch_prefix or brand.BRANCH_PREFIX)
         r2 = _run(["git", "-C", repo_top, "worktree", "add", "-b", child, str(dest), "--", branch])
         if r2.returncode == 0:
             lock_worktree(repo_top, dest)
@@ -819,25 +824,35 @@ class ForkWorktreeInfo:
     repo: str     # absolute toplevel of the main clone both worktrees belong to
 
 
-def fork_branch_name(source_session_id: str, n: int) -> str:
-    """``<prefix>fork-<short source id>-<n>`` — inside ``brand.is_session_branch``, so
-    ``remove_worktree`` tidies it like any other session child branch."""
-    return f"{brand.BRANCH_PREFIX}fork-{_short(source_session_id)}-{n}"
+def fork_branch_name(source_session_id: str, n: int,
+                     prefix: str = brand.BRANCH_PREFIX) -> str:
+    """``<prefix>fork-<short source id>-<n>``; *prefix* is the configured session-branch
+    prefix (D-22), defaulting to the built-in one. Deleted only through its record."""
+    return f"{prefix}fork-{_short(source_session_id)}-{n}"
 
 
-def _next_fork_branch(repo_top: str, source_session_id: str) -> str:
-    """The first ``fork_branch_name(source, n)`` (n ≥ 1) with no local branch, from
-    one ``for-each-ref``. Call under ``clone_lock(repo_top)``."""
-    stem = "refs/heads/" + fork_branch_name(source_session_id, 0)[:-1]
-    out = run_git(repo_top, *NO_SUBMODULE_RECURSE, "for-each-ref", "--format=%(refname)", stem + "*")
+def _next_fork_branch(repo_top: str, source_session_id: str,
+                      prefix: str = brand.BRANCH_PREFIX) -> str:
+    """The first ``fork_branch_name(source, n, prefix)`` (n ≥ 1) whose ``n`` no fork of
+    this source holds under the built-in prefixes or the current *prefix*. One
+    ``for-each-ref``. Call under ``clone_lock(repo_top)``.
+
+    Exactly that, no more: an ``n`` held only under an EARLIER custom prefix is not
+    seen, so after a change between two custom prefixes an ``n`` may repeat. Harmless —
+    the names still differ by prefix, so git keeps both, and deletion goes through
+    each branch's own record, never the name."""
+    stems = ["refs/heads/" + fork_branch_name(source_session_id, 0, p)[:-1]
+             for p in dict.fromkeys((prefix, *brand.BRANCH_PREFIXES))]
+    out = run_git(repo_top, *NO_SUBMODULE_RECURSE, "for-each-ref", "--format=%(refname)",
+                  *(stem + "*" for stem in stems))
     if out is None:
         raise ForkWorktreeError("could not list the fork branches")
-    taken = {int(s) for line in os.fsdecode(out).splitlines()
-             if (s := line[len(stem):]).isascii() and s.isdecimal()}
+    taken = {int(s) for line in os.fsdecode(out).splitlines() for stem in stems
+             if line.startswith(stem) and (s := line[len(stem):]).isascii() and s.isdecimal()}
     n = 1
     while n in taken:
         n += 1
-    return fork_branch_name(source_session_id, n)
+    return fork_branch_name(source_session_id, n, prefix)
 
 
 def _rel_ok(rel: bytes) -> bool:
@@ -967,7 +982,7 @@ def discard_fork_worktree(info: ForkWorktreeInfo) -> None:
 
 
 def create_fork_worktree(source_cwd: str, *, source_session_id: str,
-                         dest: str) -> ForkWorktreeInfo:
+                         dest: str, branch_prefix: str | None = None) -> ForkWorktreeInfo:
     """Create a new worktree at ``dest`` on a new fork branch, at the source worktree's
     current HEAD and carrying its uncommitted work. Read-only on the source.
 
@@ -1065,7 +1080,8 @@ def create_fork_worktree(source_cwd: str, *, source_session_id: str,
             if os.path.lexists(dest):
                 raise ForkWorktreeError(f"fork dest already exists: {dest}",
                                         FORK_DEST_EXISTS)
-            branch = _next_fork_branch(repo_top, source_session_id)
+            branch = _next_fork_branch(repo_top, source_session_id,
+                                       branch_prefix or brand.BRANCH_PREFIX)
         except DiskSpaceError as exc:
             raise ForkWorktreeError(str(exc), FORK_DISK_FULL) from exc
         except GitTimeout as exc:
@@ -1348,12 +1364,27 @@ def snapshot_recovery_ref(worktree: str, session_id: str, *, reason: str) -> str
         return None
 
 
-def local_branch_exists(repo_path: str, branch: str) -> bool:
-    """Whether ``refs/heads/<branch>`` exists in *repo_path*'s clone."""
+def branch_presence(repo_path: str, branch: str) -> bool | None:
+    """Whether ``refs/heads/<branch>`` exists in *repo_path*'s clone: True, False, or
+    None when git could not say. Only ``rev-parse --verify --quiet``'s exit 1 with no
+    stderr is proof of absence — a missing repo, a lock or any other failure is
+    unknown, never "absent" (a caller that forgets or reports a deletion on False
+    must not do it on a git error)."""
     if not branch:
         return False
-    return _run(["git", "-C", repo_path, "rev-parse", "--verify", "--quiet",
-                 f"refs/heads/{branch}"]).returncode == 0
+    r = _run(["git", "-C", repo_path, "rev-parse", "--verify", "--quiet",
+              f"refs/heads/{branch}"])
+    if r.returncode == 0:
+        return True
+    if r.returncode == 1 and not r.stderr.strip():
+        return False
+    return None
+
+
+def local_branch_exists(repo_path: str, branch: str) -> bool:
+    """Whether ``refs/heads/<branch>`` is known to exist in *repo_path*'s clone. False
+    means absent OR unknown — use :func:`branch_presence` when the difference matters."""
+    return branch_presence(repo_path, branch) is True
 
 
 def _branch_has_unpushed_commits(repo_top: str, branch: str) -> bool | None:
@@ -1399,7 +1430,8 @@ def snapshot_branch_tip(repo_top: str, branch: str, session_id: str) -> str | No
         return None
 
 
-def snapshot_before_discard(worktree: str, session_id: str) -> list[str] | None:
+def snapshot_before_discard(worktree: str, session_id: str, *,
+                            owned_branch: Callable[[str], bool]) -> list[str] | None:
     """Keep everything a Discard (D-19) would destroy, BEFORE anything is touched.
 
     A Discard force-removes the worktree and ``branch -D``'s its session branch
@@ -1436,7 +1468,14 @@ def snapshot_before_discard(worktree: str, session_id: str) -> list[str] | None:
                 return None
             refs.append(ref)
         branch = current_branch(worktree)
-        if branch is not None and brand.is_session_branch(branch):
+        # The SAME ownership predicate the removal will ask (D-22): a branch it would
+        # delete — custom prefix included — gets its tip kept first; a branch it keeps
+        # loses nothing. A predicate that raises owns nothing, as in remove_worktree.
+        try:
+            owned = branch is not None and bool(owned_branch(branch))
+        except Exception:
+            owned = False
+        if branch is not None and owned:
             at_risk = _branch_has_unpushed_commits(repo_top, branch)
             if at_risk is None:
                 raise RecoveryUnknown(f"unpushed commits on {branch} unknown")
@@ -1513,12 +1552,16 @@ def recreate_worktree(repo_path: str, path: str, branch: str, *,
 
 
 def remove_worktree(worktree_path: str, force: bool = False, *,
-                    session_id: str | None = None) -> bool:
+                    session_id: str | None = None,
+                    owned_branch: Callable[[str], bool]) -> bool:
     """Remove a ViberPit worktree IFF it has no uncommitted changes.
 
     Returns True if removed, False if it was left in place (dirty — we never
-    destroy uncommitted work). Also deletes the per-session child branch when one
-    was created (either brand prefix), so the repo stays tidy.
+    destroy uncommitted work). Also deletes the branch it had checked out, but only
+    when *owned_branch* says ViberPit created it (D-22) — a name match is never proof.
+    *owned_branch* is REQUIRED, with no default, so no caller can skip the question:
+    the server builds it from the branch ownership records
+    (``server/sessions/branch_ownership.py``); a predicate that raises keeps the branch.
 
     ``force=True`` bypasses the dirty guard and uses ``git worktree remove
     --force``.  Only the janitor's max-age eviction path should set this —
@@ -1597,16 +1640,23 @@ def remove_worktree(worktree_path: str, force: bool = False, *,
         log.warning("worktree.remove_failed path=%s err=%s", wt, rm.stderr.strip())
         return False
 
-    # Tidy up the session child branch we created (only our own prefixes — a user's
-    # own branch is never deleted). BOTH spellings: a worktree created before the
-    # rebrand is torn down by the post-rebrand code, so matching only the emitted
-    # prefix would leak every legacy child branch into the clone permanently.
+    # Tidy up the branch ViberPit created for this session — only when the caller's
+    # ownership predicate (recorded creation, or the session's own legacy shape) says
+    # so; a user's own branch, or any branch nobody can vouch for, is kept (D-22).
     # `remove` already deregisters this worktree; no global prune (it could reap a
     # sibling session's live worktree — #177).
     # The branch is deleted only when nothing on it would be lost: no unpushed commits,
     # or their tip is kept as a recovery ref. Unknown (git failed) or a failed snapshot
     # keeps the branch — it used to be deleted either way.
-    if brand.is_session_branch(branch):
+    try:
+        owned = bool(branch) and branch != "HEAD" and bool(owned_branch(branch))
+    except Exception:
+        _log_fields(logging.WARNING, "worktree.keep_branch", path=wt, branch=branch,
+                    reason="ownership_unknown")
+        owned = False
+    if not owned and branch and branch != "HEAD":
+        log.info("worktree.keep_branch path=%s branch=%s reason=not_owned", wt, branch)
+    if owned:
         at_risk = _branch_has_unpushed_commits(repo_top, branch)
         if at_risk is None:
             log.info("worktree.keep_branch path=%s branch=%s reason=unpushed_unknown",
