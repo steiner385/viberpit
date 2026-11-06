@@ -95,6 +95,11 @@ Reconnect failures are logged and show up in the next status poll; they never fa
 
 **First live use** - the first tap per provider registers ViberPit as an OAuth client with that provider.
 
+**Provider results** (live registration from the edge on 2026-11-06, redirect URI `https://dobby.tail0dd570.ts.net/api/mcp/oauth/callback`):
+- **Railway** accepts it: registration at `https://backboard.railway.com/oauth/register` returned a client (`token_endpoint_auth_method: none`), now cached, and the start answers a 302 to Railway's authorize URL carrying that redirect URI, `resource=https://mcp.railway.com/` and `scope=workspace:member offline_access`. The callback half runs the first time Railway's grant dies (it has not yet).
+- **AWS** refuses it: `https://us-east-1.oauth.signin.aws/v1/register` answers `400 invalid_redirect_uri` ("The redirection URI … is not allowed by this server"); its metadata lists only `none` client auth and no `iss` support. AWS therefore stays on paste-back for good, like KinDash: the Sign in link lands on the manual flow, and the refusal is logged at INFO because it is the provider's policy, not a fault. Signing in to AWS from a terminal (`claude mcp login`, loopback redirect) still works and is captured from the account dir.
+- **KinDash** offers no dynamic client registration (below).
+
 **KinDash** - its authorization server offers no dynamic client registration, so one-tap (like the CLI) cannot sign in to it and it stays on its Failed row. Tracked in cairnea/KinDash#20485; ViberPit adds no static-client config.
 
 ## Token refresh
