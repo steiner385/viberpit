@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
-import { useArchivedSessions, useGithubRepos, usePresets, type GithubRepo } from '@/api/hooks'
+import {
+  useArchivedSessions, useGithubRepos, usePresets, useRepoBranches, type GithubRepo, type RepoBranches,
+} from '@/api/hooks'
 import type { ArchivedSession, SessionPreset } from '@/api/types'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { TIER_LABEL } from '@/session/statusTier'
@@ -56,6 +58,9 @@ export interface PaletteData {
   repos: readonly GithubRepo[]
   /** Saved presets, one "New session from preset" action each (D-14). */
   presets?: readonly SessionPreset[]
+  /** The focused repo's real branches (D-21), once fetched; absent while loading
+   *  or after an error, which leaves the live-session branches alone. */
+  repoBranches?: { repo: string } & RepoBranches
 }
 
 const time = (iso: string | null | undefined): number => {
@@ -168,6 +173,8 @@ export function buildPaletteEntries(host: PaletteHost, data: PaletteData): Palet
     // No list filter narrows to a branch, so a branch always drills. Each branch a
     // session has on a repo also offers a new session there (D-19): the dispatch bar
     // opens with that repo and branch chosen — nothing is created until it is sent.
+    // The new-session entries carry their repo as a facet, so a `repo:` drill
+    // lists them under its sessions.
     const branches = new Map<string, Set<string>>()
     for (const { session } of host.live) {
       const b = session.branch?.trim()
@@ -177,15 +184,26 @@ export function buildPaletteEntries(host: PaletteHost, data: PaletteData): Palet
       if (r) repos.add(r)
       branches.set(b, repos)
     }
+    const startOn = (r: string, b: string): PaletteEntry => ({
+      key: `branch-new:${r}@${b}`, section: 'branches', label: `New session on ${r}@${b}`,
+      keywords: ['new session', r, b], facets: { repo: r }, run: () => host.startOnBranch(r, b),
+    })
+    // The focused repo's fetched branches (D-21) replace its live ones: merged,
+    // deduped, the default first — emitted together after the live loop.
+    const fetched = c.interactive ? data.repoBranches : undefined
+    const isFetched = (r: string) => !!fetched && r.toLowerCase() === fetched.repo.toLowerCase()
+    const fetchedLive: string[] = []
     for (const [b, repos] of branches) {
       out.push({ key: `branch:${b}`, section: 'branches', label: b, drill: `branch:${b}` })
       if (!c.interactive) continue
       for (const r of repos) {
-        out.push({
-          key: `branch-new:${r}@${b}`, section: 'branches', label: `New session on ${r}@${b}`,
-          keywords: ['new session', r, b], run: () => host.startOnBranch(r, b),
-        })
+        if (isFetched(r)) fetchedLive.push(b)
+        else out.push(startOn(r, b))
       }
+    }
+    if (fetched) {
+      const merged = new Set([...(fetched.default ? [fetched.default] : []), ...fetched.branches, ...fetchedLive])
+      for (const b of merged) out.push(startOn(fetched.repo, b))
     }
   }
   return out
@@ -229,17 +247,47 @@ export function paletteSections(prepared: PreparedPalette, query: string): Palet
 }
 
 /**
+ * The repo the palette is focused on (D-21), or null: the exact value of a
+ * `repo:` drill term, or a `<repo>@…` term — "New session on o/app@" being typed.
+ * Only a repo the palette already knows (`known`, case-insensitive) counts, and
+ * the answer is its canonical spelling, so free text never becomes a fetch.
+ */
+export function focusedRepo(query: string, known: readonly string[]): string | null {
+  for (const raw of query.toLowerCase().split(' ')) {
+    const at = raw.indexOf('@')
+    const name = raw.startsWith('repo:') ? raw.slice('repo:'.length) : at > 0 ? raw.slice(0, at) : ''
+    if (!name) continue
+    const hit = known.find((k) => k.toLowerCase() === name)
+    if (hit) return hit
+  }
+  return null
+}
+
+/**
  * The palette's entries, prepared for search. The archived list, the GitHub
  * repos and the presets are fetched HERE, inside the lazy chunk, so nothing loads them until
  * the palette first opens — and the shell's many `@/api/hooks` test mocks never
- * meet these hooks.
+ * meet these hooks. A repo's real branches are fetched only once `query` focuses
+ * it (`focusedRepo`), never one request per repo on open (D-21).
  */
-export function usePaletteEntries(host: PaletteHost): PreparedPalette {
+export function usePaletteEntries(host: PaletteHost, query: string): PreparedPalette {
   const { data: archived = [] } = useArchivedSessions()
   const { data: repos = [] } = useGithubRepos()
   const { data: presets = [] } = usePresets()
+  const known = useMemo(() => {
+    const names = new Set(repos.map((r) => r.nameWithOwner))
+    for (const { session } of host.live) if (session.repo?.trim()) names.add(session.repo.trim())
+    return [...names]
+  }, [repos, host.live])
+  const focus = host.context.interactive ? focusedRepo(query, known) : null
+  const { data: branchData } = useRepoBranches(focus ?? '', focus !== null)
+  const repoBranches = useMemo(
+    // A malformed body degrades like an error: the live entries alone.
+    () => (focus && Array.isArray(branchData?.branches) ? { repo: focus, ...branchData } : undefined),
+    [focus, branchData],
+  )
   return useMemo(
-    () => preparePalette(buildPaletteEntries(host, { archived, repos, presets })),
-    [host, archived, repos, presets],
+    () => preparePalette(buildPaletteEntries(host, { archived, repos, presets, repoBranches })),
+    [host, archived, repos, presets, repoBranches],
   )
 }

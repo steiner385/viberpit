@@ -6,7 +6,7 @@ import { SETTINGS_META } from '@/features/settings/settingsMeta'
 import { NAV_DEFS } from '@/shell/navDefs'
 import type { PaletteHost } from './paletteHost'
 import {
-  RECENT_SESSIONS, buildPaletteEntries, paletteSections, preparePalette, type PaletteEntry,
+  RECENT_SESSIONS, buildPaletteEntries, focusedRepo, paletteSections, preparePalette, type PaletteEntry,
 } from './usePaletteEntries'
 
 const ctx = (over: Partial<ShortcutContext> = {}): ShortcutContext => ({
@@ -199,10 +199,90 @@ describe('buildPaletteEntries', () => {
     ])
     const prepared = preparePalette(entries)
     const drill = (q: string) => paletteSections(prepared, q).map((s) => [s.id, s.entries.map((e) => e.label)])
-    // Only Sessions survive a drill: nothing else carries the facet.
+    // Only Sessions survive a branch drill: nothing else carries that facet. A repo
+    // drill also keeps the repo's "New session on" entries (D-21), which carry it.
     expect(drill('branch:main')).toEqual([['sessions', ['Live bg', 'Live m']]])
-    expect(drill('repo:o/app')).toEqual([['sessions', ['Maintain the docs', 'Live m', 'Old z']]])
-    expect(drill('repo:o/app-two')).toEqual([['sessions', ['Live bg']]])
+    expect(drill('repo:o/app')).toEqual([
+      ['sessions', ['Maintain the docs', 'Live m', 'Old z']],
+      ['branches', ['New session on o/app@feat/x', 'New session on o/app@main']],
+    ])
+    expect(drill('repo:o/app-two')).toEqual([['sessions', ['Live bg']], ['branches', ['New session on o/app-two@main']]])
+  })
+})
+
+describe('repo branches in ⌘K (D-21)', () => {
+  const h = () => host({
+    live: [
+      { session: live('a', { repo: 'o/app', branch: 'feat/x' }), scope: 'live' },
+      { session: live('b', { repo: 'o/app', branch: 'main' }), scope: 'live' },
+      { session: live('c', { repo: 'o/lib', branch: 'feat/x' }), scope: 'live' },
+    ],
+  })
+  const starts = (entries: PaletteEntry[]) =>
+    entries.filter((e) => e.key.startsWith('branch-new:')).map((e) => e.label)
+
+  it('merges the fetched branches with the live ones, deduped, the default first', () => {
+    const entries = buildPaletteEntries(h(), {
+      ...NO_DATA, repoBranches: { repo: 'o/app', default: 'main', branches: ['dev', 'feat/x', 'main', 'release'] },
+    })
+    expect(starts(entries)).toEqual([
+      'New session on o/lib@feat/x',
+      'New session on o/app@main', 'New session on o/app@dev', 'New session on o/app@feat/x',
+      'New session on o/app@release',
+    ])
+    // The drill lists them in that order, the default on top.
+    const prepared = preparePalette(entries)
+    const branches = paletteSections(prepared, 'repo:o/app').find((s) => s.id === 'branches')?.entries.map((e) => e.label)
+    expect(branches).toEqual([
+      'New session on o/app@main', 'New session on o/app@dev', 'New session on o/app@feat/x',
+      'New session on o/app@release',
+    ])
+    // So does typing the repo and an `@`.
+    expect(paletteSections(prepared, 'o/app@').find((s) => s.id === 'branches')?.entries[0].label)
+      .toBe('New session on o/app@main')
+  })
+
+  it('a fetched branch starts a session through the same host.startOnBranch', () => {
+    const hh = h()
+    const entries = buildPaletteEntries(hh, { ...NO_DATA, repoBranches: { repo: 'o/app', default: 'main', branches: ['dev'] } })
+    entries.find((e) => e.label === 'New session on o/app@dev')!.run!()
+    expect(hh.startOnBranch).toHaveBeenCalledWith('o/app', 'dev')
+  })
+
+  it('a live-only branch of the focused repo stays, after the fetched ones; a null default adds nothing', () => {
+    const entries = buildPaletteEntries(h(), { ...NO_DATA, repoBranches: { repo: 'O/App', default: null, branches: ['dev'] } })
+    expect(starts(entries).filter((l) => l.includes('App@') || l.includes('app@'))).toEqual([
+      'New session on O/App@dev', 'New session on O/App@feat/x', 'New session on O/App@main',
+    ])
+  })
+
+  it('without fetched branches (loading or failed) the live entries are exactly as before', () => {
+    expect(starts(buildPaletteEntries(h(), NO_DATA))).toEqual([
+      'New session on o/app@feat/x', 'New session on o/lib@feat/x', 'New session on o/app@main',
+    ])
+  })
+
+  it('kiosk ignores fetched branches', () => {
+    const k = host({ context: ctx({ interactive: false }) })
+    const entries = buildPaletteEntries(k, { ...NO_DATA, repoBranches: { repo: 'o/app', default: 'main', branches: ['dev'] } })
+    expect(starts(entries)).toEqual([])
+  })
+})
+
+describe('focusedRepo', () => {
+  const known = ['acme/Rocket', 'acme/lonely']
+  it('is the repo of a `repo:` drill term or a `<repo>@` term, in its canonical spelling', () => {
+    expect(focusedRepo('repo:acme/lonely', known)).toBe('acme/lonely')
+    expect(focusedRepo('new session acme/rocket@', known)).toBe('acme/Rocket')
+    expect(focusedRepo('acme/rocket@fe', known)).toBe('acme/Rocket')
+  })
+  it('is null for no focus, a bare prefix, or a repo the palette does not know', () => {
+    expect(focusedRepo('', known)).toBeNull()
+    expect(focusedRepo('acme/rocket', known)).toBeNull()
+    expect(focusedRepo('repo:', known)).toBeNull()
+    expect(focusedRepo('@main', known)).toBeNull()
+    expect(focusedRepo('repo:acme/unknown', known)).toBeNull()
+    expect(focusedRepo('evil/x@main', known)).toBeNull()
   })
 })
 
