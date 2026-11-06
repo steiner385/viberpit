@@ -1262,14 +1262,19 @@ async def test_session_branch_writers_on_postgres(pg_engine, pg_url, tmp_path, m
     sid = "dc000001-0000-0000-0000-000000000000"
     clone = tmp_path / "clone"
     subprocess.run(["git", "init", "-q", str(clone)], check=True)
+    subprocess.run(["git", "-C", str(clone), "-c", "user.name=t", "-c", "user.email=t@e",
+                    "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    # The backfill only records a branch that still exists in the clone.
+    subprocess.run(["git", "-C", str(clone), "branch", "viberpit/main-dc000001"], check=True)
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     marker = f"session_branches:{host}"
     try:
         async with _pg_module_engine(pg_url):     # its init_db already backfilled once
             for _ in range(2):                    # the second is the ON CONFLICT path
-                assert await bo.record_branch(session_id=sid, host=host, clone=str(clone),
+                assert await bo.record_branch(session_id=sid, host=host, path=str(clone),
                                               branch="viberpit/x", source=bo.SOURCE_CREATE)
-            assert await bo.recorded_branches(host, str(clone)) == frozenset({"viberpit/x"})
+            assert {r.branch for r in await bo.branch_records(host, str(clone)) or ()} == {
+                "viberpit/x"}
             async with Session() as s:
                 (stamp,) = (await s.execute(select(SessionBranch.created_at).where(
                     SessionBranch.host == host))).scalars().all()
@@ -1285,8 +1290,9 @@ async def test_session_branch_writers_on_postgres(pg_engine, pg_url, tmp_path, m
                 applied = (await s.execute(select(DataBackfill.applied_at).where(
                     DataBackfill.name == marker))).scalar_one()
             assert applied.tzinfo is not None
-            assert await bo.recorded_branches(host, str(clone)) == frozenset(
-                {"viberpit/x", "viberpit/main-dc000001"})
+            assert {(r.branch, r.source) for r in await bo.branch_records(
+                host, str(clone)) or ()} == {("viberpit/x", "create"),
+                                             ("viberpit/main-dc000001", "backfill")}
     finally:
         async with Session() as s:            # session-scoped fixture: clean up
             await s.execute(delete(SessionBranch).where(SessionBranch.host == host))

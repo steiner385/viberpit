@@ -6098,7 +6098,7 @@ class SessionOrchestrator:
                     and (fork_worktree is not None or worktree_info.is_child)):
                 await _branch_ownership.record_branch(
                     session_id=session_id, host=self_host_name(),
-                    clone=worktree_info.repo, branch=worktree_info.branch,
+                    path=worktree_info.path, branch=worktree_info.branch,
                     source=(_branch_ownership.SOURCE_FORK if fork_worktree is not None
                             else _branch_ownership.SOURCE_CREATE))
             # Resolve final cwd: an explicit cwd was already validated above; a
@@ -7108,7 +7108,7 @@ class SessionOrchestrator:
                 raise self._worktree_refusal(session_id, "discard", wc.WORKTREE_NOT_MANAGED)
             if self._worktree_shared(session_id, cwd):
                 raise self._worktree_refusal(session_id, "discard", wc.WORKTREE_SHARED)
-            repo_top = await asyncio.to_thread(_resolve_git_common_dir, cwd)
+            repo_top = await asyncio.to_thread(_branch_ownership.clone_top, cwd)
             try:
                 refs = await asyncio.to_thread(worktrees.snapshot_before_discard, cwd,
                                                session_id)
@@ -23552,7 +23552,7 @@ class SessionOrchestrator:
                                f"The row is stamped {row.host!r}, not {me!r}.")
         cwd = row.cwd
         created = False
-        # The clone import_ created the session's branch in (no prior ref), else None.
+        # The worktree import_ created the session's branch for (no prior ref), else None.
         branch_made_in: str | None = None
 
         async def _abandon() -> None:
@@ -23599,7 +23599,7 @@ class SessionOrchestrator:
                         raise sm.MoveError(sm.MOVE_IMPORT_FAILED, f"{exc.code}: {exc.detail}",
                                            extra={"gitCode": exc.code}) from exc
                     created = not existed
-                    branch_made_in = info.repo if info.is_child else None
+                    branch_made_in = info.path if info.is_child else None
                     if os.path.abspath(info.path) != os.path.abspath(cwd):
                         raise sm.MoveError(sm.MOVE_PATH_MISMATCH,
                                            f"imported at {info.path}, row says {cwd}")
@@ -23628,12 +23628,16 @@ class SessionOrchestrator:
             raise
         # D-22: ownership travels with the move — but only for a branch this import
         # created here AND the source had a record for. A branch the target clone
-        # already had is not proof. Never raises (an unrecorded branch is kept).
+        # already had is not proof. The source is matched under the name it RECORDED
+        # with (the export manifest's ``source``, its self_host_name()), not *source*,
+        # the fleet's routing name (a primary's NULL stamp routes as its registry name
+        # or "local"). Never raises (an unrecorded branch is kept).
         if (bundle is not None and bundle.branch and branch_made_in is not None
                 and await _branch_ownership.source_had_record(
-                    session_id, bundle.branch, source_host=source, target_host=me)):
+                    session_id, bundle.branch,
+                    source_host=(manifest or {}).get("source") or source, target_host=me)):
             await _branch_ownership.record_branch(
-                session_id=session_id, host=me, clone=branch_made_in,
+                session_id=session_id, host=me, path=branch_made_in,
                 branch=bundle.branch, source=_branch_ownership.SOURCE_IMPORT)
         # Import-complete evidence for the crash reconcile — the TRUE last step, outside
         # the try: once it may have committed, nothing can abandon this tree any more.
@@ -29406,7 +29410,7 @@ class SessionOrchestrator:
         # valid git dir, so we can scope-deregister exactly this path afterward
         # (never a global prune — issue #177). Off the event loop: git subprocess
         # startup can spike under load.
-        repo_top = await asyncio.to_thread(_resolve_git_common_dir, str(cwd_path))
+        repo_top = await asyncio.to_thread(_branch_ownership.clone_top, str(cwd_path))
         if repo_top:
             # Snapshot uncommitted work into the clone's common git dir before the
             # rmtree (#2913): the ref outlives the worktree. Never raises.
@@ -30357,22 +30361,3 @@ def _describe_blocking_entry(path: str) -> str | None:
     except OSError:
         return None
     return None
-
-
-def _resolve_git_common_dir(path: str) -> str | None:
-    """Return the absolute common git dir's parent for the worktree at *path*, or None.
-
-    Combines the is-git-repo probe and the rev-parse into a single blocking call so
-    callers can offload both to asyncio.to_thread in one step — git subprocess startup
-    is non-trivial under load, and simultaneous archive of many sessions was blocking
-    the event loop long enough to trip the health-check watchdog.
-    """
-    if not worktrees.is_git_repo(path):
-        return None
-    r = subprocess.run(
-        ["git", "-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        return None
-    return os.path.dirname(r.stdout.strip().rstrip("/"))

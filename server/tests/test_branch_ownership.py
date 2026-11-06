@@ -42,103 +42,165 @@ async def _records() -> list[SessionBranch]:
 
 # ── the strict legacy shape rule ───────────────────────────────────────────────
 
-@pytest.mark.parametrize("branch,fork_parent,want", [
-    ("viberpit/main-abcd1234", None, True),           # this session's child shape
-    (f"{LEGACY}main-abcd1234", None, True),           # legacy spelling, same shape
-    ("viberpit/feat/x-abcd1234", None, True),         # a base with a slash
-    ("viberpit/main-eeee9999", None, False),          # ANOTHER session's shape
-    ("viberpit/-abcd1234", None, False),              # no base
-    ("viberpit/abcd1234", None, False),               # no separator
-    ("main-abcd1234", None, False),                   # no built-in prefix
-    ("feature/main-abcd1234", None, False),           # a user namespace
-    ("viberpit/foo", None, False),                    # arbitrary name under the prefix
-    ("viberpit/fork-f00dcafe-1", PARENT, True),       # a fork child's own shape
-    (f"{LEGACY}fork-f00dcafe-12", PARENT, True),
-    ("viberpit/fork-f00dcafe-0", PARENT, False),      # n starts at 1
-    ("viberpit/fork-f00dcafe-01", PARENT, False),     # never emitted
-    ("viberpit/fork-f00dcafe-x", PARENT, False),
-    ("viberpit/fork-eeee9999-1", PARENT, False),      # a fork of ANOTHER source
-    ("viberpit/main-abcd1234", PARENT, False),        # a fork child never has a child branch
+FORK1 = "viberpit/fork-f00dcafe-1"
+
+
+@pytest.mark.parametrize("branch,fork_parent,row_branch,want", [
+    ("viberpit/main-abcd1234", None, None, True),         # this session's child shape
+    (f"{LEGACY}main-abcd1234", None, None, True),         # legacy spelling, same shape
+    ("viberpit/feat/x-abcd1234", None, None, True),       # a base with a slash
+    ("viberpit/main-eeee9999", None, None, False),        # ANOTHER session's shape
+    ("viberpit/-abcd1234", None, None, False),            # no base
+    ("viberpit/abcd1234", None, None, False),             # no separator
+    ("main-abcd1234", None, None, False),                 # no built-in prefix
+    ("feature/main-abcd1234", None, None, False),         # a user namespace
+    ("viberpit/foo", None, None, False),                  # arbitrary name under the prefix
+    (FORK1, PARENT, FORK1, True),                         # a fork child's own branch
+    (f"{LEGACY}fork-f00dcafe-12", PARENT, f"{LEGACY}fork-f00dcafe-12", True),
+    # Only the fork's OWN n: a sibling fork of the same source is not its branch, and
+    # with no recorded row branch there is no telling which n is its — refused.
+    ("viberpit/fork-f00dcafe-2", PARENT, FORK1, False),
+    (FORK1, PARENT, None, False),
+    ("viberpit/fork-f00dcafe-0", PARENT, "viberpit/fork-f00dcafe-0", False),  # n ≥ 1
+    ("viberpit/fork-f00dcafe-01", PARENT, "viberpit/fork-f00dcafe-01", False),
+    ("viberpit/fork-f00dcafe-x", PARENT, "viberpit/fork-f00dcafe-x", False),
+    ("viberpit/fork-eeee9999-1", PARENT, "viberpit/fork-eeee9999-1", False),  # other source
+    ("viberpit/main-abcd1234", PARENT, "viberpit/main-abcd1234", False),  # fork: no child
     # A non-fork row never owns a fork-shaped branch — not even one cut from it:
     # deleting a source must never take its forks' branches with it.
-    ("viberpit/fork-abcd1234-1", None, False),
+    ("viberpit/fork-abcd1234-1", None, "viberpit/fork-abcd1234-1", False),
 ])
-def test_legacy_shape_is_strict(branch, fork_parent, want):
-    assert bo.legacy_session_branch(branch, SID, fork_parent_id=fork_parent) is want
+def test_legacy_shape_is_strict(branch, fork_parent, row_branch, want):
+    assert bo.legacy_session_branch(branch, SID, fork_parent_id=fork_parent,
+                                    row_branch=row_branch) is want
 
 
 def test_legacy_shape_matches_the_name_builders():
     """The rule is derived from the builders, so the two cannot drift."""
     assert bo.legacy_session_branch(worktrees._child_branch("main", SID), SID)
-    assert bo.legacy_session_branch(worktrees.fork_branch_name(PARENT, 3), OTHER,
-                                    fork_parent_id=PARENT)
+    fork = worktrees.fork_branch_name(PARENT, 3)
+    assert bo.legacy_session_branch(fork, OTHER, fork_parent_id=PARENT, row_branch=fork)
+
+
+# ── the one clone key ──────────────────────────────────────────────────────────
+
+def _repo(path: Path, *branches: str) -> Path:
+    """A git repo with one commit and *branches* created at it."""
+    subprocess.run(["git", "init", "-q", "-b", "main", str(path)], check=True)
+    subprocess.run(["git", "-C", str(path), "-c", "user.name=t", "-c", "user.email=t@e",
+                    "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    for b in branches:
+        subprocess.run(["git", "-C", str(path), "branch", b], check=True)
+    return path
+
+
+def test_clone_key_is_the_common_dir_top_for_every_path_in_the_repo(tmp_path):
+    clone = _repo(tmp_path / "clone")
+    (clone / "sub").mkdir()
+    wt = tmp_path / "wt-parent"
+    subprocess.run(["git", "-C", str(clone), "worktree", "add", "-q", "-b", "p", str(wt)],
+                   check=True)
+    link = tmp_path / "link"
+    link.symlink_to(clone)
+    key = os.path.realpath(clone)
+    # A linked worktree keys to its clone, never to itself (--show-toplevel would).
+    for path in (clone, clone / "sub", wt, link):
+        assert bo.clone_key(str(path)) == key
+    assert bo.clone_key(str(tmp_path)) is None           # not a repo
 
 
 # ── record / lookup / predicate ────────────────────────────────────────────────
 
+def _rec(branch: str, source: str = bo.SOURCE_CREATE, sid: str = SID) -> bo.BranchRecord:
+    return bo.BranchRecord(branch, source, sid)
+
+
 @pytest.mark.asyncio
 async def test_record_is_idempotent_and_canonicalises_the_clone(isolated_db, tmp_path):
-    clone = tmp_path / "clone"
-    clone.mkdir()
+    clone = _repo(tmp_path / "clone")
     link = tmp_path / "link"
     link.symlink_to(clone)
-    assert await bo.record_branch(session_id=SID, host="dobby", clone=str(link),
+    assert await bo.record_branch(session_id=SID, host="dobby", path=str(link),
                                   branch="viberpit/main-abcd1234", source=bo.SOURCE_CREATE)
-    assert await bo.record_branch(session_id=SID, host="dobby", clone=str(clone),
+    assert await bo.record_branch(session_id=SID, host="dobby", path=str(clone),
                                   branch="viberpit/main-abcd1234", source=bo.SOURCE_CREATE)
     (rec,) = await _records()
     assert (rec.session_id, rec.host, rec.clone, rec.branch, rec.source) == (
         SID, "dobby", os.path.realpath(clone), "viberpit/main-abcd1234", "create")
     assert rec.created_at is not None and rec.created_at.tzinfo is None   # naive UTC
-    assert await bo.recorded_branches("dobby", str(link)) == frozenset(
-        {"viberpit/main-abcd1234"})
+    assert await bo.branch_records("dobby", str(link)) == frozenset(
+        {_rec("viberpit/main-abcd1234")})
 
 
 @pytest.mark.asyncio
 async def test_records_are_host_and_clone_scoped(isolated_db, tmp_path):
-    a, b = tmp_path / "a", tmp_path / "b"
-    a.mkdir()
-    b.mkdir()
+    a, b = _repo(tmp_path / "a"), _repo(tmp_path / "b")
     # Not this session's legacy shape, so only the record can make it owned.
     branch = "viberpit/custom-name"
-    await bo.record_branch(session_id=SID, host="rocky", clone=str(a), branch=branch,
+    await bo.record_branch(session_id=SID, host="rocky", path=str(a), branch=branch,
                            source=bo.SOURCE_CREATE)
     assert (await bo.owned_branch_predicate("rocky", str(a), SID))(branch) is True
     assert (await bo.owned_branch_predicate("dobby", str(a), SID))(branch) is False
     assert (await bo.owned_branch_predicate("rocky", str(b), SID))(branch) is False
-    assert await bo.recorded_branches("dobby", str(a)) == frozenset()
+    assert await bo.branch_records("dobby", str(a)) == frozenset()
 
 
 @pytest.mark.asyncio
 async def test_predicate_applies_the_legacy_rule_for_the_sessions_own_row(isolated_db,
                                                                           tmp_path):
+    clone = _repo(tmp_path / "clone")
     async with db_session() as db:
         db.add(DbSession(id=OTHER, name="f", account_name="a", cwd="/x",
-                         parent_session_id=PARENT, is_fork=True))
-    owned = await bo.owned_branch_predicate("dobby", str(tmp_path), SID)
+                         parent_session_id=PARENT, is_fork=True,
+                         branch="viberpit/fork-f00dcafe-2"))
+    owned = await bo.owned_branch_predicate("dobby", str(clone), SID)
     assert owned("viberpit/main-abcd1234") is True       # own shape, no record
     assert owned("viberpit/main-eeee9999") is False      # another session's shape
     assert owned("viberpit/foo") is False                # arbitrary, unrecorded
     assert owned("feature") is False
-    fork_owned = await bo.owned_branch_predicate("dobby", str(tmp_path), OTHER)
-    assert fork_owned("viberpit/fork-f00dcafe-2") is True
+    fork_owned = await bo.owned_branch_predicate("dobby", str(clone), OTHER)
+    assert fork_owned("viberpit/fork-f00dcafe-2") is True    # its own recorded n
+    assert fork_owned("viberpit/fork-f00dcafe-1") is False   # a sibling fork's
     assert fork_owned("viberpit/main-eeee9999") is False
 
 
 def test_predicate_from_an_unknown_snapshot_keeps_everything():
     owned = bo.predicate_from(None, SID)
     assert owned("viberpit/main-abcd1234") is False
-    assert bo.predicate_from(frozenset({"x"}), SID)("x") is True
+    assert bo.predicate_from(frozenset({_rec("x")}), SID)("x") is True
+
+
+@pytest.mark.parametrize("source", [bo.SOURCE_CREATE, bo.SOURCE_FORK, bo.SOURCE_IMPORT])
+def test_a_creation_record_is_owned_whichever_session_is_removed(source):
+    records = frozenset({_rec("x", source, sid=SID)})
+    assert bo.predicate_from(records, OTHER)("x") is True
+
+
+def test_a_backfill_record_only_vouches_for_its_own_session():
+    records = frozenset({_rec("viberpit/x", bo.SOURCE_BACKFILL, sid=SID)})
+    assert bo.predicate_from(records, SID)("viberpit/x") is True
+    assert bo.predicate_from(records, OTHER)("viberpit/x") is False
+
+
+@pytest.mark.asyncio
+async def test_a_backfill_record_does_not_authorise_another_session(isolated_db, tmp_path):
+    clone = _repo(tmp_path / "clone")
+    await bo.record_branch(session_id=SID, host="dobby", path=str(clone),
+                           branch="viberpit/x", source=bo.SOURCE_BACKFILL)
+    assert (await bo.owned_branch_predicate("dobby", str(clone), SID))("viberpit/x")
+    assert not (await bo.owned_branch_predicate("dobby", str(clone), OTHER))("viberpit/x")
 
 
 @pytest.mark.asyncio
 async def test_a_failed_write_fails_closed_and_warns(isolated_db, tmp_path, monkeypatch,
                                                      caplog):
+    clone = _repo(tmp_path / "clone")
+
     def broken():
         raise RuntimeError("db down")
     monkeypatch.setattr(bo, "db_session", broken)
     with caplog.at_level(logging.WARNING, logger=bo.log.name):
-        ok = await bo.record_branch(session_id=SID, host="dobby", clone=str(tmp_path),
+        ok = await bo.record_branch(session_id=SID, host="dobby", path=str(clone),
                                     branch="viberpit/main-abcd1234",
                                     source=bo.SOURCE_CREATE)
     assert ok is False
@@ -150,12 +212,26 @@ async def test_a_failed_write_fails_closed_and_warns(isolated_db, tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_an_unresolvable_clone_fails_closed_and_warns(isolated_db, tmp_path, caplog):
+    with caplog.at_level(logging.WARNING, logger=bo.log.name):
+        assert await bo.record_branch(session_id=SID, host="dobby", path=str(tmp_path),
+                                      branch="viberpit/x", source=bo.SOURCE_CREATE) is False
+    assert await _records() == []
+    assert any(r.getMessage() == "session_branch.record_failed" for r in caplog.records)
+    assert await bo.branch_records("dobby", str(tmp_path)) is None
+    assert (await bo.owned_branch_predicate("dobby", str(tmp_path), SID))(
+        "viberpit/main-abcd1234") is False
+
+
+@pytest.mark.asyncio
 async def test_a_failed_read_keeps_every_branch(isolated_db, tmp_path, monkeypatch):
+    clone = _repo(tmp_path / "clone")
+
     def broken():
         raise RuntimeError("db down")
     monkeypatch.setattr(bo, "db_session", broken)
-    assert await bo.recorded_branches("dobby", str(tmp_path)) is None
-    owned = await bo.owned_branch_predicate("dobby", str(tmp_path), SID)
+    assert await bo.branch_records("dobby", str(clone)) is None
+    owned = await bo.owned_branch_predicate("dobby", str(clone), SID)
     assert owned("viberpit/main-abcd1234") is False      # even the legacy shape
 
 
@@ -176,6 +252,21 @@ async def test_a_spawned_child_branch_is_recorded(env) -> None:  # noqa: F811 �
     (row,) = await _records()
     assert (row.session_id, row.host, row.clone, row.branch, row.source) == (
         rec.id, _host(), os.path.realpath(clone), rec.branch, bo.SOURCE_CREATE)
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_from_a_linked_worktree_records_under_the_clone(
+        env, tmp_path) -> None:  # noqa: F811 — pytest fixture
+    """An adopted parent's cwd can be a linked worktree: the record is keyed by the
+    common-dir top (the clone), never the worktree --show-toplevel reports."""
+    orch, _spawns, _src, _root, clone = env
+    wt = tmp_path / "wt-parent"
+    _fork_git(clone, "worktree", "add", "-q", "-b", "parent-branch", str(wt))
+    rec = await orch.create_session("Child", cwd=str(wt), branch="main")
+    assert rec.branch == worktrees._child_branch("main", rec.id)
+    (row,) = await _records()
+    assert row.clone == os.path.realpath(clone) != os.path.realpath(wt)
+    assert row.branch == rec.branch and row.source == bo.SOURCE_CREATE
 
 
 @pytest.mark.asyncio
@@ -222,7 +313,7 @@ async def test_a_spawn_whose_record_write_fails_still_starts_unrecorded(
 async def test_a_move_import_carries_the_record(monkeypatch, two_hosts) -> None:  # noqa: F811 — pytest fixture
     h = two_hosts
     branch = worktrees._child_branch("main", MOVE_SID)
-    await bo.record_branch(session_id=MOVE_SID, host="dobby", clone=str(h.a_clone),
+    await bo.record_branch(session_id=MOVE_SID, host="dobby", path=str(h.a_clone),
                            branch=branch, source=bo.SOURCE_CREATE)
     manifest = _manifest(h)
     o = await _target(monkeypatch, h)
@@ -232,6 +323,21 @@ async def test_a_move_import_carries_the_record(monkeypatch, two_hosts) -> None:
         ("dobby", os.path.realpath(h.a_clone), branch, "create", MOVE_SID),
         ("rocky", os.path.realpath(h.b_clone), branch, "import", MOVE_SID),
     }
+
+
+@pytest.mark.asyncio
+async def test_a_move_from_the_primary_matches_the_name_it_recorded_under(
+        monkeypatch, two_hosts) -> None:  # noqa: F811 — pytest fixture
+    """The fleet routes a primary's NULL stamp as its registry name or "local", but the
+    primary recorded under its self_host_name() — which its export manifest carries."""
+    h = two_hosts
+    branch = worktrees._child_branch("main", MOVE_SID)
+    await bo.record_branch(session_id=MOVE_SID, host="dobby", path=str(h.a_clone),
+                           branch=branch, source=bo.SOURCE_CREATE)
+    manifest = {**_manifest(h), "source": "dobby"}     # what transfer_export returns
+    o = await _target(monkeypatch, h)
+    await o.transfer_import(MOVE_SID, manifest, source="local")
+    assert ("rocky", "import") in {(r.host, r.source) for r in await _records()}
 
 
 @pytest.mark.asyncio
@@ -251,7 +357,7 @@ async def test_a_move_import_onto_an_existing_branch_records_nothing(
     create it, so it is not proof of ownership on the target."""
     h = two_hosts
     branch = worktrees._child_branch("main", MOVE_SID)
-    await bo.record_branch(session_id=MOVE_SID, host="dobby", clone=str(h.a_clone),
+    await bo.record_branch(session_id=MOVE_SID, host="dobby", path=str(h.a_clone),
                            branch=branch, source=bo.SOURCE_CREATE)
     subprocess.run(["git", "-C", str(h.b_clone), "branch", branch], check=True)
     manifest = _manifest(h)
@@ -261,11 +367,6 @@ async def test_a_move_import_onto_an_existing_branch_records_nothing(
 
 
 # ── the one-shot backfill ──────────────────────────────────────────────────────
-
-def _repo(path: Path) -> Path:
-    subprocess.run(["git", "init", "-q", "-b", "main", str(path)], check=True)
-    return path
-
 
 async def _unmark() -> None:
     """Drop the marker isolated_db's own init_db left, so the backfill runs again."""
@@ -286,7 +387,11 @@ async def test_backfill_records_only_each_rows_own_shape(isolated_db, tmp_path,
                                                          monkeypatch):
     monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
     await _unmark()
-    clone = _repo(tmp_path / "clone")
+    s8 = "88888888-0000-0000-0000-000000000000"
+    # Every candidate branch exists in the clone, except s8's.
+    clone = _repo(tmp_path / "clone", "viberpit/main-abcd1234", f"{LEGACY}fork-f00dcafe-1",
+                  "feature", "viberpit/main-55555555", "viberpit/main-66666666",
+                  "viberpit/fork-f00dcafe-1")
     s3 = "33333333-0000-0000-0000-000000000000"
     s4 = "44444444-0000-0000-0000-000000000000"
     s5 = "55555555-0000-0000-0000-000000000000"
@@ -315,6 +420,10 @@ async def test_backfill_records_only_each_rows_own_shape(isolated_db, tmp_path,
         # A dispatched (non-fork) child with a parent: its own child shape only.
         DbSession(id=s7, name="g", account_name="a", cwd=str(clone),
                   branch="viberpit/fork-f00dcafe-1", parent_session_id=PARENT),
+        # Its own shape and a live clone, but the branch is gone → not recorded (a
+        # record for a missing branch would vouch for a later same-named one).
+        DbSession(id=s8, name="h", account_name="a", cwd=str(clone),
+                  branch="viberpit/main-88888888"),
     )
     monkeypatch.setattr(bo, "_clone_path_for", lambda root, repo: clone
                         if repo == "acme/clone" else None)
@@ -334,7 +443,7 @@ async def test_backfill_records_only_each_rows_own_shape(isolated_db, tmp_path,
 async def test_backfill_is_one_shot_per_host(isolated_db, tmp_path, monkeypatch):
     monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
     await _unmark()
-    clone = _repo(tmp_path / "clone")
+    clone = _repo(tmp_path / "clone", "viberpit/main-abcd1234", "viberpit/main-eeee9999")
     await _seed(DbSession(id=SID, name="a", account_name="a", cwd=str(clone),
                           branch="viberpit/main-abcd1234"))
     assert await bo.backfill_session_branches(repo_root_fallback=str(tmp_path)) == 1
