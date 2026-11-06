@@ -79,7 +79,7 @@ def test_expired_artifact_returns_none():
     b"not a zip",
     _zip(json.dumps(GOOD), name="other.json"),
     _zip(json.dumps([1, 2])),
-])
+], ids=["bad-json", "not-a-zip", "wrong-name", "not-an-object"])  # stable ids: zip bytes embed a DOS timestamp, xdist workers would disagree
 def test_bad_json_raises_value_error(blob):
     fake = _Fake([{"id": 9, "name": METRICS_ARTIFACT, "expired": False, "size_in_bytes": 512}], blob)
     with pytest.raises(MetricsContractError, match=r"^metrics\.json: "):
