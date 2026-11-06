@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from unittest import mock
@@ -86,8 +87,73 @@ def test_fixed_string_vs_regex(repo: Path) -> None:
     assert wf.search_files(str(repo), "a.b(c)")["matches"][0]["line"] == 3
     assert wf.search_files(str(repo), "a.b(c")["matches"][0]["line"] == 3  # not a regex
     rx = wf.search_files(str(repo), r"Hel+o W", regex=True)
-    assert rx["matches"][0]["start"] == 7 and rx["matches"][0]["end"] == 14
+    # regex mode never re-runs the pattern in Python: git's column only, an empty span
+    assert rx["matches"][0]["start"] == 7 and rx["matches"][0]["end"] == 7
     assert wf.search_files(str(repo), "a.b(c)", regex=True)["matches"] == []  # group, no literal ()
+
+
+def test_pathological_regex_cannot_stall_the_loop(repo: Path) -> None:
+    import asyncio
+    import time
+
+    (repo / "evil.txt").write_text("a" * 40 + "c\n")
+    _commit(repo)
+    ticks: list[float] = []
+
+    async def ticker() -> None:
+        while True:
+            ticks.append(time.monotonic())
+            await asyncio.sleep(0.02)
+
+    async def run() -> dict:
+        t = asyncio.create_task(ticker())
+        await asyncio.sleep(0.05)
+        t0 = time.monotonic()
+        res = await asyncio.to_thread(wf.search_files, str(repo), "(a+)+b|a", True)
+        elapsed = time.monotonic() - t0
+        t.cancel()
+        res["elapsed"] = elapsed
+        return res
+
+    res = asyncio.run(run())
+    assert res["elapsed"] < wf.SEARCH_TIMEOUT_S + 2
+    assert res["matches"] and res["matches"][0]["end"] == res["matches"][0]["start"]
+    gaps = [b - a for a, b in zip(ticks, ticks[1:], strict=False)]
+    assert max(gaps) < 0.5, max(gaps)  # the loop kept ticking throughout
+
+
+def test_nul_in_query_is_bad_query(repo: Path) -> None:
+    for regex in (False, True):
+        with pytest.raises(wf.FileAccessError) as ei:
+            wf.search_files(str(repo), "a\x00b", regex)
+        assert ei.value.code == wf.BAD_QUERY == "BAD_QUERY"
+
+
+def test_stream_git_survives_a_nul_argument(repo: Path) -> None:
+    from viberpit.worktree_diff import stream_git
+    assert stream_git(str(repo), ["grep", "-e", "a\x00b"], lambda c: False) == "failed"
+
+
+def test_other_git_failures_are_search_failed_not_bad_regex(repo: Path) -> None:
+    _git(repo, "config", "core.bigFileThreshold", "bogus")  # harmless; real failure below
+    (repo / ".git" / "index").write_bytes(b"garbage")  # git cannot read the index
+    for regex in (False, True):
+        with pytest.raises(wf.FileAccessError) as ei:
+            wf.search_files(str(repo), "hello", regex)
+        assert ei.value.code == wf.SEARCH_FAILED == "SEARCH_FAILED"
+
+
+def test_submodule_recurse_is_pinned_off(repo: Path) -> None:
+    seen: list[list[str]] = []
+
+    def fake(cwd, args, consume, **kw):
+        seen.append(list(args))
+        return "ok"
+
+    with patch.object(wf, "stream_git", fake):
+        wf.search_files(str(repo), "hello")
+    assert "submodule.recurse=false" in seen[0]
+    assert seen[0].index("submodule.recurse=false") < seen[0].index("grep")
 
 
 def test_bad_regex(repo: Path) -> None:
@@ -123,17 +189,58 @@ def test_paths_are_relative_to_a_subdirectory_cwd(repo: Path) -> None:
     assert _paths(res) == {"app.py"}  # nothing above cwd, and read_file-relative
 
 
-def test_symlink_pointing_outside_is_not_followed(repo: Path, tmp_path: Path) -> None:
+def test_symlink_blobs_are_not_followed(repo: Path, tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.txt").write_text("hello SECRETTOKEN\n")
     os.symlink(outside / "secret.txt", repo / "link.txt")
     os.symlink(outside, repo / "linkdir")
     _commit(repo)
+    assert wf.search_files(str(repo), "SECRETTOKEN")["matches"] == []
+
+
+def _outside(tmp_path: Path) -> Path:
+    out = tmp_path / "outside"
+    (out / "b").mkdir(parents=True)
+    (out / "secret.txt").write_text("SECRETTOKEN\n")
+    (out / "b" / "secret.txt").write_text("SECRETTOKEN\n")
+    return out
+
+
+def test_swapped_leading_directory_symlink_leaks_nothing(repo: Path, tmp_path: Path) -> None:
+    """A tracked ``dir/secret.txt`` whose ``dir`` was swapped for a symlink (uncommitted):
+    git only lstats the last component, so it would print the outside file."""
+    (repo / "dir").mkdir()
+    (repo / "dir" / "secret.txt").write_text("SECRETTOKEN tracked\n")
+    _commit(repo)
+    shutil.rmtree(repo / "dir")
+    os.symlink(_outside(tmp_path), repo / "dir")
     res = wf.search_files(str(repo), "SECRETTOKEN")
-    assert res["matches"] == []
-    assert not any(p.startswith(("link.txt", "linkdir")) for p in _paths(wf.search_files(
-        str(repo), "hello")))
+    assert res["matches"] == [] and res["truncated"] is False
+    assert "SECRETTOKEN" not in repr(res)
+    # the legitimate matches in other files still arrive
+    assert _paths(wf.search_files(str(repo), "hello"))
+
+
+def test_nested_symlinked_component_leaks_nothing(repo: Path, tmp_path: Path) -> None:
+    (repo / "a" / "b").mkdir(parents=True)
+    (repo / "a" / "b" / "secret.txt").write_text("SECRETTOKEN tracked\n")
+    (repo / "keep.txt").write_text("SECRETTOKEN keep\n")
+    _commit(repo)
+    shutil.rmtree(repo / "a")
+    os.symlink(_outside(tmp_path), repo / "a")
+    assert _paths(wf.search_files(str(repo), "SECRETTOKEN")) == {"keep.txt"}
+
+
+def test_swapped_dir_symlink_inside_the_worktree_is_also_dropped(repo: Path) -> None:
+    """Even a symlink to another directory *inside* the worktree is refused: the same
+    rule as ``read_file`` (no symlinked component anywhere)."""
+    (repo / "d").mkdir()
+    (repo / "d" / "x.txt").write_text("INSIDE\n")
+    _commit(repo)
+    shutil.rmtree(repo / "d")
+    os.symlink(repo / "src", repo / "d")
+    assert wf.search_files(str(repo), "INSIDE")["matches"] == []
 
 
 def test_binary_files_are_skipped(repo: Path) -> None:
@@ -282,6 +389,15 @@ def test_route_timeout_is_200_with_flag(repo: Path) -> None:
         r = c.get(_url(q="hello"), headers=_H)
     assert r.status_code == 200
     assert r.json() == {"matches": [], "truncated": False, "timedOut": True}
+
+
+def test_route_nul_is_400_bad_query_and_search_failed_is_500(repo: Path) -> None:
+    with patch.dict(os.environ, _ENV), _client(str(repo)) as c:
+        nul = c.get(_url(q="a%00b"), headers=_H)
+        (repo / ".git" / "index").write_bytes(b"garbage")
+        broken = c.get(_url(q="hello"), headers=_H)
+    assert nul.status_code == 400 and nul.json()["detail"] == {"code": "BAD_QUERY"}
+    assert broken.status_code == 500 and broken.json()["detail"] == {"code": "SEARCH_FAILED"}
 
 
 def test_route_missing_worktree_and_unknown_session_are_404(repo: Path) -> None:

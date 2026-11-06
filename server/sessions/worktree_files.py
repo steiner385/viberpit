@@ -32,8 +32,8 @@ from __future__ import annotations
 
 import errno
 import heapq
+import logging
 import os
-import re
 import stat
 import time
 from typing import Any
@@ -42,6 +42,7 @@ from server.permission_rules.patterns import worktree_rel
 from viberpit.fs_beneath import SymlinkInPath, open_beneath
 from viberpit.worktree_diff import (
     BINARY_SNIFF_BYTES,
+    NO_SUBMODULE_RECURSE,
     GitTimeout,
     stream_git,
     worktree_top,
@@ -72,15 +73,20 @@ _MAX_SEARCH_LINE_BYTES = 1 << 20  # a single line past this stops the search (tr
 PATH_OUTSIDE_WORKTREE = "PATH_OUTSIDE_WORKTREE"
 FILE_NOT_FOUND = "FILE_NOT_FOUND"
 BAD_REGEX = "BAD_REGEX"
+BAD_QUERY = "BAD_QUERY"          # a NUL in the query: no argv can carry it
+SEARCH_FAILED = "SEARCH_FAILED"  # git itself failed for a reason that is not the pattern
 # ``error_data`` code of the KeyError for an unknown session on any worktree read.
 SESSION_NOT_FOUND = "SESSION_NOT_FOUND"
+
+log = logging.getLogger(__name__)
 
 _clock = time.monotonic  # the ranking deadline's clock (a test seam)
 
 
 class FileAccessError(Exception):
     """A file read or search refused: ``code`` is ``PATH_OUTSIDE_WORKTREE`` (400),
-    ``FILE_NOT_FOUND`` (404) or, for a search, ``BAD_REGEX`` (400).
+    ``FILE_NOT_FOUND`` (404) or, for a search, ``BAD_REGEX`` / ``BAD_QUERY`` (400) and
+    ``SEARCH_FAILED`` (500).
 
     ``error_data`` rides the daemon's RPC error envelope, so a remote edge rebuilds it
     with its code (``RemoteOrchestrator.session_file``), and marks it an expected
@@ -333,19 +339,6 @@ def read_file(cwd: str, path: str) -> dict[str, Any]:
 # ------------------------------------------------------------------ content search
 
 
-def _match_span(text: str, start: int, q: str, regex: bool, ignore_case: bool) -> int:
-    """End of the match that begins at ``start`` in ``text``. A fixed string is its own
-    length; a regex is re-matched with Python's ``re`` at that offset (ERE and ``re``
-    differ at the edges, so a miss degrades to an empty highlight, never an error)."""
-    if not regex:
-        return min(start + len(q), len(text))
-    try:
-        m = re.compile(q, re.IGNORECASE if ignore_case else 0).match(text, start)
-    except re.error:
-        return start
-    return m.end() if m else start
-
-
 def _clip_line(text: str, start: int, end: int) -> tuple[str, int, int]:
     """``text`` cut to ``MAX_SEARCH_LINE_CHARS`` around the match, with ``start``/``end``
     re-based onto the returned text and clamped inside it."""
@@ -378,9 +371,20 @@ def search_files(cwd: str, q: str, regex: bool = False,
     ``end`` are character offsets of the match in it.
 
     A ``q`` shorter than ``MIN_SEARCH_QUERY_CHARS`` finds nothing. Raises
-    ``FileAccessError(FILE_NOT_FOUND)`` for a missing, empty or non-git ``cwd`` and
-    ``FileAccessError(BAD_REGEX)`` when git rejects a ``regex`` pattern.
+    ``FileAccessError(FILE_NOT_FOUND)`` for a missing, empty or non-git ``cwd``,
+    ``BAD_QUERY`` for a NUL in ``q``, ``BAD_REGEX`` when git rejects a ``regex``
+    pattern, and ``SEARCH_FAILED`` for any other git failure.
+
+    Confinement: git ``lstat``s only the last component of a path, so a tracked
+    ``dir/x`` whose ``dir`` was swapped for a symlink would be read from outside the
+    work tree. A match is therefore reported only if its path opens beneath the
+    session's root with no symlinked component (``open_beneath``, as :func:`read_file`);
+    the rest are dropped silently. The highlight never re-runs the user's pattern in
+    Python (catastrophic backtracking would stall the daemon): a fixed string spans its
+    own length, a regex gets git's start column and an empty span.
     """
+    if "\0" in q:
+        raise FileAccessError(BAD_QUERY)
     q = q[:MAX_QUERY_CHARS]
     limit = max(1, min(int(limit), MAX_SEARCH_MATCHES))
     try:
@@ -392,7 +396,7 @@ def search_files(cwd: str, q: str, regex: bool = False,
     if len(q) < MIN_SEARCH_QUERY_CHARS:
         return {"matches": [], "truncated": False, "timedOut": False}
     ignore_case = q == q.lower()
-    args = ["-c", "grep.fullName=false", "grep", "-n", "--column", "-z", "--no-color",
+    args = [*NO_SUBMODULE_RECURSE, "-c", "grep.fullName=false", "grep", "-n", "--column", "-z", "--no-color",
             "-I", f"--max-count={MAX_MATCHES_PER_FILE}", "-E" if regex else "-F"]
     if ignore_case:
         args.append("-i")
@@ -402,6 +406,19 @@ def search_files(cwd: str, q: str, regex: bool = False,
     files: set[str] = set()
     capped = False
     pending = b""
+    root = os.path.realpath(cwd)
+    confined: dict[str, bool] = {}
+
+    def beneath(path: str) -> bool:
+        ok = confined.get(path)
+        if ok is None:
+            try:
+                os.close(_open_beneath(root, path))
+                ok = True
+            except (FileAccessError, OSError):
+                ok = False
+            confined[path] = ok
+        return ok
 
     def take(line: bytes) -> bool:
         nonlocal capped
@@ -415,6 +432,8 @@ def search_files(cwd: str, q: str, regex: bool = False,
             lineno, col = int(parts[1]), int(parts[2])
         except (UnicodeDecodeError, ValueError):
             return False  # not valid UTF-8 cannot round-trip through JSON to a read
+        if _is_git_internal(path) or not beneath(path):
+            return False
         if path not in files:
             if len(files) >= MAX_SEARCH_FILES:
                 capped = True
@@ -423,7 +442,7 @@ def search_files(cwd: str, q: str, regex: bool = False,
         raw = parts[3]
         start = len(raw[:max(col - 1, 0)].decode("utf-8", "replace"))
         text = raw.decode("utf-8", "replace")
-        end = _match_span(text, start, q, regex, ignore_case)
+        end = start if regex else start + len(q)
         text, start, end = _clip_line(text, start, end)
         matches.append({"path": path, "line": lineno, "text": text,
                         "start": start, "end": end})
@@ -443,14 +462,21 @@ def search_files(cwd: str, q: str, regex: bool = False,
             return True
         return False
 
-    status = stream_git(cwd, args, consume, timeout=SEARCH_TIMEOUT_S, ok_codes=(0, 1))
-    if status == "failed" and regex:
-        raise FileAccessError(BAD_REGEX)
+    err = bytearray()
+    status = stream_git(cwd, args, consume, timeout=SEARCH_TIMEOUT_S, ok_codes=(0, 1),
+                        stderr_tail=err)
+    if status == "failed":
+        reason = bytes(err).decode("utf-8", "replace").strip()
+        # git words a rejected ``-e`` pattern ``fatal: -e option, '<pat>': <regcomp msg>``.
+        if regex and "-e option, " in reason:
+            raise FileAccessError(BAD_REGEX)
+        log.info("file search failed in %s: %s", cwd, reason[-300:] or "no output")
+        raise FileAccessError(SEARCH_FAILED)
     return {"matches": matches, "truncated": capped, "timedOut": status == "timeout"}
 
 
 __all__ = [
-    "BAD_REGEX", "DEFAULT_LIST_LIMIT", "FILE_NOT_FOUND", "MAX_LIST_LIMIT",
+    "BAD_QUERY", "BAD_REGEX", "SEARCH_FAILED", "DEFAULT_LIST_LIMIT", "FILE_NOT_FOUND", "MAX_LIST_LIMIT",
     "MAX_QUERY_CHARS", "MAX_READ_BYTES", "MAX_SCAN_ENTRIES", "MAX_SEARCH_MATCHES",
     "MIN_SEARCH_QUERY_CHARS", "PATH_OUTSIDE_WORKTREE", "SESSION_NOT_FOUND",
     "FileAccessError", "list_files", "read_file", "search_files",

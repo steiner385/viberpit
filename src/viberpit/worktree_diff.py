@@ -52,6 +52,7 @@ import re
 import selectors
 import stat
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -63,6 +64,11 @@ MAX_TOTAL_BYTES = 2097152
 BINARY_SNIFF_BYTES = 8192
 _PATCH_BATCH = 64
 GIT_TIMEOUT_S = 30
+#: ``git -c`` pair that stops a command descending into a submodule, whose own config
+#: the driver neutralisation cannot see.
+NO_SUBMODULE_RECURSE = ("-c", "submodule.recurse=false")
+#: How much of git's stderr ``stream_git`` keeps for a caller that asks for it.
+STDERR_TAIL_BYTES = 2048
 # Environment that would point git at some other repository than ``cwd``'s.
 _REPO_ENV_VARS = (
     "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
@@ -144,7 +150,8 @@ _READ_CHUNK = 65536
 def stream_git(cwd: str, args: Sequence[str], consume: Callable[[bytes], bool],
                read_size: Callable[[], int] = lambda: _READ_CHUNK,
                timeout: float = GIT_TIMEOUT_S,
-               ok_codes: Sequence[int] = (0,)) -> str:
+               ok_codes: Sequence[int] = (0,),
+               stderr_tail: bytearray | None = None) -> str:
     """Run hardened git in ``cwd`` and feed its stdout to ``consume`` chunk by chunk.
 
     The one streaming loop behind every bounded git read (the diff patch fetch, the
@@ -152,18 +159,23 @@ def stream_git(cwd: str, args: Sequence[str], consume: Callable[[bytes], bool],
     reads of at most ``read_size()`` bytes, and git killed and reaped however it ends.
     ``consume`` returns True to stop early. ``timeout`` replaces ``GIT_TIMEOUT_S`` for a
     caller with a tighter budget; ``ok_codes`` are the exit codes that count as success
-    (``git grep`` exits 1 for "no match").
+    (``git grep`` exits 1 for "no match"). ``stderr_tail``, when given, receives the last
+    ``STDERR_TAIL_BYTES`` of git's stderr (spooled to a temp file, so a chatty git can
+    never block on a full pipe); otherwise stderr is discarded.
 
     Returns ``"ok"`` (EOF and an exit code in ``ok_codes``), ``"cut"`` (``consume`` stopped it; git is
     killed), ``"timeout"`` (the deadline passed, while reading or waiting for exit),
     or ``"failed"`` (spawn error or non-zero exit).
     """
+    errf = tempfile.TemporaryFile() if stderr_tail is not None else None
     try:
         proc = subprocess.Popen(
             ["git", "-C", cwd, *GIT_GLOBAL, *args],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=git_env(),
+            stdout=subprocess.PIPE, stderr=errf or subprocess.DEVNULL, env=git_env(),
         )
-    except OSError:
+    except (OSError, ValueError):  # ValueError: a NUL byte in an argument
+        if errf is not None:
+            errf.close()
         return "failed"
     assert proc.stdout is not None
     status = "ok"
@@ -194,6 +206,12 @@ def stream_git(cwd: str, args: Sequence[str], consume: Callable[[bytes], bool],
             proc.kill()
         proc.stdout.close()
         proc.wait()
+        if errf is not None:
+            assert stderr_tail is not None
+            size = errf.seek(0, os.SEEK_END)
+            errf.seek(max(0, size - STDERR_TAIL_BYTES))
+            stderr_tail[:] = errf.read()
+            errf.close()
     return status
 
 

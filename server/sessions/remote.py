@@ -1088,7 +1088,8 @@ class RemoteOrchestrator:
             code = (exc.data or {}).get("code")
             if exc.err_type == "FileAccessError" and code in (
                     worktree_files.PATH_OUTSIDE_WORKTREE, worktree_files.FILE_NOT_FOUND,
-                    worktree_files.BAD_REGEX):
+                    worktree_files.BAD_REGEX, worktree_files.BAD_QUERY,
+                    worktree_files.SEARCH_FAILED):
                 raise worktree_files.FileAccessError(code) from exc
             raise
 

@@ -2267,6 +2267,8 @@ _FILE_ACCESS_STATUS = {
     worktree_files.PATH_OUTSIDE_WORKTREE: status.HTTP_400_BAD_REQUEST,
     worktree_files.FILE_NOT_FOUND: status.HTTP_404_NOT_FOUND,
     worktree_files.BAD_REGEX: status.HTTP_400_BAD_REQUEST,
+    worktree_files.BAD_QUERY: status.HTTP_400_BAD_REQUEST,
+    worktree_files.SEARCH_FAILED: status.HTTP_500_INTERNAL_SERVER_ERROR,
 }
 
 
@@ -2284,8 +2286,8 @@ async def session_file_search(
     the session's tracked files (D-20 Files tab content search), run as ``git grep`` on
     the daemon that owns the worktree. Read-only: identity only, no audit row. ``q`` is
     at least 2 characters (422 otherwise) and cut to ``worktree_files.MAX_QUERY_CHARS``;
-    ``regex`` switches fixed-string to ERE. A search past its timeout is still 200 with
-    ``timedOut`` and the partial matches; a pattern git rejects is 400 ``BAD_REGEX``; no
+    ``regex`` switches fixed-string to ERE (a NUL in ``q`` is 400 ``BAD_QUERY``). A search past its timeout is still 200 with
+    ``timedOut`` and the partial matches; a pattern git rejects is 400 ``BAD_REGEX``; any other git failure 500 ``SEARCH_FAILED``; no
     git cwd 404 ``FILE_NOT_FOUND``; unknown session 404; an old daemon 409
     ``daemon_outdated``."""
     try:

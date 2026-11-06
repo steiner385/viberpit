@@ -38,6 +38,7 @@ from . import brand, gh_credential, paths
 from .gitrepos import STALE_LOCK_AGE_S, clone_lock, git_env_for_remote
 from .fs_beneath import SymlinkInPath, open_beneath, open_dir_beneath
 from .worktree_diff import (
+    NO_SUBMODULE_RECURSE,
     GitTimeout,
     UnsafeGitConfig,
     filter_overrides,
@@ -770,9 +771,6 @@ FORK_GIT_TIMEOUT_S = 600.0
 #: otherwise fail "Please tell me who you are".
 _FORK_IDENT = ("-c", f"user.name={brand.NAME} fork",
                "-c", f"user.email=fork@{brand.SLUG}.invalid")
-#: On every fork git call: never descend into a submodule, whose own config the
-#: driver neutralisation cannot see.
-_FORK_SAFE = ("-c", "submodule.recurse=false")
 _COPY_CHUNK = 1 << 20
 
 
@@ -829,7 +827,7 @@ def _next_fork_branch(repo_top: str, source_session_id: str) -> str:
     """The first ``fork_branch_name(source, n)`` (n ≥ 1) with no local branch, from
     one ``for-each-ref``. Call under ``clone_lock(repo_top)``."""
     stem = "refs/heads/" + fork_branch_name(source_session_id, 0)[:-1]
-    out = run_git(repo_top, *_FORK_SAFE, "for-each-ref", "--format=%(refname)", stem + "*")
+    out = run_git(repo_top, *NO_SUBMODULE_RECURSE, "for-each-ref", "--format=%(refname)", stem + "*")
     if out is None:
         raise ForkWorktreeError("could not list the fork branches")
     taken = {int(s) for line in os.fsdecode(out).splitlines()
@@ -1029,7 +1027,7 @@ def create_fork_worktree(source_cwd: str, *, source_session_id: str,
             raise ForkWorktreeError(
                 f"repository config has conditional includes: {', '.join(conditional)}",
                 FORK_UNSAFE_CONFIG)
-        git = (*_FORK_SAFE, *filter_overrides(top), *merge_driver_overrides(top))
+        git = (*NO_SUBMODULE_RECURSE, *filter_overrides(top), *merge_driver_overrides(top))
 
         # Read the source: only objects are written, never its index or tree.
         with tempfile.TemporaryDirectory(prefix=f"{brand.SLUG}-fork-") as td:
@@ -1045,7 +1043,7 @@ def create_fork_worktree(source_cwd: str, *, source_session_id: str,
         if stash_sha:
             # The child is made at head_sha and checked to be there; the stash must
             # sit on that same commit, or applying it would be a real merge.
-            parent = run_git(top, *_FORK_SAFE, "rev-parse", "--verify", "-q",
+            parent = run_git(top, *NO_SUBMODULE_RECURSE, "rev-parse", "--verify", "-q",
                              f"{stash_sha}^1")
             if parent is None or os.fsdecode(parent.strip()) != head_sha:
                 raise ForkWorktreeError("the source's HEAD moved while it was being forked")
@@ -1095,7 +1093,7 @@ def create_fork_worktree(source_cwd: str, *, source_session_id: str,
         try:
             lock_worktree(repo_top, Path(dest))
             step = "verify"
-            child_head = run_git(dest, *_FORK_SAFE, "rev-parse", "--verify", "-q", "HEAD")
+            child_head = run_git(dest, *NO_SUBMODULE_RECURSE, "rev-parse", "--verify", "-q", "HEAD")
             if child_head is None or os.fsdecode(child_head.strip()) != head_sha:
                 raise ForkWorktreeError("the fork worktree is not at the source's HEAD")
             if stash_sha:
