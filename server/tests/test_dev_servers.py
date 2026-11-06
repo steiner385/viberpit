@@ -497,11 +497,13 @@ async def test_a_stuck_scan_times_out_empty_and_logs_info(host, caplog) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_scan_stuck_forever_holds_one_thread_and_polls_stay_prompt(host) -> None:
+async def test_a_scan_stuck_forever_holds_one_thread_and_polls_stay_prompt(
+        host, monkeypatch) -> None:
     """Final review item 2: one stalled mount must not leak a thread per poll. While a
     scan is blocked, no second one starts; every poll answers at once with the last
     good result; and the shared default executor is never involved."""
     import threading
+    monkeypatch.setattr(ds, "LAST_GOOD_MAX_AGE_S", 1e9)  # age-out has its own test
     block, entered = threading.Event(), []
     now = [1000.0]
 
@@ -533,6 +535,34 @@ async def test_a_scan_stuck_forever_holds_one_thread_and_polls_stay_prompt(host)
         assert await asyncio.wait_for(asyncio.to_thread(lambda: 42), 2) == 42
         # A fresh (Open) detection never trusts a stale answer.
         assert await det.detect(SID_A, host.keys, bg_commands=_no_bg, fresh=True,
+                                managed_worktrees=_MW) == []
+    finally:
+        block.set()
+
+
+@pytest.mark.asyncio
+async def test_last_good_list_ages_out_while_a_scan_stays_stuck(host) -> None:
+    """Dead servers must not stay listed forever behind a stuck scan."""
+    import threading
+    block, entered = threading.Event(), []
+    now = [1000.0]
+
+    class _StuckFs(ds.ProcFs):
+        def listeners(self):
+            entered.append(1)
+            if len(entered) > 1:
+                block.wait()
+            return super().listeners()
+    det = ds.DevServerDetector(fs=_StuckFs(host.fs.root), daemon_pid=100, probe=host.probe,
+                               scan_timeout=0.1, clock=lambda: now[0])
+    try:
+        good = await det.detect(SID_A, host.keys, bg_commands=_no_bg, managed_worktrees=_MW)
+        assert good
+        now[0] += ds.CACHE_TTL_S + 1
+        assert await det.detect(SID_A, host.keys, bg_commands=_no_bg,
+                                managed_worktrees=_MW) == good
+        now[0] += ds.LAST_GOOD_MAX_AGE_S + 1
+        assert await det.detect(SID_A, host.keys, bg_commands=_no_bg,
                                 managed_worktrees=_MW) == []
     finally:
         block.set()

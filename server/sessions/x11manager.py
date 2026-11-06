@@ -535,7 +535,11 @@ class X11Manager:
         profile_dir: str | None = None,
     ) -> bool:
         spec = self._specs.get(session_id)
-        if spec is None or len(spec.browsers) >= self._max_browsers:
+        if spec is None:
+            return False
+        # The cap counts live browsers only: a closed window must not hold a slot.
+        self.prune_browsers(session_id)
+        if len(spec.browsers) >= self._max_browsers:
             return False
         try:
             url_tail = browser_url_argv(url)

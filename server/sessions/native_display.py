@@ -161,6 +161,8 @@ class NativeDisplay:
         if not self._usable(cur):
             return REASON_NATIVE_UNAVAILABLE
         procs = self._browsers.setdefault(session_id, [])
+        # The cap counts live browsers only: a closed window must not hold a slot.
+        procs[:] = [p for p in procs if getattr(p, "returncode", None) is None]
         if len(procs) >= self._max_browsers:
             return REASON_CAP
         try:
