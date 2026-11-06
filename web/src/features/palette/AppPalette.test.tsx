@@ -444,4 +444,22 @@ describe('repo branches (D-21)', () => {
     expect(branchOptions()).toEqual(['New session on acme/rocket@feat/thrust'])
     expect(document.querySelector('[data-sonner-toast]')).toBeNull()
   })
+
+  it('typing on after the `@` keeps the one request: the focus, not the query, is the key', async () => {
+    const user = userEvent.setup()
+    BRANCHES['acme/rocket'] = { default: 'main', branches: ['feat/thrust', 'main'] }
+    try {
+      await renderList()
+      await openFromRail(user)
+      await user.keyboard('acme/rocket@')
+      await waitFor(() => expect(branchOptions()).toContain('New session on acme/rocket@main'))
+      await user.keyboard('f')
+      await waitFor(() => expect(paletteInput()).toHaveValue('acme/rocket@f'))
+      await user.keyboard('e')
+      await waitFor(() => expect(branchOptions()).toEqual(['New session on acme/rocket@feat/thrust']))
+      expect(branchCalls()).toEqual(['/github/branches?repo=acme%2Frocket'])
+    } finally {
+      delete BRANCHES['acme/rocket']
+    }
+  })
 })

@@ -3,14 +3,16 @@
  *
  * A Discard — and a close, delete, drain or forced removal — keeps the worktree's
  * work as recovery refs on the clone; until now they were only in a toast or a log.
- * This card lists them (reason, short SHA, date when known) with the restore command,
- * which copies on click or Enter — the same `CopyablePath` control the Discard toast
- * uses for it — so they stay findable after the toast is gone.
+ * This card lists every one (reason, short SHA, date) with ITS restore command, so
+ * an older snapshot is as restorable as the newest. The command copies through the
+ * same `CopyablePath` control the Discard toast uses (pointer, Enter or Space; the
+ * copy is announced). A ref with no command (an edge that predates the per-entry
+ * field) shows its full name as plain text instead, never only in a tooltip.
  *
  * Lazy (`ArchivedReviewPage` imports it through `import()`), so the archived page's
  * eager route pays nothing for it. Supplementary on a read-only page: while loading,
  * on any error (an unknown session, an old daemon) and with no refs it renders
- * nothing. Refs, reasons and the command are untrusted text, never markup.
+ * nothing. Refs, reasons and commands are untrusted text, never markup.
  */
 import { useId } from 'react'
 import { useSessionRecoveryRefs } from '@/api/hooks'
@@ -28,7 +30,6 @@ export default function RecoveryRefsCard({ sessionId }: { sessionId: string }) {
   // A body without a `refs` array (an edge that predates the route behind a
   // catch-all) is as quiet as an error.
   if (!data || !Array.isArray(data.refs) || data.refs.length === 0) return null
-  const restore = data.restoreCommand
 
   return (
     <Card
@@ -40,26 +41,26 @@ export default function RecoveryRefsCard({ sessionId }: { sessionId: string }) {
     >
       <SectionHeading id={headingId}>Recovery snapshots</SectionHeading>
       <p className="text-xs text-ink-muted">
-        Work saved when this session&apos;s worktree was removed.
+        Work saved when this session&apos;s worktree was removed. Select a restore command to copy it.
       </p>
-      <ul className="space-y-1">
+      <ul className="space-y-2">
         {data.refs.map((r) => (
-          <li key={r.ref} title={r.ref} className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm">
-            <span className="text-ink">{r.reason ?? 'Snapshot'}</span>
-            <code className="font-mono text-xs text-ink-muted">{r.sha.slice(0, SHORT_SHA)}</code>
-            {isValidTimestamp(r.createdAt) && (
-              <span className="text-xs text-ink-muted">{new Date(r.createdAt).toLocaleString()}</span>
-            )}
+          <li key={r.ref} className="min-w-0 space-y-0.5">
+            <p className="flex flex-wrap items-baseline gap-x-2 text-sm">
+              <span className="text-ink">{r.reason}</span>
+              <code className="font-mono text-xs text-ink-muted">{r.sha.slice(0, SHORT_SHA)}</code>
+              {isValidTimestamp(r.createdAt) && (
+                <span className="text-xs text-ink-muted">{new Date(r.createdAt).toLocaleString()}</span>
+              )}
+            </p>
+            <p className="min-w-0 break-all font-mono text-xs text-ink">
+              {r.restoreCommand
+                ? <CopyablePath text={r.restoreCommand} title="Copy restore command" />
+                : <code className="text-ink-muted">{r.ref}</code>}
+            </p>
           </li>
         ))}
       </ul>
-      {restore !== null && (
-        <p className="min-w-0 break-all font-mono text-xs text-ink">
-          <span className="mr-1 font-sans text-ink-muted">Restore with:</span>
-          <CopyablePath text={restore} title="Copy restore command" />
-          <span className="ml-1 font-sans text-ink-muted">(click to copy)</span>
-        </p>
-      )}
     </Card>
   )
 }

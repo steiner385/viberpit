@@ -82,7 +82,10 @@ describe('ArchivedReviewPage', () => {
   it('shows the session\'s recovery snapshots under the header when it has any (D-21)', async () => {
     vi.mocked(hooks.useSessionTranscript).mockReturnValue(queryResult({ events: [] }) as never)
     vi.mocked(hooks.useSessionRecoveryRefs).mockReturnValue(queryResult({
-      refs: [{ ref: 'refs/viberpit/recovery/arc-99/discard', reason: 'discard', sha: 'abcdef1234', createdAt: null }],
+      refs: [{
+        ref: 'refs/viberpit/recovery/arc-99/discard', reason: 'discard', sha: 'abcdef1234',
+        createdAt: '2026-11-05T14:30:00Z', restoreCommand: 'git restore-me',
+      }],
       restoreCommand: 'git restore-me',
     }) as never)
     renderPage()

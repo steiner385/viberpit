@@ -1,8 +1,8 @@
 /**
  * D-21 follow-ups, route-mocked at 1440 and 390:
  *  - an archived session's page lists its recovery snapshots (reason, short SHA,
- *    date) with the restore command as literal text that a click puts on the
- *    clipboard exactly; a refusal (409 `daemon_outdated`) or no refs shows no card;
+ *    date) and each one's own restore command, literal text that a click or Enter
+ *    puts on the clipboard exactly; a refusal (409 `daemon_outdated`) or no refs shows no card;
  *  - ⌘K "New session on repo@branch" offers the repo's real branches: nothing is
  *    fetched when the palette opens, typing `<repo>@` fetches that one repo, the
  *    default branch comes first, and a failed fetch keeps the live branches quietly.
@@ -17,10 +17,13 @@ const ARCHIVED = {
   createdAt: '2026-11-01T10:00:00Z', archivedAt: '2026-11-05T10:00:00Z',
 }
 const RESTORE = 'git -C /home/u/repos/acme-rocket worktree add ../restored "refs/viberpit/recovery/arc-21/discard" <b>x</b>'
+const OLDER_RESTORE = 'git -C /home/u/repos/acme-rocket worktree add ../restored refs/viberpit/recovery/arc-21/close'
 const REFS = {
   refs: [
-    { ref: 'refs/viberpit/recovery/arc-21/discard', reason: 'discard', sha: '0123456789abcdef', createdAt: '2026-11-05T09:59:00Z' },
-    { ref: 'refs/viberpit/recovery/arc-21/close', reason: 'close', sha: 'fedcba9876543210', createdAt: null },
+    { ref: 'refs/viberpit/recovery/arc-21/discard', reason: 'discard', sha: '0123456789abcdef',
+      createdAt: '2026-11-05T09:59:00Z', restoreCommand: RESTORE },
+    { ref: 'refs/viberpit/recovery/arc-21/close', reason: 'close', sha: 'fedcba9876543210',
+      createdAt: '2026-11-01T09:00:00Z', restoreCommand: OLDER_RESTORE },
   ],
   restoreCommand: RESTORE,
 }
@@ -92,7 +95,7 @@ async function openPalette(page: Page, width: number, branches: { status: number
 
 for (const width of [1440, 390]) {
   test.describe(`D-21 at ${width}px`, () => {
-    test('an archived session lists its recovery snapshots; clicking the command copies it exactly', async ({ page, context }) => {
+    test('an archived session lists its recovery snapshots; each one’s command copies exactly', async ({ page, context }) => {
       await context.grantPermissions(['clipboard-read', 'clipboard-write'])
       await openArchived(page, width, { status: 200, json: REFS })
       const card = page.getByRole('region', { name: 'Recovery snapshots' })
@@ -104,11 +107,17 @@ for (const width of [1440, 390]) {
       await expect(items.nth(1)).toContainText('close')
       await expect(items.nth(1)).toContainText('fedcba9')
       // Literal text: the `<b>` is characters, not an element.
-      const restore = card.getByTitle('Copy restore command')
+      const restore = items.nth(0).getByRole('button')
       await expect(restore).toHaveText(RESTORE)
       await expect(card.locator('b')).toHaveCount(0)
       await restore.click()
       await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(RESTORE)
+      // An older snapshot is restorable too: its own command, from the keyboard.
+      const older = items.nth(1).getByRole('button')
+      await expect(older).toHaveText(OLDER_RESTORE)
+      await older.focus()
+      await page.keyboard.press('Enter')
+      await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(OLDER_RESTORE)
       await noSidewaysScroll(page)
     })
 

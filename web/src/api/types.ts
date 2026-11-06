@@ -1342,13 +1342,14 @@ export interface WorktreeDiscardResult {
   branchDeleted: boolean
 }
 
-/** One recovery ref kept for a session (D-21). `reason` and `createdAt` are null
- *  when the ref name / reflog does not encode them. */
+/** One recovery ref kept for a session (D-21), decoded from its name. `restoreCommand`
+ *  restores this ref; absent from an edge that predates the per-entry field. */
 export interface RecoveryRef {
   ref: string
-  reason: string | null
+  reason: string
   sha: string
-  createdAt: string | null
+  createdAt: string
+  restoreCommand?: string | null
 }
 
 /** `GET /sessions/{id}/recovery-refs` (D-21) — live or archived. `restoreCommand`
