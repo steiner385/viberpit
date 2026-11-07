@@ -217,6 +217,35 @@ for (const width of [1440, 390]) {
     await expect(hold).toBeHidden()
   })
 
+  test(`${width}px: a new session the host can't sandbox says the default is on, with the reason`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    const creates: unknown[] = []
+    await page.route('**/api/**', (route) => route.fulfill({ json: [] }))
+    await page.route('**/api/sessions', (route) => {
+      if (route.request().method() === 'POST') {
+        creates.push(route.request().postDataJSON())
+        return route.fulfill({ status: 409, json: { error: {
+          code: 'SANDBOX_UNAVAILABLE', message: 'unavailable', reason: 'socat is not installed' } } })
+      }
+      return route.fulfill({ json: [] })
+    })
+    await page.route('**/api/github/repos', (route) => route.fulfill({ json: [{
+      nameWithOwner: 'acme/rocket', name: 'rocket', owner: 'acme', isPrivate: true, url: '', defaultBranch: 'main',
+      pushedAt: null, cloned: true,
+    }] }))
+    await page.route('**/api/config', (route) => route.fulfill({ json: { repoRoot: '', adoptionEnabled: false } }))
+    await page.route('**/api/daemon/health', (route) => route.fulfill({ json: { status: 'ok' } }))
+    await page.routeWebSocket('**/ws', () => {})
+    await page.goto('/sessions')
+    await page.getByLabel('Repository').selectOption('acme/rocket')
+    await page.getByLabel('New session prompt').fill('Ship it')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => creates.length).toBe(1)
+    const alert = page.getByRole('alert').filter({ hasText: 'Sandbox new sessions' })
+    await expect(alert).toContainText('"Sandbox new sessions" is on and the sandbox can\'t run on this host (socat is not installed).')
+    await noOverflow(page)
+  })
+
   test(`${width}px: Settings › Sessions offers "Sandbox new sessions" only with the capability`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
     const puts: Record<string, unknown>[] = []

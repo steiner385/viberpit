@@ -4,7 +4,7 @@ import { MUTATION_ERROR_FALLBACK } from '@/api/queryClient'
 import {
   describeCreateSessionFailure, createSessionFailureMessage, REAUTH_MESSAGE,
   CREATE_SESSION_FALLBACK, ENGINE_UNAVAILABLE_FALLBACK, MODEL_EFFORT_MISMATCH_FALLBACK,
-  MODELS_UNAVAILABLE_MESSAGE, ALL_LIMITED_MESSAGE,
+  MODELS_UNAVAILABLE_MESSAGE, ALL_LIMITED_MESSAGE, sandboxCreateMessage,
 } from './createSessionFailure'
 
 describe('describeCreateSessionFailure — the 409 triage', () => {
@@ -165,5 +165,35 @@ describe('createSessionFailureMessage — one line for a single-sentence surface
   it('falls back rather than returning an empty line for an unrecognized failure', () => {
     expect(createSessionFailureMessage(describeCreateSessionFailure(new Error('boom'))))
       .toBe(CREATE_SESSION_FALLBACK)
+  })
+})
+
+describe('describeCreateSessionFailure — the sandbox (D-23)', () => {
+  const create409 = (code: string, reason?: string) =>
+    new ApiRequestError(409, { error: { code, message: 'server words', ...(reason ? { reason } : {}) } })
+
+  it('SANDBOX_UNAVAILABLE names the default "Sandbox new sessions" and the host reason', () => {
+    const f = describeCreateSessionFailure(create409('SANDBOX_UNAVAILABLE', 'socat is not installed'))
+    expect(f).toEqual({ kind: 'sandbox', code: 'SANDBOX_UNAVAILABLE', message: sandboxCreateMessage('socat is not installed') })
+    expect(createSessionFailureMessage(f)).toBe(
+      'Not started: "Sandbox new sessions" is on and the sandbox can\'t run on this host (socat is not installed).')
+  })
+
+  it('SANDBOX_DISABLED carries its reason, from the detail envelope too', () => {
+    const f = describeCreateSessionFailure(new ApiRequestError(409, { detail: {
+      code: 'SANDBOX_DISABLED', message: 'm', reason: 'the sandbox is turned off on this host' } }))
+    expect(f.kind).toBe('sandbox')
+    expect(createSessionFailureMessage(f)).toContain('"Sandbox new sessions" is on')
+    expect(createSessionFailureMessage(f)).toContain('(the sandbox is turned off on this host)')
+  })
+
+  it('no reason: the sentence still stands', () => {
+    expect(sandboxCreateMessage(null)).toBe('Not started: "Sandbox new sessions" is on and the sandbox can\'t run on this host.')
+  })
+
+  it('never mistakes a sandbox refusal for the usage ceiling or a branch failure', () => {
+    for (const code of ['SANDBOX_UNAVAILABLE', 'SANDBOX_DISABLED', 'SANDBOX_UNSUPPORTED', 'SANDBOX_UNVERIFIED', 'SANDBOX_START_FAILED']) {
+      expect(describeCreateSessionFailure(create409(code)).kind, code).toBe('sandbox')
+    }
   })
 })

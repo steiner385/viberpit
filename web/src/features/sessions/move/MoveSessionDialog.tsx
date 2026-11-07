@@ -69,7 +69,7 @@ function isPreClaimRefusal(err: unknown): boolean {
 }
 
 /** `{detail: {code, message, outcome?, …}}` off a failed request. */
-function errorDetail(err: unknown): { code: string | null; message: string | null; outcome: string | null; reason: string | null } {
+function errorDetail(err: unknown): { code: string | null; message: string | null; outcome: string | null; sandboxReason: string | null } {
   const code = apiErrorCode(err)
   const detail = err instanceof ApiRequestError ? err.body?.detail : null
   const rec = detail && typeof detail === 'object' ? (detail as Record<string, unknown>) : {}
@@ -77,8 +77,8 @@ function errorDetail(err: unknown): { code: string | null; message: string | nul
     code,
     message: typeof rec.message === 'string' ? rec.message : null,
     outcome: typeof rec.outcome === 'string' ? rec.outcome : null,
-    // A free-text why some codes carry (D-23 `MOVE_TARGET_SANDBOX`: the target's preflight).
-    reason: typeof rec.reason === 'string' ? rec.reason : null,
+    // D-23 `MOVE_TARGET_SANDBOX`: the target's sandbox preflight failure, in its words.
+    sandboxReason: typeof rec.sandboxReason === 'string' ? rec.sandboxReason : null,
   }
 }
 
@@ -144,10 +144,10 @@ export default function MoveSessionDialog({ sessionId, source, onClose, onSettle
   let blocked: string | null = null
   if (preflight.isError) {
     const d = errorDetail(preflight.error)
-    blocked = moveReasonText(d.code, d.message, d.reason)
+    blocked = moveReasonText(d.code, d.message, d.sandboxReason)
   } else if (pf) {
     if (pf.factsError) blocked = moveReasonText(pf.factsError)
-    else if (!pf.verdict.ok) blocked = moveReasonText(pf.verdict.reason, pf.verdict.message)
+    else if (!pf.verdict.ok) blocked = moveReasonText(pf.verdict.reason, pf.verdict.message, pf.verdict.sandboxReason)
     // Defence in depth: a dirty tree is carried only from a repo GitHub says is private.
     else if (dirty && !privateRepo) blocked = PUBLIC_REPO_COPY
   }
@@ -166,7 +166,7 @@ export default function MoveSessionDialog({ sessionId, source, onClose, onSettle
         onSuccess: (res) => { setOutcome({ kind: 'moved', host: res.to }); onSettled?.() },
         onError: (err) => {
           const d = errorDetail(err)
-          const reason = moveReasonText(d.code, d.message, d.reason)
+          const reason = moveReasonText(d.code, d.message, d.sandboxReason)
           if (d.outcome === 'moved') { setOutcome({ kind: 'moved', host: target }); onSettled?.() }
           else if (d.outcome === 'restored') {
             setOutcome({ kind: 'restored', host: source ?? 'its host', reason }); onSettled?.()
@@ -225,7 +225,7 @@ export default function MoveSessionDialog({ sessionId, source, onClose, onSettle
                   const refused = v !== undefined && !v.ok
                   return (
                     <option key={h.name} value={h.name} disabled={refused && h.name !== target}>
-                      {refused ? `${h.name} — ${moveReasonText(v.reason, v.message)}` : h.name}
+                      {refused ? `${h.name} — ${moveReasonText(v.reason, v.message, v.sandboxReason)}` : h.name}
                     </option>
                   )
                 })}

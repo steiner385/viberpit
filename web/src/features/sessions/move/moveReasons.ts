@@ -81,18 +81,21 @@ export const MOVE_REASON_COPY: Record<MoveReasonCode, string> = {
   MOVE_HISTORY_EXISTS: 'The target host already has a copy of this Codex thread; clear it there first.',
 }
 
-/** Codes whose line names the host's own reason (`detail.reason`) when there is one —
- *  D-23: the sandboxed session's target failed its sandbox preflight. */
+/** Codes whose line names the host's own reason when there is one — D-23: the
+ *  sandboxed session's target failed its sandbox preflight (`sandboxReason`). */
 const WITH_REASON: ReadonlySet<MoveReasonCode> = new Set(['MOVE_TARGET_SANDBOX'])
 
-/** The plain-language line for a reason code. `reason` is the refusal's free-text
- *  `detail.reason`, appended for the codes that carry one. */
+/** The plain-language line for a reason code. `hostReason` is the refusal's free-text
+ *  why (`sandboxReason` on a verdict or a refusal's detail), appended for the codes
+ *  that carry one. */
 export function moveReasonText(
-  code: string | null | undefined, serverMessage?: string | null, reason?: string | null,
+  code: string | null | undefined, serverMessage?: string | null, hostReason?: unknown,
 ): string {
   if (code && Object.hasOwn(MOVE_REASON_COPY, code)) {
     const text = MOVE_REASON_COPY[code as MoveReasonCode]
-    return reason && WITH_REASON.has(code as MoveReasonCode) ? `${text.slice(0, -1)} (${reason}).` : text
+    return typeof hostReason === 'string' && hostReason && WITH_REASON.has(code as MoveReasonCode)
+      ? `${text.slice(0, -1)} (${hostReason}).`
+      : text
   }
   return serverMessage || MOVE_GENERIC_COPY
 }
