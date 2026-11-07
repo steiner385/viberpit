@@ -1,7 +1,7 @@
 // @vitest-environment node
 // web/src/ws/liveBatch.test.ts
 import { describe, it, expect } from 'vitest'
-import { createGapState, resetSeq, handleLiveBatch, describeSrcSeqGap } from './liveBatch'
+import { createGapState, resetSeq, resetGens, handleLiveBatch, describeSrcSeqGap } from './liveBatch'
 import type { SessionEvent } from '@/session/events'
 
 const ev = (over: Record<string, unknown>): SessionEvent =>
@@ -236,5 +236,99 @@ describe('handleLiveBatch', () => {
     )
     expect(r.dispatch).toHaveLength(0)
     expect(r.needsHeal).toBe(false)
+  })
+})
+
+describe('handleLiveBatch attach generations (#3357)', () => {
+  const run = (state: ReturnType<typeof createGapState>, events: SessionEvent[]) =>
+    handleLiveBatch(events, { activeSessionId: 's1', state })
+
+  it('a newer gen starting again at seq 0 is not deduped and opens no srcSeq gap', () => {
+    // The incident shape: forwarder A sent seq0/src1199, then forwarder B sent seq0/src1200
+    // and seq1/src1201. Without gen, B's seq0 was eaten as a duplicate.
+    const state = createGapState()
+    run(state, [ev({ type: 'questionResolved', seq: 0, sessionId: 's1', srcSeq: 1199, gen: 1 })])
+    const r = run(state, [
+      ev({ type: 'questionResolved', seq: 0, sessionId: 's1', srcSeq: 1200, gen: 2 }),
+      ev({ type: 'status', seq: 1, sessionId: 's1', srcSeq: 1201, gen: 2 }),
+    ])
+    expect(r.dispatch).toHaveLength(2)
+    expect(r.unseenSrcDedups).toEqual([])
+    expect(r.srcSeqGaps).toEqual([])
+    expect(r.needsHeal).toBe(false)
+    expect(state.lastGen.get('s1')).toBe(2)
+    expect(state.lastSrcSeq.get('s1')).toBe(1201)
+  })
+
+  it('keeps lastSrcSeq across a gen bump, so a real srcSeq hole is still reported', () => {
+    const state = createGapState()
+    run(state, [ev({ seq: 0, sessionId: 's1', srcSeq: 10, gen: 1 })])
+    const r = run(state, [ev({ seq: 0, sessionId: 's1', srcSeq: 13, gen: 2 })])
+    expect(r.dispatch).toHaveLength(1)
+    expect(r.srcSeqGaps).toHaveLength(1)
+    expect(describeSrcSeqGap(r.srcSeqGaps[0])).toBe('type=textDelta seq=0 prevSeq=-1 gen=2 skipped=[]')
+  })
+
+  it('drops a frame from an older gen as stale, without touching seq or srcSeq', () => {
+    const state = createGapState()
+    run(state, [ev({ seq: 0, sessionId: 's1', srcSeq: 20, gen: 2 })])
+    const r = run(state, [
+      ev({ seq: 5, sessionId: 's1', srcSeq: 30, gen: 1 }),
+      ev({ seq: 1, sessionId: 's1', srcSeq: 21, gen: 2 }),
+    ])
+    expect(r.dispatch).toHaveLength(1)
+    expect(r.needsHeal).toBe(false)
+    expect(r.srcSeqGaps).toEqual([])
+    expect(state.lastSeq.get('s1')).toBe(1)
+    expect(state.lastSrcSeq.get('s1')).toBe(21)
+  })
+
+  it('names a stale frame in the next gap record', () => {
+    const state = createGapState()
+    run(state, [ev({ seq: 0, sessionId: 's1', srcSeq: 20, gen: 2 })])
+    const r = run(state, [
+      ev({ seq: 3, sessionId: 's1', srcSeq: 21, gen: 1 }),
+      ev({ seq: 1, sessionId: 's1', srcSeq: 22, gen: 2 }),
+    ])
+    expect(describeSrcSeqGap(r.srcSeqGaps[0])).toBe(
+      'type=textDelta seq=1 prevSeq=0 gen=2 skipped=[stale:textDelta@seq3/src21/g1]')
+  })
+
+  it('replayReset and resumeOk record their gen, so the forwarder that follows is not re-baselined again', () => {
+    const state = createGapState()
+    run(state, [{ type: 'replayReset', sessionId: 's1', gen: 3 } as unknown as SessionEvent])
+    expect(state.lastGen.get('s1')).toBe(3)
+    run(state, [{ type: 'resumeOk', sessionId: 's1', gen: 4 } as unknown as SessionEvent])
+    expect(state.lastGen.get('s1')).toBe(4)
+    const r = run(state, [
+      ev({ seq: 0, sessionId: 's1', gen: 4 }),
+      ev({ seq: 2, sessionId: 's1', gen: 4 }),
+    ])
+    expect(r.needsHeal).toBe(true)   // a seq hole inside one gen still heals
+  })
+
+  it('a frame with a newer gen but a leading seq hole still heals', () => {
+    const state = createGapState()
+    run(state, [ev({ seq: 7, sessionId: 's1', gen: 1 })])
+    const r = run(state, [ev({ seq: 1, sessionId: 's1', gen: 2 })])
+    expect(r.needsHeal).toBe(true)
+  })
+
+  it('frames with no gen behave exactly as before', () => {
+    const state = createGapState()
+    run(state, [ev({ seq: 0, sessionId: 's1', srcSeq: 9 }), ev({ seq: 1, sessionId: 's1', srcSeq: 10 })])
+    const r = run(state, [ev({ seq: 1, sessionId: 's1', srcSeq: 11 })])
+    expect(r.dispatch).toHaveLength(0)
+    expect(r.unseenSrcDedups).toHaveLength(1)
+    expect(state.lastGen.size).toBe(0)
+  })
+
+  it('resetGens lets a new server socket start again at gen 1', () => {
+    const state = createGapState()
+    run(state, [ev({ seq: 0, sessionId: 's1', gen: 5 })])
+    resetGens(state)
+    const r = run(state, [ev({ seq: 0, sessionId: 's1', gen: 1 })])
+    expect(r.dispatch).toHaveLength(1)
+    expect(state.lastGen.get('s1')).toBe(1)
   })
 })

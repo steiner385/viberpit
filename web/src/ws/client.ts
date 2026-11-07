@@ -15,7 +15,7 @@ import { SESSION_EVENT_TYPES } from '@/session/events'
 import type { PromptStage } from '@/session/promptStage'
 import { noteSent, noteStage, noteHeld, clearFlight, reconcileFlightRow } from '@/lib/promptFlight'
 import { clientLogger } from '@/obs/logger'
-import { createGapState, handleLiveBatch, describeSrcSeqGap, catchUpCursor, catchUpEpoch, invalidateCatchUp, type GapState } from './liveBatch'
+import { createGapState, handleLiveBatch, describeSrcSeqGap, catchUpCursor, catchUpEpoch, invalidateCatchUp, resetGens, type GapState } from './liveBatch'
 import { revIsNewer, shouldApplyRev } from '@/session/reconcile'
 import { RESTING_BEFORE_TURN } from '@/session/statusTier'
 
@@ -206,6 +206,8 @@ export class SessionSocket {
 
     ws.onopen = () => {
       this._setConnectionState('connected')
+      // A new server socket numbers its attach generations from 1 again (#3357).
+      resetGens(this._gap)
       // Reset the backoff only once the connection proves STABLE. During a deploy
       // restart the edge can accept the socket then immediately drop it (daemon not
       // ready); resetting the attempt counter on every fleeting open defeats

@@ -21,13 +21,25 @@ export interface GapState {
    *  daemon epoch (a restart resets the srcSeq space to 0) and force a full replay. Absent
    *  ⇒ no epoch known ⇒ server full-replays (conservative). Pairs with `lastSrcSeq`. */
   srcEpoch: Map<string, string>
+  /** The server attach generation (`gen`, #3357) whose seq space `lastSeq` belongs to.
+   *  Each server forwarder restarts `seq` at 0, so a bare `seq` cannot tell two
+   *  forwarders apart: a newer `gen` re-baselines `lastSeq`, an older one is stale.
+   *  Per server socket — cleared on (re)connect by `resetGens`. */
+  lastGen: Map<string, number>
 }
 
 export function createGapState(): GapState {
   return {
     lastSeq: new Map(), lastSrcSeq: new Map(), srcContiguous: new Map(),
-    srcEpoch: new Map(),
+    srcEpoch: new Map(), lastGen: new Map(),
   }
+}
+
+/** Forget every session's attach generation — call when a NEW server socket opens: its
+ *  generation counter starts again at 1, so the old socket's values would make every new
+ *  frame look stale (#3357). */
+export function resetGens(state: GapState): void {
+  state.lastGen.clear()
 }
 
 /** Reset the per-attach + source-seq BASELINES for a session — called on replayReset
@@ -92,13 +104,15 @@ export function catchUpEpoch(state: GapState, sessionId: string): string | null 
 
 /** A tagged frame `handleLiveBatch` filtered out instead of dispatching: `dedup` = its
  *  per-attach `seq` was not above the last applied one, `owner` = it belongs to a session
- *  other than the active one. Carried for telemetry only (#3094). */
+ *  other than the active one, `stale` = it came from an older attach generation than the
+ *  one already applied (#3357). Carried for telemetry only (#3094). */
 export interface SkippedFrame {
-  reason: 'dedup' | 'owner'
+  reason: 'dedup' | 'owner' | 'stale'
   sessionId: string
   type?: string
   seq?: number
   srcSeq?: number
+  gen?: number
 }
 
 /** A non-contiguous daemon source seq observed on the live stream — pure telemetry
@@ -113,6 +127,7 @@ export interface SrcSeqGap {
   seq?: number
   prevSeq?: number
   type?: string
+  gen?: number
   skipped: SkippedFrame[]
 }
 
@@ -121,7 +136,8 @@ export const MAX_SKIPPED_IN_GAP = 5
 
 // `seq` is the per-attach dedup/heal key; `srcSeq` is the daemon's additive
 // end-to-end source seq (loss telemetry only — see GapState).
-export interface WireMeta { seq?: number; sessionId?: string; srcSeq?: number; srcSeqSkip?: number; epoch?: string }
+export interface WireMeta { seq?: number; sessionId?: string; srcSeq?: number; srcSeqSkip?: number; epoch?: string; gen?: number }
+// `gen`: the server attach generation naming this frame's seq space (#3357).
 // `srcSeqSkip`: source seqs the edge consumed (never forwarded) just before this frame.
 
 /**
@@ -154,6 +170,13 @@ export interface WireMeta { seq?: number; sessionId?: string; srcSeq?: number; s
  * the stale seq re-poison the fresh baseline → false gap → heal loop mid-turn.
  * (The FIFO also guarantees stale frames precede the reset, so the duplicate-drop
  * rule above never eats a fresh post-reset frame.)
+ *
+ * Attach generation (`gen`, #3357): each server forwarder stamps its own `gen`, and its
+ * `seq` restarts at 0. A frame whose `gen` is newer than the session's `lastGen` starts a
+ * new seq space — `lastSeq` re-baselines to -1 (as `resetSeq` does) but `lastSrcSeq` is
+ * KEPT, because the daemon's srcSeq runs on across attaches. A frame with an older `gen`
+ * is a stale producer and is dropped (`stale`). Frames with no `gen` (an older server)
+ * behave exactly as before.
  */
 export function handleLiveBatch(
   events: SessionEvent[],
@@ -186,6 +209,7 @@ export function handleLiveBatch(
       const sid = meta.sessionId ?? activeSessionId
       if (sid) {
         resetSeq(state, sid)
+        noteGen(state, sid, meta.gen)
         // A full replay is starting: the source stream is NOT contiguous until it
         // finishes (replayComplete re-establishes the cursor baseline).
         state.srcContiguous.set(sid, false)
@@ -200,6 +224,7 @@ export function handleLiveBatch(
       const sid = meta.sessionId ?? activeSessionId
       if (sid) {
         resetSeq(state, sid)
+        noteGen(state, sid, meta.gen)
         state.srcContiguous.set(sid, true)
         // Re-anchor the cursor's epoch to the one the server resumed us under (#497). The
         // resetSeq above cleared it; set it fresh (or leave cleared when no epoch is carried
@@ -232,6 +257,23 @@ export function handleLiveBatch(
       continue
     }
 
+    if (typeof meta.gen === 'number' && meta.sessionId) {
+      const lastGen = state.lastGen.get(meta.sessionId)
+      if (lastGen !== undefined && meta.gen < lastGen) {
+        // An older forwarder's frame: its seq belongs to a space this session has left.
+        noteSkip({
+          reason: 'stale', sessionId: meta.sessionId, type: etype, seq: meta.seq,
+          srcSeq: meta.srcSeq, gen: meta.gen,
+        })
+        continue
+      }
+      if (lastGen === undefined || meta.gen > lastGen) {
+        // A new seq space starts here. Keep lastSrcSeq: the daemon srcSeq is continuous.
+        state.lastGen.set(meta.sessionId, meta.gen)
+        if (typeof meta.seq === 'number') state.lastSeq.set(meta.sessionId, -1)
+      }
+    }
+
     const prevSeq = meta.sessionId ? state.lastSeq.get(meta.sessionId) : undefined
     if (typeof meta.seq === 'number' && meta.sessionId) {
       if (prevSeq !== undefined && meta.seq <= prevSeq) {
@@ -241,6 +283,7 @@ export function handleLiveBatch(
         if (meta.seq < prevSeq) needsHeal = true
         const skip: SkippedFrame = {
           reason: 'dedup', sessionId: meta.sessionId, type: etype, seq: meta.seq, srcSeq: meta.srcSeq,
+          gen: meta.gen,
         }
         noteSkip(skip)
         // A true re-send repeats a srcSeq already applied; one AHEAD of the last applied
@@ -265,7 +308,7 @@ export function handleLiveBatch(
       if (prevSrc !== undefined && meta.srcSeq !== prevSrc + 1 + (meta.srcSeqSkip ?? 0)) {
         srcSeqGaps.push({
           sessionId: meta.sessionId, prev: prevSrc, got: meta.srcSeq,
-          seq: meta.seq, prevSeq, type: etype, skipped: [...skipped],
+          seq: meta.seq, prevSeq, type: etype, gen: meta.gen, skipped: [...skipped],
         })
         // A source-seq hole means events were lost between daemon and browser: the
         // cursor is no longer trustworthy, so forbid catch-up until a full replay (or a
@@ -281,12 +324,22 @@ export function handleLiveBatch(
   return { dispatch, needsHeal, srcSeqGaps, unseenSrcDedups }
 }
 
+/** Record the attach generation a replayReset/resumeOk announces (#3357). Never moves
+ *  backwards; an absent `gen` (older server) leaves the tracker alone. */
+function noteGen(state: GapState, sessionId: string, gen: number | undefined): void {
+  if (typeof gen !== 'number') return
+  const last = state.lastGen.get(sessionId)
+  if (last === undefined || gen > last) state.lastGen.set(sessionId, gen)
+}
+
 /** The quoted context tail of a `transcript.srcseq.gap` log line. Everything variable
  *  sits inside ONE quoted string so the error sink's normalizer folds it to `<str>` and
  *  the fingerprint stays stable whatever the hole's shape. */
 export function describeSrcSeqGap(g: SrcSeqGap): string {
-  const frame = (f: { type?: string; seq?: number; srcSeq?: number }): string =>
-    `${f.type ?? '?'}@seq${f.seq ?? '?'}/src${f.srcSeq ?? '?'}`
+  const genTag = (gen?: number): string => (gen === undefined ? '' : `/g${gen}`)
+  const frame = (f: { type?: string; seq?: number; srcSeq?: number; gen?: number }): string =>
+    `${f.type ?? '?'}@seq${f.seq ?? '?'}/src${f.srcSeq ?? '?'}${genTag(f.gen)}`
   const skipped = g.skipped.map((f) => `${f.reason}:${frame(f)}`).join(',')
-  return `type=${g.type ?? '?'} seq=${g.seq ?? '?'} prevSeq=${g.prevSeq ?? '?'} skipped=[${skipped}]`
+  const gen = g.gen === undefined ? '' : ` gen=${g.gen}`
+  return `type=${g.type ?? '?'} seq=${g.seq ?? '?'} prevSeq=${g.prevSeq ?? '?'}${gen} skipped=[${skipped}]`
 }

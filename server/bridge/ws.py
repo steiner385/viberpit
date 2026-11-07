@@ -46,6 +46,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 
 from sqlalchemy import select
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -287,7 +288,8 @@ class _TeardownMarks:
 
 
 async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str, *,
-                        on_commands_changed=None, on_command_result=None) -> None:
+                        on_commands_changed=None, on_command_result=None,
+                        gen: int | None = None) -> None:
     """Forward a driver stream's live events into *out_q* as wire dicts.
 
     *stream* is a ``DriverStream``/``RemoteDriverStream`` opened by
@@ -321,6 +323,12 @@ async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str, *
     A consumed frame's source seq is invisible to the client, so the next forwarded frame
     carries ``srcSeqSkip`` (the count of consumed seqs just before it) and the client's
     tracker treats that as contiguous (#3283).
+
+    ``gen`` (#3357) names this forwarder's seq space: the socket's attach generation,
+    stamped as ``wire["gen"]`` on every forwarded frame. ``seq`` alone restarts at 0 per
+    forwarder, so two forwarders' frames reaching one client looked like duplicates and
+    the client's seq dedup dropped unseen frames. With ``gen`` the client re-baselines on
+    a newer generation and drops an older one as stale. Omitted when None.
     """
     with bind_session(session_id):
         seq = 0
@@ -364,6 +372,8 @@ async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str, *
                     continue
                 wire["sessionId"] = session_id
                 wire["seq"] = seq
+                if gen is not None:
+                    wire["gen"] = gen
                 src = getattr(e, "src_seq", None)
                 if src is not None:
                     wire["srcSeq"] = src
@@ -446,7 +456,8 @@ async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None
                                    session_id: str,
                                    drop_incomplete: bool = False,
                                    turn_started_at: float | None = None,
-                                   epoch: str | None = None) -> list:
+                                   epoch: str | None = None,
+                                   gen: int | None = None) -> list:
     """Replay the transcript (trimmed of the in-progress turn when drop_incomplete),
     then replayComplete — every frame IN ORDER through *enqueue* (the socket's
     single outbound FIFO: out_q → batcher). Returns the replayed events.
@@ -470,7 +481,10 @@ async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None
 
     turn_started_at (epoch seconds, from the live driver) scopes the trim to the turn
     that actually IS in progress — the CLI's disk write lags the live stream, so the
-    file's last user entry can belong to a PREVIOUS, completed turn (see replay.py)."""
+    file's last user entry can belong to a PREVIOUS, completed turn (see replay.py).
+
+    *gen* (#3357) is the attach generation the live forwarder that follows will stamp;
+    it rides the replayReset so the client knows which seq space starts next."""
     events: list = []
     earliest_turn = 0
     total_turns = 0
@@ -556,7 +570,10 @@ async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None
             # and its history never returns (blank-on-navigation bug). Tagging lets the
             # client (handleLiveBatch / useSessionRuntime.onEvent) drop a replay meant
             # for a session it is no longer viewing.
-            enqueue({"type": "replayReset", "sessionId": session_id})
+            reset: dict = {"type": "replayReset", "sessionId": session_id}
+            if gen is not None:
+                reset["gen"] = gen
+            enqueue(reset)
             for e in events:
                 # The local disk path yields real ev.* objects; the engine-replay
                 # fallback yields those in-process and already-serialized wire dicts
@@ -643,6 +660,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
         # register a NEW forwarding task, so teardown never has to take a lock to
         # fence them (see the teardown block).
         closing = False
+        # Attach generation (#3357): every live forwarder this socket starts gets the next
+        # value, stamped as `gen` on its frames and on its attach's replayReset/resumeOk,
+        # so the client can tell one forwarder's seq space from another's.
+        attach_gen = 0
+        # Names this socket in ws.attach.decision, so a journal line can be tied to one
+        # client connection when several browsers view the same session.
+        conn_id = uuid.uuid4().hex[:8]
         # PER-SESSION attach locks, created on demand. Serialises attach/detach/
         # ensure-live across their two callers: the per-session work chains and the
         # lifecycle-triggered auto re-attach task. Without it, an auto re-attach can
@@ -828,8 +852,15 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
         # Attach / detach
         # ------------------------------------------------------------------
 
+        def _next_gen() -> int:
+            """Allocate the next attach generation for this socket (#3357)."""
+            nonlocal attach_gen
+            attach_gen += 1
+            return attach_gen
+
         async def _replay_and_complete(session_id: str, drop_incomplete: bool = False,
-                                       turn_started_at: float | None = None) -> list:
+                                       turn_started_at: float | None = None,
+                                       gen: int | None = None) -> list:
             """Delegate to the module-level helper, binding this socket's orchestrator
             and out_q (the single session-frame FIFO — see the helper's stale-straddle
             rationale).  A transcript that can't be located or parsed must NOT crash the
@@ -842,7 +873,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             return await _run_replay_and_complete(orchestrator, out_q.put_nowait,
                                                   session_id, drop_incomplete,
                                                   turn_started_at,
-                                                  epoch=orchestrator.daemon_epoch())
+                                                  epoch=orchestrator.daemon_epoch(),
+                                                  gen=gen)
 
         def _error_complete(session_id: str) -> dict:
             """Build an error-path replayComplete frame.
@@ -1369,7 +1401,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 log.warning("ws.attach: pending notice flush failed for %s",
                             session_id, exc_info=True)
 
-        def _start_live_stream(session_id: str, stream) -> None:
+        def _start_live_stream(session_id: str, stream, gen: int) -> None:
             """Forward an opened driver stream's events into the batcher for this
             session. The stream was opened by driver.open_stream() BEFORE the replay
             (see _handle_attach's settle-race note); once this task starts, the
@@ -1388,7 +1420,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 asyncio.create_task(
                     _forward_live(stream, out_q, session_id,
                                   on_commands_changed=_emit_command_catalog,
-                                  on_command_result=_emit_command_result),
+                                  on_command_result=_emit_command_result,
+                                  gen=gen),
                     name=f"ws-live-{session_id}"),
                 name=f"ws-live-{session_id}", on_failure=_on_forward_task_failed)
             live_tasks[session_id] = task
@@ -1411,7 +1444,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             task.add_done_callback(_clear_when_finished)
 
         async def _maybe_catch_up(session_id: str, driver, since_src_seq: int | None,
-                                  since_epoch: str | None) -> bool:
+                                  since_epoch: str | None, gen: int) -> bool:
             """Wave-3 cursor catch-up (audit W2.3), remote mode only.
 
             When the client re-attaches (heal / reconnect) with a CONTIGUOUS srcSeq cursor
@@ -1503,7 +1536,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # re-anchors its cursor to the epoch the ring it just resumed actually belongs
             # to (#497), not the edge's possibly-stale cached epoch.
             out_q.put_nowait({"type": "resumeOk", "sessionId": session_id,
-                              "epoch": current_epoch})
+                              "epoch": current_epoch, "gen": gen})
             return True
 
         async def _teardown_live_task(session_id: str) -> None:
@@ -1537,6 +1570,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             rebind = session_id in live_tasks
             if rebind:
                 await _teardown_live_task(session_id)
+            # One generation per attach: its replayReset/resumeOk and its forwarder's
+            # frames all carry it (#3357).
+            gen = _next_gen()
 
             # READ-ONLY attach for a detached session: replay history only. A detached
             # record has no live driver, and resuming one just to *view* it spawns an
@@ -1567,8 +1603,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             if rec is not None and getattr(rec, "detached", False):
                 log_event(log, logging.INFO, "ws.attach.decision",
                           session_id=session_id, mode="full_replay",
-                          rebind=rebind, cursor=since_src_seq, detached=True)
-                await _replay_and_complete(session_id)
+                          rebind=rebind, cursor=since_src_seq, detached=True,
+                          gen=gen, conn=conn_id)
+                await _replay_and_complete(session_id, gen=gen)
                 # Replay the last-known slash-command catalog so the composer palette
                 # populates on view. A detached session has no live driver (the lazy-view
                 # path defers the resume), so without this the catalog frame — otherwise
@@ -1589,7 +1626,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # open_stream so the decision is made once, up front — never a half-sent
             # resumeOk. Not covered / no cursor / local mode → catching_up is False and the
             # full replay below runs exactly as before.
-            catching_up = await _maybe_catch_up(session_id, driver, since_src_seq, since_epoch)
+            catching_up = await _maybe_catch_up(session_id, driver, since_src_seq, since_epoch,
+                                                gen)
             # Epoch-gate visibility (#497): whether the cursor's minting epoch matched the
             # daemon's current epoch, surfaced in the journal so a stale-epoch full-replay
             # (after a daemon restart) is distinguishable from a not-covered one. Only
@@ -1607,7 +1645,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                       mode=("catch_up" if catching_up else "full_replay"),
                       rebind=rebind, cursor=since_src_seq, detached=False,
                       since_epoch=since_epoch, daemon_epoch=daemon_epoch,
-                      epoch_match=epoch_match)
+                      epoch_match=epoch_match, gen=gen, conn=conn_id)
             # Open the driver stream SYNCHRONOUSLY, BEFORE the replay (the
             # settle-race bug, B3): open_stream() atomically snapshots the
             # in-progress turn buffer AND pins turn_active/turn_started_at to that
@@ -1651,7 +1689,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         turn_started_at = None
                     events = await _replay_and_complete(
                         session_id, drop_incomplete=drop_incomplete,
-                        turn_started_at=turn_started_at)
+                        turn_started_at=turn_started_at, gen=gen)
                     # drop_incomplete is exactly "the stream snapshot delivers the open
                     # turn" — the pair was pinned together above — so it also decides
                     # whether the pending-ask re-emit would duplicate (and precede) it.
@@ -1663,7 +1701,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # can't leak a subscriber that buffers every future emit forever.
                 stream.close()
                 raise
-            _start_live_stream(session_id, stream)
+            _start_live_stream(session_id, stream, gen)
 
         async def _ensure_live(session_id: str) -> bool:
             """Make the session live + streaming so a prompt can flow, resuming a
@@ -1714,7 +1752,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # no settle race to close — but ONE way of opening a live stream keeps
             # the two paths from drifting). No awaits between open and task start,
             # so no leak window either.
-            _start_live_stream(session_id, driver.open_stream())
+            # A NEW forwarder (seq restarts at 0) with no replayReset/resumeOk ahead of
+            # it: its fresh generation is what tells the client to re-baseline (#3357).
+            _start_live_stream(session_id, driver.open_stream(), _next_gen())
             # Now that a live driver exists, (re)build + emit the command catalog. This
             # both refreshes the palette and self-populates the persisted cache for a
             # session that had never been live before (e.g. one predating catalog caching,

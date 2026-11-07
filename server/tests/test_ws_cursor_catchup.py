@@ -221,6 +221,36 @@ def test_same_socket_reattach_with_cursor_catches_up(remote_edge):
     assert [e["text"] for e in tail] == ["d2", "d3"], ev2
 
 
+def test_consecutive_attaches_stamp_increasing_gen_and_resume_ok_carries_it(remote_edge):
+    """#3357: each attach on one socket gets its own generation. The forwarder stamps it as
+    ``gen`` on every frame and the attach's resumeOk carries the same value, so the client
+    can tell a new seq space (seq restarts at 0) from a duplicate of the old one."""
+    orch, client = remote_edge
+    orch._records["s1"] = _rec("s1")
+    driver = _RingDriver(4)
+    orch._drivers["s1"] = driver
+    with mock.patch.object(orch, "ensure_driver", new=mock.AsyncMock(return_value=driver)), \
+         mock.patch.object(orch, "transcript_source", new=mock.AsyncMock(return_value=(None, None))):
+        with client.websocket_connect("/ws", headers=_IDENT) as ws:
+            ws.send_json({"type": "attach", "sessionId": "s1"})
+            ev1 = _collect_until(ws, lambda acc: _count(acc, "textDelta") >= 4)
+            ws.send_json({"type": "attach", "sessionId": "s1", "sinceSrcSeq": 1,
+                          "sinceEpoch": _daemon_epoch(client)})
+            ev2 = _collect_until(
+                ws, lambda acc: any(e.get("type") == "resumeOk" for e in acc)
+                and _count(acc, "textDelta") >= 2)
+
+    gens1 = {e["gen"] for e in ev1 if e.get("type") == "textDelta"}
+    gens2 = {e["gen"] for e in ev2 if e.get("type") == "textDelta"}
+    assert len(gens1) == 1 and len(gens2) == 1, (ev1, ev2)
+    (g1,), (g2,) = gens1, gens2
+    assert g2 > g1
+    resume = next(e for e in ev2 if e.get("type") == "resumeOk")
+    assert resume["gen"] == g2
+    # Both forwarders restart seq at 0: only gen tells them apart.
+    assert [e["seq"] for e in ev2 if e.get("type") == "textDelta"][0] == 0
+
+
 def test_ring_covers_rpc_round_trip(live_ring_edge):
     """RemoteOrchestrator.ring_covers over the real daemon RPC: covered within the window,
     not covered when the cursor is ahead of head (epoch guard). Now returns (covered, epoch):
