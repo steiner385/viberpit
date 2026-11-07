@@ -165,3 +165,24 @@ def test_ws_prompt_rejected_after_failed_rebuild_still_warns(ws_env, caplog):
                       if r.getMessage().startswith("ws.prompt rejected")]
     assert rejected_recs, "expected the terminal rejection rung to still fire"
     assert rejected_recs[0].levelno == logging.WARNING
+
+
+def test_ws_prompt_rejected_while_draining_is_info_not_warning(ws_env, caplog):
+    """A prompt typed during a deploy drain is expected (#3359): INFO, still rejected."""
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "drain-info")
+    sid = session.id
+
+    with caplog.at_level(logging.INFO, logger="server.bridge.ws"):
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            _attach(ws, sid)
+            client.portal.call(orch.begin_drain)
+            ws.send_text(json.dumps({"type": "prompt", "sessionId": sid,
+                                     "text": "held please"}))
+            events = _drain_events(ws, until_type="promptRejected")
+
+    assert [e for e in events if e.get("type") == "promptRejected"
+            and e.get("reason") == "draining"]
+    recs = [r for r in caplog.records
+            if r.getMessage().startswith("ws.prompt rejected")]
+    assert recs and recs[0].levelno == logging.INFO
