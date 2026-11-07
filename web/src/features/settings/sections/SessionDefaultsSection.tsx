@@ -15,7 +15,8 @@ import { SettingRow } from '../chassis/SettingRow'
 import { SaveBar } from '../chassis/SaveBar'
 import { PathControl } from '../chassis/PathControl'
 import { branchPrefixReason, useSettingsForm } from '../useSettingsForm'
-import { SANDBOX_DEFAULT_COPY } from '@/features/sessions/sandboxCopy'
+import { SANDBOX_DEFAULT_COPY, sandboxError } from '@/features/sessions/sandboxCopy'
+import { apiErrorCode } from '@/api/client'
 
 /** '' is the draft's "server default" — the payload turns it back into null. */
 type ApprovalAction = '' | 'require_approval' | 'block' | 'allow'
@@ -167,6 +168,11 @@ export function SessionDefaultsSection() {
   // A refused prefix is shown under its field, not in the section banner (D-22). Tied
   // to form.error, which clears on the next edit, so a stale refusal never lingers.
   const prefixError = form.error ? branchPrefixReason(update.error) : null
+  // The person-only refusal (D-23) can only come from the sandbox default — the one
+  // person-gated field here — so it sits under that row, in plain words.
+  const sandboxRefusal = form.error && apiErrorCode(update.error) === 'SESSION_CONTROL_HUMAN_ONLY'
+    ? sandboxError(update.error)
+    : null
   const confirmMode = confirm?.mode
   const confirmLabel = PERMISSION_MODES.find((m) => m.value === confirmMode)?.label ?? confirmMode
 
@@ -178,7 +184,7 @@ export function SessionDefaultsSection() {
       description={SETTINGS_BY_ID.sessions.description}
       footer={<SaveBar form={form} />}
     >
-      {form.error && !prefixError && <Banner tone="danger" role="alert" title="Not saved">{form.error}</Banner>}
+      {form.error && !prefixError && !sandboxRefusal && <Banner tone="danger" role="alert" title="Not saved">{form.error}</Banner>}
       {/* Stale data, not missing data (R17) — a `status` notice above the form
           rather than an `alert` in place of it. */}
       {isError && (
@@ -216,7 +222,7 @@ export function SessionDefaultsSection() {
         )}
         {/* D-23: only where the server can sandbox at all (the kill switch, on Claude). */}
         {settings.sandboxCapability === true && (
-          <SettingRow label="Sandbox" htmlFor="defaults-sandbox" description={SANDBOX_DEFAULT_COPY} selfLabelled>
+          <SettingRow label="Sandbox" htmlFor="defaults-sandbox" description={SANDBOX_DEFAULT_COPY} error={sandboxRefusal} selfLabelled>
             <Checkbox
               id="defaults-sandbox"
               label="Sandbox new sessions"

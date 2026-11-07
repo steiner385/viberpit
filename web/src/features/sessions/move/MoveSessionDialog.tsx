@@ -69,7 +69,7 @@ function isPreClaimRefusal(err: unknown): boolean {
 }
 
 /** `{detail: {code, message, outcome?, …}}` off a failed request. */
-function errorDetail(err: unknown): { code: string | null; message: string | null; outcome: string | null } {
+function errorDetail(err: unknown): { code: string | null; message: string | null; outcome: string | null; reason: string | null } {
   const code = apiErrorCode(err)
   const detail = err instanceof ApiRequestError ? err.body?.detail : null
   const rec = detail && typeof detail === 'object' ? (detail as Record<string, unknown>) : {}
@@ -77,6 +77,8 @@ function errorDetail(err: unknown): { code: string | null; message: string | nul
     code,
     message: typeof rec.message === 'string' ? rec.message : null,
     outcome: typeof rec.outcome === 'string' ? rec.outcome : null,
+    // A free-text why some codes carry (D-23 `MOVE_TARGET_SANDBOX`: the target's preflight).
+    reason: typeof rec.reason === 'string' ? rec.reason : null,
   }
 }
 
@@ -142,7 +144,7 @@ export default function MoveSessionDialog({ sessionId, source, onClose, onSettle
   let blocked: string | null = null
   if (preflight.isError) {
     const d = errorDetail(preflight.error)
-    blocked = moveReasonText(d.code, d.message)
+    blocked = moveReasonText(d.code, d.message, d.reason)
   } else if (pf) {
     if (pf.factsError) blocked = moveReasonText(pf.factsError)
     else if (!pf.verdict.ok) blocked = moveReasonText(pf.verdict.reason, pf.verdict.message)
@@ -164,7 +166,7 @@ export default function MoveSessionDialog({ sessionId, source, onClose, onSettle
         onSuccess: (res) => { setOutcome({ kind: 'moved', host: res.to }); onSettled?.() },
         onError: (err) => {
           const d = errorDetail(err)
-          const reason = moveReasonText(d.code, d.message)
+          const reason = moveReasonText(d.code, d.message, d.reason)
           if (d.outcome === 'moved') { setOutcome({ kind: 'moved', host: target }); onSettled?.() }
           else if (d.outcome === 'restored') {
             setOutcome({ kind: 'restored', host: source ?? 'its host', reason }); onSettled?.()

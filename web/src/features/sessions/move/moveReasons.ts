@@ -24,6 +24,7 @@ export const MOVE_REASON_CODES = [
   'MOVE_AWAITING_ANSWER', 'MOVE_HAS_CHILDREN', 'MOVE_IS_CHILD', 'MOVE_NOT_MANAGED_WORKTREE',
   'MOVE_UNKNOWN_HOST', 'MOVE_SAME_HOST', 'MOVE_TARGET_DISABLED', 'MOVE_TARGET_UNHEALTHY',
   'MOVE_TARGET_ENGINE', 'MOVE_TARGET_PLATFORM', 'MOVE_TARGET_FULL', 'MOVE_TARGET_UNAVAILABLE',
+  'MOVE_TARGET_SANDBOX',
   'MOVE_DIRTY_NEEDS_CONSENT', 'MOVE_DIRTY_PUBLIC_REPO', 'MOVE_UNPUSHED_PUBLIC_REPO',
   'MOVE_BACKGROUND_NEEDS_CONFIRM',
   'MOVE_SOURCE_UNREACHABLE', 'MOVE_EXPORT_FAILED', 'MOVE_RESTAMP_FAILED', 'MOVE_IMPORT_FAILED',
@@ -59,6 +60,7 @@ export const MOVE_REASON_COPY: Record<MoveReasonCode, string> = {
   MOVE_TARGET_PLATFORM: "That host's platform can't take this session.",
   MOVE_TARGET_FULL: 'That host is at its session limit.',
   MOVE_TARGET_UNAVAILABLE: 'That host is not reachable right now.',
+  MOVE_TARGET_SANDBOX: "That host can't run this session's sandbox.",
   MOVE_DIRTY_NEEDS_CONSENT: 'The worktree has uncommitted changes — tick the box to carry them.',
   MOVE_DIRTY_PUBLIC_REPO: PUBLIC_REPO_COPY,
   MOVE_UNPUSHED_PUBLIC_REPO: UNPUSHED_PUBLIC_REPO_COPY,
@@ -79,8 +81,18 @@ export const MOVE_REASON_COPY: Record<MoveReasonCode, string> = {
   MOVE_HISTORY_EXISTS: 'The target host already has a copy of this Codex thread; clear it there first.',
 }
 
-/** The plain-language line for a reason code. */
-export function moveReasonText(code: string | null | undefined, serverMessage?: string | null): string {
-  if (code && Object.hasOwn(MOVE_REASON_COPY, code)) return MOVE_REASON_COPY[code as MoveReasonCode]
+/** Codes whose line names the host's own reason (`detail.reason`) when there is one —
+ *  D-23: the sandboxed session's target failed its sandbox preflight. */
+const WITH_REASON: ReadonlySet<MoveReasonCode> = new Set(['MOVE_TARGET_SANDBOX'])
+
+/** The plain-language line for a reason code. `reason` is the refusal's free-text
+ *  `detail.reason`, appended for the codes that carry one. */
+export function moveReasonText(
+  code: string | null | undefined, serverMessage?: string | null, reason?: string | null,
+): string {
+  if (code && Object.hasOwn(MOVE_REASON_COPY, code)) {
+    const text = MOVE_REASON_COPY[code as MoveReasonCode]
+    return reason && WITH_REASON.has(code as MoveReasonCode) ? `${text.slice(0, -1)} (${reason}).` : text
+  }
   return serverMessage || MOVE_GENERIC_COPY
 }

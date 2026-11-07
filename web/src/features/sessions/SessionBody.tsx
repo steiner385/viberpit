@@ -207,8 +207,10 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
           // Offered by the card only beside a worktree path (`cwd`).
           worktree: { sessionId: rt.sessionId, busy, onDiscarded: onClosed },
           // Strictly on (D-23): an unknown capability is an older edge with no endpoint.
-          sandbox: caps?.sandbox === true
-            ? { sessionId: rt.sessionId, busy, state: sessionRecord?.sandbox ?? null }
+          // An enabled sandbox shows even without it (the kill switch turned off under
+          // it), so it can always be turned off.
+          sandbox: caps?.sandbox === true || sessionRecord?.sandbox?.enabled === true
+            ? { sessionId: rt.sessionId, busy, state: sessionRecord?.sandbox ?? null, held: sandboxHold !== null }
             : undefined,
           prs: sessionRecord?.prs,
           prAutofix: {

@@ -47,3 +47,17 @@ export function useSetSandbox() {
     },
   })
 }
+
+/**
+ * "Re-check host": `GET /sessions/{id}/sandbox?refresh=true` re-runs the owning host's
+ * preflight (bwrap, socat, gh, CLI version), so a host fixed since the daemon started
+ * shows without waiting out the cached reading. The answer replaces the facts.
+ */
+export function useRecheckSandboxHost() {
+  const qc = useQueryClient()
+  return useMutation<SandboxFacts, ApiRequestError, string>({
+    mutationFn: (sessionId) => api.get<SandboxFacts>(`${path(sessionId)}?refresh=true`),
+    meta: { suppressErrorToast: true },
+    onSuccess: (facts, sessionId) => { qc.setQueryData(sandboxFactsKey(sessionId), facts) },
+  })
+}

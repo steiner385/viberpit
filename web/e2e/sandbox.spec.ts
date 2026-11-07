@@ -36,6 +36,10 @@ interface Opts {
   facts?: Record<string, unknown>
   /** The POST's answer: a status and body. */
   post?: { status: number; json: unknown }
+  /** What `?refresh=true` (Re-check host) answers over `facts`. */
+  refreshed?: Record<string, unknown>
+  /** `/api/config`'s `capabilities.sandbox` (false = the kill switch is off). */
+  capability?: boolean
 }
 
 async function openSession(page: Page, width: number, opts: Opts = {}) {
@@ -52,13 +56,17 @@ async function openSession(page: Page, width: number, opts: Opts = {}) {
   }] }))
   await page.route('**/api/config', (route) => route.fulfill({ json: {
     repoRoot: '', adoptionEnabled: false,
-    engines: [{ engine: 'claude_code', available: true, unavailableReasons: {}, capabilities: CAPS }],
+    engines: [{ engine: 'claude_code', available: true, unavailableReasons: {}, capabilities: { ...CAPS, sandbox: opts.capability ?? true } }],
   } }))
   await page.route('**/api/daemon/health', (route) => route.fulfill({ json: { status: 'ok' } }))
   await page.route('**/api/sessions/*/diff**', (route) => route.fulfill({ status: 404, json: { detail: 'no worktree' } }))
-  await page.route(`**/api/sessions/${sid}/sandbox`, (route) => {
+  const refreshes: string[] = []
+  await page.route(new RegExp(`/api/sessions/${sid}/sandbox(\\?.*)?$`), (route) => {
     if (route.request().method() !== 'POST') {
-      return route.fulfill({ json: facts({ enabled: sandbox.enabled, state: sandbox.state, reason: sandbox.reason, held, ...opts.facts }) })
+      const refresh = new URL(route.request().url()).searchParams.get('refresh') === 'true'
+      if (refresh) refreshes.push(route.request().url())
+      return route.fulfill({ json: facts({ enabled: sandbox.enabled, state: sandbox.state, reason: sandbox.reason, held,
+        ...opts.facts, ...(refresh ? opts.refreshed : {}) }) })
     }
     posts.push(route.request())
     if (opts.post) return route.fulfill(opts.post)
@@ -75,7 +83,7 @@ async function openSession(page: Page, width: number, opts: Opts = {}) {
   await page.goto('/')
   await page.getByRole('button', { name: /open session sandbox me/i }).click()
   await expect(page.getByText('Done with the build')).toBeVisible()
-  return { posts }
+  return { posts, refreshes }
 }
 
 /** The rail's Environment card: a column at 1440, the Details tab at 390. */
@@ -129,6 +137,41 @@ for (const width of [1440, 390]) {
     const env = await environment(page, width)
     await expect(env.getByRole('switch', { name: 'Sandbox' })).toBeDisabled()
     await expect(env.getByTestId('sandbox-disabled-reason')).toHaveText('socat is not installed')
+    await noOverflow(page)
+  })
+
+  test(`${width}px: Re-check host re-runs the preflight and unlocks a fixed host`, async ({ page }) => {
+    const { refreshes } = await openSession(page, width, {
+      facts: { available: false, canToggle: false, unavailableReason: 'socat is not installed' },
+      refreshed: { available: true, canToggle: true, unavailableReason: null },
+    })
+    const env = await environment(page, width)
+    const toggle = env.getByRole('switch', { name: 'Sandbox' })
+    await expect(toggle).toBeDisabled()
+    await env.getByRole('button', { name: 'Re-check host' }).click()
+    await expect(toggle).toBeEnabled()
+    expect(refreshes).toHaveLength(1)
+    await expect(env.getByRole('button', { name: 'Re-check host' })).toHaveCount(0)
+  })
+
+  test(`${width}px: kill switch off under a held session — Turn off only, one shared confirm`, async ({ page }) => {
+    const { posts } = await openSession(page, width, {
+      held: true, sandbox: { enabled: true, state: 'failed', reason: 'the sandbox is turned off on this host' },
+      capability: false,
+      facts: { capability: false, available: false, preflight: null, canToggle: true },
+    })
+    // The banner: no Retry (the server would refuse it), Turn off stays.
+    const hold = page.getByTestId('sandbox-hold')
+    await expect(hold.getByRole('button', { name: 'Turn off sandbox and continue' })).toBeVisible()
+    await expect(hold.getByRole('button', { name: 'Retry' })).toHaveCount(0)
+    // The card keeps the enabled row, and turning it off asks the same question.
+    const env = await environment(page, width)
+    const toggle = env.getByRole('switch', { name: 'Sandbox' })
+    await expect(toggle).toHaveAttribute('aria-checked', 'true')
+    await toggle.click()
+    const dialog = page.getByRole('dialog', { name: 'Continue without the sandbox?' })
+    await dialog.getByRole('button', { name: 'Turn off and continue' }).click()
+    await expect.poll(() => bodies(posts)).toEqual([{ enabled: false }])
     await noOverflow(page)
   })
 

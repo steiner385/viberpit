@@ -8,16 +8,24 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { api, ApiRequestError } from '@/api/client'
 import { SessionErrorBanner, type SandboxHold } from './SessionErrorBanner'
+import { sandboxFactsKey } from '@/api/sandboxHooks'
 import { SANDBOX_CONFIRM, SANDBOX_ERROR_MESSAGES } from '../sandboxCopy'
 
 type Err = { code: string; message: string } | null
 
 let reply: unknown
 let posts: { path: string; body: unknown }[]
+let facts: unknown
 
 beforeEach(() => {
   vi.restoreAllMocks()
   posts = []
+  facts = { sessionId: 's1', capability: true, enabled: true, state: 'failed', reason: 'x', held: true, busy: false,
+    available: true, unavailableReason: null, preflight: null, canToggle: true, allowedDomains: [] }
+  vi.spyOn(api, 'get').mockImplementation(async () => {
+    if (facts instanceof Error) throw facts
+    return facts
+  })
   reply = { sessionId: 's1', enabled: true, state: 'active', reason: null, held: false, respawned: true }
   vi.spyOn(api, 'post').mockImplementation(async (path: string, body?: unknown) => {
     posts.push({ path, body })
@@ -27,10 +35,10 @@ beforeEach(() => {
 })
 
 function mount(error: Err, hold: SandboxHold | null = null, dismissError = vi.fn()) {
-  const qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   const rt = { state: { error } as never, dismissError }
   render(<QueryClientProvider client={qc}><SessionErrorBanner rt={rt} sandboxHold={hold} /></QueryClientProvider>)
-  return { dismissError }
+  return { dismissError, qc }
 }
 
 const HOLD: SandboxHold = { sessionId: 's1', reason: 'socat is not installed' }
@@ -97,6 +105,26 @@ describe('SessionErrorBanner — sandbox hold', () => {
     dialog = screen.getByRole('dialog', { name: SANDBOX_CONFIRM.continueOff.title })
     await userEvent.click(within(dialog).getByRole('button', { name: SANDBOX_CONFIRM.continueOff.confirmLabel }))
     await waitFor(() => expect(posts).toEqual([{ path: '/sessions/s1/sandbox', body: { enabled: false } }]))
+  })
+
+  it('kill switch off (capability false): no Retry, but Turn off and continue stays', async () => {
+    facts = { ...(facts as object), capability: false, reason: 'the sandbox is turned off on this host' }
+    reply = { sessionId: 's1', enabled: false, state: 'off', reason: null, held: false, respawned: true }
+    const { qc } = mount(null, { sessionId: 's1', reason: 'the sandbox is turned off on this host' })
+    const off = await screen.findByRole('button', { name: 'Turn off sandbox and continue' })
+    // The facts have answered (so Retry's absence is the verdict, not a load).
+    await waitFor(() => expect(qc.getQueryData(sandboxFactsKey('s1'))).toBeDefined())
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+    await userEvent.click(off)
+    await userEvent.click(within(screen.getByRole('dialog', { name: SANDBOX_CONFIRM.continueOff.title }))
+      .getByRole('button', { name: SANDBOX_CONFIRM.continueOff.confirmLabel }))
+    await waitFor(() => expect(posts).toEqual([{ path: '/sessions/s1/sandbox', body: { enabled: false } }]))
+  })
+
+  it('a failed facts read still offers Retry (the server decides)', async () => {
+    facts = new ApiRequestError(409, { detail: { code: 'daemon_outdated' } })
+    mount(null, HOLD)
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeVisible()
   })
 
   it('shows a refusal inline', async () => {

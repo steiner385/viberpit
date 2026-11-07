@@ -154,6 +154,18 @@ describe('SessionBody — session rail', () => {
       expect(screen.queryByTestId('sandbox-hold')).toBeNull()
     })
 
+    it('an enabled sandbox shows its row even with the capability off (kill switch), to turn it off', async () => {
+      sessionsHook.mockReturnValue({ data: [{ ...BASE_SESSION, sandbox: { enabled: true, state: 'failed', reason: 'off here' } }] })
+      vi.mocked(api.get).mockResolvedValue({
+        sessionId: 's1', capability: false, enabled: true, state: 'failed', reason: 'off here', held: true, busy: false,
+        available: false, unavailableReason: null, preflight: null, canToggle: true, allowedDomains: [],
+      })
+      renderWithClient()
+      const sw = await screen.findByRole('switch', { name: 'Sandbox' })
+      expect(sw).toHaveAttribute('aria-checked', 'true')
+      expect(sw).toBeEnabled()
+    })
+
     it('the Environment card has the Sandbox row only where the engine reports the capability', async () => {
       const { unmount } = renderWithClient()
       await screen.findByRole('region', { name: 'Environment' })

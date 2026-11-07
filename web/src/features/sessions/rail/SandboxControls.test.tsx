@@ -12,7 +12,8 @@ import type { SandboxFacts, SessionSandbox } from '@/api/types'
 import { SandboxControls } from './SandboxControls'
 import { EnvironmentCard } from './EnvironmentCard'
 import {
-  SANDBOX_BUSY, SANDBOX_CONFIRM, SANDBOX_DID_NOT_START, SANDBOX_ERROR_MESSAGES, SANDBOX_NOTE,
+  SANDBOX_BUSY, SANDBOX_CONFIRM, SANDBOX_DID_NOT_START, SANDBOX_ERROR_MESSAGES, SANDBOX_HUMAN_ONLY, SANDBOX_NOTE,
+  SANDBOX_RECHECK_FAILED, SANDBOX_SWITCHED_OFF, sandboxDisabledReason,
 } from '../sandboxCopy'
 
 const FACTS: SandboxFacts = {
@@ -26,15 +27,22 @@ const OK = { sessionId: 's1', enabled: true, state: 'active', reason: null, held
 let facts: unknown
 let reply: unknown
 let posts: { path: string; body: unknown }[]
+/** What `?refresh=true` answers; unset = the same as `facts`. */
+let refreshed: unknown
+let gets: string[]
 
 beforeEach(() => {
   vi.restoreAllMocks()
   facts = FACTS
   reply = OK
   posts = []
-  vi.spyOn(api, 'get').mockImplementation(async () => {
-    if (facts instanceof Error) throw facts
-    return facts
+  refreshed = undefined
+  gets = []
+  vi.spyOn(api, 'get').mockImplementation(async (path: string) => {
+    gets.push(path)
+    const answer = path.endsWith('?refresh=true') && refreshed !== undefined ? refreshed : facts
+    if (answer instanceof Error) throw answer
+    return answer
   })
   vi.spyOn(api, 'post').mockImplementation(async (path: string, body?: unknown) => {
     posts.push({ path, body })
@@ -43,11 +51,11 @@ beforeEach(() => {
   })
 })
 
-function mount({ busy = false, state = null as SessionSandbox | null } = {}) {
+function mount({ busy = false, state = null as SessionSandbox | null, held = false } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <SandboxControls sessionId="s1" busy={busy} state={state} />
+      <SandboxControls sessionId="s1" busy={busy} state={state} held={held} />
     </QueryClientProvider>,
   )
 }
@@ -170,7 +178,13 @@ describe('SandboxControls — toggle', () => {
     [new ApiRequestError(409, { detail: { code: 'SANDBOX_UNAVAILABLE', message: 'm', reason: 'socat is not installed' } }),
       'The sandbox is unavailable on this host: socat is not installed'],
     [new ApiRequestError(409, { detail: { code: 'SANDBOX_SESSION_BUSY', message: 'm' } }), SANDBOX_ERROR_MESSAGES.SANDBOX_SESSION_BUSY],
-    [new ApiRequestError(403, { detail: { code: 'SESSION_CONTROL_HUMAN_ONLY', message: 'm' } }), SANDBOX_ERROR_MESSAGES.SESSION_CONTROL_HUMAN_ONLY],
+    // The person-only refusal: the server's own words (they say where it CAN be done)…
+    [new ApiRequestError(403, { detail: { code: 'SESSION_CONTROL_HUMAN_ONLY',
+      message: 'This request came from the ViberPit host itself. … use a browser on another device on your tailnet (phone, laptop).' } }),
+    /use a browser on another device/],
+    // …else a plain line that names who can and cannot.
+    [new ApiRequestError(403, { detail: { code: 'SESSION_CONTROL_HUMAN_ONLY' } }), SANDBOX_HUMAN_ONLY],
+    [new ApiRequestError(409, { detail: { code: 'SANDBOX_DISABLED', message: 'm' } }), SANDBOX_ERROR_MESSAGES.SANDBOX_DISABLED],
     [new ApiRequestError(409, { detail: { code: 'SESSION_MOVING', message: 'm', movingTo: 'rocky' } }), /rocky/],
     [new ApiRequestError(409, { detail: { code: 'SOMETHING_NEW', message: 'The server says no' } }), 'The server says no'],
   ])('shows a refusal inline (%#)', async (err, text) => {
@@ -180,6 +194,93 @@ describe('SandboxControls — toggle', () => {
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: SANDBOX_CONFIRM.on.confirmLabel }))
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent(text)
+  })
+})
+
+describe('SandboxControls — kill switch off under a sandboxed session (fix round 1)', () => {
+  const HELD = { ...FACTS, capability: false, enabled: true, state: 'failed' as const,
+    reason: 'the sandbox is turned off on this host', held: true, available: false,
+    unavailableReason: null, preflight: null, canToggle: true }
+
+  it('keeps the row for an enabled sandbox, with only the off action, and the held confirm', async () => {
+    facts = HELD
+    reply = { ...OK, enabled: false, state: 'off', held: false }
+    mount()
+    const sw = await toggle()
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    expect(sw).toBeEnabled()
+    expect(screen.getByTestId('sandbox-state')).toHaveTextContent('Failed: the sandbox is turned off on this host')
+    await userEvent.click(sw)
+    // Turning off a HELD session: the same "continue without" confirm the banner uses.
+    const dialog = screen.getByRole('dialog', { name: SANDBOX_CONFIRM.continueOff.title })
+    await userEvent.click(within(dialog).getByRole('button', { name: SANDBOX_CONFIRM.continueOff.confirmLabel }))
+    await waitFor(() => expect(posts).toEqual([{ path: '/sessions/s1/sandbox', body: { enabled: false } }]))
+  })
+
+  it('hides the row once the sandbox is off and the capability is gone', async () => {
+    facts = { ...HELD, enabled: false, state: 'off', reason: null, held: false }
+    const { container } = mount()
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('the live payload keeps the row even before the facts agree', async () => {
+    facts = { ...FACTS, capability: false }
+    mount({ state: { enabled: true, state: 'failed', reason: 'x' } })
+    expect(await toggle()).toHaveAttribute('aria-checked', 'true')
+  })
+})
+
+describe('SandboxControls — canToggle does not imply the capability', () => {
+  it('never offers turning ON from canToggle alone: capability off reads as switched off', async () => {
+    facts = { ...FACTS, capability: false, enabled: false, canToggle: true }
+    const { container } = mount()
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    // Off and not capable: nothing to show at all.
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('an unavailable host keeps ON disabled even if canToggle says yes', async () => {
+    facts = { ...FACTS, available: false, unavailableReason: 'socat is not installed', canToggle: true }
+    mount()
+    expect(await toggle()).toBeDisabled()
+    expect(screen.getByTestId('sandbox-disabled-reason')).toHaveTextContent('socat is not installed')
+  })
+
+  it('the reason table: ON without the capability names the kill switch; OFF follows canToggle', () => {
+    expect(sandboxDisabledReason({ ...FACTS, capability: false }, false, false)).toEqual({ text: SANDBOX_SWITCHED_OFF, host: false })
+    expect(sandboxDisabledReason({ ...FACTS, capability: false, enabled: true, canToggle: true }, true, false)).toBeNull()
+  })
+})
+
+describe('SandboxControls — Re-check host', () => {
+  const UNAVAILABLE = { ...FACTS, available: false, canToggle: false, unavailableReason: 'socat is not installed' }
+
+  it('re-runs the preflight with refresh=true and unlocks the toggle when the host is fixed', async () => {
+    facts = UNAVAILABLE
+    refreshed = FACTS
+    mount()
+    expect(await toggle()).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Re-check host' }))
+    await waitFor(() => expect(gets).toContain('/sessions/s1/sandbox?refresh=true'))
+    await waitFor(async () => expect(await toggle()).toBeEnabled())
+    expect(screen.queryByRole('button', { name: 'Re-check host' })).toBeNull()
+  })
+
+  it('is offered only for a host reason — not while busy', async () => {
+    facts = UNAVAILABLE
+    mount({ busy: true })
+    await toggle()
+    expect(screen.queryByRole('button', { name: 'Re-check host' })).toBeNull()
+  })
+
+  it('a failed re-check is shown inline', async () => {
+    facts = UNAVAILABLE
+    refreshed = new ApiRequestError(500, { detail: 'boom' })
+    mount()
+    await toggle()
+    await userEvent.click(screen.getByRole('button', { name: 'Re-check host' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(SANDBOX_RECHECK_FAILED)
   })
 })
 
