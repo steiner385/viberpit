@@ -2657,10 +2657,14 @@ class SessionOrchestrator:
             sandboxed = bool(fork_kw.pop("sandbox", False))
             stderr_sink = fork_kw.pop("stderr", None)
             gate = fork_kw.pop("sandbox_gate", None)
+            sandbox_tmp = fork_kw.pop("sandbox_tmp", None)
             kw: dict = {"on_pre_compact": on_pre_compact, **fork_kw}
             if sandboxed:
-                from server.sessions.claude_sdk_factory import session_tmpdir_path
                 extra.update(sandbox_mod.session_env())
+                if sandbox_tmp:
+                    # The session's own temp root: the CLI's writable temp and Bash
+                    # TMPDIR, the only temp dir its shell may read.
+                    extra["CLAUDE_CODE_TMPDIR"] = sandbox_tmp
                 if stderr_sink is not None and "stderr" in declared:
                     kw["stderr"] = stderr_sink
                 # Non-Bash tools are confined by an SDK PreToolUse hook (every mode). A
@@ -2669,7 +2673,7 @@ class SessionOrchestrator:
                 # every hook of this spawn: writes are serialised against running Bash.
                 if "sandbox_confine" in declared:
                     kw["sandbox_confine"] = sandbox_mod.confinement_hook(
-                        cwd, tmpdir=session_tmpdir_path(), gate=gate)
+                        cwd, tmpdir=sandbox_tmp, gate=gate)
                 if "sandbox_post_write" in declared:
                     kw["sandbox_post_write"] = sandbox_mod.post_write_hook(
                         cwd, functools.partial(self._on_sandbox_escape, session_id),
@@ -2686,7 +2690,7 @@ class SessionOrchestrator:
                 # spawn-only, and a factory that cannot take it fails the after-spawn
                 # check (fail closed), never runs bare.
                 spawn_flags = {**spawn_flags, **sandbox_mod.spawn_settings_overlay(
-                    cwd, config_dir, session_tmpdir_path())}
+                    cwd, config_dir, sandbox_tmp)}
             if spawn_flags and "flag_settings" in declared:
                 kw["flag_settings"] = spawn_flags
             if self._rewind_spawn(session_id):

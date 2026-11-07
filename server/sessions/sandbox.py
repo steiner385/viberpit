@@ -834,6 +834,59 @@ def post_write_hook(cwd: str | None, on_escape: Callable[[str, str], Any],
     return _hook
 
 
+# ── per-session temp root (fix round 5) ──────────────────────────────────────
+# The CLI's temp root is ``CLAUDE_CODE_TMPDIR`` (2.1.319 ``Xf()`` @282248627:
+# ``CLAUDE_CODE_TMPDIR``, else ``os.tmpdir()``); it is the sandbox's default writable temp
+# root (spike §1.6, ``$m()`` @288608093) and the sandboxed shell's ``TMPDIR``
+# (``Lpt`` @286500575). The shared root holds every session's Bash output, so a
+# sandboxed session gets its own, and only that one is re-allowed and writable.
+
+#: The directory, beside the shared Claude temp root, that holds per-session roots.
+SESSION_TMP_PARENT = "viberpit-sbx"
+
+
+def session_tmp_path(session_id: str) -> str:
+    """``<dir of the shared Claude temp root>/viberpit-sbx/<session_id>`` — off the
+    ``/tmp`` tmpfs, like the shared root (``claude_sdk_factory.session_tmpdir_path``)."""
+    from server.sessions.claude_sdk_factory import session_tmpdir_path
+    if not session_id or os.sep in session_id or session_id in (".", ".."):
+        raise ValueError(f"bad session id {session_id!r}")
+    return os.path.join(os.path.dirname(os.path.abspath(session_tmpdir_path())),
+                        SESSION_TMP_PARENT, session_id)
+
+
+def prepare_session_tmp(session_id: str) -> str:
+    """Create the session's temp root 0700 (its parent too) and prove it is a real
+    directory owned by this user — never a symlink a racing process planted."""
+    import stat as _stat
+    path = session_tmp_path(session_id)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    st = os.lstat(path)
+    if not _stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+        raise SandboxError(SANDBOX_START_FAILED,
+                           "the session's sandbox temp directory is not a private directory")
+    os.chmod(path, 0o700)
+    return path
+
+
+def remove_session_tmp(session_id: str) -> None:
+    """Remove the session's temp root (driver close: session close, archive, respawn).
+    Best-effort: a leftover is re-made private at the next spawn."""
+    import shutil
+    try:
+        path = session_tmp_path(session_id)
+    except ValueError:
+        return
+    if os.path.islink(path):
+        os.unlink(path)
+        return
+    shutil.rmtree(path, ignore_errors=True)
+
+
 #: Re-allows under the HOME read-deny (fix round 4): toolchains a sandboxed shell runs
 #: and the git config it reads. Each entry is home-relative and is ONLY a re-allow of a
 #: path the home deny hides — nothing outside home is denied by it.

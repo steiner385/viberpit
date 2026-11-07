@@ -391,15 +391,15 @@ class _Client(FakeSDKClient):
         return await super().__aexit__(*exc)
 
 
-def _echo(reply: Any, cwd: str | None, config_dir: str | None) -> Any:
+def _echo(reply: Any, cwd: str | None, config_dir: str | None,
+          tmpdir: str | None = None) -> Any:
     """A CLI that applied the block reports its lists back: fill the restriction lists a
     scripted reply left at their empty defaults with what this spawn's block sends."""
     if not isinstance(reply, dict) or not isinstance(reply.get("restrictions"), dict):
         return reply
     out = json.loads(json.dumps(reply))
     r = out["restrictions"]
-    from server.sessions.claude_sdk_factory import session_tmpdir_path
-    deny_read, allow_read = sb.read_policy(config_dir, cwd, session_tmpdir_path())
+    deny_read, allow_read = sb.read_policy(config_dir, cwd, tmpdir)
     for key, want in (("fs_deny_read", deny_read), ("fs_allow_read", allow_read),
                       ("fs_deny_write", sb.protected_git_paths(cwd))):
         if r.get(key) == []:
@@ -410,7 +410,8 @@ def _echo(reply: Any, cwd: str | None, config_dir: str | None) -> Any:
 def _sandboxed_driver(control: FakeControl | None, *, enter_error=None,
                       stderr_lines=(), sandbox=True):
     if control is not None:
-        control.replies = [_echo(r, "/tmp/r", "/tmp/cfg") for r in control.replies]
+        control.replies = [_echo(r, "/tmp/r", "/tmp/cfg", sb.session_tmp_path(SID))
+                           for r in control.replies]
     calls: list[dict] = []
     clients: list[_Client] = []
     states: list[tuple[str, str | None]] = []
@@ -545,7 +546,7 @@ class _World:
         self.spawns.append({"flag_settings": flag_settings, "extra_env": extra_env,
                             "stderr": stderr, "resume": resume})
         reply = _echo(self.dialogs.pop(0) if len(self.dialogs) > 1 else self.dialogs[0],
-                      cwd, cfg)
+                      cwd, cfg, (extra_env or {}).get("CLAUDE_CODE_TMPDIR"))
         control = FakeControl(reply)
         self.controls.append(control)
         return _Client(control)
@@ -651,9 +652,8 @@ def test_a_sandboxed_spawn_sends_the_block_and_the_env_and_is_verified(orch_env,
     want = dict(SPIKE_BLOCK["sandbox"])
     want_fs = want.pop("filesystem")
     assert sent == want
-    from server.sessions.claude_sdk_factory import session_tmpdir_path
     deny_read, allow_read = sb.read_policy(str(orch_env), str(tmp_path / "wt"),
-                                           session_tmpdir_path())
+                                           sb.session_tmp_path(SID))
     assert fs == {**want_fs, "denyRead": deny_read, "allowRead": allow_read}
     assert spawn["extra_env"]["GH_NO_UPDATE_NOTIFIER"] == "1"
     assert spawn["extra_env"]["GH_CONFIG_DIR"] == str(tmp_path / "vp")
@@ -2474,3 +2474,98 @@ def test_the_block_sends_the_read_rules_and_the_check_requires_them_exactly(tmp_
 def test_each_webfetch_refusal_names_its_reason(url, why, tmp_path):
     reason = sb.confine_tool("WebFetch", {"url": url}, str(tmp_path))
     assert reason and why in reason
+
+
+# ══ fix round 5: a per-session temp root ══════════════════════════════════════
+
+
+def test_the_session_temp_root_is_private_beside_the_shared_one(tmp_path, monkeypatch):
+    import stat
+    from server.sessions import claude_sdk_factory as csf
+    monkeypatch.setenv("VIBERPIT_SESSION_TMPDIR", str(tmp_path / "cache" / "claude-tmp"))
+    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
+    path = sb.session_tmp_path(SID)
+    assert path == str(tmp_path / "cache" / "viberpit-sbx" / SID)
+    assert os.path.dirname(os.path.dirname(path)) == os.path.dirname(csf.session_tmpdir_path())
+    assert sb.prepare_session_tmp(SID) == path
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o700
+    os.chmod(path, 0o755)
+    sb.prepare_session_tmp(SID)                    # re-made private
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o700
+    sb.remove_session_tmp(SID)
+    assert not os.path.exists(path)
+    for bad in ("", "../x", "a/b", ".."):
+        with pytest.raises(ValueError):
+            sb.session_tmp_path(bad)
+
+
+def test_a_planted_symlink_is_never_used_as_the_temp_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIBERPIT_SESSION_TMPDIR", str(tmp_path / "cache" / "claude-tmp"))
+    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
+    path = sb.session_tmp_path(SID)
+    os.makedirs(os.path.dirname(path))
+    (tmp_path / "elsewhere").mkdir()
+    os.symlink(tmp_path / "elsewhere", path)
+    with pytest.raises(sb.SandboxError) as ei:
+        sb.prepare_session_tmp(SID)
+    assert ei.value.code == sb.SANDBOX_START_FAILED
+    sb.remove_session_tmp(SID)                     # unlinks the link, not its target
+    assert not os.path.lexists(path) and (tmp_path / "elsewhere").is_dir()
+
+
+def test_the_spawn_uses_and_re_allows_only_its_own_temp_root(orch_env, tmp_path, monkeypatch):
+    monkeypatch.setenv("VIBERPIT_SESSION_TMPDIR", str(tmp_path / "cache" / "claude-tmp"))
+    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
+    world = _World()
+
+    async def go():
+        orch = await _orch(tmp_path, world)
+        driver = await orch.ensure_driver(SID)
+        own = sb.session_tmp_path(SID)
+        existed = os.path.isdir(own)
+        await orch.close_session(SID)
+        gone = not os.path.exists(own)
+        await orch.stop()
+        return own, existed, gone, driver
+    own, existed, gone, driver = asyncio.run(go())
+    spawn = world.spawns[0]
+    assert spawn["extra_env"]["CLAUDE_CODE_TMPDIR"] == own and existed
+    allow = spawn["flag_settings"]["sandbox"]["filesystem"]["allowRead"]
+    assert os.path.realpath(own) in allow
+    shared = os.path.realpath(str(tmp_path / "cache" / "claude-tmp"))
+    assert shared not in allow
+    assert gone, "closing the session removes its temp root"
+
+
+def test_the_check_requires_the_sessions_own_root_exactly(tmp_path):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    own = str(tmp_path / "sbx" / SID)
+    shared = str(tmp_path / "claude-tmp")
+    deny, allow = sb.read_policy(str(cfg), None, own)
+    good = _dialog(restrictions__fs_deny_read=deny, restrictions__fs_allow_read=allow)
+    assert sb.check_dialog(good, config_dir=str(cfg), tmpdir=own).ok is True
+    _, allow_shared = sb.read_policy(str(cfg), None, shared)
+    wrong = _dialog(restrictions__fs_deny_read=deny, restrictions__fs_allow_read=allow_shared)
+    assert "re-allows differ" in sb.check_dialog(wrong, config_dir=str(cfg), tmpdir=own).reason
+
+
+@pytest.mark.asyncio
+async def test_the_driver_confines_reads_to_its_own_temp_root(tmp_path, monkeypatch):
+    from claude_agent_sdk import PermissionResultDeny
+    monkeypatch.setenv("VIBERPIT_SESSION_TMPDIR", str(tmp_path / "cache" / "claude-tmp"))
+    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
+    clone, wt, _tmp = _tree(tmp_path)
+    d = ClaudeAgentDriver(SID, "acct1", str(wt), "/tmp/cfg", mode="full-auto",
+                          sdk_factory=lambda *a, **k: _Client(FakeControl()),
+                          registry=PermissionRegistry(), identity="u", sandbox=True)
+    d._sandbox_tmp = sb.prepare_session_tmp(SID)
+    (tmp_path / "cache" / "claude-tmp").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "cache" / "claude-tmp" / "other.txt").write_text("x")
+    ok = await asyncio.wait_for(d._can_use_tool("Read", {"file_path": f"{d._sandbox_tmp}/o"}),
+                                5)
+    assert not isinstance(ok, PermissionResultDeny)
+    other = await asyncio.wait_for(d._can_use_tool(
+        "Read", {"file_path": str(tmp_path / "cache" / "claude-tmp" / "other.txt")}), 5)
+    assert isinstance(other, PermissionResultDeny)
+    sb.remove_session_tmp(SID)

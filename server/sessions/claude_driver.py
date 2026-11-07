@@ -476,6 +476,7 @@ class ClaudeAgentDriver:
         self._sandbox = bool(sandbox)
         self._on_sandbox_state = on_sandbox_state
         self._sandbox_stderr: collections.deque[str] = collections.deque(maxlen=200)
+        self._sandbox_tmp: str | None = None
         # The in-flight registry a sandboxed CLI's hooks share (owner decision
         # 2026-11-07): writes are serialised against running Bash in every thread.
         self._sandbox_gate: sandbox_mod.SandboxGate | None = (
@@ -1139,10 +1140,9 @@ class ClaudeAgentDriver:
         if self._sandbox:
             # D-23: the CLI sandbox wraps Bash only; file tools and third-party MCP tools
             # are confined here too (the spawn's PreToolUse hook is the binding layer).
-            from .claude_sdk_factory import session_tmpdir_path
             from server.permission_rules.patterns import FILE_TOOLS
             why = sandbox_mod.confine_tool(tool_name, tool_input, self.cwd,
-                                           tmpdir=session_tmpdir_path())
+                                           tmpdir=self._sandbox_tmp)
             if why is None and tool_name in FILE_TOOLS and self._sandbox_gate is not None:
                 why = self._sandbox_gate.write_blocked()
             if why is not None:
@@ -1258,6 +1258,10 @@ class ClaudeAgentDriver:
             fork_kw["sandbox"] = True
             fork_kw["stderr"] = self._sandbox_stderr.append
             fork_kw["sandbox_gate"] = self._sandbox_gate
+            # Its own temp root (CLAUDE_CODE_TMPDIR), created private for this CLI.
+            self._sandbox_tmp = await asyncio.to_thread(sandbox_mod.prepare_session_tmp,
+                                                        self.session_id)
+            fork_kw["sandbox_tmp"] = self._sandbox_tmp
             await self._report_sandbox(sandbox_mod.STATE_PENDING, None)
         client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode,
                                self.resume, on_pre_compact=self._on_pre_compact, **fork_kw)
@@ -1334,8 +1338,7 @@ class ClaudeAgentDriver:
                               timeout=sandbox_mod.SANDBOX_CONTROL_TIMEOUT_S)
         except Exception as exc:
             return sandbox_mod.DialogVerdict(False, f"get_sandbox_dialog failed: {exc}")
-        from .claude_sdk_factory import session_tmpdir_path
-        return sandbox_mod.check_dialog(resp, cwd=self.cwd, tmpdir=session_tmpdir_path(),
+        return sandbox_mod.check_dialog(resp, cwd=self.cwd, tmpdir=self._sandbox_tmp,
                                         config_dir=self.config_dir)
 
     def _sandbox_failure_texts(self, exc: BaseException | None) -> list[str]:
@@ -1362,6 +1365,7 @@ class ClaudeAgentDriver:
         closing = asyncio.ensure_future(client.__aexit__(None, None, None))
         await bounded_wait(closing, timeout=_CLOSE_AEXIT_TIMEOUT_S,
                            phase=f"driver.sandbox_abort:{self.session_id}")
+        await self._remove_sandbox_tmp()
 
     def _note_background(self, e) -> bool:
         """Track a BackgroundTaskStarted / Ended event; True when the backgrounded set
@@ -1377,6 +1381,13 @@ class ClaudeAgentDriver:
         if self._sandbox_gate is not None:
             self._sandbox_gate.background_ended(e.tool_use_id)
         return self._subagent_tasks.pop(e.tool_use_id, None) is not None
+
+    async def _remove_sandbox_tmp(self) -> None:
+        """The CLI is gone: drop its private temp root (close, archive, respawn)."""
+        if self._sandbox_tmp is None:
+            return
+        self._sandbox_tmp = None
+        await asyncio.to_thread(sandbox_mod.remove_session_tmp, self.session_id)
 
     async def _report_sandbox(self, state: str, reason: str | None) -> None:
         if self._on_sandbox_state is None:
@@ -3376,6 +3387,7 @@ class ClaudeAgentDriver:
                 self._automation_close_ok = (completed and closing.done()
                                              and not closing.cancelled()
                                              and closing.exception() is None)
+            await self._remove_sandbox_tmp()
             # Final sync_back: capture any token rotation that occurred during the
             # session (e.g. a long-running session where the SDK refreshed but the
             # drain's finally sync_back already ran before the close was requested).
