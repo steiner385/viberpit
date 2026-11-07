@@ -397,6 +397,13 @@ try:
         # that owns the session. Off = every session lists no dev servers, so none opens.
         dev_server_detect_enabled: bool = Field(
             default=True, alias="VIBERPIT_DEV_SERVER_DETECT_ENABLED")
+        # D-18 dev servers published by Docker (#3350): list ports of running compose
+        # containers whose working dir is in a session's worktree, read from the Docker
+        # Engine API socket. Opt-in: reading that socket needs root-equivalent access.
+        dev_server_docker_enabled: bool = Field(
+            default=False, alias="VIBERPIT_DEV_SERVER_DOCKER_ENABLED")
+        dev_server_docker_socket: str = Field(
+            default="/var/run/docker.sock", alias="VIBERPIT_DEV_SERVER_DOCKER_SOCKET")
         # Plugin marketplace install/update/add (D-16c). Off = those routes 404
         # ``plugin_install_disabled`` and browse is empty; enable/disable, uninstall and
         # marketplace remove stay available.
@@ -795,6 +802,12 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         dev_server_detect_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_DEV_SERVER_DETECT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        dev_server_docker_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_DEV_SERVER_DOCKER_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+        )
+        dev_server_docker_socket: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_DEV_SERVER_DOCKER_SOCKET", "/var/run/docker.sock")
         )
         plugin_install_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_PLUGIN_INSTALL_ENABLED", "true").lower() in ("1", "true", "yes", "on")

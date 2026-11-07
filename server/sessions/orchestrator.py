@@ -573,6 +573,17 @@ def _dev_server_detect_enabled() -> bool:
     return bool(get_settings().dev_server_detect_enabled)
 
 
+def _docker_published() -> list[_dev_servers.Published]:
+    """The opt-in Docker source of dev-server detection (#3350), re-read each scan so the
+    setting applies without a restart: ``[]`` while ``VIBERPIT_DEV_SERVER_DOCKER_ENABLED``
+    is off, so the socket is never touched."""
+    from server.config import get_settings
+    settings = get_settings()
+    if not settings.dev_server_docker_enabled:
+        return []
+    return _dev_servers.docker_published(settings.dev_server_docker_socket)
+
+
 async def effective_repo_root(fallback: str) -> str:
     """DB AppSettings.repo_root → *fallback*. THE resolver for "where do managed
     worktrees live": the daemons (``SessionOrchestrator._effective_repo_root``) and the
@@ -22593,7 +22604,8 @@ class SessionOrchestrator:
         # getattr: some harnesses build the orchestrator via __new__.
         det = getattr(self, "_dev_server_det", None)
         if det is None:
-            det = self._dev_server_det = _dev_servers.DevServerDetector()
+            det = self._dev_server_det = _dev_servers.DevServerDetector(
+                published=_docker_published)
         return det
 
     async def _detect_dev_servers(self, session_id: str, *, fresh: bool) -> list[dict]:
