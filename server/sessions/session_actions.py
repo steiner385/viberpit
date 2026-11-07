@@ -242,6 +242,29 @@ async def repair_worktree(orch, *, session_id: str, identity: str,
         raise _worktree_action_error(exc) from exc
 
 
+def sandbox_action_error(exc) -> ActionError:
+    """A ``SandboxError`` as the edge answers it (D-23): its code, the copy, 409, and the
+    specific ``reason`` (the preflight's first failure, the CLI's refusal) beside them."""
+    from server.sessions import sandbox as sb
+    return ActionError(exc.code, sb.MESSAGES.get(exc.code, exc.code), sb.http_status(exc.code),
+                       extra={"reason": exc.reason})
+
+
+async def set_sandbox(orch, *, session_id: str, enabled: bool, identity: str,
+                      via: str | None) -> dict:
+    """Turn a session's sandbox on or off (D-23), on the daemon that owns it. Person-only:
+    off widens what a session may do unattended, and on respawns it. The owning daemon
+    writes ``session.sandbox`` (it alone sees a respawn whose edge went away), so
+    *identity*/*via* travel with the call and nothing is audited here."""
+    from server.sessions import sandbox as sb
+    require_human(identity, via, action="turn a session's sandbox on or off",
+                  code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+    try:
+        return await orch.set_session_sandbox(session_id, enabled, identity=identity, via=via)
+    except sb.SandboxError as exc:
+        raise sandbox_action_error(exc) from exc
+
+
 RULE_HUMAN_ONLY_CODE = "RULES_HUMAN_ONLY"
 
 

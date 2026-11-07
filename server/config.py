@@ -454,6 +454,11 @@ try:
         # control request apply_flag_settings, per constitution I.
         flag_settings_enabled: bool = Field(default=True,
                                             alias="VIBERPIT_FLAG_SETTINGS_ENABLED")
+        # Sandbox for Claude sessions (D-23) kill switch: off = no engine advertises
+        # ``sandbox``, no spawn carries the CLI's ``sandbox`` settings block or its env,
+        # and the per-session toggle is refused. Gates the internal CLI control request
+        # get_sandbox_dialog and a fast-moving CLI surface, per constitution I.
+        sandbox_enabled: bool = Field(default=True, alias="VIBERPIT_SANDBOX_ENABLED")
         # Live (not complete/done/ended/archived) children one parent may have at once.
         child_session_cap: int = Field(default=3, alias="VIBERPIT_CHILD_SESSION_CAP")
         # Deepest nesting: 1 = children only, 2 = grandchildren, …
@@ -838,6 +843,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         flag_settings_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_FLAG_SETTINGS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        sandbox_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_SANDBOX_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         child_session_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("VIBERPIT_CHILD_SESSION_CAP", "")) and v.isdigit() else 3

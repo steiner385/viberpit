@@ -68,7 +68,9 @@ from server.sessions.commands.catalog import (APP_COMMAND, APP_COMMAND_REFUSED,
                                              COMMAND_ORIGIN_REST, app_command_refusal,
                                              app_only_command)
 from server.sessions.engine import (
-    EFFORT_UNCHANGED, AgentEngine, AgentEngineUnavailable, parse_agent_engine)
+    EFFORT_UNCHANGED, AgentEngine, AgentEngineUnavailable, declared_capabilities,
+    parse_agent_engine)
+from server.sessions import sandbox as sandbox_mod
 from server.sessions.model_policy import quota_model
 from server.sessions.permissions import resolve_permission_mode
 from server.sessions.selection import AllAccountsBusy, select_account
@@ -362,6 +364,10 @@ def _record_to_dict(
         # an engine or kind without styles, the kill switch off, or no list reported.
         "outputStyle": flag_settings.effective_output_style(record),
         "availableOutputStyles": flag_settings.available_output_styles(record),
+        # Sandbox (D-23): {enabled, state: off|pending|active|failed, reason}. The raw
+        # columns ride SessionRecord.to_dict; this is the browser's derived view.
+        "sandbox": sandbox_mod.session_view(
+            record, declared_capabilities(getattr(record, "engine", AgentEngine.CLAUDE_CODE))),
         # The effort levels the current model accepts (CLI `supportedEffortLevels`): the
         # picker offers exactly these; [] hides it, null = not reported yet.
         "supportedEffortLevels": (record.effort_levels_now()
@@ -1137,6 +1143,14 @@ async def create_session(
     except AllAccountsBusy as exc:
         return _all_accounts_busy_response(
             exc, limited_message="All accounts are at or above the usage ceiling")
+    except sandbox_mod.SandboxError as exc:
+        # D-23: the new session's sandbox could not start or be verified (the default
+        # sandboxes new sessions). Nothing runs; the CLI's own reason rides along.
+        return JSONResponse(
+            status_code=sandbox_mod.http_status(exc.code),
+            content={"error": {"code": exc.code, "message": sandbox_mod.MESSAGES[exc.code],
+                               "reason": exc.reason}},
+        )
 
     if _resolved_tool_allowlist is not None:
         # Enforced by the standing-rule gate (server/permission_rules/gate.py):
@@ -2587,6 +2601,58 @@ async def repair_session_worktree(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     except DaemonError as exc:
         _raise_daemon_outdated_or_reraise(exc, "repair worktrees")
+
+
+@router.get("/{session_id}/sandbox")
+async def session_sandbox_facts(
+    session_id: str,
+    request: Request,
+    refresh: bool = False,
+    _identity: str = Depends(current_identity),
+) -> Any:
+    """The Environment card's sandbox facts (D-23), read on the daemon that owns the
+    session: ``{sessionId, host, capability, enabled, state, reason, held, busy,
+    available, unavailableReason, preflight, canToggle, allowedDomains}``. ``refresh``
+    re-runs that host's preflight (otherwise cached per host). 404 unknown session; 409
+    ``daemon_outdated``."""
+    try:
+        return await _get_orchestrator(request).sandbox_facts(session_id, refresh=refresh)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "read sandbox state")
+
+
+class SandboxRequest(BaseModel):
+    """``POST /{id}/sandbox`` body (D-23)."""
+    enabled: bool
+
+
+@router.post("/{session_id}/sandbox")
+async def set_session_sandbox(
+    session_id: str,
+    body: SandboxRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+) -> Any:
+    """Turn the session's sandbox on or off (D-23). Idle only; both directions respawn
+    the session (resuming its conversation) and the new CLI is verified before it runs.
+    200 ``{sessionId, enabled, state, reason, held, respawned}`` — a respawn whose
+    sandbox failed answers ``state: failed``, ``held: true``. Person-only (403
+    ``SESSION_CONTROL_HUMAN_ONLY``); 409 ``SANDBOX_DISABLED`` / ``SANDBOX_UNSUPPORTED`` /
+    ``SANDBOX_UNAVAILABLE`` (``reason``: the preflight's first failure) /
+    ``SANDBOX_SESSION_BUSY`` / ``SANDBOX_SESSION_ENDED`` / ``SESSION_MOVING``; 404 unknown
+    session; 409 ``daemon_outdated``. Audited ``session.sandbox`` by the owning daemon."""
+    try:
+        return await session_actions.set_sandbox(
+            _get_orchestrator(request), session_id=session_id, enabled=body.enabled,
+            identity=identity, via=human_gate_via(request))
+    except ActionError as exc:
+        return _action_error_response(exc)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "change a session's sandbox")
 
 
 class ForkRequest(BaseModel):

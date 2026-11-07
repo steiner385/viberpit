@@ -118,7 +118,7 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
                      on_pre_compact=None, options_overlay=None, owns_pr=None,
                      ready_grants=None, fork_session=False, extra_args=None,
                      enable_file_checkpointing=False, platform_guide=None,
-                     flag_settings=None):
+                     flag_settings=None, stderr=None):
     """Build the real ``ClaudeSDKClient`` for one session.
 
     *owns_pr*: the session's ``(repo, number, head_ref) -> bool`` ownership check for
@@ -139,6 +139,11 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     *flag_settings* (D-14): the session's stored flag-layer settings (``fastMode``,
     ``effortLevel``), merged into the ``--settings`` JSON so a resume or respawn starts
     with them; live changes go through ``ClaudeAgentDriver.apply_flag_settings``.
+
+    *stderr* (D-23): a per-line callback for the CLI's stderr, passed only for a
+    sandboxed spawn, so the driver can read the CLI's own sandbox refusal ("❌ Sandbox
+    Error", "sandbox required but unavailable") when the spawn fails. The sandbox block
+    itself rides *flag_settings*.
 
     *platform_guide*: the session's per-platform guide text (``platform_guide.py``),
     appended to the system prompt; ``None`` for a Linux session.
@@ -179,6 +184,8 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
         },
         **(await asyncio.to_thread(_cli_path_kwargs)),
     )
+    if stderr is not None:
+        kwargs["stderr"] = stderr
     opts = ClaudeAgentOptions(**merge_options_overlay(kwargs, options_overlay))
     return ClaudeSDKClient(options=opts)
 

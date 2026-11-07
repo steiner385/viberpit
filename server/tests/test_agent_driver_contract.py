@@ -73,6 +73,9 @@ def test_claude_adapter_satisfies_provider_neutral_driver_contract():
         # Move to host (D-17): history on the shared tree + resume by id from any cwd;
         # the kill switch gates it at engine.move_supported, not here.
         cross_host_transfer=True,
+        # Sandbox (D-23): the CLI's own sandbox via --settings, verified with
+        # get_sandbox_dialog; the kill switch gates it at sandbox.sandbox_supported.
+        sandbox=True,
     )
 
     driver._engine_session_id = "native-1"

@@ -256,6 +256,12 @@ def reconstruct_create_session_error(exc: DaemonError) -> Exception:
         from viberpit import gitrepos
         exc_cls = gitrepos.CloneError if exc.err_type == "CloneError" else gitrepos.GhError
         return exc_cls(exc.message)
+    if exc.err_type == "SandboxError":
+        # D-23: a new session's sandbox could not start or be verified. Known codes only.
+        from server.sessions.sandbox import SANDBOX_CODES, SandboxError
+        data = exc.data or {}
+        if data.get("code") in SANDBOX_CODES:
+            return SandboxError(data["code"], data.get("reason"))
     return exc
 
 

@@ -363,6 +363,15 @@ class Session(Base):
     # through the ``--settings`` JSON and live through ``apply_flag_settings``. NULL =
     # use ``AppSettings.default_output_style``. Nullable so reconcile adds it.
     output_style: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Sandbox (D-23): the session's setting, recorded at its first spawn (the effective
+    # value: the app default then). NULL = a row spawned before D-23, read as off. Applied
+    # at every spawn through the ``--settings`` JSON; changed only by the person-gated
+    # toggle, which respawns. Nullable so reconcile adds it.
+    sandbox: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    # The last sandbox verification of this session's CLI (``get_sandbox_dialog``):
+    # ``pending`` | ``active`` | ``failed``, and the failure's reason. Nullable for reconcile.
+    sandbox_state: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    sandbox_reason: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # The person who typed an app command (`/plan`, `/fast` …) as this session's initial
     # prompt (D-16a): the proof a rehydrate needs to re-park it, and who it runs as. NULL
     # = no such command, or a non-human creator (it is never run). Nullable for reconcile.
@@ -597,6 +606,9 @@ class AppSettings(Base):
     # The output style a coding session spawns with when it has none of its own (D-16a).
     # NULL = the CLI's own ``default``. Nullable for backfill.
     default_output_style: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Whether new Claude sessions spawn in the sandbox (D-23). NULL = off. Recorded on
+    # each session at its first spawn, so changing it never changes a running session.
+    sandbox_default: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     # The owner's confirmed plugin marketplaces (D-16c, D1): a JSON object {name:
     # normalized source} (server/library/curated.py). NULL = none confirmed. Nullable
     # for backfill.

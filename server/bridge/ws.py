@@ -84,6 +84,7 @@ from server.sessions.facade import call_with_deadline
 from server.sessions.orchestrator import DriverStartTimeout, ENSURE_DRIVER_WORST_CASE_S
 from server.sessions.replay import replay_window
 from server.sessions.origin_backfill import apply_origin_backfill
+from server.sessions import sandbox as sandbox_mod
 from server.sessions import session_actions
 from server.sessions.session_actions import ActionError
 from server.sessions.types import ASSISTANT_KIND, is_assistant
@@ -998,6 +999,19 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # test_reassign_stale_ownership.py).
                 if isinstance(exc, DaemonError) and exc.err_type == "DriverStartTimeout":
                     await _worker_start_timed_out(session_id, exc, auto)
+                    return None
+                if sandbox_mod.is_sandbox_error(exc):
+                    # D-23: the session asked for the sandbox and it could not start or
+                    # be verified (or it is held on that). An expected, handled refusal:
+                    # INFO, and the hold banner offers Retry / Turn off sandbox.
+                    reason = (getattr(exc, "reason", None)
+                              or (getattr(exc, "data", None) or {}).get("reason"))
+                    log.info("ws.attach: session %s not started: sandbox (%s)",
+                             session_id, reason)
+                    await _attach_failed(
+                        session_id, "SESSION_SANDBOX_FAILED",
+                        f"{sandbox_mod.MESSAGES[sandbox_mod.SANDBOX_HELD]}"
+                        + (f" ({reason})" if reason else ""), auto)
                     return None
                 stale_ownership = isinstance(exc, StaleOwnership) or (
                     isinstance(exc, DaemonError) and exc.err_type == "StaleOwnership")

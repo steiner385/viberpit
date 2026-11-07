@@ -223,6 +223,8 @@ class InProcessOrchestratorAdapter:
     async def worktree_preflight(self, *a, **k): return await _maybe_await(self._orch.worktree_preflight(*a, **k))
     async def discard_worktree(self, *a, **k): return await _maybe_await(self._orch.discard_worktree(*a, **k))
     async def repair_worktree(self, *a, **k): return await _maybe_await(self._orch.repair_worktree(*a, **k))
+    async def sandbox_facts(self, *a, **k): return await _maybe_await(self._orch.sandbox_facts(*a, **k))
+    async def set_session_sandbox(self, *a, **k): return await _maybe_await(self._orch.set_session_sandbox(*a, **k))
     async def fork_session(self, *a, **k): return await _maybe_await(self._orch.fork_session(*a, **k))
     async def rewind_session(self, *a, **k): return await _maybe_await(self._orch.rewind_session(*a, **k))
     async def undo_rewind(self, *a, **k): return await _maybe_await(self._orch.undo_rewind(*a, **k))

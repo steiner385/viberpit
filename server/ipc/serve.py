@@ -243,6 +243,15 @@ async def daemon_lifespan(app, orchestrator):
         ),
         name="codex-doctor",
     )
+    # D-23: this host's sandbox preflight, re-run at every daemon start (and on demand
+    # via the facts route) and cached per host. Background and argv-only: each probe is
+    # bounded at sandbox.PROBE_TIMEOUT_S, and boot never waits for it.
+    from server.sessions import sandbox as _sandbox
+    app.state.sandbox_preflight_task = None
+    if _sandbox.sandbox_enabled():
+        app.state.sandbox_preflight_task = _supervise(
+            asyncio.create_task(_sandbox.preflight(refresh=True), name="sandbox-preflight"),
+            name="sandbox-preflight")
     # Reap `claude` CLIs the PREVIOUS incarnation left running (#1379) — before
     # anything below can rehydrate or resume. KillMode=mixed lets the old unit's
     # children outlive it ("Unit process … (claude) remains running after unit
@@ -329,6 +338,9 @@ async def daemon_lifespan(app, orchestrator):
     finally:
         uninstall_drain_on_sigterm()
         await cancel_and_reap(app.state.boot_resume_task, phase="daemon.boot-resume")
+        if app.state.sandbox_preflight_task is not None:
+            await cancel_and_reap(app.state.sandbox_preflight_task,
+                                  phase="daemon.sandbox-preflight")
         platform_probe = getattr(app.state, "platform_probe", None)
         if platform_probe is not None:
             await platform_probe.aclose()

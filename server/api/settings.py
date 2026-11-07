@@ -15,7 +15,9 @@ from server.db import get_db, get_or_create_app_settings
 from server.db.models import AppSettings
 from server.hostname import self_host_name
 from server.library import scan
+from server.sessions.engine import AgentEngine, declared_capabilities
 from server.sessions.global_cap import GlobalCap, drain_if_raised, read_global_cap
+from server.sessions.sandbox import sandbox_supported
 from server.sessions.types import VALID_SESSION_MODES
 from server.version import running_git_sha
 
@@ -133,6 +135,10 @@ class SettingsBody(BaseModel):
     # the built-in; anything else is validated (server/sessions/branch_prefix.py) and
     # refused with 400 BRANCH_PREFIX_INVALID + a reason.
     branchPrefix: str | None = None
+    # Whether new Claude sessions spawn in the sandbox (D-23). Omitted → unchanged;
+    # true/false sets it. Recorded on each session at its first spawn. Changing it needs
+    # a person (403 SESSION_CONTROL_HUMAN_ONLY), as the per-session toggle does.
+    sandboxDefault: bool | None = None
 
 
 async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | None) -> tuple[int, int, int]:
@@ -180,6 +186,10 @@ def _to_dict(s: AppSettings, cap: GlobalCap) -> dict:
         "assistantOperatorTools": s.assistant_operator_tools,
         "defaultOutputStyle": s.default_output_style,
         "branchPrefix": s.branch_prefix,
+        # D-23: NULL surfaces as off. The capability is the kill switch on Claude (the
+        # one engine with a sandbox): the Settings toggle shows only while it is true.
+        "sandboxDefault": s.sandbox_default is True,
+        "sandboxCapability": sandbox_supported(declared_capabilities(AgentEngine.CLAUDE_CODE)),
         **_server_blocks(cap),
     }
 
@@ -295,6 +305,18 @@ async def put_settings_row(
         if style is not None and style not in {s["name"] for s in known}:
             raise HTTPException(status_code=422, detail="invalid defaultOutputStyle")
         row.default_output_style = style
+    if body.sandboxDefault is not None and body.sandboxDefault != (row.sandbox_default is True):
+        from server.auth.identity import human_gate_via
+        from server.sessions.session_actions import (SESSION_CONTROL_HUMAN_ONLY_CODE,
+                                                     ActionError, require_human)
+        try:
+            require_human(_identity, human_gate_via(request),
+                          action="change whether new sessions run in the sandbox",
+                          code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+        except ActionError as exc:
+            raise HTTPException(status_code=exc.http,
+                                detail={"code": exc.code, "message": exc.message}) from exc
+        row.sandbox_default = body.sandboxDefault
     if "branchPrefix" in body.model_fields_set:
         from server.sessions import branch_prefix as bp
         # Unchanged → nothing to validate (D-22): re-running the clash scan on every

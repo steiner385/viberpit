@@ -113,6 +113,7 @@ from server.sessions import memory_files
 from server.sessions import dev_servers as _dev_servers
 from server.sessions.memory_watch import SessionKey
 from server.sessions import flag_settings
+from server.sessions import sandbox as sandbox_mod
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.claude_driver import (
@@ -774,10 +775,14 @@ _STUCK_SESSION_SWEEP_INTERVAL: float = 300.0
 # Keep this the ONE list; both the sweep and _reassign_locked's failure classification
 # read it, so a new terminal reason cannot be honoured in one and retried in the other.
 _WORKTREE_MISSING_PAUSE_REASON: str = "worktree_missing"
+#   sandbox_failed               — a session that asked for the sandbox (D-23) could not
+#       start it or prove it runs. Fail closed: no loop may rebuild it, sandboxed or
+#       not; a person's Retry or "Turn off sandbox and continue" is the only way on.
 _TERMINAL_PAUSE_REASONS: frozenset[str] = frozenset({
     "engine_rotation_unsupported",
     "automation_ownership_stale",
     _WORKTREE_MISSING_PAUSE_REASON,
+    sandbox_mod.SANDBOX_PAUSE_REASON,
 })
 
 # Pause reason for a rebuild the session lease refused: another host holds this
@@ -819,6 +824,7 @@ PAUSE_REASONS: frozenset[str] = frozenset({
     _LEASE_HELD_PAUSE_REASON,
     _REASSIGN_FAILED_PAUSE_REASON,
     _WORKTREE_MISSING_PAUSE_REASON,
+    sandbox_mod.SANDBOX_PAUSE_REASON,
 })
 
 # Pause reasons that are an expected, self-healing capacity wait rather than an anomaly:
@@ -839,6 +845,8 @@ _ECHOED_PAUSE_REASONS: frozenset[str] = frozenset({
     _REASSIGN_FAILED_PAUSE_REASON,
     "automation_ownership_stale",
     _WORKTREE_MISSING_PAUSE_REASON,   # follows `worktree.missing` (#2913)
+    # follows the driver's `sandbox.unavailable` (INFO) / `sandbox.verify_failed` (WARNING)
+    sandbox_mod.SANDBOX_PAUSE_REASON,
 })
 
 # Minimum spacing between recovery-triggered sweeps (an account dropping below ceiling
@@ -2640,12 +2648,25 @@ class SessionOrchestrator:
             # `fork_kw` is the driver's fork request (D-8: fork_session + extra_args),
             # forwarded only when present, so a factory that never forks keeps its
             # signature.
+            # D-23: the driver asks for the sandbox only when its build decided so
+            # (`_create_driver`); the block, the env and the stderr tail ride this spawn.
+            sandboxed = bool(fork_kw.pop("sandbox", False))
+            stderr_sink = fork_kw.pop("stderr", None)
             kw: dict = {"on_pre_compact": on_pre_compact, **fork_kw}
+            if sandboxed:
+                extra.update(sandbox_mod.session_env())
+                if stderr_sink is not None and "stderr" in declared:
+                    kw["stderr"] = stderr_sink
             if "owns_pr" in declared:
                 kw["owns_pr"] = functools.partial(self._session_opened_pr, session_id)
             if "ready_grants" in declared:
                 kw["ready_grants"] = self._ready_grants(session_id)
             spawn_flags = self._spawn_flag_settings(session_id)
+            if sandboxed:
+                # The FULL block, whatever the flag-settings kill switch says: it is
+                # spawn-only, and a factory that cannot take it fails the after-spawn
+                # check (fail closed), never runs bare.
+                spawn_flags = {**spawn_flags, **sandbox_mod.settings_block()}
             if spawn_flags and "flag_settings" in declared:
                 kw["flag_settings"] = spawn_flags
             if self._rewind_spawn(session_id):
@@ -3112,6 +3133,10 @@ class SessionOrchestrator:
             reasoning_effort=reasoning_effort,
             desired_disabled_mcp=desired_disabled_mcp,
             load_mcp_tool_rules=tool_rules_for_session,
+            # D-23: decided ONCE per build, here, and handed to the driver, which passes it
+            # to the factory below: the spawn that carries the block is the one verified.
+            sandbox=sandbox_mod.spawn_requested(rec, self._engine_registry.capabilities_for(engine)),
+            on_sandbox_state=self._record_sandbox_state,
             before_execution=functools.partial(self._automation_before_execution, session_id,
                                                execution_id=execution_id),
             automation_execution_id=execution_id,
@@ -6233,6 +6258,17 @@ class SessionOrchestrator:
                 if getattr(_prior, "name_is_auto", None) is not None:
                     name_is_auto = _prior.name_is_auto
             account_pinned = bool(getattr(_prior, "account_pinned", False))
+            # D-23: the EFFECTIVE sandbox is recorded at the first spawn — the app default
+            # then — and every later spawn (resume, respawn, move) reads the record, so
+            # changing the default never changes a running session. A queued/held row
+            # that already carries one keeps it.
+            sandbox_on = getattr(_prior, "sandbox", None)
+            if sandbox_on is None:
+                sandbox_on = bool(
+                    not is_assistant_kind(kind)
+                    and sandbox_mod.sandbox_supported(
+                        self._engine_registry.capabilities_for(selected_engine))
+                    and await sandbox_mod.read_default())
             _pre_record = SessionRecord(
                 id=session_id, name=name, account=account,
                 account_pinned=account_pinned,
@@ -6268,6 +6304,7 @@ class SessionOrchestrator:
                 permission_mode=permission_mode,
                 fork_from=fork_from,
                 is_fork=fork_worktree is not None,
+                sandbox=sandbox_on,
             )
         except BaseException:
             await self._run_rollback_shielded(
@@ -6385,6 +6422,7 @@ class SessionOrchestrator:
                                 pending_model_requested_by=None,
                                 pending_model_requested_at=None,
                                 reasoning_effort=reasoning_effort,
+                                sandbox=_pre_record.sandbox,
                                 display_mode=sa_func.coalesce(DbSession.display_mode, display_mode),
                                 display_fallback_reason=sa_func.coalesce(
                                     DbSession.display_fallback_reason, display_fallback_reason))
@@ -6422,6 +6460,8 @@ class SessionOrchestrator:
                         autopilot_paused=autopilot_paused or None,
                         auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                         platform=platform,
+                        sandbox=_pre_record.sandbox,
+                        sandbox_state=_pre_record.sandbox_state,
                     )
                     db.add(row)
             row_persisted = True
@@ -7096,12 +7136,13 @@ class SessionOrchestrator:
             raise self._worktree_refusal(session_id, action,
                                          wc.WORKTREE_SESSION_BUSY) from exc
 
-    async def _audit_worktree_control(self, type_: str, identity: str, via: str | None,
-                                      detail: dict) -> None:
-        """The control's audit row, written HERE on the owning daemon (as
-        ``_ensure_session_cwd`` writes ``session.worktree_recreated``): a discard runs to
-        completion after its edge has gone, so only the daemon sees every outcome. The
-        edge writes none. Best-effort: an audit failure never fails the action."""
+    async def _audit_session_control(self, type_: str, identity: str, via: str | None,
+                                     detail: dict) -> None:
+        """A person-gated control's audit row (D-19 Discard / Repair, D-23 sandbox),
+        written HERE on the owning daemon (as ``_ensure_session_cwd`` writes
+        ``session.worktree_recreated``): the control runs to completion after its edge
+        has gone, so only the daemon sees every outcome. The edge writes none.
+        Best-effort: an audit failure never fails the action."""
         try:
             async with db_session() as db:
                 await record_audit(db, type_, identity, detail, via=via)
@@ -7109,7 +7150,7 @@ class SessionOrchestrator:
         except Exception as exc:
             # One bare event name, whichever control and session: the fields carry
             # them, so the error sink files one issue per cause, not per session.
-            log_event(log, logging.WARNING, "session.worktree_control_audit_failed",
+            log_event(log, logging.WARNING, "session.control_audit_failed",
                       audit_type=type_, session_id=detail.get("sessionId"),
                       error=repr(exc))
 
@@ -7189,7 +7230,7 @@ class SessionOrchestrator:
                 log_event(log, logging.WARNING, "session.worktree_discard_failed",
                           session_id=session_id, step=step, path=cwd, error=error,
                           recovery_refs=extra["recoveryRefs"])
-                await self._audit_worktree_control(
+                await self._audit_session_control(
                     "session.worktree_discard", identity, via,
                     {"sessionId": session_id, "outcome": code, "path": cwd,
                      "branch": branch, "recoveryRefs": extra["recoveryRefs"]})
@@ -7225,7 +7266,7 @@ class SessionOrchestrator:
                       recovery_refs=extra["recoveryRefs"])
             res = {"discarded": True, **extra, "path": cwd, "branch": branch,
                    "branchDeleted": deleted}
-            await self._audit_worktree_control(
+            await self._audit_session_control(
                 "session.worktree_discard", identity, via,
                 {"sessionId": session_id, "outcome": "discarded", "path": cwd,
                  "branch": branch, "branchDeleted": deleted,
@@ -7263,11 +7304,138 @@ class SessionOrchestrator:
             clone_refs: list[str] = []
             if (Path(cwd) / ".git").exists():
                 clone_refs = await asyncio.to_thread(worktrees.recovery_refs, cwd, session_id)
-            await self._audit_worktree_control(
+            await self._audit_session_control(
                 "session.worktree_repair", identity, via,
                 {"sessionId": session_id, "path": cwd, "branch": branch})
             return {"repaired": True, "path": cwd, "branch": branch,
                     "recoveryRefs": clone_refs}
+
+    # ── Sandbox (D-23): the toggle and its facts, on the daemon that owns the session ──
+
+    def _sandbox_record(self, session_id: str) -> SessionRecord:
+        rec = self._records.get(session_id)
+        if rec is None:
+            exc = KeyError(f"No session with id {session_id}")
+            exc.error_data = {"code": worktree_files.SESSION_NOT_FOUND}  # type: ignore[attr-defined]
+            raise exc
+        return rec
+
+    def _sandbox_refusal(self, session_id: str, code: str,
+                         reason: str | None = None) -> sandbox_mod.SandboxError:
+        log_event(log, logging.INFO, "session.sandbox_refused", session_id=session_id,
+                  code=code, reason=reason)
+        return sandbox_mod.SandboxError(code, reason)
+
+    def _sandbox_result(self, rec: SessionRecord, *, respawned: bool) -> dict:
+        view = sandbox_mod.session_view(rec, self._engine_registry.capabilities_for(rec.engine))
+        return {"sessionId": rec.id, **view,
+                "held": rec.paused_reason == sandbox_mod.SANDBOX_PAUSE_REASON,
+                "respawned": respawned}
+
+    async def sandbox_facts(self, session_id: str, *, refresh: bool = False) -> dict:
+        """The Environment card's sandbox facts (D-23), from the daemon that owns the
+        session — its state and this host's preflight (cached per host; *refresh*
+        re-runs it): ``{sessionId, host, capability, enabled, state, reason, held, busy,
+        available, unavailableReason, preflight, canToggle, allowedDomains}``.
+        ``KeyError`` for an unknown session."""
+        rec = self._sandbox_record(session_id)
+        caps = self._engine_registry.capabilities_for(rec.engine)
+        capability = sandbox_mod.takes_sandbox(rec, caps)
+        pf = (await sandbox_mod.preflight(refresh=refresh) if capability
+              else sandbox_mod.cached_preflight())
+        busy = await self._worktree_control_busy(session_id, rec)
+        view = sandbox_mod.session_view(rec, caps)
+        available = bool(capability and pf is not None and pf.ok)
+        ended = rec.status in _NOT_RELOADABLE_STATUSES
+        return {
+            "sessionId": rec.id, "host": getattr(rec, "host", None),
+            "capability": capability, **view,
+            "held": rec.paused_reason == sandbox_mod.SANDBOX_PAUSE_REASON,
+            "busy": busy, "available": available,
+            "unavailableReason": (pf.reason if capability and pf is not None and not pf.ok
+                                  else None),
+            "preflight": pf.to_wire() if pf is not None else None,
+            # Off is always allowed; on needs this host's preflight. Either way idle only.
+            "canToggle": bool(capability and not busy and not ended
+                              and (view["enabled"] or available)),
+            "allowedDomains": list(sandbox_mod.ALLOWED_DOMAINS),
+        }
+
+    async def set_session_sandbox(self, session_id: str, enabled: bool, *,
+                                  identity: str = SYSTEM_IDENTITY,
+                                  via: str | None = None) -> dict:
+        """Turn the session's sandbox on or off (D-23), on the daemon that owns it. Idle
+        only. Both directions RESPAWN through the swap primitive (``_reassign_locked``,
+        resuming the conversation with the new settings): there is no live enable — a
+        live write on a host without deps fails open (spike §1.2) — and the respawned
+        CLI is verified before it runs (``ClaudeAgentDriver._enter_sandboxed``). On a
+        session held on a failed sandbox, on is Retry and off is "Turn off sandbox and
+        continue", which releases the hold. Returns ``{sessionId, enabled, state,
+        reason, held, respawned}``; a respawn whose sandbox failed answers ``state:
+        failed`` (held). Writes ``session.sandbox`` here for every applied change, and
+        runs to completion if the caller goes away. ``KeyError`` unknown;
+        ``SandboxError`` refused."""
+        self._sandbox_record(session_id)
+        return await run_to_completion(
+            self._set_session_sandbox(session_id, bool(enabled), identity=identity, via=via),
+            name=f"session-sandbox-{session_id}")
+
+    async def _set_session_sandbox(self, session_id: str, enabled: bool, *, identity: str,
+                                   via: str | None) -> dict:
+        from server.sessions import session_move as sm
+        rec = self._sandbox_record(session_id)
+        if not sandbox_mod.sandbox_enabled():
+            raise self._sandbox_refusal(session_id, sandbox_mod.SANDBOX_DISABLED)
+        if not sandbox_mod.takes_sandbox(rec, self._engine_registry.capabilities_for(rec.engine)):
+            raise self._sandbox_refusal(session_id, sandbox_mod.SANDBOX_UNSUPPORTED)
+        if rec.status in _NOT_RELOADABLE_STATUSES:
+            raise self._sandbox_refusal(session_id, sandbox_mod.SANDBOX_SESSION_ENDED)
+        if enabled:
+            pf = await sandbox_mod.preflight()
+            if not pf.ok:
+                raise self._sandbox_refusal(session_id, sandbox_mod.SANDBOX_UNAVAILABLE,
+                                            pf.reason)
+        try:
+            async with self._transfer_slot(session_id):
+                current = await self._record_still_live(session_id)
+                if current is None:
+                    raise self._sandbox_refusal(session_id, sandbox_mod.SANDBOX_SESSION_ENDED)
+                rec = current
+                if await self._worktree_control_busy(session_id, rec):
+                    raise self._sandbox_refusal(session_id, sandbox_mod.SANDBOX_SESSION_BUSY)
+                held = rec.paused_reason == sandbox_mod.SANDBOX_PAUSE_REASON
+                respawned = False
+                if (rec.sandbox is True) != enabled or held:
+                    await self._persist_sandbox_setting(rec, enabled)
+                    # The slot held here IS the `_swapping` entry _reassign_locked expects.
+                    respawned = await self._reassign_locked(
+                        rec, rec.account, reason="sandbox", replay_last_prompt=False,
+                        publish_rotated=False, clear_pause=held)
+        except sm.MoveError as exc:
+            if exc.code != sm.MOVE_MID_TURN:
+                raise
+            raise self._sandbox_refusal(session_id,
+                                        sandbox_mod.SANDBOX_SESSION_BUSY) from exc
+        result = self._sandbox_result(rec, respawned=respawned)
+        log_event(log, logging.INFO, "session.sandbox", session_id=session_id,
+                  enabled=enabled, state=result["state"], respawned=respawned)
+        await self._audit_session_control(
+            "session.sandbox", identity, via,
+            {"sessionId": session_id, "enabled": enabled, "state": result["state"],
+             "reason": result["reason"], "respawned": respawned})
+        return result
+
+    async def _persist_sandbox_setting(self, rec: SessionRecord, enabled: bool) -> None:
+        """Record the toggle on the record and its row before the respawn reads it. The
+        last verification no longer describes the CLI about to start: on is ``pending``
+        until it is verified, off clears it."""
+        rec.sandbox = enabled
+        rec.sandbox_state = sandbox_mod.STATE_PENDING if enabled else None
+        rec.sandbox_reason = None
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(sa_update(DbSession).where(DbSession.id == rec.id).values(
+                sandbox=enabled, sandbox_state=rec.sandbox_state, sandbox_reason=None))
 
     async def _cleanup_session_paths(
         self, session_id: str, record: SessionRecord | None, *,
@@ -8664,6 +8832,21 @@ class SessionOrchestrator:
         if rec is not None:
             rec.fast_mode_state = state
             rec.fast_mode_disabled_reason = reason
+
+    async def _record_sandbox_state(self, session_id: str, state: str,
+                                    reason: str | None) -> None:
+        """Driver ``on_sandbox_state`` callback (D-23): keep the session's last sandbox
+        verification on the record and its row (``pending`` at spawn, then ``active`` or
+        ``failed`` with the reason), so the Environment card says what this CLI runs in.
+        A spawn's row is written after the driver starts; it copies the record."""
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.sandbox_state = state
+            rec.sandbox_reason = reason
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(sa_update(DbSession).where(DbSession.id == session_id).values(
+                sandbox_state=state, sandbox_reason=reason))
 
     def _announce_catalog_change(self, session_id: str) -> None:
         """Tell attached clients to re-fetch this session's command catalog (D-14):
@@ -20306,6 +20489,9 @@ class SessionOrchestrator:
             memory_files=getattr(row, "memory_files", None),
             fast_mode=bool(getattr(row, "fast_mode", False)),
             output_style=getattr(row, "output_style", None),
+            sandbox=getattr(row, "sandbox", None),
+            sandbox_state=getattr(row, "sandbox_state", None),
+            sandbox_reason=getattr(row, "sandbox_reason", None),
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
             pr_resolution_note=getattr(row, "pr_resolution_note", None),
@@ -24370,6 +24556,14 @@ class SessionOrchestrator:
         # conversation into the same worktree. `_owns_record` is a per-process
         # OPINION; the lease is a fact both hosts read from the same row. Losing
         # it returns None, which every caller of ensure_driver already handles.
+        # D-23: a session held because its sandbox failed is not rebuilt by an attach or a
+        # prompt — sandboxed or not. Retry and "Turn off sandbox and continue" are a
+        # person's (`set_session_sandbox`, or the reload menu's `_reassign`).
+        if (rec.paused_reason == sandbox_mod.SANDBOX_PAUSE_REASON
+                and sandbox_mod.spawn_requested(
+                    rec, self._engine_registry.capabilities_for(rec.engine))):
+            log.info("session.resume id=%s refused: held on a failed sandbox", session_id)
+            raise sandbox_mod.SandboxError(sandbox_mod.SANDBOX_HELD, rec.sandbox_reason)
         if not await self._claim_session(session_id, why="resume"):
             return None
 
@@ -24508,6 +24702,12 @@ class SessionOrchestrator:
                     await self._start_driver_bounded(driver, session_id=session_id,
                                                      site="session.resume")
                 except Exception as start_exc:
+                    if isinstance(start_exc, sandbox_mod.SandboxError):
+                        # D-23: the driver closed its CLI and logged why. Never the
+                        # fresh-start fallback below, never an unsandboxed retry: hold.
+                        await self._pause_session(
+                            rec, reason=sandbox_mod.SANDBOX_PAUSE_REASON)
+                        raise
                     if resume is None:
                         # No resume to blame — the SDK genuinely can't start (e.g. a
                         # truly dead account token / system problem). Surface it.
@@ -28868,7 +29068,14 @@ class SessionOrchestrator:
             lease_held = isinstance(exc, SessionLeaseHeld)
             engine_down = isinstance(exc, CodexProtocolError)
             worktree_missing = isinstance(exc, SessionWorktreeMissing)
-            if worktree_missing:
+            sandbox_failed = isinstance(exc, sandbox_mod.SandboxError)
+            if isinstance(exc, sandbox_mod.SandboxError):
+                # D-23: the new driver closed its CLI before raising and logged the cause
+                # (`sandbox.unavailable` / `sandbox.verify_failed`); park it terminally —
+                # never rebuilt without a person, least of all unsandboxed.
+                log.info("reassign.sandbox_failed session=%s trigger=%s code=%s: %s",
+                         record.id, reason, exc.code, exc.reason)
+            elif worktree_missing:
                 # `_ensure_session_cwd` already logged `worktree.missing` at WARNING
                 # with the path and branch; a second ERROR-with-traceback here would
                 # file the same condition twice (one failure, two log sites).
@@ -28923,7 +29130,9 @@ class SessionOrchestrator:
                 # while a reason that carried it minted one throttle key and one
                 # filed issue per caller of _reassign (#1766, #1780).
                 log.exception("reassign.error session=%s trigger=%s", record.id, reason)
-            if worktree_missing:
+            if sandbox_failed:
+                paused_reason = sandbox_mod.SANDBOX_PAUSE_REASON
+            elif worktree_missing:
                 paused_reason = _WORKTREE_MISSING_PAUSE_REASON
             elif lease_held:
                 paused_reason = _LEASE_HELD_PAUSE_REASON

@@ -126,6 +126,12 @@ class AgentCapabilities:
     #: 2026-11-06-codex-session-move-verification.md, #3347). Gated by the
     #: ``VIBERPIT_SESSION_MOVE_ENABLED`` kill switch (``move_supported``).
     cross_host_transfer: bool = False
+    #: Sandbox (D-23): the session's shell commands can run inside the CLI's own
+    #: sandbox (bubblewrap + socat on Linux), delivered at spawn through the
+    #: ``--settings`` JSON and verified after spawn with ``get_sandbox_dialog``. Claude
+    #: only (verified on CLI 2.1.293 / 2.1.319); Codex's sandbox stays derived from its
+    #: permission mode. Gated by ``VIBERPIT_SANDBOX_ENABLED`` (``sandbox.sandbox_supported``).
+    sandbox: bool = False
 
 
 def fork_enabled() -> bool:
@@ -212,6 +218,8 @@ def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:
     wire["rewind"] = rewind_supported(caps)
     wire["flagSettings"] = flag_settings_supported(caps)
     wire["crossHostTransfer"] = move_supported(caps)
+    from server.sessions.sandbox import sandbox_supported
+    wire["sandbox"] = sandbox_supported(caps)
     return wire
 
 
@@ -411,6 +419,14 @@ class AgentDriverConfig:
     #: closed). Claude reads them at every CLI start and sends the composed deny rules
     #: through the flag layer before the first prompt. Codex has no deny channel: ignored.
     load_mcp_tool_rules: Callable[[str], Awaitable[Any]] | None = None
+    #: Sandbox (D-23): this spawn carries the CLI's sandbox settings block and must be
+    #: verified before the driver's ``start()`` returns; one that cannot start or be
+    #: verified is closed and raises ``sandbox.SandboxError``. Only ``sandbox`` engines
+    #: (Claude) honour it; the orchestrator never sets it for another.
+    sandbox: bool = False
+    #: Fired ``(session_id, state, reason)`` with each sandbox verification outcome
+    #: (``pending`` at spawn, then ``active`` or ``failed``). Only Claude calls it.
+    on_sandbox_state: Callable[[str, str, str | None], Awaitable[None]] | None = None
     clock: Callable[[], float] | None = None
     suggester: SuggestionProvider | None = None
     assistant_api: AsyncCloser | None = None

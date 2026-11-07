@@ -221,6 +221,13 @@ def resolve_claude_bin() -> str | None:
     return candidate
 
 
+def cli_version() -> Version | None:
+    """The version of the ``claude`` a session would run (``resolve_claude_bin``), or
+    ``None`` when nothing resolves or its ``--version`` cannot be read. Blocking."""
+    binary = resolve_claude_bin()
+    return _probe_version(binary) if binary else None
+
+
 def cli_path_kwargs() -> dict:
     """``{"cli_path": <system claude>}`` for ``ClaudeAgentOptions``, or ``{}``.
 
