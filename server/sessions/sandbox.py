@@ -222,10 +222,44 @@ _SETTINGS_BLOCK: dict[str, Any] = {
 }
 
 
-def settings_block() -> dict[str, Any]:
+def protected_git_paths(cwd: str | None) -> list[str]:
+    """``<common>/hooks`` and ``<common>/config`` of the worktree's common git dir: the
+    CLI write-denies them itself (spike §1.6, ``So()``), and ViberPit names them in the
+    block's ``filesystem.denyWrite`` too, so the after-spawn check can see them applied
+    (the dialog reports only the settings' lists, not the runtime's defaults)."""
+    common = git_common_dir(cwd)
+    return [os.path.join(common, "hooks"), os.path.join(common, "config")] if common else []
+
+
+def settings_block(cwd: str | None = None) -> dict[str, Any]:
     """``{"sandbox": {...}}`` — the full block for one spawn's ``--settings`` JSON (spike
-    §2.1). A fresh deep copy every call: nothing a caller does to it reaches the next."""
-    return {SANDBOX_KEY: copy.deepcopy(_SETTINGS_BLOCK)}
+    §2.1, plus the pins). A fresh deep copy every call: nothing a caller does to it
+    reaches the next. With *cwd*, ``filesystem.denyWrite`` names that worktree's git
+    ``hooks``/``config``."""
+    block = copy.deepcopy(_SETTINGS_BLOCK)
+    deny = protected_git_paths(cwd)
+    if deny:
+        block["filesystem"]["denyWrite"] = deny
+    return {SANDBOX_KEY: block}
+
+
+def spawn_settings_overlay(cwd: str | None = None) -> dict[str, Any]:
+    """Everything a SANDBOXED spawn adds to its ``--settings`` JSON (flag layer):
+
+    * the sandbox block (:func:`settings_block`);
+    * ``disableAllHooks: true`` — settings-file hooks (a repo's ``.claude/settings.json``,
+      local, user, plugin) run as host processes outside bwrap. In the flag layer it
+      leaves only policy hooks (2.1.319: the hooks resolver ``r()`` @286836077
+      returns ``policySettings.hooks`` when the flag source disables hooks; ``y()`` in
+      ``l6`` @286862778 drops plugin hooks via ``y_()``) and keeps the SDK host's own
+      callback hooks (registered ``origin: "sdkHost"`` hooks have no ``pluginRoot`` and
+      pass ``y()``'s filter). CLAUDE.md memory is a separate loader and is untouched;
+      ``setting_sources`` is NOT used, since it would also drop CLAUDE.md;
+    * ``enableAllProjectMcpServers: false`` — a repo's ``.mcp.json`` servers would start
+      as host processes outside bwrap; the unsandboxed default auto-trusts them.
+    """
+    return {**settings_block(cwd), "disableAllHooks": True,
+            "enableAllProjectMcpServers": False}
 
 
 _OAUTH_TOKEN_RE = re.compile(r"^\s*oauth_token:\s*\S+", re.MULTILINE)
@@ -290,18 +324,9 @@ class DialogVerdict:
     expected: bool = False
 
 
-def _under(path: str, roots: Iterable[str]) -> bool:
-    real = os.path.realpath(path)
-    for root in roots:
-        r = os.path.realpath(root)
-        if real == r or real.startswith(r.rstrip(os.sep) + os.sep):
-            return True
-    return False
-
-
 def git_common_dir(cwd: str | None) -> str | None:
-    """The worktree's common git dir (``<clone>/.git``), which the CLI grants write
-    automatically (spike §1.6, ``fwr()`` @288687776), or None."""
+    """The worktree's common git dir (``<clone>/.git``; spike §1.6, ``fwr()``
+    @288687776), or None."""
     if not cwd:
         return None
     dot = os.path.join(cwd, ".git")
@@ -319,35 +344,29 @@ def git_common_dir(cwd: str | None) -> str | None:
     return os.path.dirname(parent) if os.path.basename(parent) == "worktrees" else gitdir
 
 
-#: The CLI's own default task-dir prefix (``/tmp/claude-<uid>``), its child-process
-#: tmpdir when ``CLAUDE_CODE_TMPDIR`` is unset (spike §1.6, ``hAe()``).
-_CLI_TMP_PREFIX = os.path.join(os.sep, "tmp", "claude")
-
-
-def writable_roots(cwd: str | None, tmpdir: str | None) -> tuple[str, ...]:
-    """Where a sandboxed session may write: its worktree, that worktree's common git
-    dir, the Claude temp root, and the CLI's own ``/tmp/claude*`` tmpdir."""
-    roots = [r for r in (cwd, git_common_dir(cwd), tmpdir) if r]
-    return tuple(roots)
-
-
-def _write_allowed(path: str, roots: tuple[str, ...]) -> bool:
-    if path in (".", "./"):
-        return True
-    if os.path.realpath(path).startswith(_CLI_TMP_PREFIX):
-        return True
-    return _under(path, roots)
+def _str_list(value: Any) -> list[str] | None:
+    return [str(v) for v in value] if isinstance(value, list) else None
 
 
 def check_dialog(resp: Any, *, cwd: str | None = None,
                  tmpdir: str | None = None) -> DialogVerdict:
-    """Require every condition of spike §2.4 — and that the restrictions the CLI says it
-    applied are no wider than ViberPit's block: no excluded command, no domain beyond
-    :data:`ALLOWED_DOMAINS`, no writable path beyond :func:`writable_roots`. A missing
-    §2.4 field fails: the request is ``@internal`` and a reply shape it does not
-    recognise is not proof of a sandbox. The restriction lists are checked when the
-    reply carries them (spike §1.2: ``excluded_commands``,
-    ``restrictions.{network_allowed_domains, fs_allow_write}``)."""
+    """Require every condition of spike §2.4, and that the restrictions the CLI says it
+    applied are exactly ViberPit's block. The reply's restriction lists are "the
+    settings' lists, not the runtime's built-in defaults" (2.1.319 schema @284671000),
+    and every one used here is emitted by both verified CLIs (2.1.293 and 2.1.319 carry
+    ``excluded_commands`` / ``fs_allow_write`` / ``fs_deny_write`` /
+    ``network_allowed_domains``), so an ABSENT list fails like a wrong one:
+
+    * ``excluded_commands == []``;
+    * ``restrictions.network_allowed_domains`` within :data:`ALLOWED_DOMAINS`;
+    * ``restrictions.fs_allow_write == []`` — it lists only EXTRA writable paths
+      (``filesystem.allowWrite``), so anything there was added by some settings layer;
+    * ``restrictions.fs_deny_write`` includes the worktree's ``<common>/hooks`` and
+      ``<common>/config`` (sent in the block's ``filesystem.denyWrite``).
+
+    *tmpdir* is accepted for the caller's symmetry and unused: the temp roots are
+    runtime defaults, never in the settings' lists."""
+    del tmpdir
     if not isinstance(resp, Mapping):
         return DialogVerdict(False, "get_sandbox_dialog returned no sandbox state")
     deps = resp.get("dependencies")
@@ -376,30 +395,90 @@ def check_dialog(resp: Any, *, cwd: str | None = None,
     if not (isinstance(restrictions, Mapping)
             and restrictions.get("allow_all_unix_sockets") is False):
         return DialogVerdict(False, "unix sockets are not blocked")
-    excluded = resp.get("excluded_commands")
-    if excluded is not None and excluded != []:
+    excluded = _str_list(resp.get("excluded_commands"))
+    if excluded is None:
+        return DialogVerdict(False, "get_sandbox_dialog did not report excluded commands")
+    if excluded:
         return DialogVerdict(False, "commands are excluded from the sandbox: "
-                             + ", ".join(map(str, excluded))
-                             if isinstance(excluded, list) else
-                             "the excluded-commands list is unreadable")
-    domains = restrictions.get("network_allowed_domains")
-    if domains is not None:
-        if not isinstance(domains, list):
-            return DialogVerdict(False, "the network allowlist is unreadable")
-        extra = [str(d) for d in domains if d not in ALLOWED_DOMAINS]
-        if extra:
-            return DialogVerdict(False, "the network allowlist is wider than GitHub: "
-                                 + ", ".join(extra))
-    writes = restrictions.get("fs_allow_write")
-    if writes is not None:
-        if not isinstance(writes, list):
-            return DialogVerdict(False, "the writable paths are unreadable")
-        roots = writable_roots(cwd, tmpdir)
-        wide = [str(w) for w in writes if not _write_allowed(str(w), roots)]
-        if wide:
-            return DialogVerdict(False, "writable paths beyond the worktree: "
-                                 + ", ".join(wide))
+                             + ", ".join(excluded))
+    domains = _str_list(restrictions.get("network_allowed_domains"))
+    if domains is None:
+        return DialogVerdict(False, "get_sandbox_dialog did not report the network "
+                             "allowlist")
+    extra = [d for d in domains if d not in ALLOWED_DOMAINS]
+    if extra:
+        return DialogVerdict(False, "the network allowlist is wider than GitHub: "
+                             + ", ".join(extra))
+    writes = _str_list(restrictions.get("fs_allow_write"))
+    if writes is None:
+        return DialogVerdict(False, "get_sandbox_dialog did not report the writable paths")
+    if writes:
+        return DialogVerdict(False, "extra writable paths are allowed: " + ", ".join(writes))
+    denied = _str_list(restrictions.get("fs_deny_write"))
+    if denied is None:
+        return DialogVerdict(False, "get_sandbox_dialog did not report the write denials")
+    missing = [p for p in protected_git_paths(cwd) if p not in denied]
+    if missing:
+        return DialogVerdict(False, "git hooks/config are not write-denied: "
+                             + ", ".join(missing))
     return DialogVerdict(True)
+
+
+# ── non-Bash tools (D22d: the sandbox contains a full-auto session) ──────────
+# The CLI sandbox wraps Bash only. Edit/Write/MultiEdit/NotebookEdit and MCP tools run in
+# the CLI process itself, so a sandboxed session confines them here, through an SDK
+# PreToolUse callback hook (binds in EVERY permission mode, bypassPermissions included:
+# 2.1.319 runs PreToolUse hooks before the permission pipeline and ``Nds`` @296090015
+# returns a hook "deny" before it ever calls canUseTool or reads the mode) and again in
+# the driver's can_use_tool (defence in depth for the modes that reach it).
+
+
+def confine_tool(tool_name: str, tool_input: Any, cwd: str | None) -> str | None:
+    """Why a sandboxed session may not run this tool call, or None when it may.
+
+    * A file-writing tool (``FILE_TOOLS``) must target a path whose realpath is inside
+      the worktree (``patterns.worktree_rel``: symlinks resolved, ``..``/``~``/NUL
+      refused, containment by ``commonpath``), and neither the literal nor the resolved
+      path may be protected (``.git``, ``.claude/**``, secrets …: ``is_protected_path``).
+      The clone's common git dir is outside the worktree, so it is refused too.
+    * An MCP tool is allowed only from ViberPit's own in-process server.
+    """
+    from server.mcp_spec import is_mcp_tool
+    from server.permission_rules.patterns import (FILE_TOOLS, is_protected_path,
+                                                  tool_path_arg, worktree_rel)
+    if tool_name in FILE_TOOLS:
+        raw = tool_path_arg(tool_name, tool_input if isinstance(tool_input, Mapping) else {})
+        if raw is None:
+            return f"{tool_name} needs one unambiguous file path in a sandboxed session"
+        resolved = worktree_rel(raw, cwd)
+        if resolved is None:
+            return (f"{tool_name} is confined to this session's worktree while it runs "
+                    f"in the sandbox; {raw!r} is outside it")
+        literal = os.path.normpath(raw if not os.path.isabs(raw)
+                                   else os.path.relpath(raw, cwd or "/"))
+        if is_protected_path(resolved) or is_protected_path(literal.replace(os.sep, "/")):
+            return (f"{tool_name} may not change {raw!r} in a sandboxed session (git "
+                    "internals, .claude settings and hooks, and secrets are protected)")
+        return None
+    if tool_name.startswith("mcp__") and not is_mcp_tool(tool_name):
+        return (f"{tool_name} is a third-party MCP tool; a sandboxed session may use only "
+                "its built-in tools")
+    return None
+
+
+def confinement_hook(cwd: str | None):
+    """The SDK ``PreToolUse`` callback enforcing :func:`confine_tool` for one spawn."""
+    async def _hook(input_data, tool_use_id=None, context=None) -> dict:
+        data = input_data or {}
+        reason = confine_tool(str(data.get("tool_name") or ""), data.get("tool_input") or {},
+                              cwd)
+        if reason is None:
+            return {}
+        log.info("sandbox.tool_denied tool=%s", data.get("tool_name"))
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                       "permissionDecision": "deny",
+                                       "permissionDecisionReason": reason}}
+    return _hook
 
 
 def startup_failure(texts: Iterable[str | None]) -> str | None:

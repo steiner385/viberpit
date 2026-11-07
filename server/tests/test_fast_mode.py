@@ -339,12 +339,17 @@ async def test_set_model_refuses_an_effort_the_model_does_not_list(caplog) -> No
 # ---------------------------------------------------------------- spawn settings
 
 
-def test_spawn_settings_merge_the_session_flags_under_the_mcp_trust() -> None:
+def test_spawn_settings_merge_the_session_flags_over_the_mcp_trust() -> None:
+    """The MCP trust is the default; the session's own flag settings win over it — the
+    one writer of that key is a sandboxed spawn turning it off (D-23 fix round 2)."""
     assert json.loads(claude_sdk_factory.spawn_settings()) == {
         "enableAllProjectMcpServers": True}
     assert json.loads(claude_sdk_factory.spawn_settings(
-        {"fastMode": True, "effortLevel": "high", "enableAllProjectMcpServers": False})) == {
+        {"fastMode": True, "effortLevel": "high"})) == {
         "fastMode": True, "effortLevel": "high", "enableAllProjectMcpServers": True}
+    assert json.loads(claude_sdk_factory.spawn_settings(
+        {"fastMode": True, "enableAllProjectMcpServers": False})) == {
+        "fastMode": True, "enableAllProjectMcpServers": False}
 
 
 @pytest.mark.asyncio

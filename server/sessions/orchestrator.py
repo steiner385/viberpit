@@ -2657,6 +2657,10 @@ class SessionOrchestrator:
                 extra.update(sandbox_mod.session_env())
                 if stderr_sink is not None and "stderr" in declared:
                     kw["stderr"] = stderr_sink
+                # Non-Bash tools are confined by an SDK PreToolUse hook (every mode). A
+                # factory that cannot take it still has the driver's can_use_tool check.
+                if "sandbox_confine" in declared:
+                    kw["sandbox_confine"] = sandbox_mod.confinement_hook(cwd)
             if "owns_pr" in declared:
                 kw["owns_pr"] = functools.partial(self._session_opened_pr, session_id)
             if "ready_grants" in declared:
@@ -2666,7 +2670,7 @@ class SessionOrchestrator:
                 # The FULL block, whatever the flag-settings kill switch says: it is
                 # spawn-only, and a factory that cannot take it fails the after-spawn
                 # check (fail closed), never runs bare.
-                spawn_flags = {**spawn_flags, **sandbox_mod.settings_block()}
+                spawn_flags = {**spawn_flags, **sandbox_mod.spawn_settings_overlay(cwd)}
             if spawn_flags and "flag_settings" in declared:
                 kw["flag_settings"] = spawn_flags
             if self._rewind_spawn(session_id):
@@ -4178,6 +4182,7 @@ class SessionOrchestrator:
         queue_only: bool = False,
         platform: str | None = None,
         initial_prompt_human: bool = False,
+        sandbox: bool = False,
     ) -> SessionRecord:
         """Pick an account, start an AgentDriver, persist a DB row, return a SessionRecord.
 
@@ -4345,7 +4350,7 @@ class SessionOrchestrator:
                     client_node=client_node, display=display, parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
-                    queue_reason=queue_reason, platform=platform)
+                    queue_reason=queue_reason, platform=platform, sandbox=sandbox)
             try:
                 return await self._spawn_session(
                     session_id, name=name, account=account, initial_prompt=initial_prompt,
@@ -4358,7 +4363,7 @@ class SessionOrchestrator:
                     client_node=client_node, display=display, parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
-                    platform=platform)
+                    platform=platform, sandbox=sandbox)
             except AllAccountsBusy as busy:
                 # Wait for quota rather than refuse — for people AND automations
                 # (2026-10-08). Re-auth is not a wait (it never clears on its own), and
@@ -4383,7 +4388,7 @@ class SessionOrchestrator:
                     client_node=client_node, display=display, parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
-                    queue_reason="account_limited", platform=platform)
+                    queue_reason="account_limited", platform=platform, sandbox=sandbox)
 
         if ownership_token is None:
             return await launch()
@@ -4613,6 +4618,7 @@ class SessionOrchestrator:
                                queue_reason: str = "global_cap",
                                replace_row: bool = False,
                                platform: str | None = None,
+                               sandbox: bool = False,
                                ) -> SessionRecord:
         """Persist a 'queued' row + queue entry for a session that cannot start yet.
 
@@ -4663,7 +4669,10 @@ class SessionOrchestrator:
                 display_mode=display_mode,
                 display_fallback_reason=display_fallback_reason,
                 autopilot_paused=autopilot_paused or None,
-                auto_archive_opt_out_reason=auto_archive_opt_out_reason))
+                auto_archive_opt_out_reason=auto_archive_opt_out_reason,
+                # D-23: a sandboxed parent's queued child is stamped now, so a deleted
+                # parent row cannot downgrade it before it starts.
+                sandbox=True if sandbox else None))
         params: dict = {
             "name": name, "account": account, "initial_prompt": initial_prompt,
             "cols": cols, "rows": rows, "cwd": cwd, "branch": branch,
@@ -4699,6 +4708,11 @@ class SessionOrchestrator:
             params["auto_archive_opt_out_reason"] = auto_archive_opt_out_reason
         if parent_session_id is not None:
             params["parent_session_id"] = parent_session_id
+        # D-23: written only when on (mixed-version rule above). A daemon whose
+        # _spawn_session predates it raises TypeError and ends the entry — it fails,
+        # it never starts the child plain.
+        if sandbox:
+            params["sandbox"] = True
         # Not a _spawn_session kwarg — _maybe_start_queued pops it before splatting
         # params into that call. Only written for the non-default reason so a
         # "global_cap" entry (the overwhelming majority) leaves the wire format
@@ -4715,7 +4729,7 @@ class SessionOrchestrator:
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="queued", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
-            initial_prompt=initial_prompt,
+            initial_prompt=initial_prompt, sandbox=True if sandbox else None,
             model=model, reasoning_effort=reasoning_effort, host=host,
             kind=kind, owner_identity=owner_identity,
             display_mode=display_mode, display_fallback_reason=display_fallback_reason,
@@ -5890,6 +5904,8 @@ class SessionOrchestrator:
             params["kind"] = kind
         if owner_identity is not None:
             params["owner_identity"] = owner_identity
+        if getattr(row, "sandbox", None) is True:
+            params["sandbox"] = True   # D-23: a stamped queued child stays sandboxed
         return params
 
     async def _announce_orphan_reconciled(self, row, action: str) -> None:
@@ -6068,6 +6084,7 @@ class SessionOrchestrator:
         fork_worktree: worktrees.ForkWorktreeInfo | None = None,
         fork_from: tuple[str, str] | None = None,
         platform: str | None = None,
+        sandbox: bool = False,
     ) -> SessionRecord:
         """Start an AgentDriver, persist/update a DB row, return a SessionRecord.
 
@@ -6270,12 +6287,11 @@ class SessionOrchestrator:
             # A child (dispatch_session) or a fork of a sandboxed session is never
             # narrower than it — the way its permission mode is capped — and is refused
             # up front where it cannot be sandboxed, never born plain (D-23).
-            sandbox_on = getattr(_prior, "sandbox", None)
+            caps_here = self._engine_registry.capabilities_for(selected_engine)
+            sandbox_on = True if sandbox else getattr(_prior, "sandbox", None)
             if sandbox_on is None:
-                caps_here = self._engine_registry.capabilities_for(selected_engine)
                 lineage = parent_session_id or getattr(_prior, "parent_session_id", None)
                 if lineage and await self._lineage_sandboxed(lineage):
-                    await sandbox_mod.require_here(caps_here)
                     sandbox_on = True
                 else:
                     # read_default raises on a DB error: the create fails (fail closed).
@@ -6283,6 +6299,10 @@ class SessionOrchestrator:
                         not is_assistant_kind(kind)
                         and sandbox_mod.sandbox_supported(caps_here)
                         and await sandbox_mod.read_default())
+            if sandbox_on:
+                # Refused up front — before any driver or row — where this host cannot
+                # run it (kill switch, engine, preflight): never born plain.
+                await sandbox_mod.require_here(caps_here)
             _pre_record = SessionRecord(
                 id=session_id, name=name, account=account,
                 account_pinned=account_pinned,
@@ -19775,6 +19795,16 @@ class SessionOrchestrator:
             refuse(fk.FORK_UNAVAILABLE, f"engine {rec.engine} cannot fork here")
         if rec.kind is not None:
             refuse(fk.FORK_UNAVAILABLE, f"a {rec.kind} session is not forkable")
+        if rec.sandbox is True:
+            # D-23: a fork of a sandboxed session is sandboxed; refused here, before the
+            # fork worktree is made, when this host cannot run it.
+            try:
+                await sandbox_mod.require_here(
+                    self._engine_registry.capabilities_for(rec.engine))
+            except sandbox_mod.SandboxError as exc:
+                log.info("session.fork_refused source=%s code=%s reason=%s",
+                         session_id, exc.code, exc.reason)
+                raise
 
         fork_from: tuple[str, str] | None = None
         if at_turn_id is None:
@@ -19843,7 +19873,8 @@ class SessionOrchestrator:
                 name_is_auto=False, origin=None, origin_ref=None, model=rec.model,
                 reasoning_effort=rec.reasoning_effort, engine=rec.engine,
                 parent_session_id=session_id, fork_worktree=fork_wt, fork_from=fork_from,
-                platform=await self._session_platform(session_id))
+                platform=await self._session_platform(session_id),
+                sandbox=rec.sandbox is True)
         except BaseException:
             await self._run_rollback_shielded(
                 self._discard_fork_and_record(fork_wt),
@@ -25724,7 +25755,8 @@ class SessionOrchestrator:
             identity=identity, permission_mode=mode, name_is_auto=False,
             model=model or getattr(parent, "model", None),
             engine=child_engine,
-            parent_session_id=parent_id)
+            parent_session_id=parent_id,
+            sandbox=getattr(parent, "sandbox", None) is True)
         async with db_session() as db:
             await record_audit(db, "session.child_dispatch", identity,
                                {"parentSessionId": parent_id, "childSessionId": rec.id, "name": name},
@@ -25857,9 +25889,10 @@ class SessionOrchestrator:
         Raises ChildSessionLimit with the model-readable reason for every refusal
         (not its child, child gone, delivery refused)."""
         child = self._records.get(child_session_id)
-        _cs.check_reply(parent_id=parent_id, child=child, child_id=child_session_id,
-                        message=message)
         parent = self._records.get(parent_id)
+        _cs.check_reply(parent_id=parent_id, child=child, child_id=child_session_id,
+                        message=message,
+                        parent_sandboxed=getattr(parent, "sandbox", None) is True)
         text = _cs.build_parent_reply(
             parent_id=parent_id, parent_name=getattr(parent, "name", None) or parent_id,
             message=message)

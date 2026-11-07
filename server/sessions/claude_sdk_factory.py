@@ -52,8 +52,10 @@ _MCP_TRUST_SETTINGS = {"enableAllProjectMcpServers": True}
 def spawn_settings(flag_settings: dict | None = None) -> str:
     """The ``--settings`` JSON for one spawn: the MCP trust above plus the session's own
     flag-layer settings (D-14: ``fastMode``, ``effortLevel``). Spawn-time only — it is
-    never written to the shared account ``settings.json``. The trust key always wins."""
-    return json.dumps({**(flag_settings or {}), **_MCP_TRUST_SETTINGS})
+    never written to the shared account ``settings.json``. The session's settings win
+    over the trust default: a sandboxed spawn (D-23,
+    ``sandbox.spawn_settings_overlay``) turns project-MCP auto-trust OFF."""
+    return json.dumps({**_MCP_TRUST_SETTINGS, **(flag_settings or {})})
 
 # Per-line cap on the SDK's stdout reader (``ClaudeAgentOptions.max_buffer_size``). The
 # SDK default is 1 MiB, and ONE line over it kills the reader for good while the CLI
@@ -126,7 +128,7 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
                      on_pre_compact=None, options_overlay=None, owns_pr=None,
                      ready_grants=None, fork_session=False, extra_args=None,
                      enable_file_checkpointing=False, platform_guide=None,
-                     flag_settings=None, stderr=None):
+                     flag_settings=None, stderr=None, sandbox_confine=None):
     """Build the real ``ClaudeSDKClient`` for one session.
 
     *owns_pr*: the session's ``(repo, number, head_ref) -> bool`` ownership check for
@@ -147,6 +149,11 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     *flag_settings* (D-14): the session's stored flag-layer settings (``fastMode``,
     ``effortLevel``), merged into the ``--settings`` JSON so a resume or respawn starts
     with them; live changes go through ``ClaudeAgentDriver.apply_flag_settings``.
+
+    *sandbox_confine* (D-23): the PreToolUse callback confining non-Bash tools for a
+    sandboxed spawn (``sandbox.confinement_hook``). Registered with no matcher, so it
+    sees every tool call (2.1.319: a matcher-less hook matches all, @295677744); it
+    binds in every permission mode (see ``sandbox``).
 
     *stderr* (D-23): a per-line callback for the CLI's stderr, passed only for a
     sandboxed spawn, so the driver can read the CLI's own sandbox refusal ("❌ Sandbox
@@ -174,6 +181,8 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     hooks: dict = {"PreToolUse": [HookMatcher(matcher="Bash", hooks=[
         human_hold_pre_tool_use, draft_ready_guard(owns_pr, grants=ready_grants),
         merge_hold_guard()])]}
+    if sandbox_confine is not None:
+        hooks["PreToolUse"].append(HookMatcher(hooks=[sandbox_confine]))
     if on_pre_compact is not None:
         hooks["PreCompact"] = [HookMatcher(hooks=[on_pre_compact])]
     kwargs = dict(

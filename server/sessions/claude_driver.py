@@ -1130,6 +1130,14 @@ class ClaudeAgentDriver:
         # inside that sub-agent's thread. Best-effort: unmapped → unattributed, as before.
         agent_id = getattr(ctx, "agent_id", None) if ctx is not None else None
         pid = self.subagent_tool_use_id(agent_id) if agent_id is not None else None
+        if self._sandbox:
+            # D-23: the CLI sandbox wraps Bash only; file tools and third-party MCP tools
+            # are confined here too (the spawn's PreToolUse hook is the binding layer).
+            why = sandbox_mod.confine_tool(tool_name, tool_input, self.cwd)
+            if why is not None:
+                log.info("driver._can_use_tool: sandbox denied tool=%s session=%s",
+                         tool_name, self.session_id)
+                return PermissionResultDeny(message=why)
         if tool_name == "AskUserQuestion":
             return await self._handle_ask_user_question(tool_input, turn_id, parent_tool_use_id=pid)
         if is_assistant_kind(self.kind) and not is_mcp_tool(tool_name):

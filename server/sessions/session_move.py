@@ -234,7 +234,8 @@ class MoveVerdict:
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_wire(self) -> dict[str, Any]:
-        return {"ok": self.ok, "reason": self.code, "message": self.message, **self.extra}
+        # The verdict's own keys win: an extra can never overwrite the reason code.
+        return {**self.extra, "ok": self.ok, "reason": self.code, "message": self.message}
 
     def error(self) -> MoveError:
         return MoveError(self.code or MOVE_NOT_FOUND, self.message, extra=self.extra)
@@ -313,8 +314,9 @@ def movable(subject: MoveSubject, target: str, candidate: Any, *, caps: Any, ena
         return _no(MOVE_TARGET_FULL, f"{target} is at capacity.")
     if subject.sandbox and not (target_sandbox or {}).get("ok"):
         why = (target_sandbox or {}).get("reason") or "it did not report its sandbox readiness"
+        # `sandboxReason`, not `reason`: MoveVerdict.to_wire's own `reason` is the code.
         return _no(MOVE_TARGET_SANDBOX,
-                   f"{target} cannot run this session's sandbox ({why}).", reason=why)
+                   f"{target} cannot run this session's sandbox ({why}).", sandboxReason=why)
     if facts is not None:
         if facts.pending_card:
             return _no(MOVE_AWAITING_ANSWER,

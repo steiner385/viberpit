@@ -77,7 +77,9 @@ GOOD_DIALOG: dict[str, Any] = {
     "unavailable_reason": None, "mode": "regular", "unsandboxed_fallback": False,
     "dependencies": {"errors": [], "warnings": []}, "excluded_commands": [],
     "restrictions": {"network_allowed_domains": list(sb.ALLOWED_DOMAINS),
-                     "allow_all_unix_sockets": False, "fs_allow_write": ["."]},
+                     "allow_all_unix_sockets": False, "fs_allow_write": [],
+                     "fs_deny_write": [], "fs_deny_read": [], "fs_allow_read": [],
+                     "network_denied_domains": []},
 }
 
 
@@ -754,8 +756,10 @@ def test_a_new_session_with_the_default_off_records_off(orch_env, tmp_path):
     assert row.sandbox is False and not world.sandboxed(-1)
 
 
-def test_a_new_session_whose_sandbox_cannot_start_fails_and_registers_nothing(orch_env, tmp_path):
+def test_a_new_session_whose_sandbox_cannot_start_fails_and_registers_nothing(orch_env, tmp_path,
+                                                                             monkeypatch):
     world = _World(_dialog(unavailable_reason="socat not installed"))
+    monkeypatch.setattr(sb, "preflight", _async(_ok_preflight()))
 
     async def go():
         orch = await _orch(tmp_path, world, default=True)
@@ -1232,8 +1236,9 @@ CHILD = "5a4db0c5-0000-0000-0000-0000000000c1"
     ({"excluded_commands": ["git push"]}, "excluded"),
     ({"restrictions__network_allowed_domains": ["github.com", "pypi.org"]}, "pypi.org"),
     ({"restrictions__fs_allow_write": [".", "/home/tony/.ssh"]}, "/home/tony/.ssh"),
-    ({"excluded_commands": "git"}, "unreadable"),
-    ({"restrictions__network_allowed_domains": "github.com"}, "unreadable"),
+    ({"excluded_commands": "git"}, "did not report excluded commands"),
+    ({"restrictions__network_allowed_domains": "github.com"}, "did not report the network"),
+    ({"restrictions__fs_allow_write": ["."]}, "extra writable paths are allowed: ."),
 ])
 def test_a_reply_wider_than_the_block_fails_the_check(over, needle, tmp_path):
     verdict = sb.check_dialog(_dialog(**over), cwd=str(tmp_path / "wt"),
@@ -1242,21 +1247,51 @@ def test_a_reply_wider_than_the_block_fails_the_check(over, needle, tmp_path):
     assert verdict.expected is False   # a contradiction of what was sent: WARNING
 
 
-def test_writes_inside_the_worktree_its_git_dir_and_the_tmp_roots_pass(tmp_path):
+def _linked_worktree(tmp_path):
     clone = tmp_path / "clone"
     (clone / ".git" / "worktrees" / "w1").mkdir(parents=True)
     wt = tmp_path / "wt"
-    wt.mkdir()
+    wt.mkdir(exist_ok=True)
     (wt / ".git").write_text(f"gitdir: {clone}/.git/worktrees/w1\n")
-    tmp = tmp_path / "claude-tmp"
-    reply = _dialog(restrictions__fs_allow_write=[
-        ".", str(wt), str(wt / "sub"), str(clone / ".git"), str(tmp / "task"),
-        "/tmp/claude-1000/x"])
-    assert sb.check_dialog(reply, cwd=str(wt), tmpdir=str(tmp)).ok is True
-    assert sb.git_common_dir(str(wt)) == str(clone / ".git")
-    # A sibling checkout of the same clone is NOT the worktree.
-    bad = _dialog(restrictions__fs_allow_write=[str(clone)])
-    assert sb.check_dialog(bad, cwd=str(wt), tmpdir=str(tmp)).ok is False
+    return clone, wt
+
+
+def test_any_extra_writable_path_fails_even_inside_the_worktree(tmp_path):
+    """Fix round 2, N2: ``fs_allow_write`` lists only EXTRA writes, so it must be []."""
+    clone, wt = _linked_worktree(tmp_path)
+    for extra in ([str(wt)], [str(clone / ".git")], ["/tmp/claude-1000/x"], ["/tmp/claudeX"]):
+        assert sb.check_dialog(_dialog(restrictions__fs_allow_write=extra),
+                               cwd=str(tmp_path / "plain")).ok is False, extra
+
+
+@pytest.mark.parametrize("drop", [("excluded_commands",), ("restrictions", "fs_allow_write"),
+                                  ("restrictions", "network_allowed_domains"),
+                                  ("restrictions", "fs_deny_write")])
+def test_an_absent_restriction_list_fails(drop):
+    reply = json.loads(json.dumps(GOOD_DIALOG))
+    (reply if len(drop) == 1 else reply[drop[0]]).pop(drop[-1])
+    verdict = sb.check_dialog(reply)
+    assert verdict.ok is False and "did not report" in verdict.reason
+
+
+def test_git_hooks_and_config_must_be_write_denied_and_are_sent(tmp_path):
+    clone, wt = _linked_worktree(tmp_path)
+    want = [str(clone / ".git" / "hooks"), str(clone / ".git" / "config")]
+    assert sb.protected_git_paths(str(wt)) == want
+    assert sb.settings_block(str(wt))["sandbox"]["filesystem"] == {
+        "disabled": False, "denyWrite": want}
+    assert sb.check_dialog(GOOD_DIALOG, cwd=str(wt)).ok is False
+    ok = _dialog(restrictions__fs_deny_write=want)
+    assert sb.check_dialog(ok, cwd=str(wt)).ok is True
+    half = _dialog(restrictions__fs_deny_write=want[:1])
+    assert "config" in sb.check_dialog(half, cwd=str(wt)).reason
+
+
+def test_both_verified_clis_emit_the_restriction_lists():
+    """N2: the 2.1.293 floor stands — its binary carries every list the check reads
+    (checked on rocky's 2.1.293: excluded_commands, fs_allow_write, fs_deny_write,
+    network_allowed_domains all present), so MIN_CLI_VERSION was not raised."""
+    assert sb.MIN_CLI_VERSION == (2, 1, 293)
 
 
 def test_the_block_pins_every_loosening_key():
@@ -1434,7 +1469,7 @@ def test_a_sandboxed_session_moves_only_to_a_host_that_can_sandbox(readiness, ok
                    target_sandbox=readiness)
     assert v.ok is ok
     if not ok:
-        assert v.code == sm.MOVE_TARGET_SANDBOX and v.extra["reason"]
+        assert v.code == sm.MOVE_TARGET_SANDBOX and v.extra["sandboxReason"]
         if readiness:
             assert "socat is not installed" in v.message
     # An unsandboxed session never asks.
@@ -1511,9 +1546,11 @@ def test_a_target_imports_sandbox_failure_holds_nothing_and_the_source_restores(
 # ── item 6: expected refusals log no WARNING ────────────────────────────────
 
 
-def test_a_queued_session_refused_by_its_sandbox_logs_info(orch_env, tmp_path, caplog):
+def test_a_queued_session_refused_by_its_sandbox_logs_info(orch_env, tmp_path, caplog,
+                                                          monkeypatch):
     caplog.set_level(logging.INFO)
     world = _World(_dialog(unavailable_reason="socat not installed"))
+    monkeypatch.setattr(sb, "preflight", _async(_bad_preflight()))
 
     async def go():
         orch = await _orch(tmp_path, world, sandbox=False, default=True)
@@ -1523,7 +1560,7 @@ def test_a_queued_session_refused_by_its_sandbox_logs_info(orch_env, tmp_path, c
         await orch.stop()
         return rec
     asyncio.run(go())
-    assert world.spawns, "the queued session was started (and refused)"
+    assert world.spawns == [], "refused up front: no CLI started"
     msgs = [(r.levelno, r.getMessage()) for r in caplog.records]
     assert any("session_queue.start_refused_sandbox" in m and lvl == logging.INFO
                for lvl, m in msgs)
@@ -1573,3 +1610,405 @@ def test_a_local_trusted_caller_cannot_change_the_default(monkeypatch):
     with patch.dict(os.environ, _ENV), client:
         r = client.put("/api/settings", json={"sandboxDefault": True}, headers=_H)
     assert r.status_code == 403
+
+
+# ══ fix round 2 (re-review of ab357e7c) ══════════════════════════════════════
+
+MODES = ["interactive", "acceptEdits", "full-auto", "bypassPermissions"]
+
+
+# ── N4 (a)(b): non-Bash tools are confined in sandboxed sessions ────────────
+
+
+@pytest.mark.parametrize("tool,inp,denied", [
+    ("Edit", {"file_path": "src/a.py"}, False),
+    ("Write", {"file_path": "{wt}/src/new.py"}, False),
+    ("MultiEdit", {"file_path": "README.md"}, False),
+    ("NotebookEdit", {"notebook_path": "nb.ipynb"}, False),
+    ("Write", {"file_path": "/etc/passwd"}, True),
+    ("Edit", {"file_path": "../other/x.py"}, True),
+    ("Edit", {"file_path": "~/.bashrc"}, True),
+    ("Write", {"file_path": ".git/hooks/pre-commit"}, True),
+    ("Edit", {"file_path": ".claude/settings.json"}, True),
+    ("Write", {"file_path": "sub/.claude/hooks/x.sh"}, True),
+    ("Write", {"file_path": "link-out/x"}, True),           # symlink leaving the worktree
+    ("Write", {"file_path": "link-git/hooks/x"}, True),     # symlink into the clone's .git
+    ("Edit", {"file_path": "{common}/config"}, True),       # the common git dir itself
+    ("Edit", {"file_path": "a.py", "notebook_path": "b"}, True),   # ambiguous
+    ("Edit", {}, True),
+    ("mcp__github__create_issue", {}, True),
+    ("mcp__viberpit__session_context", {}, False),
+    ("Read", {"file_path": "/etc/hosts"}, False),           # reads are not confined
+    ("Bash", {"command": "ls"}, False),                     # the sandbox's own job
+])
+def test_confine_tool(tmp_path, tool, inp, denied):
+    clone, wt = _linked_worktree(tmp_path)
+    (tmp_path / "outside").mkdir()
+    os.symlink(tmp_path / "outside", wt / "link-out")
+    os.symlink(clone / ".git", wt / "link-git")
+    fmt = {"wt": str(wt), "common": str(clone / ".git")}
+    inp = {k: v.format(**fmt) for k, v in inp.items()}
+    why = sb.confine_tool(tool, inp, str(wt))
+    assert (why is not None) is denied, why
+
+
+@pytest.mark.asyncio
+async def test_the_confinement_hook_denies_with_the_reason(tmp_path):
+    hook = sb.confinement_hook(str(tmp_path))
+    out = await hook({"tool_name": "Write", "tool_input": {"file_path": "/etc/x"}}, "t1", None)
+    spec = out["hookSpecificOutput"]
+    assert spec["hookEventName"] == "PreToolUse" and spec["permissionDecision"] == "deny"
+    assert "outside" in spec["permissionDecisionReason"]
+    assert await hook({"tool_name": "Write", "tool_input": {"file_path": "ok.py"}},
+                      "t2", None) == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_the_spawn_registers_the_confinement_hook_in_every_mode(mode, tmp_path):
+    """The binding layer: an SDK PreToolUse callback with no matcher (sees every tool),
+    registered whatever the permission mode — the CLI runs PreToolUse hooks before the
+    permission pipeline and honours their deny before reading the mode (2.1.319
+    ``Nds`` @296090015), bypassPermissions included."""
+    hook = sb.confinement_hook(str(tmp_path))
+    client = await claude_sdk_factory.real_sdk_factory(
+        str(tmp_path), str(tmp_path / "cfg"), None, mode, None, sandbox_confine=hook,
+        flag_settings=sb.spawn_settings_overlay(str(tmp_path)))
+    matchers = client.options.hooks["PreToolUse"]
+    ours = [m for m in matchers if hook in m.hooks]
+    assert len(ours) == 1 and ours[0].matcher is None
+    settings = json.loads(client.options.settings)
+    assert settings["disableAllHooks"] is True
+    assert settings["enableAllProjectMcpServers"] is False
+
+
+@pytest.mark.asyncio
+async def test_an_unsandboxed_spawn_has_no_confinement_and_keeps_project_mcp_trust(tmp_path):
+    client = await claude_sdk_factory.real_sdk_factory(
+        str(tmp_path), str(tmp_path / "cfg"), None, "full-auto", None)
+    assert len(client.options.hooks["PreToolUse"]) == 1     # the Bash guards only
+    settings = json.loads(client.options.settings)
+    assert settings["enableAllProjectMcpServers"] is True and "disableAllHooks" not in settings
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_the_driver_also_denies_in_can_use_tool_in_every_mode(mode, tmp_path):
+    from claude_agent_sdk import PermissionResultDeny
+    d = ClaudeAgentDriver(SID, "acct1", str(tmp_path), "/tmp/cfg", mode=mode,
+                          sdk_factory=lambda *a, **k: _Client(FakeControl(GOOD_DIALOG)),
+                          registry=PermissionRegistry(), identity="u", sandbox=True)
+    for tool, inp in [("Write", {"file_path": "/etc/x"}),
+                      ("Edit", {"file_path": ".git/config"}),
+                      ("mcp__other__tool", {})]:
+        # Bounded: without the check the call would park on a permission card.
+        res = await asyncio.wait_for(d._can_use_tool(tool, inp), timeout=5)
+        assert isinstance(res, PermissionResultDeny), (mode, tool)
+
+
+def test_the_orchestrator_spawn_wires_the_hook_and_the_overlay(orch_env, tmp_path, monkeypatch):
+    world = _World()
+    seen: dict = {}
+    real = world.factory
+
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None,
+                options_overlay=None, flag_settings=None, extra_env=None, stderr=None,
+                sandbox_confine=None):
+        seen["confine"] = sandbox_confine
+        return real(cwd, cfg, can_use_tool, mode, resume, flag_settings=flag_settings,
+                    extra_env=extra_env, stderr=stderr)
+    world.factory = factory  # type: ignore[method-assign]
+
+    async def go():
+        orch = await _orch(tmp_path, world)
+        await orch.ensure_driver(SID)
+        await orch.stop()
+    asyncio.run(go())
+    assert callable(seen["confine"])
+    flags = world.spawns[0]["flag_settings"]
+    assert flags["disableAllHooks"] is True and flags["enableAllProjectMcpServers"] is False
+
+
+# ── N1: a sandboxed parent cannot steer a plain child ───────────────────────
+
+
+def test_check_reply_refuses_a_plain_child_of_a_sandboxed_parent():
+    from server.sessions import child_sessions as cs
+    plain = SimpleNamespace(parent_session_id="p1", status="handed_back", sandbox=False)
+    boxed = SimpleNamespace(parent_session_id="p1", status="handed_back", sandbox=True)
+    with pytest.raises(cs.ChildSessionLimit, match="without the sandbox"):
+        cs.check_reply(parent_id="p1", child=plain, child_id="c", message="go",
+                       parent_sandboxed=True)
+    cs.check_reply(parent_id="p1", child=boxed, child_id="c", message="go",
+                   parent_sandboxed=True)
+    cs.check_reply(parent_id="p1", child=plain, child_id="c", message="go")
+
+
+def test_reply_to_child_passes_the_parents_sandbox(orch_env, tmp_path):
+    from server.sessions import child_sessions as cs
+    world = _World()
+
+    async def go():
+        orch = await _orch(tmp_path, world, sandbox=True)
+        orch._records[CHILD] = _rec(id=CHILD, sandbox=False, parent_session_id=SID,
+                                    status="handed_back")
+        with pytest.raises(cs.ChildSessionLimit, match="without the sandbox"):
+            await orch.reply_to_child_session(SID, child_session_id=CHILD, message="go",
+                                              identity="session:x")
+        await orch.stop()
+    asyncio.run(go())
+    assert world.spawns == []
+
+
+# ── N3: a queued child is stamped at dispatch ───────────────────────────────
+
+
+def _queue_everything(orch, monkeypatch):
+    async def full(**kw):
+        return "global_cap"
+    monkeypatch.setattr(orch, "_launch_queue_reason", full)
+
+
+def test_a_queued_child_is_stamped_sandboxed_in_its_params_and_row(orch_env, tmp_path,
+                                                                    monkeypatch):
+    from server.sessions import session_queue as sq
+    world = _World()
+    monkeypatch.setattr(sb, "preflight", _async(_ok_preflight()))
+
+    async def go():
+        orch = await _orch(tmp_path, world, sandbox=True)
+        _queue_everything(orch, monkeypatch)
+        out = await orch.dispatch_child_session(SID, name="kid", prompt="go", model=None,
+                                                permission_mode=None, identity="session:x")
+        row = await _row(out["id"])
+        entries = {out["id"]: (await sq.entry_for(out["id"])).params}
+        rec = orch._records[out["id"]]
+        await orch.stop()
+        return out, row, entries, rec
+    out, row, entries, rec = asyncio.run(go())
+    assert out["status"] == "queued" and world.spawns == []
+    assert row.sandbox is True and rec.sandbox is True
+    assert entries[out["id"]]["sandbox"] is True
+
+
+def test_an_unsandboxed_parents_queued_child_carries_no_key(orch_env, tmp_path, monkeypatch):
+    from server.sessions import session_queue as sq
+    world = _World()
+
+    async def go():
+        orch = await _orch(tmp_path, world, sandbox=False)
+        _queue_everything(orch, monkeypatch)
+        out = await orch.dispatch_child_session(SID, name="kid", prompt="go", model=None,
+                                                permission_mode=None, identity="session:x")
+        entries = {out["id"]: (await sq.entry_for(out["id"])).params}
+        await orch.stop()
+        return out, entries
+    out, entries = asyncio.run(go())
+    assert "sandbox" not in entries[out["id"]]
+
+
+# ── mutation survivors from round 1 ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize("env,preflight,code", [
+    ({}, _bad_preflight(), sb.SANDBOX_UNAVAILABLE),
+    ({"VIBERPIT_SANDBOX_ENABLED": "false"}, _ok_preflight(), sb.SANDBOX_DISABLED),
+])
+def test_a_queued_dispatch_is_refused_up_front_and_never_queued(orch_env, tmp_path,
+                                                                monkeypatch, env, preflight,
+                                                                code):
+    """Kills ``dispatch_no_precheck`` and ``require_here_no_switch``: on the queue path
+    nothing downstream would refuse — only the dispatch's own check stands."""
+    from server.sessions import session_queue as sq
+    world = _World()
+    monkeypatch.setattr(sb, "preflight", _async(preflight))
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    async def go():
+        orch = await _orch(tmp_path, world, sandbox=True)
+        _queue_everything(orch, monkeypatch)
+        with pytest.raises(sb.SandboxError) as ei:
+            await orch.dispatch_child_session(SID, name="kid", prompt="go", model=None,
+                                              permission_mode=None, identity="session:x")
+        ids = set(orch._records)
+        entries = await sq.positions()
+        await orch.stop()
+        return ei.value, ids, entries
+    err, ids, entries = asyncio.run(go())
+    assert err.code == code and ids == {SID} and entries == {}
+
+
+def test_a_queued_child_whose_host_cannot_sandbox_is_refused_at_start(orch_env, tmp_path,
+                                                                      monkeypatch):
+    """Kills ``inherit_no_require_here``: a child queued while the host could sandbox,
+    started after it no longer can, is refused at spawn — no driver, no CLI."""
+    world = _World()
+    monkeypatch.setattr(sb, "preflight", _async(_ok_preflight()))
+
+    async def go():
+        orch = await _orch(tmp_path, world, sandbox=True)
+        rec = await orch.create_session(name="c", account="acct1", cwd=str(tmp_path / "wt"),
+                                        parent_session_id=SID, queue_only=True)
+        monkeypatch.setattr(sb, "preflight", _async(_bad_preflight()))
+        await orch._maybe_start_queued(force=rec.id)
+        live = rec.id in orch._drivers
+        await orch.stop()
+        return live
+    assert asyncio.run(go()) is False
+    assert world.spawns == []
+
+
+def test_a_fork_of_a_sandboxed_session_is_refused_before_anything_is_made(orch_env, tmp_path,
+                                                                          monkeypatch):
+    world = _World()
+    monkeypatch.setattr(sb, "preflight", _async(_bad_preflight()))
+
+    async def go():
+        orch = await _orch(tmp_path, world, sandbox=True)
+        made = []
+
+        async def no_worktree(*a, **k):
+            made.append(a)
+            raise AssertionError("the fork worktree must not be made")
+        orch._make_fork_worktree = no_worktree  # type: ignore[method-assign]
+        with pytest.raises(sb.SandboxError) as ei:
+            await orch.fork_session(SID, at_turn_id=None, mode="message", request_id="r1",
+                                    prefill="hi")
+        ids = set(orch._records)
+        await orch.stop()
+        return ei.value, ids, made
+    err, ids, made = asyncio.run(go())
+    assert err.code == sb.SANDBOX_UNAVAILABLE and ids == {SID} and made == []
+
+
+def test_a_fork_of_a_sandboxed_session_spawns_sandboxed(orch_env, tmp_path, monkeypatch):
+    world = _World()
+    monkeypatch.setattr(sb, "preflight", _async(_ok_preflight()))
+    seen: dict = {}
+
+    async def go():
+        orch = await _orch(tmp_path, world, sandbox=True)
+
+        from viberpit import worktrees as wt_mod
+        monkeypatch.setattr(wt_mod, "fork_worktree_dir",
+                            lambda cwd, root, child: str(tmp_path / "fork"))
+
+        async def fake_worktree(cwd, sid, dest):
+            return SimpleNamespace(cwd=str(tmp_path / "wt"), branch="b")
+        orch._make_fork_worktree = fake_worktree  # type: ignore[method-assign]
+
+        async def spawn(child_id, **kw):
+            seen.update(kw)
+        orch._spawn_session = spawn  # type: ignore[method-assign]
+        await orch.fork_session(SID, at_turn_id=None, mode="message", request_id="r1",
+                                prefill="hi")
+        await orch.stop()
+    asyncio.run(go())
+    assert seen["sandbox"] is True and seen["parent_session_id"] == SID
+
+
+def test_a_notice_for_an_answerable_child_of_a_held_parent_escalates(orch_env, tmp_path):
+    """Kills ``notify_no_escalate``."""
+    world = _World()
+
+    async def go():
+        orch = await _orch(tmp_path, world, sandbox=True,
+                           paused_reason=sb.SANDBOX_PAUSE_REASON)
+        escalated: list = []
+
+        async def rearm(*a):
+            return None
+
+        async def escalate(child_id, parent_id, why):
+            escalated.append((child_id, parent_id, why))
+        orch._rearm_child_notice = rearm  # type: ignore[method-assign]
+        orch._escalate_child_to_human = escalate  # type: ignore[method-assign]
+        await orch._notify_parent(SID, CHILD, "handed_back", "<n/>")
+        await orch._notify_parent(SID, CHILD, "done", "<n/>")
+        await orch.stop()
+        return escalated
+    assert asyncio.run(go()) == [(CHILD, SID, "its parent is held on a failed sandbox")]
+
+
+def test_a_target_import_maps_a_sandbox_failure_and_holds_nothing(orch_env, tmp_path,
+                                                                  monkeypatch, caplog):
+    """Kills ``import_mark_dropped`` and ``import_no_moveerror``: a real (non-local)
+    ``transfer_import`` whose sandbox fails answers MOVE_TARGET_SANDBOX and writes no
+    hold or failed state to the shared row."""
+    from viberpit import worktree_transfer as wtx
+    from server.sessions import session_move as sm
+    caplog.set_level(logging.INFO)
+    world = _World(_dialog(enabled=False))
+    wt = tmp_path / "wt"
+
+    async def go():
+        orch = await _orch(tmp_path, world)
+        monkeypatch.setattr(wtx.Bundle, "from_dict",
+                            classmethod(lambda cls, d: SimpleNamespace(branch="b")))
+        monkeypatch.setattr(wtx, "import_",
+                            lambda bundle, clone, root: SimpleNamespace(path=str(wt),
+                                                                        is_child=False))
+
+        async def clone_for_move(*a, **k):
+            return str(tmp_path / "clone")
+
+        async def nothing(*a, **k):
+            return None
+
+        async def claimed(*a, **k):
+            return True
+        orch._clone_for_move = clone_for_move  # type: ignore[method-assign]
+        orch._verify_moved_transcript = nothing  # type: ignore[method-assign]
+        orch._claim_session = claimed  # type: ignore[method-assign]
+        with pytest.raises(sm.MoveError) as ei:
+            await orch.transfer_import(SID, {"bundle": {"x": 1}}, source="rocky")
+        row = await _row()
+        rec = orch._records.get(SID)
+        importing = set(orch.__dict__.get("_transfer_importing", set()))
+        await orch.stop()
+        return ei.value, row, rec, importing
+    err, row, rec, importing = asyncio.run(go())
+    assert err.code == sm.MOVE_TARGET_SANDBOX and "did not start" in err.message
+    assert row.paused_reason is None and row.sandbox_state != "failed"
+    assert getattr(rec, "paused_reason", None) is None
+    assert importing == set()
+    assert world.sandboxed(0)
+
+
+def test_the_move_subject_reads_the_rows_sandbox(orch_env, tmp_path):
+    """Kills ``move_subject_no_sandbox``."""
+    from server.sessions import session_move as sm
+
+    class _Fleet:
+        primary_name = "dobby"
+
+        async def get_session(self, sid):
+            return None
+
+        def moving_target(self, sid):
+            return None
+
+    async def go():
+        orch = await _orch(tmp_path, _World(), sandbox=True)
+        boxed = await sm._context(_Fleet(), SID)
+        async with db_session() as db:
+            (await db.get(DbSession, SID)).sandbox = False
+        plain = await sm._context(_Fleet(), SID)
+        await orch.stop()
+        return boxed.subject.sandbox, plain.subject.sandbox
+    assert asyncio.run(go()) == (True, False)
+
+
+def test_a_sandbox_refusal_keeps_its_code_in_the_move_preflight_wire():
+    """The web's bug: ``to_wire`` spread ``extra`` after ``reason``, so a ``reason`` extra
+    overwrote the code. The sandbox's reason rides as ``sandboxReason``, and the
+    verdict's own keys win whatever an extra is called."""
+    from server.sessions import session_move as sm
+    v = sm.movable(_subject(True), "rocky", _candidate(), caps=ClaudeAgentDriver.capabilities,
+                   enabled=True, target_sandbox={"ok": False, "reason": "socat is not installed"})
+    wire = v.to_wire()
+    assert wire["reason"] == sm.MOVE_TARGET_SANDBOX
+    assert wire["sandboxReason"] == "socat is not installed"
+    clash = sm.MoveVerdict(False, "MOVE_X", "m", {"reason": "oops", "ok": True})
+    assert clash.to_wire()["reason"] == "MOVE_X" and clash.to_wire()["ok"] is False
