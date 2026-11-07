@@ -461,3 +461,26 @@ def test_queue_cancel_on_a_queued_row_with_no_entry_ends_it(tmp_path, me):
             await _stop_orch(orch)
 
     asyncio.run(run())
+
+
+def test_start_now_past_this_hosts_cap_is_reported_as_an_admitted_overage(tmp_path, me):
+    """"Start now" overrides this host's cap on purpose (#3358): the session it adds
+    must count toward /info's admitted-over-cap figure, or the fleet alarm WARNs about
+    the user's own override as an accounting fault. A normal drain adds nothing."""
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'sn.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=10)
+        try:
+            await _add_hosts(orch, _host(ME, max_sessions=1), _host("other", max_sessions=5))
+            await orch.create_session("one")
+            waiting = await orch.create_session("two", queue_only=True)
+            assert await orch._maybe_start_queued() == 0
+            assert await orch.admitted_over_cap_count() == 0
+
+            assert await orch.start_queued_now(waiting.id) == "started"
+            assert await orch.owned_active_session_count() == 2
+            assert await orch.admitted_over_cap_count() == 1
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())

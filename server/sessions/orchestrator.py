@@ -1291,10 +1291,11 @@ class SessionOrchestrator:
         # not see it removed the worktree (or handed the session away) under it.
         # `_transfer_slot` waits these out; `_worktree_control_busy` reports them.
         self._attaching: dict[str, asyncio.Future] = {}
-        # Sessions a resume admitted while this daemon was already at its cap (#3255).
-        # Resumes are exempt from the cap by design, so the count they leave over the cap
-        # is expected; /info reports it so the fleet alarm can tell it from a fault.
-        self._resumed_over_cap: set[str] = set()
+        # Sessions a user override admitted past THIS host's cap (#3255, #3358): a
+        # resume, or a "Start now" of a queued entry. Both bypass the cap by design, so
+        # the overage they leave is expected; /info reports it so the fleet alarm can
+        # tell it from a fault.
+        self._admitted_over_cap: set[str] = set()
         # Sessions that failed to re-launch after a daemon-affecting deploy:
         # session_id -> attempts so far. Seeded by restore_deploy, drained by the
         # daemon's recovery pass (_recover_resume_failures_once). Deploy-scoped and
@@ -5552,6 +5553,10 @@ class SessionOrchestrator:
                     # mid-spawn daemon death replayable rather than orphaning.
                     await sq.remove(sid)
                     started += 1
+                    if forcing:
+                        # "Start now" skipped the host cap on purpose; say so, or the
+                        # fleet alarm reads the overage as an accounting fault (#3358).
+                        await self._note_admitted_over_cap(sid)
         return started
 
     async def _session_platform(self, session_id: str) -> str | None:
@@ -24645,29 +24650,34 @@ class SessionOrchestrator:
         driver.seed_status(rec.status)
         await self._maybe_rearm_on_attach(session_id)
         log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
-        await self._note_resume_over_cap(session_id)
+        await self._note_admitted_over_cap(session_id)
         return driver
 
-    async def _note_resume_over_cap(self, session_id: str) -> None:
-        """Record a resume that left this daemon over its cap (#3255).
+    async def _note_admitted_over_cap(self, session_id: str) -> None:
+        """Record an override that left this daemon over its own cap (#3255, #3358).
 
-        A resume is admitted without the launch gate (it revives an existing session,
-        it does not add one to the cap), so it is the only way a daemon's owned count
-        can pass its cap. Recording it here, rather than gating the resume, keeps user
-        attaches unchanged; the alarm then treats exactly this much overage as expected.
+        Two paths skip the launch gate on purpose: a resume (it revives an existing
+        session) and "Start now" on a queued entry (a person's override). Recording them
+        here, rather than gating them, keeps both unchanged; the alarm then treats
+        exactly this much overage as expected.
+
+        Measured against THIS host's ``Host.max_sessions`` (``_local_host_cap``), the cap
+        the alarm compares against — not the fleet-wide ``_max_active_sessions``, which
+        a single host's count never reaches, so nothing was ever recorded (#3358).
         """
-        if await self.owned_active_session_count() > await self._max_active_sessions():
-            self._resumed_over_cap.add(session_id)
+        local_cap = await self._local_host_cap()
+        if local_cap is not None and await self.owned_active_session_count() > local_cap:
+            self._admitted_over_cap.add(session_id)
 
-    async def resumed_over_cap_count(self) -> int:
-        """Live sessions a resume admitted past the cap, for /info (#3255).
+    async def admitted_over_cap_count(self) -> int:
+        """Live sessions an override admitted past this host's cap, for /info.
 
         Pruned on every read: a session that ended, archived, or went back to a
         non-slot status no longer holds the overage, so it stops being excused."""
-        self._resumed_over_cap = {
-            sid for sid in self._resumed_over_cap
+        self._admitted_over_cap = {
+            sid for sid in self._admitted_over_cap
             if (r := self._records.get(sid)) is not None and self._consumes_capacity_slot(r)}
-        return len(self._resumed_over_cap)
+        return len(self._admitted_over_cap)
 
     async def _exit_complete_on_resume(self, session_id: str, rec) -> None:
         """Move a just-resumed `complete` session back to `done` (in-memory + DB).

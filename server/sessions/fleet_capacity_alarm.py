@@ -8,11 +8,12 @@ still silent. This watches them on the probe cadence (``host_probe.probe_all``):
 
 * **Over cap** (``active > max``): the launch gate never admits past its cap, so a
   count that stays above it is an accounting fault (the phantom count above) or a cap
-  lowered under live work that is not draining. WARNING — an auto-error. The one
-  exception is a resume (#3255): a user's attach of a detached session, or the
-  restart-time resume, is admitted past the cap by design. The daemon reports how many
-  of its sessions a resume put over the cap; that part of the overage is INFO, and only
-  the rest escalates.
+  lowered under live work that is not draining. WARNING — an auto-error. The
+  exceptions are the two overrides admitted past the host's cap by design: a resume
+  (#3255) — a user's attach of a detached session, or the restart-time resume — and
+  "Start now" on a queued session (#3358). The daemon reports how many of its sessions
+  an override put over its own cap; that part of the overage is INFO, and only the
+  rest escalates.
 * **At cap** (``active == max``): routine now that the Backlog Runner fills slots
   and launches queue. INFO on entry/exit only, so the journal answers "when did it
   fill?"; the fleet page badges it.
@@ -58,7 +59,7 @@ class CapacityAlarm:
     def __init__(self) -> None:
         self._over_ticks: dict[str, int] = {}
         self._over_warned: set[str] = set()
-        self._resume_over: set[str] = set()
+        self._override_over: set[str] = set()
         self._at_cap: set[str] = set()
         self._no_host_ticks = 0
         self._no_host_warned = False
@@ -68,33 +69,35 @@ class CapacityAlarm:
         """Forget every spell (tests share the module-level instance)."""
         self._over_ticks.clear()
         self._over_warned.clear()
-        self._resume_over.clear()
+        self._override_over.clear()
         self._at_cap.clear()
         self._no_host_ticks, self._no_host_warned, self._no_host_noted = 0, False, False
 
     def observe(self, candidates: Iterable[HostCandidate], *,
                 deploy_excused: AbstractSet[str] = frozenset(),
-                resumed_over_cap: Mapping[str, int] = {}) -> None:
+                admitted_over_cap: Mapping[str, int] = {}) -> None:
         """``deploy_excused`` names hosts whose being down is a deploy doing its job
         (restarting it, or fencing it on version skew mid-rollout).
-        ``resumed_over_cap`` maps a host to how many of its sessions a resume admitted
-        past the cap (#3255); that much of its overage is expected, not a fault."""
+        ``admitted_over_cap`` maps a host to how many of its sessions an override (a
+        resume, or "Start now") admitted past its cap (#3255, #3358); that much of its
+        overage is expected, not a fault."""
         hosts = list(candidates)
         enabled = [c for c in hosts if c.enabled]
-        self._observe_hosts(enabled, resumed_over_cap)
+        self._observe_hosts(enabled, admitted_over_cap)
         self._observe_fleet(enabled, deploy_excused)
 
     def _observe_hosts(self, enabled: list[HostCandidate],
-                       resumed_over_cap: Mapping[str, int]) -> None:
+                       admitted_over_cap: Mapping[str, int]) -> None:
         seen = {c.name for c in enabled}
         for c in enabled:
             cap = c.max_sessions
             over = cap is not None and c.active_sessions > cap
             at = cap is not None and c.active_sessions == cap
-            # A resume may explain at most the overage it created; the rest is a fault.
+            # An override may explain at most the overage it created; the rest is a fault.
             explained = 0
             if cap is not None and over:
-                explained = min(c.active_sessions - cap, max(0, resumed_over_cap.get(c.name, 0)))
+                explained = min(c.active_sessions - cap,
+                                max(0, admitted_over_cap.get(c.name, 0)))
             unexplained = cap is not None and c.active_sessions - explained > cap
             if unexplained:
                 n = self._over_ticks[c.name] = self._over_ticks.get(c.name, 0) + 1
@@ -106,15 +109,16 @@ class CapacityAlarm:
                         c.name, c.active_sessions, cap)
             else:
                 self._clear_over(c.name)
-            if explained and c.name not in self._resume_over:
-                self._resume_over.add(c.name)
+            if explained and c.name not in self._override_over:
+                self._override_over.add(c.name)
                 log.info("fleet.capacity: host %s is over its cap (%d/%d) by %d session(s) "
-                         "a resume admitted — resumes are exempt from the cap, no action",
+                         "a resume or Start now admitted — user overrides are exempt "
+                         "from the cap, no action",
                          c.name, c.active_sessions, cap, explained)
-            elif not explained and c.name in self._resume_over:
-                self._resume_over.discard(c.name)
-                log.info("fleet.capacity: host %s resumed sessions have ended — back within "
-                         "its cap", c.name)
+            elif not explained and c.name in self._override_over:
+                self._override_over.discard(c.name)
+                log.info("fleet.capacity: host %s sessions admitted over its cap have "
+                         "ended — back within its cap", c.name)
             if at and c.name not in self._at_cap:
                 self._at_cap.add(c.name)
                 log.info("fleet.capacity: host %s is at its cap (%d/%d) — new launches "
@@ -126,7 +130,7 @@ class CapacityAlarm:
         # A host that was disabled or removed is no longer this alarm's business.
         for name in set(self._over_ticks) - seen:
             self._clear_over(name)
-        self._resume_over &= seen
+        self._override_over &= seen
         self._at_cap &= seen
 
     def _clear_over(self, name: str) -> None:
