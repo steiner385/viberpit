@@ -466,7 +466,7 @@ def create_daemon_app() -> FastAPI:
         from server.version import checkout_git_sha, running_git_sha
         orch = getattr(app.state, "orchestrator", None)
         active = await _owned_active_count(orch)
-        resumed_over_cap = await _resumed_over_cap_count(orch)
+        admitted_over_cap = await _admitted_over_cap_count(orch)
         # The engine advertisement the edge's dispatch gate reads. Derived from the
         # Codex manager's own availability verdict rather than re-probed here, so
         # "may I run Codex?" has exactly one answer per runner. Absent on a daemon
@@ -481,7 +481,7 @@ def create_daemon_app() -> FastAPI:
                 PLATFORMS_INFO_KEY: platforms,
                 proto.CAPABILITIES_INFO_KEY: list(proto.DAEMON_CAPABILITIES),
                 "epoch": _app_epoch, **_capacity_snapshot(active),
-                "resumedOverCap": resumed_over_cap}
+                "admittedOverCap": admitted_over_cap}
 
     @app.get("/healthz")
     async def healthz() -> dict:
@@ -518,16 +518,17 @@ def _read_mem_available_mb() -> int | None:
     return None
 
 
-async def _resumed_over_cap_count(orch) -> int:
-    """Sessions a resume admitted past this daemon's cap, for /info (#3255). Never
-    raises, and degrades DOWNWARD to 0: reporting too few leaves the alarm's WARNING in
-    place, which is the status quo; reporting too many would hide a real fault."""
+async def _admitted_over_cap_count(orch) -> int:
+    """Sessions an override (resume, "Start now") admitted past this daemon's cap, for
+    /info (#3255, #3358). Never raises, and degrades DOWNWARD to 0: reporting too few
+    leaves the alarm's WARNING in place, which is the status quo; reporting too many
+    would hide a real fault."""
     if orch is None:
         return 0
     try:
-        return await orch.resumed_over_cap_count()
+        return await orch.admitted_over_cap_count()
     except Exception:
-        log.warning("/info: resumed-over-cap count failed — reporting 0", exc_info=True)
+        log.warning("/info: admitted-over-cap count failed — reporting 0", exc_info=True)
         return 0
 
 

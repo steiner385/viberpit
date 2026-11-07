@@ -268,7 +268,7 @@ def test_resume_explained_overage_clears_with_info(caplog):
     alarm = CapacityAlarm()
     _tick_resumed(alarm, 1, _host(active=6, cap=5), resumed=1)
     caplog.clear()
-    alarm.observe([_host(active=5, cap=5)], resumed_over_cap={"dobby": 1})
+    alarm.observe([_host(active=5, cap=5)], admitted_over_cap={"dobby": 1})
     assert any("back within its cap" in r.getMessage() for r in caplog.records)
     assert _warnings(caplog) == []
 
@@ -295,4 +295,4 @@ def test_resumes_never_excuse_more_overage_than_exists(caplog):
 
 def _tick_resumed(alarm, n, host, *, resumed):
     for _ in range(n):
-        alarm.observe([host], resumed_over_cap={host.name: resumed})
+        alarm.observe([host], admitted_over_cap={host.name: resumed})

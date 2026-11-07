@@ -204,3 +204,27 @@ def test_failed_probe_logs_info_while_the_hosts_restart_is_expected(tmp_path, ca
     lines = [r for r in caplog.records if "probe_failed" in r.getMessage()]
     assert lines and all(r.levelno == logging.INFO for r in lines)
     assert lines[0].fields.get("restart") == "in_progress"
+
+
+def test_probe_reads_the_admitted_over_cap_key_and_its_pre_3358_name(tmp_path, monkeypatch):
+    """/info renamed ``resumedOverCap`` to ``admittedOverCap`` (#3358). An edge probing
+    a daemon not yet on the rename still reads the old key during the rollout skew."""
+    from server.ipc.protocol import PROTOCOL_VERSION
+    from server.sessions import host_probe
+
+    monkeypatch.setattr(host_probe, "_ADMITTED_OVER_CAP", {})
+    replies = {"new": {"admittedOverCap": 2}, "old": {"resumedOverCap": 1}, "none": {}}
+
+    async def fake_fetch(endpoint):
+        return {"sha": "s", "protocol": PROTOCOL_VERSION,
+                **replies[endpoint.split("//")[1].split(":")[0]]}
+
+    async def run():
+        from server.db.models import Host
+        await _seed(tmp_path, "adm.db", *(Host(name=n, endpoint=f"https://{n}:9443")
+                                          for n in replies))()
+        for n in replies:
+            await host_probe.probe_host(n, f"https://{n}:9443", fetch=fake_fetch)
+        return {n: host_probe._ADMITTED_OVER_CAP[n] for n in replies}
+
+    assert asyncio.run(run()) == {"new": 2, "old": 1, "none": 0}
