@@ -2294,8 +2294,12 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # DaemonUnavailable catch above, #1884). Every case here the
                 # prompt was NOT delivered, and a dropped user message must
                 # never be silent.
-                log.warning("ws.prompt rejected session=%s reason=%s",
-                            session_id, status)
+                # "draining" is the deploy/restart drain: expected and transient (the
+                # browser re-queues the prompt), so INFO — WARNING auto-files an issue
+                # (#3359). The other rungs are real failures and stay WARNING.
+                log.log(logging.INFO if status == "draining" else logging.WARNING,
+                        "ws.prompt rejected session=%s reason=%s",
+                        session_id, status)
                 await _send(_prompt_rejected(msg, session_id, status))
 
         async def _run_session_frame(msg: dict) -> None:
