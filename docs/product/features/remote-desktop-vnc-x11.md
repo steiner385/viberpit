@@ -146,7 +146,18 @@ nobody has watched it for 30 minutes in a row.
 **Safety.** Opening a preview is for people only (the assistant and API tokens cannot do it), is recorded in the
 audit log, and refuses requests from other websites. The address is built on the server, never from page text.
 
+**Servers in Docker (opt-in).** A `docker compose up` server listens through `docker-proxy` or `rootlesskit`, not a
+process of the session, so it is only listed when the session's host sets `VIBERPIT_DEV_SERVER_DOCKER_ENABLED=true`.
+ViberPit then asks the Docker engine (`GET /containers/json`, filtered to compose containers, over
+`VIBERPIT_DEV_SERVER_DOCKER_SOCKET`, default `/var/run/docker.sock`) for running containers, and lists each
+published port of one whose compose working directory is inside the session's worktree. The row is labelled
+`docker <container>`. A session that is not in a managed worktree gets no containers. It is off by default because
+reading that socket needs the `docker` group, which is as powerful as root; ViberPit only ever lists containers.
+It costs one local socket read (a few milliseconds) per scan and starts no program. Rootless Docker and Podman serve
+the same API on their own socket (e.g. `$XDG_RUNTIME_DIR/docker.sock`, `$XDG_RUNTIME_DIR/podman/podman.sock`); point
+the socket setting there. Only rootful Docker 29 has been checked.
+
 **Not included yet.** No proxied preview, so a server on another host that is bound to loopback is seen through
-VNC rather than as a link; no element picker; ports published by Docker are not detected.
+VNC rather than as a link; no element picker.
 
 Kill switch: `VIBERPIT_DEV_SERVER_DETECT_ENABLED=false` hides the list and stops the scan.

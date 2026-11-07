@@ -17,12 +17,16 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import os
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
+import threading
 import time
+import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -874,6 +878,173 @@ async def test_real_proc_detects_http_server_and_not_a_raw_socket(tmp_path: Path
     finally:
         os.killpg(root.pid, 15)
         root.wait(timeout=10)
+
+
+# ---------------------------------------------------------------- Docker-published (#3350)
+
+_WD = ds._COMPOSE_WORKDIR
+
+
+def _container(name: str, workdir: str | None, ports: list[dict]) -> dict:
+    labels = {_WD: workdir} if workdir is not None else {}
+    return {"Id": "b57523fd1f4abc", "Names": [f"/{name}"], "Labels": labels, "Ports": ports}
+
+
+def _pub(port: int, ip: str = "0.0.0.0", private: int = 80) -> dict:
+    return {"IP": ip, "PrivatePort": private, "PublicPort": port, "Type": "tcp"}
+
+
+def test_parse_containers_keeps_published_tcp_ports_of_compose_containers() -> None:
+    got = ds.parse_containers([
+        _container("web-1", "/w/a", [_pub(5000), _pub(5000, "::"),
+                                     {"PrivatePort": 9000, "Type": "tcp"},  # exposed only
+                                     {**_pub(5001), "Type": "udp"}]),
+        _container("plain", None, [_pub(6000)]),             # not compose
+        _container("rel", "relative/dir", [_pub(6001)]),      # never a relative path
+        "garbage", {"Labels": "nope"},
+    ])
+    assert got == [ds.Published(5000, ipaddress.ip_address("0.0.0.0"), "/w/a", "web-1"),
+                   ds.Published(5000, ipaddress.ip_address("::"), "/w/a", "web-1")]
+    assert ds.parse_containers({"message": "denied"}) == []
+
+
+def test_docker_published_component_rules(host) -> None:
+    """A container in A's worktree is A's; one elsewhere is nobody's; a port a process of
+    A already holds stays the process's; the two binds of one port are one entry."""
+    published = ds.parse_containers([
+        _container("a-web-1", "/w/a/compose", [_pub(5000), _pub(5000, "::")]),
+        _container("a-db-1", "/w/a", [_pub(5434, "127.0.0.1", 5432)]),
+        _container("a-dup-1", "/w/a", [_pub(5173)]),   # A's python already listens
+        _container("other-1", "/srv/elsewhere", [_pub(5002)]),
+        _container("a-low-1", "/w/a", [_pub(80)]),
+    ])
+    cands = ds.find_all_candidates(host.keys, fs=host.fs, daemon_pid=100,
+                                   managed_worktrees=_MW, published=published)
+    a = {c.port: c for c in cands[SID_A]}
+    assert a[5000] == ds.Candidate(5000, "127.0.0.1", "all", 0, ("docker", "a-web-1"), ())
+    assert a[5434].bind == "loopback" and a[5434].address == "127.0.0.1"
+    assert a[5173].pid == 202  # the process, not the container
+    assert 5002 not in a and 80 not in a
+    assert all(c.port not in (5000, 5002, 5434) for sid in (SID_B, SID_C) for c in cands[sid])
+
+
+def test_docker_published_needs_a_managed_worktree(home_host) -> None:
+    """A session outside every managed worktree (``~``) never claims a container, even
+    one whose working dir is its cwd: the same rule as an escaped process."""
+    published = ds.parse_containers([
+        _container("h-1", "/home/u", [_pub(5050)]),
+        _container("h-2", "/home/u/site", [_pub(5051)]),
+        _container("c1-1", f"{_HOME_WT}/r/c1", [_pub(5052)]),
+    ])
+    managed = frozenset({f"{_HOME_WT}/r/c1", f"{_HOME_WT}/r/c2"})
+    cands = ds.find_all_candidates(home_host.keys, fs=home_host.fs, daemon_pid=100,
+                                   managed_worktrees=managed, published=published)
+    owners = {c.port: sid for sid, cs in cands.items() for c in cs}
+    assert 5050 not in owners and 5051 not in owners
+    assert owners[5052] == SID_B
+
+
+@pytest.mark.asyncio
+async def test_detector_lists_a_published_port_with_no_host_listener(tmp_path: Path) -> None:
+    """Rootless Docker / no userland proxy: no LISTEN row at all, still listed."""
+    p = FakeProc(tmp_path / "proc")
+    p.add(100, 1, ["python3", "-m", "server.ipc"])
+    p.add(200, 100, ["claude", "--resume", "esid-a"], cwd="/w/a")
+    probe = _Probe({5000: "Compose app"})
+    calls = []
+
+    def published() -> list[ds.Published]:
+        calls.append(1)
+        return ds.parse_containers([_container("a-web-1", "/w/a", [_pub(5000)])])
+    det = ds.DevServerDetector(fs=ds.ProcFs(str(p.root)), daemon_pid=100, probe=probe,
+                               published=published)
+    servers = await det.detect(SID_A, _keys((SID_A, "esid-a", "/w/a")), bg_commands=_no_bg,
+                               managed_worktrees=frozenset({"/w/a"}))
+    assert servers == [{"port": 5000, "address": "127.0.0.1", "bind": "all", "pid": 0,
+                        "label": "docker a-web-1", "title": "Compose app",
+                        "note": ds.EXPOSED_NOTE}]
+    await det.detect(SID_A, _keys((SID_A, "esid-a", "/w/a")), bg_commands=_no_bg,
+                     managed_worktrees=frozenset({"/w/a"}))
+    assert calls == [1]  # cached with the scan: one socket read per scan, not per poll
+
+
+class _FakeEngine:
+    """A Docker Engine API stand-in on a unix socket: records each request line and
+    answers ``status`` with ``body``."""
+
+    def __init__(self, path: Path, status: str, body: bytes) -> None:
+        self.requests: list[str] = []
+        self._srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._srv.bind(str(path))
+        self._srv.listen(1)
+        self._status, self._body = status, body
+        self._t = threading.Thread(target=self._serve, daemon=True)
+        self._t.start()
+
+    def _serve(self) -> None:
+        conn, _ = self._srv.accept()
+        with conn:
+            data = b""
+            while b"\r\n\r\n" not in data:
+                data += conn.recv(4096)
+            self.requests.append(data.split(b"\r\n", 1)[0].decode())
+            conn.sendall(f"HTTP/1.0 {self._status}\r\nContent-Type: application/json"
+                         f"\r\n\r\n".encode() + self._body)
+
+    def close(self) -> None:
+        self._t.join(timeout=5)
+        self._srv.close()
+
+
+def _short_sock() -> Path:
+    # AF_UNIX paths cap at ~107 bytes; pytest's tmp_path can exceed it.
+    return Path(tempfile.mkdtemp(prefix="vpd-")) / "d.sock"
+
+
+def test_docker_published_reads_the_engine_api_with_a_label_filter() -> None:
+    path = _short_sock()
+    body = json.dumps([_container("a-web-1", "/w/a", [_pub(5000)])]).encode()
+    eng = _FakeEngine(path, "200 OK", body)
+    try:
+        got = ds.docker_published(str(path))
+    finally:
+        eng.close()
+        shutil.rmtree(path.parent, ignore_errors=True)
+    assert got == [ds.Published(5000, ipaddress.ip_address("0.0.0.0"), "/w/a", "a-web-1")]
+    method, target, _ = eng.requests[0].split(" ")
+    assert method == "GET" and target.startswith("/containers/json?filters=")
+    assert json.loads(urllib.parse.unquote(target.split("=", 1)[1])) == {"label": [_WD]}
+
+
+@pytest.mark.parametrize("status,body", [
+    ("403 Forbidden", b'{"message":"denied"}'),
+    ("200 OK", b"not json"),
+])
+def test_docker_published_is_empty_on_a_refusal(status, body) -> None:
+    path = _short_sock()
+    eng = _FakeEngine(path, status, body)
+    try:
+        assert ds.docker_published(str(path)) == []
+    finally:
+        eng.close()
+        shutil.rmtree(path.parent, ignore_errors=True)
+
+
+def test_docker_published_is_empty_without_a_socket(tmp_path: Path) -> None:
+    assert ds.docker_published(str(tmp_path / "absent.sock")) == []
+
+
+def test_docker_source_is_off_by_default_and_never_touches_the_socket(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from server.sessions import orchestrator as orch_mod
+    monkeypatch.delenv("VIBERPIT_DEV_SERVER_DOCKER_ENABLED", raising=False)
+    with patch.object(ds, "docker_published", side_effect=AssertionError("touched")):
+        assert orch_mod._docker_published() == []
+    monkeypatch.setenv("VIBERPIT_DEV_SERVER_DOCKER_ENABLED", "true")
+    monkeypatch.setenv("VIBERPIT_DEV_SERVER_DOCKER_SOCKET", "/run/x.sock")
+    with patch.object(ds, "docker_published", return_value=["hit"]) as dp:
+        assert orch_mod._docker_published() == ["hit"]
+    dp.assert_called_once_with("/run/x.sock")
 
 
 # ---------------------------------------------------------------- routing (RF 3)

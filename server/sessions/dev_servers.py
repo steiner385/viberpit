@@ -30,6 +30,14 @@ and the session match are ``memory_watch``'s (``scan_proc``, ``_subtree``,
    by realpath; process cwds as the kernel reports them (already canonical).
    ``match_session``'s cwd rule is made strict here: when another live session has the
    same cwd and no ``--resume`` id decides, the process is unattributed.
+   - **published** (opt-in, ``VIBERPIT_DEV_SERVER_DOCKER_ENABLED``): a port a Docker
+     container publishes, read from the Docker Engine API (:func:`docker_published`) —
+     its listener belongs to ``docker-proxy`` (root, outside every subtree and cgroup) or
+     ``rootlesskit``, so the process rules never see it. The container's session is the
+     one whose MANAGED worktree contains its ``com.docker.compose.project.working_dir``
+     label (:func:`worktree_session_of`); a container with no compose label, or one
+     outside every managed worktree, is nobody's. A process listener on the same port
+     wins.
 3. Not a Chromium ``--remote-debugging-port`` (by command line).
 4. Only then probed: ``GET /`` with ``Accept: text/html`` to the DETECTED address (``::1``
    stays ``::1``; ``0.0.0.0`` is reached over ``127.0.0.1``), answered with a non-error
@@ -39,7 +47,9 @@ Each entry: ``{port, address, bind: "loopback"|"all"|"address", pid, label, titl
 note?}``.
 ``address`` is where the server is reached on its host; ``label`` is the background
 task's command when the listener descends from that task's shell, else the listener's
-command line; ``title`` is the page's ``<title>`` — untrusted text, capped.
+command line (``docker <container>`` for a published port, whose ``pid`` is 0: no host
+process of the session holds it); ``title`` is the page's ``<title>`` — untrusted text,
+capped.
 ``note`` (:data:`EXPOSED_NOTE`) marks a bind reachable from the network (``all`` or
 ``address``).
 
@@ -51,11 +61,14 @@ from __future__ import annotations
 import asyncio
 import html
 import ipaddress
+import json
 import logging
 import os
 import re
+import socket
 import threading
 import time
+import urllib.parse
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from typing import Any
@@ -205,6 +218,95 @@ class ProcFs:
                 return fh.read().strip()
         except OSError:
             return None
+
+
+@dataclass(frozen=True)
+class Published:
+    """One host port a running compose container publishes (Docker Engine API)."""
+    port: int
+    address: _Address     # the host bind (``0.0.0.0`` / ``::`` / one address)
+    working_dir: str      # its ``com.docker.compose.project.working_dir`` label
+    name: str             # the container's name, for the label
+
+
+DOCKER_SOCKET = "/var/run/docker.sock"
+#: One local unix-socket round trip (~1 ms on dobby); anything near this is a hung daemon.
+DOCKER_TIMEOUT_S = 1.0
+_COMPOSE_WORKDIR = "com.docker.compose.project.working_dir"
+_DOCKER_BODY_MAX = 4 * 1024 * 1024
+#: Running containers that carry a compose working dir — filtered by the engine, so an
+#: unrelated container never crosses the socket. Unversioned path: every engine (and
+#: Podman's Docker-compatible API) serves it at its own current version.
+_DOCKER_QUERY = ("/containers/json?filters="
+                 + urllib.parse.quote(json.dumps({"label": [_COMPOSE_WORKDIR]})))
+
+
+def parse_containers(payload: object) -> list[Published]:
+    """The published TCP ports of a ``GET /containers/json`` answer. Tolerates any
+    shape: a malformed container or port is skipped, never raised."""
+    out: list[Published] = []
+    if not isinstance(payload, list):
+        return out
+    for c in payload:
+        if not isinstance(c, dict):
+            continue
+        labels = c.get("Labels") or {}
+        workdir = labels.get(_COMPOSE_WORKDIR) if isinstance(labels, dict) else None
+        if not isinstance(workdir, str) or not os.path.isabs(workdir):
+            continue
+        names = c.get("Names") or []
+        name = (names[0] if names and isinstance(names[0], str) else str(c.get("Id", ""))[:12])
+        for p in c.get("Ports") or []:
+            if not isinstance(p, dict) or p.get("Type") != "tcp":
+                continue
+            try:
+                port = int(p["PublicPort"])
+                addr = ipaddress.ip_address(p.get("IP") or "0.0.0.0")
+            except (KeyError, TypeError, ValueError):
+                continue  # exposed, not published
+            out.append(Published(port, addr, workdir, name.lstrip("/")[:_LABEL_MAX]))
+    return out
+
+
+def docker_published(socket_path: str = DOCKER_SOCKET, *,
+                     timeout: float = DOCKER_TIMEOUT_S) -> list[Published]:
+    """Every published port of a running compose container, from the Docker Engine API
+    on ``socket_path`` — one ``GET`` over a unix socket, no subprocess. ``[]`` when the
+    socket is absent, refuses this user, or answers anything but a 200 JSON list; never
+    raises. Blocking: call it from the detector's scan thread.
+
+    Reading the socket needs the ``docker`` group, which is root-equivalent; this only
+    ever lists containers (``GET``), and only when an operator opts in."""
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(timeout)
+        sock.connect(socket_path)
+        # HTTP/1.0: the engine closes after the body, never chunks it.
+        sock.sendall(f"GET {_DOCKER_QUERY} HTTP/1.0\r\nHost: docker\r\n\r\n".encode("ascii"))
+        raw = b""
+        while len(raw) <= _DOCKER_BODY_MAX:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            raw += chunk
+        else:
+            log.info("dev_servers.docker_answer_too_large socket=%s", socket_path)
+            return []
+    except OSError as e:
+        log.debug("dev_servers.docker_unreachable socket=%s err=%s", socket_path, e)
+        return []
+    finally:
+        sock.close()
+    head, _, body = raw.partition(b"\r\n\r\n")
+    status = head.split(b"\r\n", 1)[0].split()
+    if len(status) < 2 or status[1] != b"200":
+        log.info("dev_servers.docker_refused socket=%s status=%s", socket_path,
+                 status[1:2] or b"?")
+        return []
+    try:
+        return parse_containers(json.loads(body))
+    except ValueError:
+        return []
 
 
 @dataclass(frozen=True)
@@ -366,14 +468,16 @@ def _launches_mcp(chain: list[int], info: Callable[[int], ProcInfo | None],
 
 
 def find_all_candidates(sessions: list[SessionKey], *, fs: ProcFs, daemon_pid: int,
-                        managed_worktrees: frozenset[str] = frozenset()
+                        managed_worktrees: frozenset[str] = frozenset(),
+                        published: Collection[Published] = ()
                         ) -> dict[str, list[Candidate]]:
-    """The module rules 1–3 for every session in ONE ``/proc`` pass: each session id ->
-    its listeners (a key for every session, ``[]`` when none). A process is owned by at
-    most one session. Reads only; probes nothing."""
+    """The module rules 1–3 for every session in ONE ``/proc`` pass, plus the
+    ``published`` container ports: each session id -> its listeners (a key for every
+    session, ``[]`` when none). A process is owned by at most one session. Reads only;
+    probes nothing."""
     out: dict[str, list[Candidate]] = {s.session_id: [] for s in sessions}
     listeners = {ino: lst for ino, lst in fs.listeners().items() if lst.port >= MIN_PORT}
-    if not listeners or not sessions:
+    if (not listeners and not published) or not sessions:
         return out
     # A session's recorded cwd may be a symlink: resolve it. A process cwd is NOT
     # resolved — the kernel's /proc/<pid>/cwd link is already canonical, and a realpath
@@ -465,21 +569,43 @@ def find_all_candidates(sessions: list[SessionKey], *, fs: ProcFs, daemon_pid: i
         if any(arg.startswith(_DEBUG_PORT) for arg in cmdline):
             continue
         lst = listeners[ino]
-        cand = Candidate(lst.port, _connect_address(lst.address), _bind_kind(lst.address),
-                         pid, cmdline, eligible[pid][1])
-        prev = by_port.get((sid, lst.port))
-        if prev is None:
-            by_port[(sid, lst.port)] = cand
-            continue
-        # One server on several binds (``localhost`` → 127.0.0.1 and ::1): one entry,
-        # reached at IPv4 first, then at the wider bind; reachable as the widest is.
-        pick = min((prev, cand), key=lambda c: (":" in c.address, -_BIND_REACH[c.bind]))
-        bind = max(prev.bind, cand.bind, key=_BIND_REACH.__getitem__)
-        by_port[(sid, lst.port)] = Candidate(lst.port, pick.address, bind, pick.pid,
-                                             pick.cmdline, pick.shells)
+        _merge(by_port, sid, Candidate(lst.port, _connect_address(lst.address),
+                                       _bind_kind(lst.address), pid, cmdline,
+                                       eligible[pid][1]))
+    _add_published(by_port, published, managed)
     for (sid, port) in sorted(by_port, key=lambda k: k[1]):
         out[sid].append(by_port[(sid, port)])
     return out
+
+
+def _merge(by_port: dict[tuple[str, int], Candidate], sid: str, cand: Candidate) -> None:
+    prev = by_port.get((sid, cand.port))
+    if prev is None:
+        by_port[(sid, cand.port)] = cand
+        return
+    # One server on several binds (``localhost`` → 127.0.0.1 and ::1): one entry,
+    # reached at IPv4 first, then at the wider bind; reachable as the widest is.
+    pick = min((prev, cand), key=lambda c: (":" in c.address, -_BIND_REACH[c.bind]))
+    bind = max(prev.bind, cand.bind, key=_BIND_REACH.__getitem__)
+    by_port[(sid, cand.port)] = Candidate(cand.port, pick.address, bind, pick.pid,
+                                          pick.cmdline, pick.shells)
+
+
+def _add_published(by_port: dict[tuple[str, int], Candidate],
+                   published: Collection[Published], managed: list[SessionKey]) -> None:
+    """The module's *published* rule: each container port goes to the managed session
+    whose worktree holds the compose working dir, unless a process of that session
+    already listens on the port. Its binds (``0.0.0.0`` and ``::``) merge as a process's
+    do. ``realpath`` stats the label's path: this runs inside the bounded scan."""
+    taken = set(by_port)
+    for p in published:
+        if p.port < MIN_PORT:
+            continue
+        sid = worktree_session_of(_realpath(p.working_dir), managed)
+        if sid is None or (sid, p.port) in taken:
+            continue
+        _merge(by_port, sid, Candidate(p.port, _connect_address(p.address),
+                                       _bind_kind(p.address), 0, ("docker", p.name), ()))
 
 
 def _host_literal(address: str) -> str:
@@ -604,13 +730,19 @@ class DevServerDetector:
     a stalled mount cannot be cancelled, so no second thread is started while it runs,
     and every poll answers at once with the session's last good result (``[]`` for a
     fresh detection, which an Open must never trust stale). One stuck mount therefore
-    costs one thread, not one per poll."""
+    costs one thread, not one per poll.
+
+    ``published`` (the opt-in Docker source, :func:`docker_published`) is called inside
+    that same scan, so its socket read is bounded by the same timeout and costs one
+    round trip per scan, not per poll."""
 
     def __init__(self, *, fs: ProcFs | None = None, daemon_pid: int | None = None,
                  probe: Callable[[str, int], Awaitable[ProbeResult | None]] | None = None,
                  clock: Callable[[], float] = time.monotonic, ttl: float = CACHE_TTL_S,
-                 scan_timeout: float = SCAN_TIMEOUT_S) -> None:
+                 scan_timeout: float = SCAN_TIMEOUT_S,
+                 published: Callable[[], list[Published]] | None = None) -> None:
         self._scan_timeout = scan_timeout
+        self._published = published
         self._fs = fs or ProcFs()
         self._daemon_pid = daemon_pid if daemon_pid is not None else os.getpid()
         self._probe = probe or probe_html
@@ -718,7 +850,8 @@ class DevServerDetector:
             if repo_roots:
                 managed = managed | managed_worktree_roots(sessions, repo_roots)
             return find_all_candidates(sessions, fs=self._fs, daemon_pid=self._daemon_pid,
-                                       managed_worktrees=managed)
+                                       managed_worktrees=managed,
+                                       published=self._published() if self._published else ())
         cands = await self._scan(session_id, sessions, scan)
         if cands is None:
             if fresh:
