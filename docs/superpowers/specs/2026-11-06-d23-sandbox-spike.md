@@ -363,3 +363,153 @@ Store the result on the session row and show it in the Environment card ("Sandbo
    resume (and a prompt-cache miss), but it is the only path that refuses when the sandbox cannot start.
 5. **Not in D22a, but needed:** the network allowlist policy. Choose `strictAllowlist:true` with GitHub only
    (recommended), or GitHub plus the package registries, or prompting (which needs the registry work in risk 6).
+
+## 5. Live verification (2026-11-07)
+
+Task 3 of the plan: one real sandboxed session per host, through ViberPit's own spawn path. Each was run outside
+the live daemon and edge.
+
+### 5.1 Versions and method
+
+| Host | CLI (`~/.local/bin/claude --version`) | Kernel | bwrap / socat | AppArmor on bwrap's children |
+|---|---|---|---|---|
+| dobby | **2.1.319** | 7.0.0-42 | 0.11.1 / 1.8.1.1 | `bwrap//&unpriv_bwrap (enforce)` |
+| rocky | **2.1.293** | 7.0.0-38 | 0.11.1 / **now installed** | `bwrap//&unpriv_bwrap (enforce)` |
+
+- Python SDK `claude-agent-sdk==0.2.105`. Model: haiku. Mode: `full-auto`.
+- **Harness.** A standalone script ran a real `SessionOrchestrator`:
+  - the real `real_sdk_factory`, `_session_factory` closure, PreToolUse, PostToolUse and PostToolUseFailure hooks,
+    `SandboxGate`, and `get_sandbox_dialog` check (`ensure_driver` on a row with `sandbox=True`);
+  - a scratch SQLite DB and a scratch `VIBERPIT_HOME`;
+  - a scratch `CLAUDE_CONFIG_DIR`: a copy of one account's `.claude.json` without `mcpServers`, plus the shared
+    `settings.json` symlink. Auth was the account's setup token in `CLAUDE_CODE_OAUTH_TOKEN`, so no refresh token
+    was copied or rotated;
+  - a shallow throwaway clone of `steiner385/viberpit`, with a linked worktree laid out as ViberPit lays one out.
+    Both were under `~/.cache/d23probe`, so the home read-deny and its re-allows applied as they do for real
+    clones;
+  - the daemon's `PATH` and `VIBERPIT_GH_CONFIG_DIR`.
+- Turns were driven through `driver.open_stream()` / `send_prompt()`. Each prompt asked the model to run one command
+  verbatim.
+- **Probe-only variants.** These were harness monkeypatches or `PATH` shims, never product code. They are marked in
+  the table:
+  - **(U)** an unconfined copy of `/usr/bin/bwrap` first on `PATH`, standing in for a host where finding F4 is
+    resolved;
+  - **(S)** the CLI's `TMPDIR` pointed outside home, standing in for a fix to finding F5;
+  - **(N)** `allowNestedUserNamespaces: true`.
+- **Clean-up.** The scratch branch `sandbox-probe/20261107103739` was deleted from an unsandboxed shell (`git
+  ls-remote` shows no `sandbox-probe/*` ref; the branches API answers 404). Every scratch dir was removed on both
+  hosts.
+
+### 5.2 Results
+
+| # | Check | Expected | Observed | Result |
+|---|---|---|---|---|
+| 1 | `get_sandbox_dialog` echo, dobby | The block's lists back exactly: `fs_deny_read` / `fs_allow_read` absolute, no `~`, no trailing slash, no extras; `fs_deny_write` = `<common>/hooks`, `<common>/config`; `fs_allow_write` `[]`; `excluded_commands` `[]`; the three GitHub domains; `allow_all_unix_sockets:false`; `mode:"regular"`; `unsandboxed_fallback:false` | Exactly that, so `check_dialog` passed and the state was `active`. The shared settings' `Edit(/home/tony/.claude-accounts/cfg/*/projects/*/memory/**)` allow rule appears under `restrictions.ignored_glob_patterns` (Linux takes no globs), **not** in `fs_allow_write`. `additionalDirectories` does not appear | PASS |
+| 2 | Same, rocky | Same | Same on 2.1.293. The ambient file-backed `~/.config/gh` is the gh re-allow | PASS |
+| 3 | `dependencies.warnings` | `[]` (seccomp helper present) | `[]` on both hosts; `errors` `[]` | PASS |
+| 4 | Sandboxed Bash runs at all | It runs | Two failures. **Before fix 811db328:** `bwrap: Can't create file at <root>/claude-1000/claude-settings-….json: Read-only file system` (F1). **After the fix, with stock bwrap, on both hosts:** `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied` (F4). (N) gives the same error | **FAIL** (F4: owner/ops) |
+| 5 | Reads (U) | Denied | `ls ~` shows only the stand-ins `.cache .cargo .config .gitconfig .rustup`. `~/.ssh`, `~/.claude-accounts`, `~/.claude`, `~/.config/gh` (dobby) and `~/.cache/viberpit/claude-tmp` do not exist. `/etc/viberpit` is empty. `~/.ssh/id_*`, `~/.aws/credentials` and `~/.claude-accounts/accounts.json` cannot be read | PASS (U) |
+| 6 | Re-allows of absent paths (U) | bwrap still starts | `~/.nvm` and `~/.pyenv` are absent on dobby; bwrap started | PASS (U) |
+| 7 | Shell snapshot and `PATH` (U) | Snapshot sources, `PATH` intact | `PATH` is the daemon's, from the snapshot | PASS (U) |
+| 8 | `uv`, `node`, `cargo` (U) | All run | `node` v22 ran. `~/.cargo/bin/cargo` ran (cargo is not on the daemon's `PATH`). **`uv` not found** (F6) | **FAIL** (F6: owner/ops) |
+| 9 | `git fetch` | Works | Stock: F4. (U): `Proxy CONNECT aborted` (F5). (U+S): `* branch master -> FETCH_HEAD`, rc 0 | **FAIL** (F4, F5); PASS (U+S) |
+| 10 | `git commit` (U) | Works, writing into the common git dir | `commit_ok a0dc947` | PASS (U) |
+| 11 | `git push origin HEAD:sandbox-probe/<ts>` | Works | (U+S): `* [new branch] HEAD -> sandbox-probe/20261107103739`, rc 0; `ls-remote` showed the ref | PASS (U+S) |
+| 12 | `gh pr view` / `gh api user` | Authenticate | (U+S): `3366 MERGED`; `steiner385` (dobby, via the dedicated `GH_CONFIG_DIR`) | PASS (U+S) |
+| 13 | `git push -u`, `git config`, hooks | Push works; `.git/config` writes fail (spike §1.6) | (U+S): the push went through ("Everything up-to-date") but no upstream was recorded. `git config probe.x 1` failed with `could not lock config file …/.git/config: File exists` (rc 255). Touching `<common>/hooks/probe` failed with `Read-only file system` | PASS (U+S): as predicted |
+| 14 | Network allowlist | `api.github.com` allowed, `example.com` denied | (U+S) with `curl`: `api_http=200`; `example.com` got `CONNECT tunnel failed, response 403` plus `<sandbox_violations> deny network-outbound example.com:443 (host is not on the allow list)` | PASS (U+S) |
+| 15 | WebFetch `api.github.com` / `example.com` | Allowed / denied | **Not observable.** The CLI does not offer WebFetch to this account at all: the init `tools` list lacks it for haiku and sonnet, with and without the sandbox (F7). The model's `ToolSearch` was denied until fix 811db328 (F3) | NOT RUN (F7) |
+| 16 | `Write /tmp/x`, main thread | Denied | `PreToolUse:Write hook error: Write is not allowed in a sandboxed session: '/tmp/d23probe-x.txt' is outside this session's worktree`. The file never appeared on the host | PASS |
+| 17 | `Write /tmp/x`, sub-agent | Denied (the hook sees sub-agent calls) | The same denial, inside the sub-agent | PASS |
+| 18 | Serialisation: Edit during a sub-agent's `sleep 20` (U) | The retry message | `PreToolUse:Edit hook error: Another command is running in this session; retry this edit when it finishes.` The same Edit was allowed after the sub-agent ended | PASS (U) |
+| 19 | Write during `run_in_background` (U) | Refused until the task's end event | The same retry message. The gate held the task in `background` and cleared it at `BackgroundTaskEnded` | PASS (U) |
+| 20 | A failed Bash leaves no stale gate entry | Gate empty afterwards | With stock bwrap, sub-agent and background Bash calls failed (F4); the gate was empty after each, and later writes were admitted | PASS |
+| 21 | Bash refused while an Edit waits on a card | Refused | The probe ran `full-auto`, which has no cards | NOT RUN |
+| 22 | Backgrounded process gone after return (U) | None left | CLI 2.1.319 itself blocks `sleep 300 & …` ("Blocked: sleep 300 followed by …"), so `timeout 300 tail -f /dev/null &` was used: `started_pid=3` (its own PID namespace); `pgrep` on the host found none | PASS (U) |
+| 23 | `TMPDIR` is the per-session root (U) | `…/viberpit-sbx/<id>/…` | **Before fix 811db328:** the **shared** `~/.cache/claude-tmp/claude-1000`, writable, listing other sessions' project dirs (F2). **After:** `…/viberpit-sbx/<id>/claude-1000`; `mktemp` works; the shared dir does not exist inside | PASS after fix (U) |
+| 24 | Per-session root removed at close | Gone | 0700 while the session ran; gone after `close_session`, in every run | PASS |
+| 25 | `~/.cache/viberpit/claude-tmp` denied (U) | Not readable | Does not exist inside | PASS (U) |
+| 26 | Shared venv (U) | Known gap | `~/GitHub/viberpit-deploy/.venv/bin/python: No such file or directory` | As expected (known limitation) |
+| 27 | Reload releases a gate whose end event was lost | Released | Needs a lost event, which the probe cannot produce | NOT RUN |
+| 28 | Rocky: sandboxed `git fetch` | Works through `~/.config/gh` | Stock: F4. (U) cannot run on rocky: an unconfined bwrap fails with `loopback: Failed RTM_NEWADDR`, because `apparmor_restrict_unprivileged_userns=1` | **FAIL** (F4) |
+
+### 5.3 Findings
+
+Fixed in **811db328** `fix(sessions): sandbox temp root and ToolSearch, from the live probe (D-23)`, with tests:
+
+- **F1. The temp-root re-allow broke every Bash.**
+  - The CLI's writable temp dir is `$m()` = `realpath(<CLAUDE_CODE_TMPDIR>/claude-<uid>)` (@287555265).
+  - The bwrap builder `H8` (@~288403900) restores write paths with `--bind` over a denyRead tmpfs. It then
+    `--ro-bind`s each `allowRead` path that is not inside a restored write path.
+  - Re-allowing the root, the write path's parent, mounted it read-only on top.
+  - The root is no longer re-allowed. The restored write path is readable as it is.
+- **F2. The shell's `TMPDIR` was a shared, writable directory.**
+  - The child-process tmpdir `hAe()` / `j$e()` (@282251389) is `<CLAUDE_CODE_TMPDIR>/claude-<uid>` only when that
+    is at most 44 bytes (`hNr`). Otherwise it is `<os.tmpdir()>/claude-<uid>`.
+  - The per-session root is always longer. The shared `settings.json` sets `env.TMPDIR=~/.cache/claude-tmp`.
+  - So the sandbox's default write list, and the shell's `TMPDIR`, included the host-wide directory every session's
+    CLI uses.
+  - The sandboxed spawn's flag layer now sets `env.TMPDIR` to the session's root. The flag layer outranks user
+    settings.
+- **F3. `ToolSearch` was denied.** 2.1.319 defers tools behind it, and the model called it before WebFetch. It only
+  loads schemas, and a tool it loads is still confined when called.
+
+Need an owner decision (not changed):
+
+- **F4. The sandbox cannot run any command on either host (blocker).**
+  - Ubuntu's `bwrap-userns-restrict` AppArmor profile puts every process bwrap starts in `unpriv_bwrap`, which has
+    `audit deny capability`.
+  - The CLI's `apply-seccomp` helper (the unix-socket filter) needs a nested user, PID and mount namespace, which
+    needs capabilities. So it fails at `/proc/self/setgroups`.
+  - Proof: the same `bwrap --unshare-user --cap-drop ALL … unshare -U -r -p -m --fork --mount-proc true` fails
+    under `/usr/bin/bwrap` and succeeds under an unconfined copy.
+  - `allowNestedUserNamespaces:true` (N) does not help. `allowAllUnixSockets:true`, which skips the helper, is the
+    escape §4.1 rules out.
+  - The state is fail-closed but useless:
+    - the dialog says `enabled:true`, so the session verifies `active`;
+    - every Bash then fails; nothing runs unsandboxed.
+  - **The host preflight passes regardless.** Its `bwrap --unshare-net true` probe does not exercise the helper.
+  - Options:
+    - a local AppArmor rule granting `unpriv_bwrap` the capabilities this needs. That is host-wide: it also affects
+      glycin and flatpak bwrap users;
+    - a dedicated profile for the CLI's helper;
+    - an upstream CLI fix.
+  - Whichever is chosen, extend the preflight with a probe that mirrors the helper (the nested `unshare -U -r -p -m`
+    inside `bwrap --unshare-user --cap-drop ALL`), so the toggle is disabled until it passes.
+- **F5. The proxy bridge sockets are hidden by the home read-deny.**
+  - The CLI creates `claude-http-<hex>.sock` / `claude-socks-<hex>.sock` in `os.tmpdir()` (sandbox runtime
+    `a1()`).
+  - It binds them into bwrap (`--bind h h`, @288417101) **before** the filesystem arguments. So the later
+    `--tmpfs /home/tony` covers them whenever `os.tmpdir()` is under home, as it is both before and after F2's fix.
+  - Every connection then fails with `Proxy CONNECT aborted`.
+  - Re-allowing the directory that holds them would recreate F1, because it is the write path's parent.
+  - Options:
+    - **(a)** `TMPDIR` in a per-session dir outside home, such as `/tmp/vpsbx-<id>`. This works (it is how row 9
+      (U+S) passed), but other sandboxed sessions' dirs there are readable.
+    - **(b)** A `CLAUDE_CODE_TMPDIR` of at most 32 bytes, so `hAe()` never falls back, plus a separate per-session
+      socket dir that is re-allowed and is not an ancestor of a write path. This is home-length-dependent and needs
+      a length guard that fails closed.
+    - **(c)** An upstream fix to the bind order.
+- **F6. `~/.local` and `~/.npm` are symlinks on dobby** (to `/mnt/ssk-ssd/tony/cache/…`).
+  - `H8` refuses to restore a re-allow whose real path leaves the denied region ("resolves outside it").
+  - So `~/.local/bin` (uv, and the user's other tools) is missing from the sandboxed shell, though the real path is
+    readable.
+  - Options: re-allow by real path and put it on the sandboxed `PATH`, or change the host layout.
+- **F7. WebFetch is not offered to this account by the CLI at all.** It is absent from the init `tools` for haiku and
+  sonnet, sandboxed or not. The WebFetch half of the allowlist is unit-tested only (`test_the_allowlist_matrix_*`).
+  The proxy half is verified by row 14.
+
+Notes:
+
+- **rocky push.** rocky's git credential helper is `store` (`~/.git-credentials`, under the home deny, not
+  re-allowed). Its clones use the global helper. A sandboxed push on rocky would not authenticate. This was inferred
+  from config, not observed, because of F4. The repo is public, so fetch needs no credentials.
+- **Host-wide `/tmp` is readable.** That includes `/tmp/claude-1000` (unsandboxed CLIs' `cache-break-state-*`
+  files). Reads outside home and the daemon dirs are allowed by design (§1.6); writes there are refused (`/tmp` is
+  read-only inside).
+- **`.gitmodules` is masked.** The CLI masks a worktree's `.gitmodules` and creates other deny placeholders (`.bashrc`,
+  `.mcp.json`, `.claude/commands`, …). Inside, git warns `unable to access …/.gitmodules: Permission denied`. The
+  placeholders are not left on the host worktree.
+- **Model refusals.** haiku refused the read and escape probes as evasive until each prompt said the run was the
+  owner's authorised verification. This is not a product issue.
+- **Benchmark row.** "Sandbox settings" should not become Y until F4 and F5 are resolved.
