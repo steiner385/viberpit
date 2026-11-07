@@ -2662,8 +2662,8 @@ class SessionOrchestrator:
             if sandboxed:
                 extra.update(sandbox_mod.session_env())
                 if sandbox_tmp:
-                    # The session's own temp root: the CLI's writable temp and Bash
-                    # TMPDIR, the only temp dir its shell may read.
+                    # The session's own temp root: the CLI's writable temp
+                    # (<root>/claude-<uid>) and Bash TMPDIR, not the shared one.
                     extra["CLAUDE_CODE_TMPDIR"] = sandbox_tmp
                 if stderr_sink is not None and "stderr" in declared:
                     kw["stderr"] = stderr_sink

@@ -236,8 +236,7 @@ def protected_git_paths(cwd: str | None) -> list[str]:
     return [os.path.join(common, "hooks"), os.path.join(common, "config")] if common else []
 
 
-def settings_block(cwd: str | None = None, config_dir: str | None = None,
-                   tmpdir: str | None = None) -> dict[str, Any]:
+def settings_block(cwd: str | None = None, config_dir: str | None = None) -> dict[str, Any]:
     """``{"sandbox": {...}}`` — the full block for one spawn's ``--settings`` JSON (spike
     §2.1, plus the pins). A fresh deep copy every call: nothing a caller does to it
     reaches the next. With *cwd*, ``filesystem.denyWrite`` names that worktree's git
@@ -249,7 +248,7 @@ def settings_block(cwd: str | None = None, config_dir: str | None = None,
     if deny:
         block["filesystem"]["denyWrite"] = deny
     if config_dir is not None:
-        deny_read, allow_read = read_policy(config_dir, cwd, tmpdir)
+        deny_read, allow_read = read_policy(config_dir, cwd)
         block["filesystem"]["denyRead"] = deny_read
         block["filesystem"]["allowRead"] = allow_read
     return {SANDBOX_KEY: block}
@@ -269,14 +268,25 @@ def spawn_settings_overlay(cwd: str | None = None, config_dir: str | None = None
       pass ``y()``'s filter). CLAUDE.md memory is a separate loader and is untouched;
       ``setting_sources`` is NOT used, since it would also drop CLAUDE.md;
     * ``enableAllProjectMcpServers: false`` — a repo's ``.mcp.json`` servers would start
-      as host processes outside bwrap; the unsandboxed default auto-trusts them.
+      as host processes outside bwrap; the unsandboxed default auto-trusts them;
+    * with *tmpdir* (the session's temp root), ``env.TMPDIR`` — the CLI's child-process
+      tmpdir, a default sandbox write path and the shell's ``TMPDIR``, is
+      ``<CLAUDE_CODE_TMPDIR>/claude-<uid>`` only when that path is at most 44 bytes, else
+      ``<os.tmpdir()>/claude-<uid>`` (2.1.319 ``j$e()`` @282251389, ``hNr=44``). The
+      per-session root is always longer, and the shared account settings point TMPDIR at
+      a host-wide dir, so the live probe (2026-11-07) found the sandboxed shell's TMPDIR
+      to be that SHARED dir: writable, and listing other sessions' files. The flag layer
+      outranks the user layer, so the fallback becomes the session's own root.
 
     Trade-off (acknowledged, fix round 3): ``disableAllHooks`` also stops the operator's
     USER hooks in sandboxed sessions; the only one in use is the WebSearch transformer,
     and WebSearch is denied there anyway.
     """
-    return {**settings_block(cwd, config_dir, tmpdir), "disableAllHooks": True,
-            "enableAllProjectMcpServers": False}
+    overlay: dict[str, Any] = {**settings_block(cwd, config_dir), "disableAllHooks": True,
+                               "enableAllProjectMcpServers": False}
+    if tmpdir:
+        overlay["env"] = {"TMPDIR": tmpdir}
+    return overlay
 
 
 _OAUTH_TOKEN_RE = re.compile(r"^\s*oauth_token:\s*\S+", re.MULTILINE)
@@ -365,7 +375,7 @@ def _str_list(value: Any) -> list[str] | None:
     return [str(v) for v in value] if isinstance(value, list) else None
 
 
-def check_dialog(resp: Any, *, cwd: str | None = None, tmpdir: str | None = None,
+def check_dialog(resp: Any, *, cwd: str | None = None,
                  config_dir: str | None = None) -> DialogVerdict:
     """Require every condition of spike §2.4, and that the restrictions the CLI says it
     applied are exactly ViberPit's block. The reply's restriction lists are "the
@@ -381,9 +391,7 @@ def check_dialog(resp: Any, *, cwd: str | None = None, tmpdir: str | None = None
     * ``restrictions.fs_deny_write`` includes the worktree's ``<common>/hooks`` and
       ``<common>/config`` (sent in the block's ``filesystem.denyWrite``).
     * with *config_dir*: ``restrictions.fs_deny_read`` is exactly the :func:`read_policy`
-      denial and ``fs_allow_read`` is exactly its re-allows (sent in the block).
-
-    *tmpdir* is the session's Claude temp root, one of the read re-allows."""
+      denial and ``fs_allow_read`` is exactly its re-allows (sent in the block)."""
     if not isinstance(resp, Mapping):
         return DialogVerdict(False, "get_sandbox_dialog returned no sandbox state")
     deps = resp.get("dependencies")
@@ -439,7 +447,7 @@ def check_dialog(resp: Any, *, cwd: str | None = None, tmpdir: str | None = None
         return DialogVerdict(False, "git hooks/config are not write-denied: "
                              + ", ".join(missing))
     if config_dir is not None:
-        want_deny, want_allow = read_policy(config_dir, cwd, tmpdir)
+        want_deny, want_allow = read_policy(config_dir, cwd)
         deny_read = _str_list(restrictions.get("fs_deny_read"))
         allow_read = _str_list(restrictions.get("fs_allow_read"))
         if deny_read is None or allow_read is None:
@@ -469,10 +477,14 @@ def check_dialog(resp: Any, *, cwd: str | None = None, tmpdir: str | None = None
 # ``settingsHooksOff``, never set to true in this binary), so the hook sees their calls.
 
 #: Tools a sandboxed session may run with no further constraint: the kernel-sandboxed
-#: shell and its background-output controls, conversation tools, sub-agents.
+#: shell and its background-output controls, conversation tools, sub-agents, and
+#: ``ToolSearch``, which only loads a deferred tool's schema: 2.1.319 defers tools such
+#: as WebFetch, and in the live probe (2026-11-07) the model called ``ToolSearch`` before
+#: WebFetch and was refused, so every deferred tool was unreachable. A tool it loads is
+#: still confined here when called.
 PLAIN_TOOLS: frozenset[str] = frozenset({
     "Bash", "BashOutput", "KillShell", "KillBash", "TaskOutput", "TaskStop",
-    "Task", "Agent", "TodoWrite", "ExitPlanMode", "AskUserQuestion",
+    "Task", "Agent", "TodoWrite", "ExitPlanMode", "AskUserQuestion", "ToolSearch",
 })
 #: Read-only file tools, confined to the worktree, its common git dir and the Claude temp
 #: root, and refused for secrets.
@@ -839,7 +851,8 @@ def post_write_hook(cwd: str | None, on_escape: Callable[[str, str], Any],
 # ``CLAUDE_CODE_TMPDIR``, else ``os.tmpdir()``); it is the sandbox's default writable temp
 # root (spike §1.6, ``$m()`` @288608093) and the sandboxed shell's ``TMPDIR``
 # (``Lpt`` @286500575). The shared root holds every session's Bash output, so a
-# sandboxed session gets its own, and only that one is re-allowed and writable.
+# sandboxed session gets its own; the CLI makes its ``<root>/claude-<uid>`` writable (and
+# so readable) over the home denial, and it is never re-allowed (see :func:`read_policy`).
 
 #: The directory, beside the shared Claude temp root, that holds per-session roots.
 SESSION_TMP_PARENT = "viberpit-sbx"
@@ -928,8 +941,8 @@ def _daemon_dirs() -> list[str]:
     return list(dict.fromkeys(os.path.abspath(p) for p in out))
 
 
-def read_policy(config_dir: str | None, cwd: str | None = None,
-                tmpdir: str | None = None) -> tuple[list[str], list[str]]:
+def read_policy(config_dir: str | None,
+                cwd: str | None = None) -> tuple[list[str], list[str]]:
     """``(denyRead, allowRead)`` for a sandboxed shell (bwrap ro-binds ``/``).
 
     Deny the whole HOME directory and ViberPit's own dirs (:func:`_daemon_dirs`), then
@@ -942,8 +955,15 @@ def read_policy(config_dir: str | None, cwd: str | None = None,
       there before every command: PATH, functions, shell options — no secrets);
     * the gh config git authenticates with (``session_env``'s ``GH_CONFIG_DIR``, else the
       ambient file-backed one);
-    * the session's Claude temp root (the Bash output files);
     * :data:`TOOLCHAIN_READS`.
+
+    NOT the session's Claude temp root. The CLI restores its own writable temp dir
+    (``<CLAUDE_CODE_TMPDIR>/claude-<uid>``, ``$m()`` @287555265) with ``--bind`` over the
+    home denial, then ``--ro-bind``s each re-allow that is not inside a restored write
+    path (``H8`` @~288403900). A re-allow of the root is its PARENT, so it was mounted
+    read-only on top and every sandboxed Bash failed with "Can't create file at
+    <root>/claude-<uid>/claude-settings-*.json: Read-only file system" (live probe
+    2026-11-07, CLI 2.1.319). The restored write path is readable as it is.
     """
     home = os.path.realpath(os.path.expanduser("~"))
     deny = list(dict.fromkeys([home, *_daemon_dirs()]))
@@ -959,8 +979,6 @@ def read_policy(config_dir: str | None, cwd: str | None = None,
     gh = (dedicated if dedicated and gh_file_backed(dedicated)
           else _ambient_gh_config_dir())
     allow.append(os.path.realpath(gh))
-    if tmpdir:
-        allow.append(os.path.realpath(tmpdir))
     allow += [os.path.join(home, rel) for rel in TOOLCHAIN_READS]
     return deny, list(dict.fromkeys(allow))
 

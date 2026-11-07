@@ -1338,8 +1338,7 @@ class ClaudeAgentDriver:
                               timeout=sandbox_mod.SANDBOX_CONTROL_TIMEOUT_S)
         except Exception as exc:
             return sandbox_mod.DialogVerdict(False, f"get_sandbox_dialog failed: {exc}")
-        return sandbox_mod.check_dialog(resp, cwd=self.cwd, tmpdir=self._sandbox_tmp,
-                                        config_dir=self.config_dir)
+        return sandbox_mod.check_dialog(resp, cwd=self.cwd, config_dir=self.config_dir)
 
     def _sandbox_failure_texts(self, exc: BaseException | None) -> list[str]:
         """Everything that may carry the CLI's sandbox refusal: the exception chain, the

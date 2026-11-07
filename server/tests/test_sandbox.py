@@ -391,15 +391,14 @@ class _Client(FakeSDKClient):
         return await super().__aexit__(*exc)
 
 
-def _echo(reply: Any, cwd: str | None, config_dir: str | None,
-          tmpdir: str | None = None) -> Any:
+def _echo(reply: Any, cwd: str | None, config_dir: str | None) -> Any:
     """A CLI that applied the block reports its lists back: fill the restriction lists a
     scripted reply left at their empty defaults with what this spawn's block sends."""
     if not isinstance(reply, dict) or not isinstance(reply.get("restrictions"), dict):
         return reply
     out = json.loads(json.dumps(reply))
     r = out["restrictions"]
-    deny_read, allow_read = sb.read_policy(config_dir, cwd, tmpdir)
+    deny_read, allow_read = sb.read_policy(config_dir, cwd)
     for key, want in (("fs_deny_read", deny_read), ("fs_allow_read", allow_read),
                       ("fs_deny_write", sb.protected_git_paths(cwd))):
         if r.get(key) == []:
@@ -410,8 +409,7 @@ def _echo(reply: Any, cwd: str | None, config_dir: str | None,
 def _sandboxed_driver(control: FakeControl | None, *, enter_error=None,
                       stderr_lines=(), sandbox=True):
     if control is not None:
-        control.replies = [_echo(r, "/tmp/r", "/tmp/cfg", sb.session_tmp_path(SID))
-                           for r in control.replies]
+        control.replies = [_echo(r, "/tmp/r", "/tmp/cfg") for r in control.replies]
     calls: list[dict] = []
     clients: list[_Client] = []
     states: list[tuple[str, str | None]] = []
@@ -546,7 +544,7 @@ class _World:
         self.spawns.append({"flag_settings": flag_settings, "extra_env": extra_env,
                             "stderr": stderr, "resume": resume})
         reply = _echo(self.dialogs.pop(0) if len(self.dialogs) > 1 else self.dialogs[0],
-                      cwd, cfg, (extra_env or {}).get("CLAUDE_CODE_TMPDIR"))
+                      cwd, cfg)
         control = FakeControl(reply)
         self.controls.append(control)
         return _Client(control)
@@ -652,8 +650,7 @@ def test_a_sandboxed_spawn_sends_the_block_and_the_env_and_is_verified(orch_env,
     want = dict(SPIKE_BLOCK["sandbox"])
     want_fs = want.pop("filesystem")
     assert sent == want
-    deny_read, allow_read = sb.read_policy(str(orch_env), str(tmp_path / "wt"),
-                                           sb.session_tmp_path(SID))
+    deny_read, allow_read = sb.read_policy(str(orch_env), str(tmp_path / "wt"))
     assert fs == {**want_fs, "denyRead": deny_read, "allowRead": allow_read}
     assert spawn["extra_env"]["GH_NO_UPDATE_NOTIFIER"] == "1"
     assert spawn["extra_env"]["GH_CONFIG_DIR"] == str(tmp_path / "vp")
@@ -1268,8 +1265,7 @@ CHILD = "5a4db0c5-0000-0000-0000-0000000000c1"
     ({"restrictions__fs_allow_write": ["."]}, "extra writable paths are allowed: ."),
 ])
 def test_a_reply_wider_than_the_block_fails_the_check(over, needle, tmp_path):
-    verdict = sb.check_dialog(_dialog(**over), cwd=str(tmp_path / "wt"),
-                              tmpdir=str(tmp_path / "tmp"))
+    verdict = sb.check_dialog(_dialog(**over), cwd=str(tmp_path / "wt"))
     assert verdict.ok is False and needle in verdict.reason
     assert verdict.expected is False   # a contradiction of what was sent: WARNING
 
@@ -2069,6 +2065,9 @@ ALLOW_MATRIX = [
     ("TodoWrite", {"todos": []}, True),
     ("ExitPlanMode", {}, True),
     ("AskUserQuestion", {}, True),
+    # Loads a deferred tool's schema (2.1.319 defers e.g. WebFetch; the live probe's
+    # model called it first and was refused). What it loads is still confined when called.
+    ("ToolSearch", {"query": "select:WebFetch", "max_results": 5}, True),
     ("mcp__viberpit__session_context", {}, True),
     ("Edit", {"file_path": "src/a.py"}, True),
     ("Read", {"file_path": "src/a.py"}, True),
@@ -2410,15 +2409,20 @@ def test_the_read_policy_denies_home_and_re_allows_only_what_the_session_needs(
     cfg = tmp_path / "accts" / "cfg" / "acct1"
     cfg.mkdir(parents=True)
     monkeypatch.setenv("VIBERPIT_GH_CONFIG_DIR", _gh_dir(tmp_path, "vp-gh", True))
-    deny, allow = sb.read_policy(str(cfg), str(wt), str(tmp))
+    deny, allow = sb.read_policy(str(cfg), str(wt))
     assert deny[0] == home
     for d in (hostpaths.ETC_DIR, hostpaths.RUN_DIR, hostpaths.STATE_DIR, hostpaths.LOG_DIR,
               str(paths.root())):
         assert os.path.abspath(d) in deny
-    assert allow[:5] == [str(wt.resolve()), str((clone / ".git").resolve()),
+    assert allow[:4] == [str(wt.resolve()), str((clone / ".git").resolve()),
                          str(cfg.resolve() / "shell-snapshots"),
-                         str((tmp_path / "vp-gh").resolve()), str(tmp.resolve())]
-    assert allow[5:] == [os.path.join(home, r) for r in sb.TOOLCHAIN_READS]
+                         str((tmp_path / "vp-gh").resolve())]
+    assert allow[4:] == [os.path.join(home, r) for r in sb.TOOLCHAIN_READS]
+    # The CLI's own writable temp dir (<CLAUDE_CODE_TMPDIR>/claude-<uid>) is restored
+    # read-write over the home denial; a re-allow at or above it would be ro-bound ON TOP
+    # and make every sandboxed Bash fail (live probe 2026-11-07).
+    cli_tmp = os.path.join(str(tmp.resolve()), f"claude-{os.getuid()}")
+    assert not any(os.path.commonpath([cli_tmp, a]) == a for a in allow)
     for secret in (".ssh", ".claude-accounts", ".claude", ".config/gh", ".aws"):
         full = os.path.join(home, secret)
         assert not any(os.path.commonpath([full, a]) == a for a in allow), secret
@@ -2430,7 +2434,7 @@ def test_the_read_policy_denies_home_and_re_allows_only_what_the_session_needs(
     os.makedirs(ambient, exist_ok=True)
     with open(os.path.join(ambient, "hosts.yml"), "w") as fh:
         fh.write("github.com:\n    oauth_token: gho_x\n")
-    assert os.path.realpath(ambient) in sb.read_policy(str(cfg), str(wt), str(tmp))[1]
+    assert os.path.realpath(ambient) in sb.read_policy(str(cfg), str(wt))[1]
 
 
 def test_toolchain_reads_are_home_relative_re_allows():
@@ -2444,7 +2448,7 @@ def test_the_block_sends_the_read_rules_and_the_check_requires_them_exactly(tmp_
     cfg.mkdir()
     wt = tmp_path / "wt"
     wt.mkdir()
-    deny, allow = sb.read_policy(str(cfg), str(wt), None)
+    deny, allow = sb.read_policy(str(cfg), str(wt))
     fs = sb.settings_block(str(wt), str(cfg))["sandbox"]["filesystem"]
     assert fs["denyRead"] == deny and fs["allowRead"] == allow
     kw = {"cwd": str(wt), "config_dir": str(cfg)}
@@ -2513,7 +2517,8 @@ def test_a_planted_symlink_is_never_used_as_the_temp_root(tmp_path, monkeypatch)
     assert not os.path.lexists(path) and (tmp_path / "elsewhere").is_dir()
 
 
-def test_the_spawn_uses_and_re_allows_only_its_own_temp_root(orch_env, tmp_path, monkeypatch):
+def test_the_spawn_uses_its_own_temp_root_and_never_re_allows_one_read_only(orch_env, tmp_path,
+                                                                            monkeypatch):
     monkeypatch.setenv("VIBERPIT_SESSION_TMPDIR", str(tmp_path / "cache" / "claude-tmp"))
     monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
     world = _World()
@@ -2530,24 +2535,41 @@ def test_the_spawn_uses_and_re_allows_only_its_own_temp_root(orch_env, tmp_path,
     own, existed, gone, driver = asyncio.run(go())
     spawn = world.spawns[0]
     assert spawn["extra_env"]["CLAUDE_CODE_TMPDIR"] == own and existed
+    # The flag layer pins the CLI's TMPDIR (os.tmpdir()) to the session's root, so its
+    # child-process tmpdir is <root>/claude-<uid> and not the shared fallback (below).
+    assert spawn["flag_settings"]["env"] == {"TMPDIR": own}
     allow = spawn["flag_settings"]["sandbox"]["filesystem"]["allowRead"]
-    assert os.path.realpath(own) in allow
+    # Neither the session's root nor the shared one is re-allowed: the CLI restores its
+    # writable <root>/claude-<uid> itself, and an ro re-allow above it would cover it.
     shared = os.path.realpath(str(tmp_path / "cache" / "claude-tmp"))
-    assert shared not in allow
+    for root in (os.path.realpath(own), shared):
+        cli_tmp = os.path.join(root, f"claude-{os.getuid()}")
+        assert not any(os.path.commonpath([cli_tmp, a]) == a for a in allow), root
     assert gone, "closing the session removes its temp root"
 
 
-def test_the_check_requires_the_sessions_own_root_exactly(tmp_path):
+def test_the_overlay_pins_the_clis_tmpdir_to_the_sessions_root(tmp_path):
+    """2.1.319's child-process tmpdir (``j$e()`` @282251389) is
+    ``<CLAUDE_CODE_TMPDIR>/claude-<uid>`` only when that path is at most 44 bytes, else
+    ``<os.tmpdir()>/claude-<uid>``; the per-session root is always longer, and the shared
+    account settings point TMPDIR at a host-wide dir — so the live probe (2026-11-07) saw
+    the sandboxed shell's TMPDIR be the SHARED dir, writable and listing other sessions'
+    files. ``env.TMPDIR`` in the flag layer (above the user layer) makes the fallback the
+    session's own root."""
+    own = str(tmp_path / "sbx" / SID)
+    assert sb.spawn_settings_overlay(str(tmp_path), None, own)["env"] == {"TMPDIR": own}
+    assert "env" not in sb.spawn_settings_overlay(str(tmp_path), None)
+
+
+def test_the_check_fails_when_a_temp_root_is_re_allowed(tmp_path):
     cfg = tmp_path / "cfg"
     cfg.mkdir()
     own = str(tmp_path / "sbx" / SID)
-    shared = str(tmp_path / "claude-tmp")
-    deny, allow = sb.read_policy(str(cfg), None, own)
+    deny, allow = sb.read_policy(str(cfg), None)
     good = _dialog(restrictions__fs_deny_read=deny, restrictions__fs_allow_read=allow)
-    assert sb.check_dialog(good, config_dir=str(cfg), tmpdir=own).ok is True
-    _, allow_shared = sb.read_policy(str(cfg), None, shared)
-    wrong = _dialog(restrictions__fs_deny_read=deny, restrictions__fs_allow_read=allow_shared)
-    assert "re-allows differ" in sb.check_dialog(wrong, config_dir=str(cfg), tmpdir=own).reason
+    assert sb.check_dialog(good, config_dir=str(cfg)).ok is True
+    wrong = _dialog(restrictions__fs_deny_read=deny, restrictions__fs_allow_read=[*allow, own])
+    assert "re-allows differ" in sb.check_dialog(wrong, config_dir=str(cfg)).reason
 
 
 @pytest.mark.asyncio
