@@ -62,6 +62,10 @@ export const SANDBOX_SWITCHED_OFF = 'The sandbox is turned off on this server'
 /** The disabled toggle's "Re-check host" failed. */
 export const SANDBOX_RECHECK_FAILED = "Couldn't re-check the host"
 
+/** The hold after a file write landed outside the worktree (`sandbox_escape_suspected`). */
+export const SANDBOX_ESCAPE_COPY =
+  "A file write went outside this session's worktree, so the session was stopped. Check the worktree before continuing."
+
 /** The 200 a respawn answers when its sandbox failed: the session is now held. */
 export const SANDBOX_DID_NOT_START = "The sandbox didn't start, so the session is held. Retry, or turn the sandbox off to continue."
 

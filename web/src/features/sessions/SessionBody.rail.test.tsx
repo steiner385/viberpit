@@ -147,6 +147,21 @@ describe('SessionBody — session rail', () => {
       expect(within(hold).getByRole('button', { name: 'Turn off sandbox and continue' })).toBeVisible()
     })
 
+    it('an escape-suspected hold shows its own copy, and the card turns off through the held confirm', async () => {
+      sessionsHook.mockReturnValue({ data: [{
+        ...BASE_SESSION, status: 'needs_attention', pausedReason: 'sandbox_escape_suspected',
+        sandbox: { enabled: true, state: 'active', reason: null },
+      }] })
+      vi.mocked(hooks.useEngineCapabilities).mockReturnValue({ sandbox: true } as never)
+      renderWithClient()
+      const hold = await screen.findByTestId('sandbox-hold')
+      expect(hold).toHaveTextContent("A file write went outside this session's worktree, so the session was stopped.")
+      expect(await within(hold).findByRole('button', { name: 'Retry' })).toBeVisible()
+      // The card knows the session is held (the payload), so off is "continue without".
+      fireEvent.click(await screen.findByRole('switch', { name: 'Sandbox' }))
+      expect(await screen.findByRole('dialog', { name: 'Continue without the sandbox?' })).toBeVisible()
+    })
+
     it('another pause reason shows no hold', async () => {
       sessionsHook.mockReturnValue({ data: [{ ...BASE_SESSION, status: 'needs_attention', pausedReason: 'rotation_cap' }] })
       renderWithClient()

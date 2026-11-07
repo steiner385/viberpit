@@ -10,9 +10,10 @@ const SandboxHoldBanner = lazy(() => import('./SandboxHoldBanner'))
 /** The attach refusal a held session answers — the same fact the hold states. */
 const SANDBOX_ATTACH_REFUSAL = 'SESSION_SANDBOX_FAILED'
 
-/** A session held because its sandbox failed (D-23): `status: needs_attention`,
- *  `pausedReason: "sandbox_failed"`. `reason` is `session.sandbox.reason`. */
-export interface SandboxHold { sessionId: string; reason: string | null }
+/** A session held on its sandbox (D-23): `status: needs_attention` with a sandbox
+ *  `pausedReason` — `sandbox_failed`, or `sandbox_escape_suspected` (`escaped`: a file
+ *  write landed outside the worktree). `reason` is `session.sandbox.reason`. */
+export interface SandboxHold { sessionId: string; reason: string | null; escaped?: boolean }
 
 interface Props {
   rt: Pick<SessionRuntime, 'state' | 'dismissError'>

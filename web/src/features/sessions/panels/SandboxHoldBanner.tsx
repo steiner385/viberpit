@@ -16,14 +16,16 @@ import { useState } from 'react'
 import { useSandboxFacts, useSetSandbox } from '@/api/sandboxHooks'
 import { Button } from '@/ui/Button'
 import { SandboxConfirmDialog } from '../SandboxConfirmDialog'
-import { sandboxError } from '../sandboxCopy'
+import { SANDBOX_ESCAPE_COPY, sandboxError } from '../sandboxCopy'
 
 /** The house 44px floor on a coarse pointer, compact under a mouse. */
 const ACTION = 'h-auto min-h-11 [@media(hover:hover)]:min-h-0 px-2 py-1 text-xs'
 
-export default function SandboxHoldBanner({ sessionId, reason, className }: {
+export default function SandboxHoldBanner({ sessionId, reason, escaped = false, className }: {
   sessionId: string
   reason: string | null
+  /** Held `sandbox_escape_suspected`: its own copy; the actions are the same. */
+  escaped?: boolean
   className?: string
 }) {
   const toggle = useSetSandbox()
@@ -52,8 +54,14 @@ export default function SandboxHoldBanner({ sessionId, reason, className }: {
   return (
     <div role="alert" className={className} data-testid="sandbox-hold">
       <div className="flex-1 min-w-0 basis-60 break-words">
-        <span className="font-medium">Sandbox failed — session held: </span>
-        {reason || 'the sandbox did not start'}
+        {escaped
+          ? <span className="font-medium">{SANDBOX_ESCAPE_COPY}</span>
+          : (
+            <>
+              <span className="font-medium">Sandbox failed — session held: </span>
+              {reason || 'the sandbox did not start'}
+            </>
+          )}
         <span className="block text-xs text-ink-muted">Nothing runs until you retry, or turn the sandbox off.</span>
       </div>
       <div className="flex flex-wrap items-center justify-end gap-2">

@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { api, ApiRequestError } from '@/api/client'
 import { SessionErrorBanner, type SandboxHold } from './SessionErrorBanner'
 import { sandboxFactsKey } from '@/api/sandboxHooks'
-import { SANDBOX_CONFIRM, SANDBOX_ERROR_MESSAGES } from '../sandboxCopy'
+import { SANDBOX_CONFIRM, SANDBOX_ERROR_MESSAGES, SANDBOX_ESCAPE_COPY } from '../sandboxCopy'
 
 type Err = { code: string; message: string } | null
 
@@ -125,6 +125,36 @@ describe('SessionErrorBanner — sandbox hold', () => {
     facts = new ApiRequestError(409, { detail: { code: 'daemon_outdated' } })
     mount(null, HOLD)
     expect(await screen.findByRole('button', { name: 'Retry' })).toBeVisible()
+  })
+
+  describe('escape suspected (fix round 3)', () => {
+    const ESCAPE: SandboxHold = { sessionId: 's1', reason: null, escaped: true }
+
+    it('reads its own copy, with the same two actions', async () => {
+      mount(null, ESCAPE)
+      const hold = await screen.findByTestId('sandbox-hold')
+      expect(hold).toHaveTextContent(SANDBOX_ESCAPE_COPY)
+      expect(SANDBOX_ESCAPE_COPY).toBe(
+        "A file write went outside this session's worktree, so the session was stopped. Check the worktree before continuing.")
+      expect(hold).not.toHaveTextContent('Sandbox failed')
+      expect(await within(hold).findByRole('button', { name: 'Retry' })).toBeVisible()
+      expect(within(hold).getByRole('button', { name: 'Turn off sandbox and continue' })).toBeVisible()
+    })
+
+    it('Retry releases it with enabled: true', async () => {
+      mount(null, ESCAPE)
+      await userEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+      await waitFor(() => expect(posts).toEqual([{ path: '/sessions/s1/sandbox', body: { enabled: true } }]))
+    })
+
+    it('Turn off goes through the shared confirm, then enabled: false', async () => {
+      reply = { sessionId: 's1', enabled: false, state: 'off', reason: null, held: false, respawned: true }
+      mount(null, ESCAPE)
+      await userEvent.click(await screen.findByRole('button', { name: 'Turn off sandbox and continue' }))
+      const dialog = screen.getByRole('dialog', { name: SANDBOX_CONFIRM.continueOff.title })
+      await userEvent.click(within(dialog).getByRole('button', { name: SANDBOX_CONFIRM.continueOff.confirmLabel }))
+      await waitFor(() => expect(posts).toEqual([{ path: '/sessions/s1/sandbox', body: { enabled: false } }]))
+    })
   })
 
   it('shows a refusal inline', async () => {

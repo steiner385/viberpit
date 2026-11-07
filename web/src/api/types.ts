@@ -1376,8 +1376,6 @@ export interface SessionSandbox {
   reason: string | null
 }
 
-/** The pause reason of a session held because its sandbox failed (D-23). */
-export const SANDBOX_HOLD_REASON = 'sandbox_failed'
 
 /** One host preflight check. `name`: bwrap, bwrap_version, socat, bwrap_probe, gh, cli_version. */
 export interface SandboxCheck {

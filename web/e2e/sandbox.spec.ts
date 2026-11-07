@@ -33,6 +33,8 @@ const facts = (over: Record<string, unknown> = {}) => ({
 interface Opts {
   sandbox?: Sandbox
   held?: boolean
+  /** The hold's pause reason (default `sandbox_failed`). */
+  pausedReason?: string
   facts?: Record<string, unknown>
   /** The POST's answer: a status and body. */
   post?: { status: number; json: unknown }
@@ -50,7 +52,7 @@ async function openSession(page: Page, width: number, opts: Opts = {}) {
   await page.route('**/api/**', (route) => route.fulfill({ json: [] }))
   await page.route('**/api/sessions', (route) => route.fulfill({ json: [{
     id: sid, name: 'Sandbox me', accountName: 'alice', engine: 'claude_code', model: 'opus',
-    status: held ? 'needs_attention' : 'idle', pausedReason: held ? 'sandbox_failed' : null, sandbox,
+    status: held ? 'needs_attention' : 'idle', pausedReason: held ? (opts.pausedReason ?? 'sandbox_failed') : null, sandbox,
     repo: 'acme/rocket', branch: 'viberpit/sandbox-session', cwd: CWD,
     createdAt: '2026-11-06T10:00:00Z', updatedAt: '2026-11-06T10:00:00Z', prs: [],
   }] }))
@@ -204,6 +206,30 @@ for (const width of [1440, 390]) {
     await expect.poll(() => bodies(posts)).toEqual([{ enabled: true }])
     // The respawn verified: the next list read drops the hold.
     await expect(hold).toBeHidden()
+  })
+
+  test(`${width}px: an escape-suspected hold reads its own copy; Retry and Turn off release it`, async ({ page }) => {
+    const { posts } = await openSession(page, width, {
+      held: true, pausedReason: 'sandbox_escape_suspected', sandbox: { enabled: true, state: 'active', reason: null },
+    })
+    const hold = page.getByTestId('sandbox-hold')
+    await expect(hold).toContainText("A file write went outside this session's worktree, so the session was stopped. Check the worktree before continuing.")
+    await noOverflow(page)
+    await page.screenshot({ path: `/tmp/d23-escape-${width}.png` })
+    await hold.getByRole('button', { name: 'Turn off sandbox and continue' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Continue without the sandbox?' })
+    await dialog.getByRole('button', { name: 'Turn off and continue' }).click()
+    await expect.poll(() => bodies(posts)).toEqual([{ enabled: false }])
+    await expect(hold).toBeHidden()
+  })
+
+  test(`${width}px: Retry releases an escape-suspected hold`, async ({ page }) => {
+    const { posts } = await openSession(page, width, {
+      held: true, pausedReason: 'sandbox_escape_suspected', sandbox: { enabled: true, state: 'active', reason: null },
+    })
+    await page.getByTestId('sandbox-hold').getByRole('button', { name: 'Retry' }).click()
+    await expect.poll(() => bodies(posts)).toEqual([{ enabled: true }])
+    await expect(page.getByTestId('sandbox-hold')).toBeHidden()
   })
 
   test(`${width}px: Turn off sandbox and continue posts enabled: false after the confirm`, async ({ page }) => {

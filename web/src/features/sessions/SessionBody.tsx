@@ -33,7 +33,6 @@ import { DeferredBrowserTab } from '@/features/sessions/browser/DeferredBrowserT
 import { useSessionDevServers } from '@/api/devServers'
 import { useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities, useResolveSuspectedComplete, useSessionDiff, useSetPrAutofix } from '@/api/hooks'
 import { canUseEngine } from '@/session/engineCapabilities'
-import { SANDBOX_HOLD_REASON } from '@/api/types'
 import { useFileTarget, useSessionView, type SessionView } from './sessionView'
 import { FileRefContext, type FileRefActions } from '@/features/sessions/transcript/fileRefContext'
 import { useComposerAttach } from '@/shell/sessionGestures'
@@ -54,6 +53,9 @@ const SessionRail = lazy(() => import('./rail/SessionRail').then((m) => ({ defau
 
 /** Local alias: the shared gate now lives beside the hook that feeds it. */
 const can = canUseEngine
+
+/** The escape-suspected hold (D-23 fix round 3); the banner is told `escaped`, not the token. */
+const SANDBOX_ESCAPE = 'sandbox_escape_suspected'
 
 /** The pane width (rem) from which the rail is a column, not the Details tab. */
 const RAIL_MIN_REM = 64
@@ -108,6 +110,16 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
   // Transcript paths under the cwd open the Files tab and attach to the dock
   // composer (D-7, `transcript/PathRef`); without a cwd they stay click-to-copy.
   const attachMention = useComposerAttach()
+  // Held on its sandbox (D-23) — it failed, or a write left the worktree: the error
+  // banner offers Retry / Turn off. Every server pause reason starting `sandbox_` is one
+  // of `server/sessions/sandbox.py:SANDBOX_HOLD_REASONS` (`sandbox_failed`,
+  // `sandbox_escape_suspected`); a prefix, not a list, because this is the entry chunk.
+  // Read BEFORE the memo below: the React Compiler treats a later method call on the
+  // record as a possible mutation of its memo dependencies.
+  const pausedReason = sessionRecord?.pausedReason
+  const sandboxHold = sessionRecord?.status === 'needs_attention' && pausedReason?.startsWith('sandbox_')
+    ? { sessionId: sessionRecord.id, reason: sessionRecord.sandbox?.reason ?? null, escaped: pausedReason === SANDBOX_ESCAPE }
+    : null
   const fileRefActions = useMemo<FileRefActions | null>(
     () => (cwd ? { cwd, openFile: setFile, attachMention } : null),
     [cwd, setFile, attachMention],
@@ -162,10 +174,6 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
     }
   }, [])
 
-  // Held because its sandbox failed (D-23): the error banner offers Retry / Turn off.
-  const sandboxHold = sessionRecord?.status === 'needs_attention' && sessionRecord.pausedReason === SANDBOX_HOLD_REASON
-    ? { sessionId: sessionRecord.id, reason: sessionRecord.sandbox?.reason ?? null }
-    : null
 
   // An error card's Switch model / Lower effort / Compact (D-19).
   const recovery: ErrorRecovery = {
@@ -210,7 +218,7 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
           // An enabled sandbox shows even without it (the kill switch turned off under
           // it), so it can always be turned off.
           sandbox: caps?.sandbox === true || sessionRecord?.sandbox?.enabled === true
-            ? { sessionId: rt.sessionId, busy, state: sessionRecord?.sandbox ?? null, held: sandboxHold !== null }
+            ? { sessionId: rt.sessionId, busy, state: sessionRecord?.sandbox ?? null, held: !!sandboxHold }
             : undefined,
           prs: sessionRecord?.prs,
           prAutofix: {
