@@ -476,9 +476,12 @@ class ClaudeAgentDriver:
         self._sandbox = bool(sandbox)
         self._on_sandbox_state = on_sandbox_state
         self._sandbox_stderr: collections.deque[str] = collections.deque(maxlen=200)
-        # Backgrounded tasks still running (tool_use ids), from the BackgroundTask events
-        # the pump already handles: a sandboxed session's file writes wait while any runs.
-        self._backgrounded: set[str] = set()
+        # The in-flight registry a sandboxed CLI's hooks share (owner decision
+        # 2026-11-07): writes are serialised against running Bash in every thread.
+        self._sandbox_gate: sandbox_mod.SandboxGate | None = (
+            sandbox_mod.SandboxGate(alive=lambda: self._client is not None
+                                    and not self._stream_ended)
+            if self._sandbox else None)
         self._on_mcp_status = on_mcp_status
         self._mcp_last: list = []                     # last snapshot, auth latch applied
         self._mcp_base: list = []                     # last sanitized snapshot, before the latch
@@ -1137,9 +1140,11 @@ class ClaudeAgentDriver:
             # D-23: the CLI sandbox wraps Bash only; file tools and third-party MCP tools
             # are confined here too (the spawn's PreToolUse hook is the binding layer).
             from .claude_sdk_factory import session_tmpdir_path
+            from server.permission_rules.patterns import FILE_TOOLS
             why = sandbox_mod.confine_tool(tool_name, tool_input, self.cwd,
-                                           tmpdir=session_tmpdir_path(),
-                                           background_busy=self.has_background_work)
+                                           tmpdir=session_tmpdir_path())
+            if why is None and tool_name in FILE_TOOLS and self._sandbox_gate is not None:
+                why = self._sandbox_gate.write_blocked()
             if why is not None:
                 log.info("driver._can_use_tool: sandbox denied tool=%s session=%s",
                          tool_name, self.session_id)
@@ -1252,6 +1257,7 @@ class ClaudeAgentDriver:
             # this flag, so the spawn that carries the block is the one verified below.
             fork_kw["sandbox"] = True
             fork_kw["stderr"] = self._sandbox_stderr.append
+            fork_kw["sandbox_gate"] = self._sandbox_gate
             await self._report_sandbox(sandbox_mod.STATE_PENDING, None)
         client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode,
                                self.resume, on_pre_compact=self._on_pre_compact, **fork_kw)
@@ -1292,6 +1298,10 @@ class ClaudeAgentDriver:
         verdict = await self._read_sandbox_dialog()
         if verdict.ok:
             log_event(log, logging.INFO, "sandbox.verified", session_id=self.session_id)
+            if self._sandbox_gate is not None:
+                # A fresh CLI has no sandboxed process running: every one dies with the
+                # CLI that spawned it (bwrap --die-with-parent), so empty is true now.
+                self._sandbox_gate.known = True
             await self._report_sandbox(sandbox_mod.STATE_ACTIVE, None)
             return
         # The CLI may have answered initialize and then refused: its own words win.
@@ -1355,20 +1365,18 @@ class ClaudeAgentDriver:
 
     def _note_background(self, e) -> bool:
         """Track a BackgroundTaskStarted / Ended event; True when the backgrounded set
-        changed (a foreground Bash is a local_bash task too, and does not count)."""
+        changed (a foreground Bash is a local_bash task too, and does not count). A
+        sandboxed session's gate holds the same tasks until they end."""
         if isinstance(e, ev.BackgroundTaskStarted):
             if not e.backgrounded:
                 return False
             self._subagent_tasks[e.tool_use_id] = e.task_id
-            self._backgrounded.add(e.tool_use_id)
+            if self._sandbox_gate is not None:
+                self._sandbox_gate.background_started(e.tool_use_id)
             return True
-        self._backgrounded.discard(e.tool_use_id)
+        if self._sandbox_gate is not None:
+            self._sandbox_gate.background_ended(e.tool_use_id)
         return self._subagent_tasks.pop(e.tool_use_id, None) is not None
-
-    def has_background_work(self) -> bool:
-        """Is a backgrounded task (Bash ``run_in_background``, Monitor …) still running?
-        The sandbox's write guard (D-23) refuses file tools while one is."""
-        return bool(self._backgrounded)
 
     async def _report_sandbox(self, state: str, reason: str | None) -> None:
         if self._on_sandbox_state is None:
@@ -1906,6 +1914,10 @@ class ClaudeAgentDriver:
                     except Exception:  # noqa: BLE001 - a summary refresh must never break the pump
                         log.debug("driver.on_sub_agents_changed failed session=%s",
                                   self.session_id, exc_info=True)
+            if isinstance(e, ev.ToolResult) and self._sandbox_gate is not None:
+                # Every finished call has a result — also one the permission flow denied
+                # after our PreToolUse hook admitted it (no PostToolUse then).
+                self._sandbox_gate.done(e.tool_id)
             if isinstance(e, (ev.BackgroundTaskStarted, ev.BackgroundTaskEnded)):
                 # A foreground Bash is a local_bash task too; only backgrounded work is a
                 # snapshot change, so only it registers and fires the refresh.
@@ -1961,6 +1973,8 @@ class ClaudeAgentDriver:
         """Settle a turn that just closed (prompt or CLI-initiated alike): sync back,
         clear turn flags, then either dequeue the next prompt or go idle — status
         refresh, suggestions, and the listener back on the cursor."""
+        if self._sandbox_gate is not None:
+            self._sandbox_gate.end_turn()   # no foreground call outlives its turn
         # Capture any token rotation the SDK performed during this turn.
         await self._call_sync_back()
         # Before any turn-scoped flag is cleared below (either branch): this turn
@@ -2418,6 +2432,8 @@ class ClaudeAgentDriver:
         (interrupt-and-post) leaves the queue for the settling turn to drain."""
         self._reg.deny_all(self.session_id)
         self._qreg.deny_all(self.session_id)
+        if self._sandbox_gate is not None:
+            self._sandbox_gate.end_turn()
         if not keep_queue:
             self._queue.clear()
         self._cancel_suggest()

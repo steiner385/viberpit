@@ -398,7 +398,8 @@ def _echo(reply: Any, cwd: str | None, config_dir: str | None) -> Any:
         return reply
     out = json.loads(json.dumps(reply))
     r = out["restrictions"]
-    deny_read, allow_read = sb.read_policy(config_dir)
+    from server.sessions.claude_sdk_factory import session_tmpdir_path
+    deny_read, allow_read = sb.read_policy(config_dir, cwd, session_tmpdir_path())
     for key, want in (("fs_deny_read", deny_read), ("fs_allow_read", allow_read),
                       ("fs_deny_write", sb.protected_git_paths(cwd))):
         if r.get(key) == []:
@@ -650,7 +651,9 @@ def test_a_sandboxed_spawn_sends_the_block_and_the_env_and_is_verified(orch_env,
     want = dict(SPIKE_BLOCK["sandbox"])
     want_fs = want.pop("filesystem")
     assert sent == want
-    deny_read, allow_read = sb.read_policy(str(orch_env))
+    from server.sessions.claude_sdk_factory import session_tmpdir_path
+    deny_read, allow_read = sb.read_policy(str(orch_env), str(tmp_path / "wt"),
+                                           session_tmpdir_path())
     assert fs == {**want_fs, "denyRead": deny_read, "allowRead": allow_read}
     assert spawn["extra_env"]["GH_NO_UPDATE_NOTIFIER"] == "1"
     assert spawn["extra_env"]["GH_CONFIG_DIR"] == str(tmp_path / "vp")
@@ -2155,59 +2158,184 @@ def test_paths_through_a_symlinked_worktree_parent_are_rebased(tmp_path):
     assert sb.confine_tool("Write", {"file_path": f"{alias_wt}/src/b.py"}, alias_wt) is None
 
 
-# ── item 2 (a): no file writes while background work runs ───────────────────
+# ── item 2 (a) → round 4: the gate serialises writes against Bash ───────────
+
+
+def _known_gate() -> sb.SandboxGate:
+    g = sb.SandboxGate()
+    g.known = True
+    return g
+
+
+def test_the_gate_refuses_writes_while_any_bash_runs_and_bash_while_a_write_does():
+    g = _known_gate()
+    assert g.admit("Bash", {"command": "sleep 5"}, "main-bash") is None
+    # A parallel sub-agent's Edit while the main thread's Bash runs: refused, retryable.
+    assert g.admit("Edit", {"file_path": "a"}, "sub-edit") == sb.WRITE_WAITS_FOR_COMMAND
+    g.done("main-bash")
+    assert g.admit("Edit", {"file_path": "a"}, "sub-edit") is None
+    # While the admitted write is pending, any thread's Bash is refused.
+    assert g.admit("Bash", {"command": "ln -sf /etc x"}, "sub-bash") == \
+        sb.COMMAND_WAITS_FOR_WRITE
+    assert g.admit("Write", {"file_path": "b"}, "main-write") is None   # writes coexist
+    g.done("sub-edit")
+    assert g.admit("Bash", {}, "b2") == sb.COMMAND_WAITS_FOR_WRITE
+    g.done("main-write")
+    assert g.admit("Bash", {}, "b2") is None
+    assert g.admit("Read", {}, "r") is None and g.admit("Grep", {}, "g") is None
+
+
+def test_unknown_or_lost_state_refuses_writes():
+    g = sb.SandboxGate()
+    assert g.admit("Write", {"file_path": "a"}, "w") == sb.WRITE_STATE_UNKNOWN
+    alive = {"v": True}
+    g = sb.SandboxGate(alive=lambda: alive["v"])
+    g.known = True
+    assert g.admit("Write", {"file_path": "a"}, "w") is None
+    g.done("w")
+    alive["v"] = False                       # the event stream was lost
+    assert g.admit("Write", {"file_path": "a"}, "w2") == sb.WRITE_STATE_UNKNOWN
+
+
+def test_turn_end_clears_stale_foreground_entries_but_not_background_work():
+    g = _known_gate()
+    g.admit("Bash", {"command": "x"}, "lost")          # its Post event never arrived
+    g.admit("Bash", {"command": "srv", "run_in_background": True}, "bg")
+    g.done("bg")                                         # the launch returned at once
+    assert g.write_blocked() == sb.WRITE_WAITS_FOR_COMMAND
+    g.end_turn()
+    assert g.bash == set() and g.background == {"bg"}
+    assert g.write_blocked() == sb.WRITE_WAITS_FOR_COMMAND   # still running: refused
+    g.background_ended("bg")
+    assert g.write_blocked() is None
 
 
 @pytest.mark.asyncio
-async def test_file_writes_wait_while_a_background_task_runs(tmp_path):
-    from claude_agent_sdk import PermissionResultDeny
+async def test_the_hooks_drive_the_gate_for_every_thread(tmp_path):
+    """Pre registers (main thread and sub-agent ids alike), Post and PostToolUseFailure
+    clear; a denied static check never registers."""
     clone, wt, tmp = _tree(tmp_path)
-    busy = {"on": True}
-    assert "background task" in sb.confine_tool(
-        "Write", {"file_path": "src/b.py"}, str(wt), background_busy=lambda: busy["on"])
-    assert sb.confine_tool("Read", {"file_path": "src/a.py"}, str(wt),
-                           background_busy=lambda: busy["on"]) is None
-    busy["on"] = False
-    assert sb.confine_tool("Write", {"file_path": "src/b.py"}, str(wt),
-                           background_busy=lambda: busy["on"]) is None
-    d = ClaudeAgentDriver(SID, "acct1", str(wt), "/tmp/cfg", mode="full-auto",
-                          sdk_factory=lambda *a, **k: _Client(FakeControl()),
-                          registry=PermissionRegistry(), identity="u", sandbox=True)
-    d._backgrounded.add("tu1")
-    assert d.has_background_work() is True
-    res = await asyncio.wait_for(d._can_use_tool("Write", {"file_path": "src/b.py"}), 5)
-    assert isinstance(res, PermissionResultDeny) and "background" in res.message
+    g = _known_gate()
+    pre = sb.confinement_hook(str(wt), tmpdir=str(tmp), gate=g)
+    post = sb.post_write_hook(str(wt), lambda t, p: None, gate=g)
+    fail = sb.done_hook(g)
+    assert await pre({"tool_name": "Bash", "tool_input": {"command": "x"}}, "sub-1", None) == {}
+    out = await pre({"tool_name": "Edit", "tool_input": {"file_path": "src/a.py"}}, "e1", None)
+    assert out["hookSpecificOutput"]["permissionDecisionReason"] == sb.WRITE_WAITS_FOR_COMMAND
+    await fail({"tool_name": "Bash"}, "sub-1", None)
+    assert await pre({"tool_name": "Edit", "tool_input": {"file_path": "src/a.py"}},
+                     "e1", None) == {}
+    out = await pre({"tool_name": "Bash", "tool_input": {"command": "y"}}, "b2", None)
+    assert out["hookSpecificOutput"]["permissionDecisionReason"] == sb.COMMAND_WAITS_FOR_WRITE
+    await post({"tool_name": "Edit", "tool_input": {"file_path": "src/a.py"}}, "e1", None)
+    assert g.writes == set()
+    denied = await pre({"tool_name": "Bash", "tool_input": {}}, "b3", None)
+    assert denied == {} and g.bash == {"b3"}
+    await pre({"tool_name": "WebSearch", "tool_input": {}}, "ws", None)
+    assert "ws" not in g.bash
 
 
-def test_the_driver_tracks_backgrounded_tasks_from_its_events(tmp_path):
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_the_driver_feeds_and_reads_the_gate_in_every_mode(mode, tmp_path):
+    from claude_agent_sdk import PermissionResultDeny
     from server.sessions import events as ev
-    d = ClaudeAgentDriver(SID, "acct1", str(tmp_path), "/tmp/cfg", mode="full-auto",
+    clone, wt, tmp = _tree(tmp_path)
+    d = ClaudeAgentDriver(SID, "acct1", str(wt), "/tmp/cfg", mode=mode,
                           sdk_factory=lambda *a, **k: _Client(FakeControl()),
                           registry=PermissionRegistry(), identity="u", sandbox=True)
+    gate = d._sandbox_gate
+    assert gate is not None and gate.known is False
+    # Before the sandbox is verified the state is unknown: writes refused.
+    res = await asyncio.wait_for(d._can_use_tool("Write", {"file_path": "src/b.py"}), 5)
+    assert isinstance(res, PermissionResultDeny)
+    gate.known = True
+    d._client = object()                                  # "live" for the alive probe
     d._note_background(ev.BackgroundTaskStarted(
         tool_use_id="tu1", task_id="t1", description="d", task_type="local_bash",
         backgrounded=True))
     d._note_background(ev.BackgroundTaskStarted(
         tool_use_id="tu2", task_id="t2", description="d", task_type="local_bash",
         backgrounded=False))
-    assert d.has_background_work() is True and d._backgrounded == {"tu1"}
+    assert gate.background == {"tu1"}
+    res = await asyncio.wait_for(d._can_use_tool("Write", {"file_path": "src/b.py"}), 5)
+    assert isinstance(res, PermissionResultDeny) and res.message == sb.WRITE_WAITS_FOR_COMMAND
     d._note_background(ev.BackgroundTaskEnded(tool_use_id="tu1", task_id="t1",
                                               status="completed"))
-    assert d.has_background_work() is False
+    assert gate.background == set()
+    d._client = None
 
 
-def test_the_orchestrator_hook_reads_the_live_drivers_background_state(orch_env, tmp_path):
+def test_a_sandboxed_driver_hands_its_gate_to_the_spawn_and_opens_it_once_verified():
+    control = FakeControl(GOOD_DIALOG)
+    d, calls, clients, states = _sandboxed_driver(control)
+    assert d._sandbox_gate is not None and d._sandbox_gate.known is False
+    asyncio.run(_start_and_close(d))
+    assert calls[0]["sandbox_gate"] is d._sandbox_gate
+    assert d._sandbox_gate.known is True
+
+
+async def _start_and_close(d):
+    await d.start()
+    await d.aclose()
+
+
+@pytest.mark.asyncio
+async def test_turn_end_and_interrupt_clear_the_gate(tmp_path):
+    d = ClaudeAgentDriver(SID, "acct1", str(tmp_path), "/tmp/cfg", mode="full-auto",
+                          sdk_factory=lambda *a, **k: _Client(FakeControl()),
+                          registry=PermissionRegistry(), identity="u", sandbox=True)
+    g = d._sandbox_gate
+    g.known = True
+    g.admit("Bash", {}, "stale")
+    await d.interrupt()
+    assert g.bash == set()
+    g.admit("Bash", {}, "stale2")
+    await d._end_turn()
+    assert g.bash == set()
+
+
+@pytest.mark.asyncio
+async def test_a_tool_result_clears_its_gate_entry(tmp_path):
+    """A call the permission flow denied after our hook admitted it gets no PostToolUse,
+    but always a result — a sub-agent's too: the driver's pump clears it from the gate."""
+    from server.tests.fakes.fake_sdk import user_tool_result
+    d = ClaudeAgentDriver(SID, "acct1", str(tmp_path), "/tmp/cfg", mode="full-auto",
+                          sdk_factory=lambda *a, **k: _Client(FakeControl()),
+                          registry=PermissionRegistry(), identity="u", sandbox=True)
+    g = d._sandbox_gate
+    g.known = True
+    g.admit("Bash", {}, "main")
+    g.admit("Bash", {}, "sub")
+    await d._handle_msg(user_tool_result("main", "denied", is_error=True))
+    await d._handle_msg(user_tool_result("sub", "ok", pid="task-1"))
+    assert g.bash == set()
+
+
+def test_the_orchestrator_shares_one_gate_across_the_spawns_hooks(orch_env, tmp_path):
     world = _World()
+    seen: dict = {}
+    real = world.factory
+
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None,
+                options_overlay=None, flag_settings=None, extra_env=None, stderr=None,
+                sandbox_confine=None, sandbox_post_write=None, sandbox_done=None):
+        seen.update(confine=sandbox_confine, post=sandbox_post_write, done=sandbox_done)
+        return real(cwd, cfg, can_use_tool, mode, resume, flag_settings=flag_settings,
+                    extra_env=extra_env, stderr=stderr)
+    world.factory = factory  # type: ignore[method-assign]
 
     async def go():
         orch = await _orch(tmp_path, world)
-        await orch.ensure_driver(SID)
-        before = orch._sandbox_background_busy(SID)
-        orch._drivers[SID]._backgrounded.add("tu1")
-        after = orch._sandbox_background_busy(SID)
+        driver = await orch.ensure_driver(SID)
+        gate = driver._sandbox_gate
+        out = await seen["confine"]({"tool_name": "Bash", "tool_input": {}}, "b1", None)
+        bash_seen = set(gate.bash)
+        await seen["done"]({"tool_name": "Bash"}, "b1", None)
         await orch.stop()
-        return before, after, orch._sandbox_background_busy("nope")
-    assert asyncio.run(go()) == (False, True, False)
+        return out, bash_seen, gate
+    out, bash_seen, gate = asyncio.run(go())
+    assert out == {} and bash_seen == {"b1"} and gate.bash == set()
 
 
 # ── item 2 (d): a write that resolved outside holds the session ─────────────
@@ -2262,55 +2390,77 @@ def test_an_escape_holds_the_session_closes_its_cli_and_files_one_warning(orch_e
 @pytest.mark.asyncio
 async def test_the_spawn_registers_the_post_write_hook(tmp_path):
     post = sb.post_write_hook(str(tmp_path), lambda t, p: None)
+    done = sb.done_hook(sb.SandboxGate())
     client = await claude_sdk_factory.real_sdk_factory(
         str(tmp_path), str(tmp_path / "cfg"), None, "bypassPermissions", None,
-        sandbox_post_write=post)
+        sandbox_post_write=post, sandbox_done=done)
     assert [m.hooks for m in client.options.hooks["PostToolUse"]] == [[post]]
+    assert [m.hooks for m in client.options.hooks["PostToolUseFailure"]] == [[done]]
 
 
 # ── item 1: shell read denials, sent and verified ───────────────────────────
 
 
-def test_the_read_policy_hides_secrets_and_keeps_what_the_session_needs(tmp_path,
-                                                                        monkeypatch):
-    home = os.path.expanduser("~")
+def test_the_read_policy_denies_home_and_re_allows_only_what_the_session_needs(
+        tmp_path, monkeypatch):
+    from viberpit import paths
+    from server import hostpaths
+    home = os.path.realpath(os.path.expanduser("~"))
+    clone, wt, tmp = _tree(tmp_path)
     cfg = tmp_path / "accts" / "cfg" / "acct1"
     cfg.mkdir(parents=True)
     monkeypatch.setenv("VIBERPIT_GH_CONFIG_DIR", _gh_dir(tmp_path, "vp-gh", True))
-    deny, allow = sb.read_policy(str(cfg))
-    for p in (".ssh", ".claude-accounts", ".claude", ".claude.json", ".config/gh"):
-        assert os.path.join(home, p) in deny
-    assert "/etc/viberpit" in deny and str(cfg) in deny
-    assert allow == [str(cfg / "shell-snapshots")]          # dedicated gh is not denied
-    # An ambient file-backed gh under ~/.config/gh (rocky) stays readable.
+    deny, allow = sb.read_policy(str(cfg), str(wt), str(tmp))
+    assert deny[0] == home
+    for d in (hostpaths.ETC_DIR, hostpaths.RUN_DIR, hostpaths.STATE_DIR, hostpaths.LOG_DIR,
+              str(paths.root())):
+        assert os.path.abspath(d) in deny
+    assert allow[:5] == [str(wt.resolve()), str((clone / ".git").resolve()),
+                         str(cfg.resolve() / "shell-snapshots"),
+                         str((tmp_path / "vp-gh").resolve()), str(tmp.resolve())]
+    assert allow[5:] == [os.path.join(home, r) for r in sb.TOOLCHAIN_READS]
+    for secret in (".ssh", ".claude-accounts", ".claude", ".config/gh", ".aws"):
+        full = os.path.join(home, secret)
+        assert not any(os.path.commonpath([full, a]) == a for a in allow), secret
+    # rocky: the ambient file-backed ~/.config/gh is the one git uses — re-allowed.
     monkeypatch.delenv("VIBERPIT_GH_CONFIG_DIR")
+    monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     ambient = os.path.join(home, ".config", "gh")
     os.makedirs(ambient, exist_ok=True)
     with open(os.path.join(ambient, "hosts.yml"), "w") as fh:
         fh.write("github.com:\n    oauth_token: gho_x\n")
-    monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    deny, allow = sb.read_policy(str(cfg))
-    assert os.path.realpath(ambient) in allow
+    assert os.path.realpath(ambient) in sb.read_policy(str(cfg), str(wt), str(tmp))[1]
 
 
-def test_the_block_sends_the_read_rules_and_the_check_requires_them(tmp_path):
+def test_toolchain_reads_are_home_relative_re_allows():
+    assert all(not os.path.isabs(p) and ".." not in p for p in sb.TOOLCHAIN_READS)
+    assert {".local/bin", ".cargo", ".gitconfig", ".config/git"} <= set(sb.TOOLCHAIN_READS)
+    assert ".ssh" not in sb.TOOLCHAIN_READS and ".config/gh" not in sb.TOOLCHAIN_READS
+
+
+def test_the_block_sends_the_read_rules_and_the_check_requires_them_exactly(tmp_path):
     cfg = tmp_path / "cfg"
     cfg.mkdir()
-    deny, allow = sb.read_policy(str(cfg))
-    fs = sb.settings_block(None, str(cfg))["sandbox"]["filesystem"]
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    deny, allow = sb.read_policy(str(cfg), str(wt), None)
+    fs = sb.settings_block(str(wt), str(cfg))["sandbox"]["filesystem"]
     assert fs["denyRead"] == deny and fs["allowRead"] == allow
+    kw = {"cwd": str(wt), "config_dir": str(cfg)}
     good = _dialog(restrictions__fs_deny_read=deny, restrictions__fs_allow_read=allow)
-    assert sb.check_dialog(good, config_dir=str(cfg)).ok is True
+    assert sb.check_dialog(good, **kw).ok is True
     short = _dialog(restrictions__fs_deny_read=deny[1:], restrictions__fs_allow_read=allow)
-    assert "not read-denied" in sb.check_dialog(short, config_dir=str(cfg)).reason
+    assert "not read-denied" in sb.check_dialog(short, **kw).reason
+    more = _dialog(restrictions__fs_deny_read=[*deny, "/opt"],
+                   restrictions__fs_allow_read=allow)
+    assert "read denials differ" in sb.check_dialog(more, **kw).reason
     wide = _dialog(restrictions__fs_deny_read=deny,
                    restrictions__fs_allow_read=[*allow, os.path.expanduser("~/.ssh")])
-    assert "re-allows differ" in sb.check_dialog(wide, config_dir=str(cfg)).reason
+    assert "re-allows differ" in sb.check_dialog(wide, **kw).reason
     gone = json.loads(json.dumps(good))
     gone["restrictions"].pop("fs_deny_read")
-    assert "did not report the read rules" in sb.check_dialog(gone,
-                                                             config_dir=str(cfg)).reason
+    assert "did not report the read rules" in sb.check_dialog(gone, **kw).reason
 
 
 @pytest.mark.parametrize("url,why", [

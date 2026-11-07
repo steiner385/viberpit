@@ -236,8 +236,8 @@ def protected_git_paths(cwd: str | None) -> list[str]:
     return [os.path.join(common, "hooks"), os.path.join(common, "config")] if common else []
 
 
-def settings_block(cwd: str | None = None,
-                   config_dir: str | None = None) -> dict[str, Any]:
+def settings_block(cwd: str | None = None, config_dir: str | None = None,
+                   tmpdir: str | None = None) -> dict[str, Any]:
     """``{"sandbox": {...}}`` — the full block for one spawn's ``--settings`` JSON (spike
     §2.1, plus the pins). A fresh deep copy every call: nothing a caller does to it
     reaches the next. With *cwd*, ``filesystem.denyWrite`` names that worktree's git
@@ -249,14 +249,14 @@ def settings_block(cwd: str | None = None,
     if deny:
         block["filesystem"]["denyWrite"] = deny
     if config_dir is not None:
-        deny_read, allow_read = read_policy(config_dir)
+        deny_read, allow_read = read_policy(config_dir, cwd, tmpdir)
         block["filesystem"]["denyRead"] = deny_read
         block["filesystem"]["allowRead"] = allow_read
     return {SANDBOX_KEY: block}
 
 
-def spawn_settings_overlay(cwd: str | None = None,
-                           config_dir: str | None = None) -> dict[str, Any]:
+def spawn_settings_overlay(cwd: str | None = None, config_dir: str | None = None,
+                           tmpdir: str | None = None) -> dict[str, Any]:
     """Everything a SANDBOXED spawn adds to its ``--settings`` JSON (flag layer):
 
     * the sandbox block (:func:`settings_block`);
@@ -275,7 +275,7 @@ def spawn_settings_overlay(cwd: str | None = None,
     USER hooks in sandboxed sessions; the only one in use is the WebSearch transformer,
     and WebSearch is denied there anyway.
     """
-    return {**settings_block(cwd, config_dir), "disableAllHooks": True,
+    return {**settings_block(cwd, config_dir, tmpdir), "disableAllHooks": True,
             "enableAllProjectMcpServers": False}
 
 
@@ -380,12 +380,10 @@ def check_dialog(resp: Any, *, cwd: str | None = None, tmpdir: str | None = None
       (``filesystem.allowWrite``), so anything there was added by some settings layer;
     * ``restrictions.fs_deny_write`` includes the worktree's ``<common>/hooks`` and
       ``<common>/config`` (sent in the block's ``filesystem.denyWrite``).
-    * with *config_dir*: ``restrictions.fs_deny_read`` includes every :func:`read_policy`
+    * with *config_dir*: ``restrictions.fs_deny_read`` is exactly the :func:`read_policy`
       denial and ``fs_allow_read`` is exactly its re-allows (sent in the block).
 
-    *tmpdir* is accepted for the caller's symmetry and unused: the temp roots are
-    runtime defaults, never in the settings' lists."""
-    del tmpdir
+    *tmpdir* is the session's Claude temp root, one of the read re-allows."""
     if not isinstance(resp, Mapping):
         return DialogVerdict(False, "get_sandbox_dialog returned no sandbox state")
     deps = resp.get("dependencies")
@@ -441,7 +439,7 @@ def check_dialog(resp: Any, *, cwd: str | None = None, tmpdir: str | None = None
         return DialogVerdict(False, "git hooks/config are not write-denied: "
                              + ", ".join(missing))
     if config_dir is not None:
-        want_deny, want_allow = read_policy(config_dir)
+        want_deny, want_allow = read_policy(config_dir, cwd, tmpdir)
         deny_read = _str_list(restrictions.get("fs_deny_read"))
         allow_read = _str_list(restrictions.get("fs_allow_read"))
         if deny_read is None or allow_read is None:
@@ -449,6 +447,10 @@ def check_dialog(resp: Any, *, cwd: str | None = None, tmpdir: str | None = None
         unread = [p for p in want_deny if p not in deny_read]
         if unread:
             return DialogVerdict(False, "secrets are not read-denied: " + ", ".join(unread))
+        extra_deny = sorted(set(deny_read) - set(want_deny))
+        if extra_deny:
+            return DialogVerdict(False, "the read denials differ from the block: "
+                                 + ", ".join(extra_deny))
         if sorted(set(allow_read)) != sorted(set(want_allow)):
             return DialogVerdict(False, "the read re-allows differ from the block: "
                                  + ", ".join(sorted(set(allow_read) ^ set(want_allow))))
@@ -629,17 +631,15 @@ def _webfetch_ok(inp: Mapping[str, Any]) -> None:
 
 
 def confine_tool(tool_name: str, tool_input: Any, cwd: str | None, *,
-                 tmpdir: str | None = None,
-                 background_busy: Callable[[], bool] | None = None) -> str | None:
+                 tmpdir: str | None = None) -> str | None:
     """Why a sandboxed session may not run this tool call, or None when it may.
     Deny-by-default (fix round 3):
 
     * :data:`PLAIN_TOOLS` and ViberPit's own MCP tools: allowed.
     * Edit / Write / MultiEdit / NotebookEdit: one unambiguous path inside the worktree,
       no symlink component, no extra hard link, not protected (``.git``, ``.claude``,
-      secrets: ``patterns.is_protected_path``), and refused outright while the session
-      has backgrounded work (*background_busy*): the write happens in the host process
-      after this check, and a still-running sandboxed process could race it (TOCTOU).
+      secrets: ``patterns.is_protected_path``). Serialising writes against running
+      shells is :class:`SandboxGate`'s job, not this pure check's.
     * :data:`READ_TOOLS`: inside the worktree (not protected), the clone's common git
       dir or the Claude temp root (*tmpdir*), symlink-safe.
     * WebFetch: https, no userinfo, no IP literal, host in :data:`ALLOWED_DOMAINS`.
@@ -654,10 +654,6 @@ def confine_tool(tool_name: str, tool_input: Any, cwd: str | None, *,
         if tool_name in PLAIN_TOOLS or is_mcp_tool(tool_name):
             return None
         if tool_name in FILE_TOOLS:
-            if background_busy is not None and background_busy():
-                raise _Refused("the session has a background task running; file edits "
-                               "wait until it ends (a running sandboxed process could "
-                               "race the write)")
             raw = tool_path_arg(tool_name, inp)
             if raw is None:
                 raise _Refused("it needs one unambiguous file path")
@@ -680,19 +676,127 @@ def confine_tool(tool_name: str, tool_input: Any, cwd: str | None, *,
             "tools are)")
 
 
+#: The retry-friendly refusals the gate answers with.
+WRITE_WAITS_FOR_COMMAND = ("Another command is running in this session; retry this edit "
+                           "when it finishes.")
+COMMAND_WAITS_FOR_WRITE = ("A file edit is being written in this session; retry this "
+                           "command when it finishes.")
+WRITE_STATE_UNKNOWN = ("This session's running commands are not known yet; retry this "
+                       "edit in a moment.")
+
+
+class SandboxGate:
+    """One sandboxed CLI's in-flight registry (owner decision 2026-11-07: serialise
+    writes against Bash). The CLI performs Edit/Write in its own host process after the
+    PreToolUse check, so a sandboxed shell running at that moment — in ANY thread: the
+    main agent or a sub-agent, foreground or background — could swap a symlink in under
+    the write. So a file write is admitted only while no Bash is in flight, and a Bash
+    only while no write is.
+
+    **Why no lock object.** Every PreToolUse/PostToolUse callback of one CLI arrives on
+    the driver's single event loop, and :meth:`admit` checks and registers with no
+    ``await`` in between: check-then-register is atomic by construction, so "no Bash in
+    flight, allow the write" and "register a new Bash" cannot interleave. A Bash that
+    arrives while an admitted write is pending is REFUSED (not parked): waiting inside a
+    hook would hold the CLI's hook call open under its timeout, and the model retries a
+    refusal it can read.
+
+    **Entries.** ``bash`` / ``writes`` are foreground calls keyed by ``tool_use_id``,
+    sub-agents' included (the hook sees every thread: ``e8t``'s only gate is ``q0``
+    @295954344). Each is cleared by its ``PostToolUse`` or ``PostToolUseFailure`` hook,
+    by its tool-result event (a call the permission flow denied after our hook gets no
+    PostToolUse, but always a result), and wholesale at turn end and on interrupt.
+    ``background`` holds launched background work — a Bash with ``run_in_background``
+    (seen by the hook) or any backgrounded task the CLI reports — cleared only by its
+    end event, never by a turn end (it outlives turns) and never on a timeout guess: a
+    lost end event refuses writes until the session is reloaded (fail closed). A new CLI
+    starts with an empty gate truthfully: every sandboxed process dies with the CLI
+    that spawned it (bwrap ``--die-with-parent`` @288416156, ``--unshare-pid``
+    @288418124).
+
+    **Unknown state refuses.** Until the driver's start has verified the sandbox, and
+    after its event stream is lost, :attr:`known` is False and writes are refused.
+    """
+
+    def __init__(self, alive: Callable[[], bool] | None = None) -> None:
+        self.bash: set[str] = set()
+        self.writes: set[str] = set()
+        self.background: set[str] = set()
+        self.known = False
+        #: The owning driver's "is my event stream live?" — a lost stream means lost
+        #: PostToolUse/end events, so the registry is no longer known.
+        self.alive = alive
+
+    def admit(self, tool_name: str, tool_input: Any, tool_use_id: str | None) -> str | None:
+        """Register this call, or say why it must wait. Synchronous on purpose."""
+        from server.permission_rules.patterns import FILE_TOOLS
+        tid = tool_use_id or f"anon-{id(tool_input)}"
+        if tool_name == "Bash":
+            if self.writes:
+                return COMMAND_WAITS_FOR_WRITE
+            self.bash.add(tid)
+            if isinstance(tool_input, Mapping) and tool_input.get("run_in_background"):
+                self.background.add(tid)
+            return None
+        if tool_name in FILE_TOOLS:
+            reason = self.write_blocked()
+            if reason is None:
+                self.writes.add(tid)
+            return reason
+        return None
+
+    def write_blocked(self) -> str | None:
+        """Why a file write may not run now, without registering anything."""
+        if not self.known or (self.alive is not None and not self.alive()):
+            return WRITE_STATE_UNKNOWN
+        if self.bash or self.background:
+            return WRITE_WAITS_FOR_COMMAND
+        return None
+
+    def done(self, tool_use_id: str | None) -> None:
+        """A call finished (PostToolUse / PostToolUseFailure / its tool result). A
+        background launch's own entry stays until its task ends."""
+        if tool_use_id:
+            self.bash.discard(tool_use_id)
+            self.writes.discard(tool_use_id)
+
+    def background_started(self, tool_use_id: str) -> None:
+        self.background.add(tool_use_id)
+
+    def background_ended(self, tool_use_id: str) -> None:
+        self.background.discard(tool_use_id)
+
+    def end_turn(self) -> None:
+        """Turn end / interrupt: no foreground call outlives it (a lost event cannot
+        wedge writes past it). Background work does outlive it, so it is kept."""
+        self.bash.clear()
+        self.writes.clear()
+
+
 def confinement_hook(cwd: str | None, *, tmpdir: str | None = None,
-                     background_busy: Callable[[], bool] | None = None):
-    """The SDK ``PreToolUse`` callback enforcing :func:`confine_tool` for one spawn."""
+                     gate: SandboxGate | None = None):
+    """The SDK ``PreToolUse`` callback: :func:`confine_tool`, then the gate."""
     async def _hook(input_data, tool_use_id=None, context=None) -> dict:
         data = input_data or {}
-        reason = confine_tool(str(data.get("tool_name") or ""), data.get("tool_input") or {},
-                              cwd, tmpdir=tmpdir, background_busy=background_busy)
+        tool = str(data.get("tool_name") or "")
+        tool_input = data.get("tool_input") or {}
+        reason = confine_tool(tool, tool_input, cwd, tmpdir=tmpdir)
+        if reason is None and gate is not None:
+            reason = gate.admit(tool, tool_input, tool_use_id or data.get("tool_use_id"))
         if reason is None:
             return {}
-        log.info("sandbox.tool_denied tool=%s", data.get("tool_name"))
+        log.info("sandbox.tool_denied tool=%s", tool)
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                        "permissionDecision": "deny",
                                        "permissionDecisionReason": reason}}
+    return _hook
+
+
+def done_hook(gate: SandboxGate):
+    """The SDK ``PostToolUseFailure`` callback: a failed call leaves the gate."""
+    async def _hook(input_data, tool_use_id=None, context=None) -> dict:
+        gate.done(tool_use_id or (input_data or {}).get("tool_use_id"))
+        return {}
     return _hook
 
 
@@ -710,13 +814,17 @@ def written_path_escaped(tool_name: str, tool_input: Any, cwd: str | None) -> st
     return None if _within(target, base) and target != base else target
 
 
-def post_write_hook(cwd: str | None, on_escape: Callable[[str, str], Any]):
-    """The SDK ``PostToolUse`` callback: a file tool whose target now resolves outside
-    the worktree calls ``on_escape(tool_name, resolved_path)`` (the orchestrator holds
-    the session ``sandbox_escape_suspected``)."""
+def post_write_hook(cwd: str | None, on_escape: Callable[[str, str], Any],
+                    gate: SandboxGate | None = None):
+    """The SDK ``PostToolUse`` callback: the call leaves the gate, and a file tool whose
+    target now resolves outside the worktree calls ``on_escape(tool_name,
+    resolved_path)`` (the orchestrator holds the session ``sandbox_escape_suspected``)."""
     async def _hook(input_data, tool_use_id=None, context=None) -> dict:
         data = input_data or {}
         tool = str(data.get("tool_name") or "")
+        if gate is not None:
+            # Before the escape check: a held session must not keep a stale entry.
+            gate.done(tool_use_id or data.get("tool_use_id"))
         escaped = written_path_escaped(tool, data.get("tool_input") or {}, cwd)
         if escaped is not None:
             res = on_escape(tool, escaped)
@@ -726,34 +834,82 @@ def post_write_hook(cwd: str | None, on_escape: Callable[[str, str], Any]):
     return _hook
 
 
-def read_policy(config_dir: str | None) -> tuple[list[str], list[str]]:
-    """``(denyRead, allowRead)`` for a sandboxed shell (bwrap ro-binds ``/``): secrets
-    are hidden — ``~/.ssh``, the account stores (``~/.claude-accounts``, ``~/.claude``,
-    ``~/.claude.json``), ``/etc/viberpit``, gh's default config and this session's own
-    ``CLAUDE_CONFIG_DIR`` — and two things the session needs are re-allowed:
+#: Re-allows under the HOME read-deny (fix round 4): toolchains a sandboxed shell runs
+#: and the git config it reads. Each entry is home-relative and is ONLY a re-allow of a
+#: path the home deny hides — nothing outside home is denied by it.
+TOOLCHAIN_READS: tuple[str, ...] = (
+    ".local/bin",          # user-installed tools (uv, gh, …)
+    ".local/share/uv",     # uv-managed Pythons and tools
+    ".cache/uv",           # uv's package cache (read; writes stay denied)
+    ".nvm",                # node versions
+    ".npm",                # npm cache (read)
+    ".cargo",              # rust toolchain bins
+    ".rustup",
+    ".pyenv",
+    ".gitconfig",          # git identity and settings
+    ".config/git",
+)
 
-    * ``<CLAUDE_CONFIG_DIR>/shell-snapshots``: the Bash tool sources its shell snapshot
-      from there before every command (PATH, functions, shell options; no secrets);
-    * the gh config the session's git authenticates with (``session_env``'s
-      ``GH_CONFIG_DIR``, else the ambient file-backed one) when it sits under a denial.
+
+def _daemon_dirs() -> list[str]:
+    """ViberPit's own config and state dirs, denied to a sandboxed shell: the host
+    paths (``hostpaths``: /etc, /run, /var/lib, /var/log stems, canonical and legacy),
+    the account store (``VIBERPIT_HOME``), the log and archive dirs and a SQLite DB's
+    dir, read from the settings."""
+    from viberpit import brand, paths
+    from server import hostpaths
+    from server.config import get_settings
+    out = [hostpaths.ETC_DIR, hostpaths.RUN_DIR, hostpaths.STATE_DIR, hostpaths.LOG_DIR]
+    for stem in ("/etc", "/run", "/var/lib", "/var/log"):
+        out += [f"{stem}/{brand.HOST_SLUG}", f"{stem}/{brand.LEGACY_SLUG}"]
+    out.append(str(paths.root()))
+    cfg = get_settings()
+    for d in (getattr(cfg, "log_dir", None), getattr(cfg, "archive_home", None)):
+        if d:
+            out.append(os.path.expanduser(str(d)))
+    url = str(getattr(cfg, "db_url", "") or "")
+    if url.startswith("sqlite") and ":///" in url:
+        db_path = url.split(":///", 1)[1]
+        if db_path and db_path != ":memory:":
+            out.append(os.path.dirname(os.path.abspath(db_path)))
+    return list(dict.fromkeys(os.path.abspath(p) for p in out))
+
+
+def read_policy(config_dir: str | None, cwd: str | None = None,
+                tmpdir: str | None = None) -> tuple[list[str], list[str]]:
+    """``(denyRead, allowRead)`` for a sandboxed shell (bwrap ro-binds ``/``).
+
+    Deny the whole HOME directory and ViberPit's own dirs (:func:`_daemon_dirs`), then
+    re-allow only what the session needs — ``allowRead`` "takes precedence over
+    denyRead" (2.1.319 schema @282524692) and becomes the Linux mount builder's
+    ``allowWithinDeny`` (@288304132; bind logic @288404941):
+
+    * the worktree (its realpath) and the clone's common git dir;
+    * ``<CLAUDE_CONFIG_DIR>/shell-snapshots`` (the Bash tool sources its snapshot from
+      there before every command: PATH, functions, shell options — no secrets);
+    * the gh config git authenticates with (``session_env``'s ``GH_CONFIG_DIR``, else the
+      ambient file-backed one);
+    * the session's Claude temp root (the Bash output files);
+    * :data:`TOOLCHAIN_READS`.
     """
-    home = os.path.expanduser("~")
-    deny = [os.path.join(home, ".ssh"), os.path.join(home, ".claude-accounts"),
-            os.path.join(home, ".claude"), os.path.join(home, ".claude.json"),
-            "/etc/viberpit", os.path.join(home, ".config", "gh")]
+    home = os.path.realpath(os.path.expanduser("~"))
+    deny = list(dict.fromkeys([home, *_daemon_dirs()]))
     allow: list[str] = []
+    if cwd:
+        allow.append(os.path.realpath(cwd))
+        common = git_common_dir(cwd)
+        if common:
+            allow.append(os.path.realpath(common))
     if config_dir:
-        for d in dict.fromkeys([os.path.abspath(config_dir), os.path.realpath(config_dir)]):
-            if d not in deny:
-                deny.append(d)
         allow.append(os.path.join(os.path.realpath(config_dir), "shell-snapshots"))
     dedicated = _viberpit_gh_config_dir()
     gh = (dedicated if dedicated and gh_file_backed(dedicated)
           else _ambient_gh_config_dir())
-    gh = os.path.realpath(gh)
-    if any(_within(gh, os.path.realpath(d)) for d in deny):
-        allow.append(gh)
-    return deny, allow
+    allow.append(os.path.realpath(gh))
+    if tmpdir:
+        allow.append(os.path.realpath(tmpdir))
+    allow += [os.path.join(home, rel) for rel in TOOLCHAIN_READS]
+    return deny, list(dict.fromkeys(allow))
 
 
 def startup_failure(texts: Iterable[str | None]) -> str | None:

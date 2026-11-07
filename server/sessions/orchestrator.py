@@ -2656,22 +2656,26 @@ class SessionOrchestrator:
             # (`_create_driver`); the block, the env and the stderr tail ride this spawn.
             sandboxed = bool(fork_kw.pop("sandbox", False))
             stderr_sink = fork_kw.pop("stderr", None)
+            gate = fork_kw.pop("sandbox_gate", None)
             kw: dict = {"on_pre_compact": on_pre_compact, **fork_kw}
             if sandboxed:
+                from server.sessions.claude_sdk_factory import session_tmpdir_path
                 extra.update(sandbox_mod.session_env())
                 if stderr_sink is not None and "stderr" in declared:
                     kw["stderr"] = stderr_sink
                 # Non-Bash tools are confined by an SDK PreToolUse hook (every mode). A
                 # factory that cannot take it still has the driver's can_use_tool check.
+                # The driver's in-flight gate (owner decision 2026-11-07) is shared by
+                # every hook of this spawn: writes are serialised against running Bash.
                 if "sandbox_confine" in declared:
-                    from server.sessions.claude_sdk_factory import session_tmpdir_path
                     kw["sandbox_confine"] = sandbox_mod.confinement_hook(
-                        cwd, tmpdir=session_tmpdir_path(),
-                        background_busy=functools.partial(self._sandbox_background_busy,
-                                                          session_id))
+                        cwd, tmpdir=session_tmpdir_path(), gate=gate)
                 if "sandbox_post_write" in declared:
                     kw["sandbox_post_write"] = sandbox_mod.post_write_hook(
-                        cwd, functools.partial(self._on_sandbox_escape, session_id))
+                        cwd, functools.partial(self._on_sandbox_escape, session_id),
+                        gate=gate)
+                if gate is not None and "sandbox_done" in declared:
+                    kw["sandbox_done"] = sandbox_mod.done_hook(gate)
             if "owns_pr" in declared:
                 kw["owns_pr"] = functools.partial(self._session_opened_pr, session_id)
             if "ready_grants" in declared:
@@ -2681,8 +2685,8 @@ class SessionOrchestrator:
                 # The FULL block, whatever the flag-settings kill switch says: it is
                 # spawn-only, and a factory that cannot take it fails the after-spawn
                 # check (fail closed), never runs bare.
-                spawn_flags = {**spawn_flags,
-                               **sandbox_mod.spawn_settings_overlay(cwd, config_dir)}
+                spawn_flags = {**spawn_flags, **sandbox_mod.spawn_settings_overlay(
+                    cwd, config_dir, session_tmpdir_path())}
             if spawn_flags and "flag_settings" in declared:
                 kw["flag_settings"] = spawn_flags
             if self._rewind_spawn(session_id):
@@ -8885,12 +8889,6 @@ class SessionOrchestrator:
         if rec is not None:
             rec.fast_mode_state = state
             rec.fast_mode_disabled_reason = reason
-
-    def _sandbox_background_busy(self, session_id: str) -> bool:
-        """The write guard's view (D-23): does this session's live driver report a
-        backgrounded task still running? No driver yet (mid-spawn) is not busy."""
-        probe = getattr(self._drivers.get(session_id), "has_background_work", None)
-        return bool(probe()) if callable(probe) else False
 
     def _on_sandbox_escape(self, session_id: str, tool: str, path: str) -> None:
         """A sandboxed session's file tool wrote through a path that now resolves outside
