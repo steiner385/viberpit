@@ -312,7 +312,7 @@ async def put_settings_row(
         try:
             require_human(_identity, human_gate_via(request),
                           action="change whether new sessions run in the sandbox",
-                          code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+                          code=SESSION_CONTROL_HUMAN_ONLY_CODE, trust_local_host=False)
         except ActionError as exc:
             raise HTTPException(status_code=exc.http,
                                 detail={"code": exc.code, "message": exc.message}) from exc

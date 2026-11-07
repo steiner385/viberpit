@@ -660,6 +660,9 @@ def test_every_remote_method_is_classified():
                 # FleetOrchestrator.orch_for_host, never by the session's stamp.
                 "transfer_preflight", "transfer_export", "transfer_import",
                 "transfer_finalize", "_transfer_call",
+                # D-23: a move asks the TARGET host's sandbox readiness by name
+                # (session_move._target_sandbox via orch_for_host).
+                "sandbox_host_readiness",
                 # D-16c follow-up (#3314): reload_plugins_everywhere is defined on
                 # FleetOrchestrator, names EVERY host's outcome and calls reload_plugins_live
                 # per host by name; not merge-all, so an unreachable host stays visible.

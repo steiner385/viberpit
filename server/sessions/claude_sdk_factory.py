@@ -93,6 +93,15 @@ def merge_options_overlay(kwargs: dict, overlay: dict | None) -> dict:
     return merged
 
 
+def session_tmpdir_path() -> str:
+    """The Claude temp root a session's CLI runs with: the daemon's own
+    ``CLAUDE_CODE_TMPDIR`` if set, else ``VIBERPIT_SESSION_TMPDIR``, else
+    ``~/.cache/viberpit/claude-tmp``. ``session_tmpdir_env`` sets it; the sandbox check
+    (D-23) allows writes under it."""
+    return (os.environ.get("CLAUDE_CODE_TMPDIR") or os.environ.get("VIBERPIT_SESSION_TMPDIR")
+            or os.path.join(os.path.expanduser("~"), ".cache", "viberpit", "claude-tmp"))
+
+
 def session_tmpdir_env() -> dict[str, str]:
     """``CLAUDE_CODE_TMPDIR`` for a coding session, off the shared ``/tmp`` tmpfs.
 
@@ -105,8 +114,7 @@ def session_tmpdir_env() -> dict[str, str]:
     """
     if os.environ.get("CLAUDE_CODE_TMPDIR"):
         return {}
-    path = os.environ.get("VIBERPIT_SESSION_TMPDIR") or os.path.join(
-        os.path.expanduser("~"), ".cache", "viberpit", "claude-tmp")
+    path = session_tmpdir_path()
     try:
         os.makedirs(path, mode=0o700, exist_ok=True)
     except OSError:

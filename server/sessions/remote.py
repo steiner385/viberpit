@@ -1210,6 +1210,12 @@ class RemoteOrchestrator:
                 raise KeyError(exc.message) from exc
             raise
 
+    async def sandbox_host_readiness(self) -> dict:
+        """This daemon's ``{ok, reason}`` sandbox readiness (D-23), for a move's target
+        preflight. An old daemon's UnknownMethod stays a DaemonError; the move refuses."""
+        return await self._client.call("sandbox_host_readiness",
+                                       timeout=SANDBOX_FACTS_RPC_TIMEOUT)
+
     async def set_session_sandbox(self, session_id, enabled: bool, *,
                                   identity: str = SYSTEM_IDENTITY,
                                   via: str | None = None) -> dict:

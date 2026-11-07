@@ -257,8 +257,10 @@ async def set_sandbox(orch, *, session_id: str, enabled: bool, identity: str,
     writes ``session.sandbox`` (it alone sees a respawn whose edge went away), so
     *identity*/*via* travel with the call and nothing is audited here."""
     from server.sessions import sandbox as sb
+    # trust_local_host=False, as for plugin changes: an agent on the edge host that the
+    # operator's local-host opt-in admits must not switch a session's sandbox off.
     require_human(identity, via, action="turn a session's sandbox on or off",
-                  code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+                  code=SESSION_CONTROL_HUMAN_ONLY_CODE, trust_local_host=False)
     try:
         return await orch.set_session_sandbox(session_id, enabled, identity=identity, via=via)
     except sb.SandboxError as exc:

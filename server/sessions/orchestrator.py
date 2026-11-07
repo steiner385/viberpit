@@ -5516,6 +5516,11 @@ class SessionOrchestrator:
                             "pr=#%d — branch auto-deleted when its PR merged "
                             "before spawn; ending queued session as obsolete",
                             sid, params.get("branch"), obsolete_pr.number)
+                    elif isinstance(exc, sandbox_mod.SandboxError):
+                        # D-23: an expected refusal (the sandbox could not start or be
+                        # verified, or a sandboxed parent's child cannot be one here).
+                        log.info("session_queue.start_refused_sandbox id=%s code=%s "
+                                 "reason=%s", sid, exc.code, exc.reason)
                     else:
                         log.warning("session_queue.start_failed id=%s", sid,
                                     exc_info=True)
@@ -6262,13 +6267,22 @@ class SessionOrchestrator:
             # then — and every later spawn (resume, respawn, move) reads the record, so
             # changing the default never changes a running session. A queued/held row
             # that already carries one keeps it.
+            # A child (dispatch_session) or a fork of a sandboxed session is never
+            # narrower than it — the way its permission mode is capped — and is refused
+            # up front where it cannot be sandboxed, never born plain (D-23).
             sandbox_on = getattr(_prior, "sandbox", None)
             if sandbox_on is None:
-                sandbox_on = bool(
-                    not is_assistant_kind(kind)
-                    and sandbox_mod.sandbox_supported(
-                        self._engine_registry.capabilities_for(selected_engine))
-                    and await sandbox_mod.read_default())
+                caps_here = self._engine_registry.capabilities_for(selected_engine)
+                lineage = parent_session_id or getattr(_prior, "parent_session_id", None)
+                if lineage and await self._lineage_sandboxed(lineage):
+                    await sandbox_mod.require_here(caps_here)
+                    sandbox_on = True
+                else:
+                    # read_default raises on a DB error: the create fails (fail closed).
+                    sandbox_on = bool(
+                        not is_assistant_kind(kind)
+                        and sandbox_mod.sandbox_supported(caps_here)
+                        and await sandbox_mod.read_default())
             _pre_record = SessionRecord(
                 id=session_id, name=name, account=account,
                 account_pinned=account_pinned,
@@ -7340,7 +7354,7 @@ class SessionOrchestrator:
         ``KeyError`` for an unknown session."""
         rec = self._sandbox_record(session_id)
         caps = self._engine_registry.capabilities_for(rec.engine)
-        capability = sandbox_mod.takes_sandbox(rec, caps)
+        capability = sandbox_mod.offers_sandbox(rec, caps)
         pf = (await sandbox_mod.preflight(refresh=refresh) if capability
               else sandbox_mod.cached_preflight())
         busy = await self._worktree_control_busy(session_id, rec)
@@ -7355,11 +7369,17 @@ class SessionOrchestrator:
             "unavailableReason": (pf.reason if capability and pf is not None and not pf.ok
                                   else None),
             "preflight": pf.to_wire() if pf is not None else None,
-            # Off is always allowed; on needs this host's preflight. Either way idle only.
-            "canToggle": bool(capability and not busy and not ended
+            # Off is always allowed — the kill switch included: it is the human exit from
+            # a hold. On needs the capability and this host's preflight. Idle only.
+            "canToggle": bool(not busy and not ended
                               and (view["enabled"] or available)),
             "allowedDomains": list(sandbox_mod.ALLOWED_DOMAINS),
         }
+
+    async def sandbox_host_readiness(self) -> dict:
+        """THIS host's ``{ok, reason}`` for running a sandboxed session (D-23), for a
+        move's preflight on the target (``session_move._verdict``)."""
+        return await sandbox_mod.host_readiness()
 
     async def set_session_sandbox(self, session_id: str, enabled: bool, *,
                                   identity: str = SYSTEM_IDENTITY,
@@ -7384,10 +7404,11 @@ class SessionOrchestrator:
                                    via: str | None) -> dict:
         from server.sessions import session_move as sm
         rec = self._sandbox_record(session_id)
-        if not sandbox_mod.sandbox_enabled():
-            raise self._sandbox_refusal(session_id, sandbox_mod.SANDBOX_DISABLED)
         if not sandbox_mod.takes_sandbox(rec, self._engine_registry.capabilities_for(rec.engine)):
             raise self._sandbox_refusal(session_id, sandbox_mod.SANDBOX_UNSUPPORTED)
+        if enabled and not sandbox_mod.sandbox_enabled():
+            # Turning it OFF stays allowed with the kill switch off: the human exit.
+            raise self._sandbox_refusal(session_id, sandbox_mod.SANDBOX_DISABLED)
         if rec.status in _NOT_RELOADABLE_STATUSES:
             raise self._sandbox_refusal(session_id, sandbox_mod.SANDBOX_SESSION_ENDED)
         if enabled:
@@ -8833,6 +8854,29 @@ class SessionOrchestrator:
             rec.fast_mode_state = state
             rec.fast_mode_disabled_reason = reason
 
+    async def _hold_on_sandbox(self, rec: SessionRecord) -> None:
+        """Park *rec* on a failed sandbox (terminal ``sandbox_failed``) — except inside a
+        move's target import, whose failure the source's restore answers: the hold would
+        land on the shared row and strand the session there (D-17 x D-23)."""
+        if rec.id in self.__dict__.get("_transfer_importing", set()):
+            log.info("session.sandbox id=%s failed on a move's target — left to the "
+                     "source's restore", rec.id)
+            return
+        await self._pause_session(rec, reason=sandbox_mod.SANDBOX_PAUSE_REASON)
+
+    async def _lineage_sandboxed(self, parent_id: str) -> bool:
+        """Is *parent_id* (a child's parent, a fork's source) sandboxed? Its record here,
+        else its row — a queued child may start on a daemon that never held the parent.
+        A row that cannot be read RAISES: the child's create fails rather than guess."""
+        rec = self._records.get(parent_id)
+        if rec is not None and getattr(rec, "sandbox", None) is not None:
+            return rec.sandbox is True
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            value = (await db.execute(sa_select(DbSession.sandbox).where(
+                DbSession.id == parent_id))).scalar_one_or_none()
+        return value is True
+
     async def _record_sandbox_state(self, session_id: str, state: str,
                                     reason: str | None) -> None:
         """Driver ``on_sandbox_state`` callback (D-23): keep the session's last sandbox
@@ -8843,6 +8887,10 @@ class SessionOrchestrator:
         if rec is not None:
             rec.sandbox_state = state
             rec.sandbox_reason = reason
+        if session_id in self.__dict__.get("_transfer_importing", set()):
+            # A move's target import (D-17): the row is shared with the source, which
+            # restores it if this import fails — a failure here is not the session's.
+            return
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             await db.execute(sa_update(DbSession).where(DbSession.id == session_id).values(
@@ -24003,8 +24051,20 @@ class SessionOrchestrator:
                                                  adopt=True):
                     raise sm.MoveError(sm.MOVE_LEASE_HELD,
                                        "Another host still holds this session's lease.")
-            # Outside the slot: ensure_driver waits for any in-flight swap.
-            driver = await self.ensure_driver(session_id)
+            # Outside the slot: ensure_driver waits for any in-flight swap. A target
+            # import (not a restore) marks itself so a sandbox failure here holds nothing
+            # on the shared row (D-23): the source's restore takes the session back.
+            importing = self.__dict__.setdefault("_transfer_importing", set())
+            if not local:
+                importing.add(session_id)
+            try:
+                driver = await self.ensure_driver(session_id)
+            except sandbox_mod.SandboxError as exc:
+                raise sm.MoveError(sm.MOVE_TARGET_SANDBOX,
+                                   f"{me} could not run the session's sandbox: "
+                                   f"{exc.reason or exc}") from exc
+            finally:
+                importing.discard(session_id)
             if driver is None:
                 raise sm.MoveError(sm.MOVE_RESUME_FAILED, "The conversation did not resume.")
         except BaseException:
@@ -24559,9 +24619,12 @@ class SessionOrchestrator:
         # D-23: a session held because its sandbox failed is not rebuilt by an attach or a
         # prompt — sandboxed or not. Retry and "Turn off sandbox and continue" are a
         # person's (`set_session_sandbox`, or the reload menu's `_reassign`).
-        if (rec.paused_reason == sandbox_mod.SANDBOX_PAUSE_REASON
-                and sandbox_mod.spawn_requested(
-                    rec, self._engine_registry.capabilities_for(rec.engine))):
+        try:
+            wants_sandbox = sandbox_mod.spawn_requested(rec, self._capabilities_of(session_id))
+        except sandbox_mod.SandboxError:
+            await self._hold_on_sandbox(rec)
+            raise
+        if rec.paused_reason == sandbox_mod.SANDBOX_PAUSE_REASON and wants_sandbox:
             log.info("session.resume id=%s refused: held on a failed sandbox", session_id)
             raise sandbox_mod.SandboxError(sandbox_mod.SANDBOX_HELD, rec.sandbox_reason)
         if not await self._claim_session(session_id, why="resume"):
@@ -24705,8 +24768,7 @@ class SessionOrchestrator:
                     if isinstance(start_exc, sandbox_mod.SandboxError):
                         # D-23: the driver closed its CLI and logged why. Never the
                         # fresh-start fallback below, never an unsandboxed retry: hold.
-                        await self._pause_session(
-                            rec, reason=sandbox_mod.SANDBOX_PAUSE_REASON)
+                        await self._hold_on_sandbox(rec)
                         raise
                     if resume is None:
                         # No resume to blame — the SDK genuinely can't start (e.g. a
@@ -25636,6 +25698,17 @@ class SessionOrchestrator:
                          parent_depth=self.child_depth(parent_id), live_children=len(live),
                          cap=cfg.child_session_cap, max_depth=cfg.child_session_max_depth)
         mode = narrowest(permission_mode, getattr(parent, "permission_mode", None) or "interactive")
+        child_engine = getattr(parent, "engine", AgentEngine.CLAUDE_CODE)
+        if getattr(parent, "sandbox", None) is True:
+            # D-23: a sandboxed parent's child is sandboxed (never narrower, like its
+            # mode) — refused here when this host cannot run it, before anything is made.
+            try:
+                await sandbox_mod.require_here(
+                    self._engine_registry.capabilities_for(child_engine))
+            except sandbox_mod.SandboxError as exc:
+                log.info("session.child_dispatch refused parent=%s code=%s reason=%s",
+                         parent_id, exc.code, exc.reason)
+                raise
         repo = getattr(parent, "repo", None)
         parent_cwd = getattr(parent, "cwd", None)
         # Two sessions never share a working tree (spec §4.3). A repo-backed parent
@@ -25650,7 +25723,7 @@ class SessionOrchestrator:
             cwd=parent_cwd if (not repo and parent_is_git) else None,
             identity=identity, permission_mode=mode, name_is_auto=False,
             model=model or getattr(parent, "model", None),
-            engine=getattr(parent, "engine", AgentEngine.CLAUDE_CODE),
+            engine=child_engine,
             parent_session_id=parent_id)
         async with db_session() as db:
             await record_audit(db, "session.child_dispatch", identity,
@@ -25720,7 +25793,18 @@ class SessionOrchestrator:
                     await self._escalate_child_to_human(
                         child_id, parent_id, "its parent session has finished")
                 return
-            drv = await self.ensure_driver(parent_id, SYSTEM_IDENTITY)
+            try:
+                drv = await self.ensure_driver(parent_id, SYSTEM_IDENTITY)
+            except sandbox_mod.SandboxError as exc:
+                # D-23: the parent is held on its sandbox — expected, so INFO. The notice
+                # is re-armed for later, and an answerable child goes to the human.
+                log.info("child_notify.parent_sandbox_held parent=%s child=%s code=%s",
+                         parent_id, child_id, exc.code)
+                await self._rearm_child_notice(child_id, status, prior_guard)
+                if status in _cs.CHILD_ANSWERABLE_STOPS:
+                    await self._escalate_child_to_human(
+                        child_id, parent_id, "its parent is held on a failed sandbox")
+                return
             # `text` is a <child-session-notification> frame, never an app command
             # (D-16a): the app-command statuses cannot come back here.
             result = "no_driver" if drv is None else await self.send_prompt(parent_id, text)

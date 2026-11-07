@@ -97,7 +97,9 @@ SANDBOX_CODES: frozenset[str] = frozenset({
 })
 
 MESSAGES: dict[str, str] = {
-    SANDBOX_DISABLED: "The sandbox is turned off on this server (VIBERPIT_SANDBOX_ENABLED).",
+    SANDBOX_DISABLED: "The sandbox is turned off on this server (VIBERPIT_SANDBOX_ENABLED), "
+                      "so a session that asked for it is not run. Turn the sandbox off "
+                      "for this session to continue without it.",
     SANDBOX_UNSUPPORTED: "This session's agent cannot run in the sandbox.",
     SANDBOX_UNAVAILABLE: "This host cannot run the sandbox.",
     SANDBOX_SESSION_BUSY: "The session is busy. Wait for the turn to finish (or Interrupt "
@@ -153,22 +155,46 @@ def sandbox_supported(caps: Any) -> bool:
 
 
 def takes_sandbox(record: Any, caps: Any) -> bool:
-    """Can this session carry a sandbox at all? A coding session (the Assistant drawer
-    runs no shell) on a supporting engine with the kill switch on."""
+    """Is this session the kind that can carry a sandbox? A coding session (the Assistant
+    drawer runs no shell) on an engine that declares ``sandbox``. Deliberately blind to
+    the kill switch: a session whose recorded setting is on stays on — and is refused,
+    never run plain — while the switch is off (:func:`spawn_requested`)."""
     from server.sessions.types import is_assistant_kind
     return (record is not None and not is_assistant_kind(getattr(record, "kind", None))
-            and sandbox_supported(caps))
+            and caps is not None and bool(getattr(caps, "sandbox", False)))
+
+
+def offers_sandbox(record: Any, caps: Any) -> bool:
+    """May the UI offer this session the toggle (and may a new session default to on)?
+    A session that can take one, with the kill switch on."""
+    return takes_sandbox(record, caps) and sandbox_enabled()
 
 
 def spawn_requested(record: Any, caps: Any) -> bool:
-    """Does a spawn of this session carry the sandbox? Its recorded setting is on and it
-    can take one. A legacy row (``sandbox`` NULL: spawned before D-23) reads as off, so
-    flipping the default on never holds every existing session at the next restart."""
-    return takes_sandbox(record, caps) and getattr(record, "sandbox", None) is True
+    """Does a spawn of this session carry the sandbox? Its recorded setting is on.
+
+    Fail closed: an engine that cannot take one is REFUSED (``SANDBOX_UNSUPPORTED``,
+    raised here — its driver would ignore the flag and run plain), and the kill switch
+    being off does not turn this False: the driver refuses the start
+    (``SANDBOX_DISABLED``) and the session is held. A legacy row (``sandbox`` NULL:
+    spawned before D-23) reads as off, so flipping the default on never holds every
+    existing session at the next restart."""
+    from server.sessions.types import is_assistant_kind
+    if record is None or getattr(record, "sandbox", None) is not True:
+        return False
+    if is_assistant_kind(getattr(record, "kind", None)):
+        return False
+    if not takes_sandbox(record, caps):
+        raise SandboxError(SANDBOX_UNSUPPORTED,
+                           "this session's engine cannot run in the sandbox")
+    return True
 
 
 # ── settings and env ─────────────────────────────────────────────────────────
 
+# Schema evidence (CLI 2.1.319): sandbox `GLr` @282541783, network `ph` @282520636,
+# filesystem `gh` @282524116 (spike §1.1). Every key below is one the binary knows; the
+# loosening ones are pinned to their safe value so no lower layer can turn them on.
 _SETTINGS_BLOCK: dict[str, Any] = {
     "enabled": True,
     # Fail closed at spawn: the CLI refuses to start instead of running Bash bare.
@@ -185,6 +211,14 @@ _SETTINGS_BLOCK: dict[str, Any] = {
         # Linux has no per-path socket filter; "all" would open docker and D-Bus.
         "allowAllUnixSockets": False,
     },
+    # Filesystem isolation stays on (`filesystem.disabled`, honored from --settings).
+    "filesystem": {"disabled": False},
+    # Linux: would skip the fresh /proc — "Reduces security" (GLr).
+    "enableWeakerNestedSandbox": False,
+    # "Removes code-execution isolation" (GLr).
+    "allowNestedUserNamespaces": False,
+    # No command's violations are hidden.
+    "ignoreViolations": {},
 }
 
 
@@ -256,9 +290,64 @@ class DialogVerdict:
     expected: bool = False
 
 
-def check_dialog(resp: Any) -> DialogVerdict:
-    """Require every condition of spike §2.4. A missing field fails: the request is
-    ``@internal`` and a reply shape it does not recognise is not proof of a sandbox."""
+def _under(path: str, roots: Iterable[str]) -> bool:
+    real = os.path.realpath(path)
+    for root in roots:
+        r = os.path.realpath(root)
+        if real == r or real.startswith(r.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
+def git_common_dir(cwd: str | None) -> str | None:
+    """The worktree's common git dir (``<clone>/.git``), which the CLI grants write
+    automatically (spike §1.6, ``fwr()`` @288687776), or None."""
+    if not cwd:
+        return None
+    dot = os.path.join(cwd, ".git")
+    if os.path.isdir(dot):
+        return dot
+    try:
+        with open(dot, encoding="utf-8") as fh:
+            line = fh.readline().strip()
+    except OSError:
+        return None
+    if not line.startswith("gitdir:"):
+        return None
+    gitdir = os.path.normpath(os.path.join(cwd, line[len("gitdir:"):].strip()))
+    parent = os.path.dirname(gitdir)
+    return os.path.dirname(parent) if os.path.basename(parent) == "worktrees" else gitdir
+
+
+#: The CLI's own default task-dir prefix (``/tmp/claude-<uid>``), its child-process
+#: tmpdir when ``CLAUDE_CODE_TMPDIR`` is unset (spike §1.6, ``hAe()``).
+_CLI_TMP_PREFIX = os.path.join(os.sep, "tmp", "claude")
+
+
+def writable_roots(cwd: str | None, tmpdir: str | None) -> tuple[str, ...]:
+    """Where a sandboxed session may write: its worktree, that worktree's common git
+    dir, the Claude temp root, and the CLI's own ``/tmp/claude*`` tmpdir."""
+    roots = [r for r in (cwd, git_common_dir(cwd), tmpdir) if r]
+    return tuple(roots)
+
+
+def _write_allowed(path: str, roots: tuple[str, ...]) -> bool:
+    if path in (".", "./"):
+        return True
+    if os.path.realpath(path).startswith(_CLI_TMP_PREFIX):
+        return True
+    return _under(path, roots)
+
+
+def check_dialog(resp: Any, *, cwd: str | None = None,
+                 tmpdir: str | None = None) -> DialogVerdict:
+    """Require every condition of spike §2.4 — and that the restrictions the CLI says it
+    applied are no wider than ViberPit's block: no excluded command, no domain beyond
+    :data:`ALLOWED_DOMAINS`, no writable path beyond :func:`writable_roots`. A missing
+    §2.4 field fails: the request is ``@internal`` and a reply shape it does not
+    recognise is not proof of a sandbox. The restriction lists are checked when the
+    reply carries them (spike §1.2: ``excluded_commands``,
+    ``restrictions.{network_allowed_domains, fs_allow_write}``)."""
     if not isinstance(resp, Mapping):
         return DialogVerdict(False, "get_sandbox_dialog returned no sandbox state")
     deps = resp.get("dependencies")
@@ -287,6 +376,29 @@ def check_dialog(resp: Any) -> DialogVerdict:
     if not (isinstance(restrictions, Mapping)
             and restrictions.get("allow_all_unix_sockets") is False):
         return DialogVerdict(False, "unix sockets are not blocked")
+    excluded = resp.get("excluded_commands")
+    if excluded is not None and excluded != []:
+        return DialogVerdict(False, "commands are excluded from the sandbox: "
+                             + ", ".join(map(str, excluded))
+                             if isinstance(excluded, list) else
+                             "the excluded-commands list is unreadable")
+    domains = restrictions.get("network_allowed_domains")
+    if domains is not None:
+        if not isinstance(domains, list):
+            return DialogVerdict(False, "the network allowlist is unreadable")
+        extra = [str(d) for d in domains if d not in ALLOWED_DOMAINS]
+        if extra:
+            return DialogVerdict(False, "the network allowlist is wider than GitHub: "
+                                 + ", ".join(extra))
+    writes = restrictions.get("fs_allow_write")
+    if writes is not None:
+        if not isinstance(writes, list):
+            return DialogVerdict(False, "the writable paths are unreadable")
+        roots = writable_roots(cwd, tmpdir)
+        wide = [str(w) for w in writes if not _write_allowed(str(w), roots)]
+        if wide:
+            return DialogVerdict(False, "writable paths beyond the worktree: "
+                                 + ", ".join(wide))
     return DialogVerdict(True)
 
 
@@ -491,6 +603,7 @@ def session_view(record: Any, caps: Any) -> dict[str, Any]:
     verification (``pending`` until this CLI is verified)."""
     if not takes_sandbox(record, caps) or getattr(record, "sandbox", None) is not True:
         return {"enabled": False, "state": STATE_OFF, "reason": None}
+    # The kill switch does not turn a recorded-on session "off": it is refused (held).
     state = getattr(record, "sandbox_state", None) or STATE_PENDING
     return {"enabled": True, "state": state,
             "reason": getattr(record, "sandbox_reason", None) if state == STATE_FAILED
@@ -498,17 +611,38 @@ def session_view(record: Any, caps: Any) -> dict[str, Any]:
 
 
 async def read_default() -> bool:
-    """``AppSettings.sandbox_default`` (NULL = off). A failed read is off (INFO): the
-    default only decides new sessions, and an unreadable one must not sandbox — nor
-    hold — every spawn on a DB blip."""
+    """``AppSettings.sandbox_default`` (NULL = off). A failed read RAISES: the create
+    that asked fails rather than recording ``sandbox=False`` for a session the owner
+    wanted sandboxed (fail closed)."""
     from sqlalchemy import select as sa_select
     from server.db import db_session
     from server.db.models import AppSettings
-    try:
-        async with db_session() as db:
-            value = (await db.execute(sa_select(AppSettings.sandbox_default).where(
-                AppSettings.id == "singleton"))).scalar_one_or_none()
-    except Exception as exc:
-        log.info("sandbox.default_unread error=%s", type(exc).__name__)
-        return False
+    async with db_session() as db:
+        value = (await db.execute(sa_select(AppSettings.sandbox_default).where(
+            AppSettings.id == "singleton"))).scalar_one_or_none()
     return value is True
+
+
+async def require_here(caps: Any) -> None:
+    """Refuse unless THIS host can run a sandboxed session on an engine with *caps* now:
+    the kill switch is on, the engine declares ``sandbox`` and the host preflight passes.
+    For a session that must be born sandboxed (a sandboxed parent's child or fork):
+    refused up front rather than created and then held."""
+    if not sandbox_enabled():
+        raise SandboxError(SANDBOX_DISABLED, "the sandbox is turned off on this host")
+    if caps is None or not getattr(caps, "sandbox", False):
+        raise SandboxError(SANDBOX_UNSUPPORTED,
+                           "this session's engine cannot run in the sandbox")
+    pf = await preflight()
+    if not pf.ok:
+        raise SandboxError(SANDBOX_UNAVAILABLE, pf.reason)
+
+
+async def host_readiness() -> dict[str, Any]:
+    """This host's answer to "can a sandboxed session run here?" for a move preflight
+    (D-17 x D-23): ``{ok, reason}``. The kill switch off is a refusal like a failed
+    preflight."""
+    if not sandbox_enabled():
+        return {"ok": False, "reason": "the sandbox is turned off on this host"}
+    pf = await preflight()
+    return {"ok": pf.ok, "reason": pf.reason}

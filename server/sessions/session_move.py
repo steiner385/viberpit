@@ -66,6 +66,10 @@ MOVE_TARGET_UNHEALTHY = "MOVE_TARGET_UNHEALTHY"
 MOVE_TARGET_ENGINE = "MOVE_TARGET_ENGINE"
 MOVE_TARGET_PLATFORM = "MOVE_TARGET_PLATFORM"
 MOVE_TARGET_FULL = "MOVE_TARGET_FULL"
+#: A sandboxed session (D-23) and a target that cannot run its sandbox (kill switch off,
+#: preflight failing, or an old daemon). Refused up front; also the import's failure
+#: code when the target's sandbox fails after all (the source restores it).
+MOVE_TARGET_SANDBOX = "MOVE_TARGET_SANDBOX"
 MOVE_DIRTY_NEEDS_CONSENT = "MOVE_DIRTY_NEEDS_CONSENT"
 MOVE_DIRTY_PUBLIC_REPO = "MOVE_DIRTY_PUBLIC_REPO"
 #: Committed work no origin ref has, on a public (or unknown-visibility) repo: the
@@ -190,6 +194,8 @@ class MoveSubject:
     managed: bool = True
     live_children: int = 0
     live_parent: str | None = None
+    #: The session's recorded sandbox setting is on (D-23).
+    sandbox: bool = False
 
 
 @dataclass(frozen=True)
@@ -240,14 +246,17 @@ def _no(code: str, message: str, **extra: Any) -> MoveVerdict:
 
 def movable(subject: MoveSubject, target: str, candidate: Any, *, caps: Any, enabled: bool,
             facts: WorktreeFacts | None = None, carry_dirty: bool = False,
-            stop_background: bool = False) -> MoveVerdict:
+            stop_background: bool = False,
+            target_sandbox: dict[str, Any] | None = None) -> MoveVerdict:
     """May *subject* be moved to host *target* right now? Pure: every input is passed in.
 
     *candidate* is the target's ``fleet.HostCandidate`` (None when the router does not
     know the host). *caps* is the engine's ``AgentCapabilities``; *enabled* the kill
     switch. *facts* is the source's worktree report — None (menu-level check) skips the
     dirty / visibility / background legs; the saga always passes them, and the source
-    re-checks all three inside ``transfer_export``.
+    re-checks all three inside ``transfer_export``. *target_sandbox* is the target's
+    ``{ok, reason}`` sandbox readiness (D-23), read only for a sandboxed session; a
+    sandboxed session with none is refused (fail closed).
     """
     from server.sessions.display_policy import DISPLAY_NATIVE
     from server.sessions.fleet import engine_rejection, platform_rejection
@@ -302,6 +311,10 @@ def movable(subject: MoveSubject, target: str, candidate: Any, *, caps: Any, ena
     if (candidate.max_sessions is not None
             and candidate.active_sessions >= candidate.max_sessions):
         return _no(MOVE_TARGET_FULL, f"{target} is at capacity.")
+    if subject.sandbox and not (target_sandbox or {}).get("ok"):
+        why = (target_sandbox or {}).get("reason") or "it did not report its sandbox readiness"
+        return _no(MOVE_TARGET_SANDBOX,
+                   f"{target} cannot run this session's sandbox ({why}).", reason=why)
     if facts is not None:
         if facts.pending_card:
             return _no(MOVE_AWAITING_ANSWER,
@@ -461,7 +474,8 @@ async def _context(fleet: Any, session_id: str) -> _Context:
         kind=row.kind, display_mode=row.display_mode, status=status, source=source,
         moving_to=fleet.moving_target(session_id) or row.moving_to,
         platform=row.platform, managed=is_under_current_base(row.cwd, root),
-        live_children=children, live_parent=parent)
+        live_children=children, live_parent=parent,
+        sandbox=getattr(row, "sandbox", None) is True)
     return _Context(session_id, source, subject, row.moved_from, row.moved_at)
 
 
@@ -486,10 +500,25 @@ async def _facts(fleet: Any, ctx: _Context) -> WorktreeFacts:
 async def _verdict(fleet: Any, ctx: _Context, target: str, facts: WorktreeFacts | None, *,
                    carry_dirty: bool, stop_background: bool) -> MoveVerdict:
     from server.sessions.engine import declared_capabilities, session_move_enabled
+    target_sandbox = (await _target_sandbox(fleet, target) if ctx.subject.sandbox
+                      else None)
     return movable(ctx.subject, target, await _candidate(fleet, target),
                    caps=declared_capabilities(ctx.subject.engine),
                    enabled=session_move_enabled(), facts=facts,
-                   carry_dirty=carry_dirty, stop_background=stop_background)
+                   carry_dirty=carry_dirty, stop_background=stop_background,
+                   target_sandbox=target_sandbox)
+
+
+async def _target_sandbox(fleet: Any, target: str) -> dict[str, Any]:
+    """The target daemon's sandbox readiness (D-23). Any failure to ask — an unknown or
+    unreachable host, a daemon predating the RPC — is a refusal with its reason."""
+    try:
+        r = await fleet.orch_for_host(target).sandbox_host_readiness()
+    except Exception as exc:
+        log.info("session.move sandbox readiness unread host=%s error=%s", target,
+                 type(exc).__name__)
+        return {"ok": False, "reason": f"{target} did not report its sandbox readiness"}
+    return r if isinstance(r, dict) else {"ok": False, "reason": None}
 
 
 async def preflight(sessions: Any, session_id: str, target: str | None = None) -> dict:

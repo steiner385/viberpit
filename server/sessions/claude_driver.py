@@ -1224,6 +1224,16 @@ class ClaudeAgentDriver:
             fork_kw = {"fork_session": True,
                        "extra_args": {"resume-session-at": self._fork_resume_at}}
         if self._sandbox:
+            if not sandbox_mod.sandbox_enabled():
+                # Kill switch off (D-23): a session that asked for the sandbox is
+                # refused — held, never spawned plain. No CLI is started.
+                reason = "the sandbox is turned off on this host"
+                log_event(log, logging.INFO, "sandbox.start_refused",
+                          session_id=self.session_id, reason=reason)
+                self._closing = True
+                self._stream_ended = True
+                await self._report_sandbox(sandbox_mod.STATE_FAILED, reason)
+                raise sandbox_mod.SandboxError(sandbox_mod.SANDBOX_DISABLED, reason)
             # The orchestrator's factory merges the sandbox block and env for exactly
             # this flag, so the spawn that carries the block is the one verified below.
             fork_kw["sandbox"] = True
@@ -1300,7 +1310,8 @@ class ClaudeAgentDriver:
                               timeout=sandbox_mod.SANDBOX_CONTROL_TIMEOUT_S)
         except Exception as exc:
             return sandbox_mod.DialogVerdict(False, f"get_sandbox_dialog failed: {exc}")
-        return sandbox_mod.check_dialog(resp)
+        from .claude_sdk_factory import session_tmpdir_path
+        return sandbox_mod.check_dialog(resp, cwd=self.cwd, tmpdir=session_tmpdir_path())
 
     def _sandbox_failure_texts(self, exc: BaseException | None) -> list[str]:
         """Everything that may carry the CLI's sandbox refusal: the exception chain, the
