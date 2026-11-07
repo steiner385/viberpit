@@ -1,7 +1,12 @@
-"""Move an idle Claude session to another fleet host (D-17, decision D19).
+"""Move an idle Claude or Codex session to another fleet host (D-17, decision D19).
 
-Facts: ``docs/superpowers/specs/2026-11-05-d17-move-session-verification.md``; parent
-design: ``2026-09-14-cross-host-session-transfer-design.md`` (Phase 1, manual move).
+Facts: ``docs/superpowers/specs/2026-11-05-d17-move-session-verification.md`` (Claude)
+and ``2026-11-06-codex-session-move-verification.md`` (Codex, #3347); parent design:
+``2026-09-14-cross-host-session-transfer-design.md`` (Phase 1, manual move). The one
+engine difference: Claude's transcript sits on a tree both hosts see, so the target
+only verifies it, while a Codex thread's rollout lives inside a host-local
+``CODEX_HOME`` and travels base64-inline in the manifest (``codexThread``, capped at
+:data:`HISTORY_MAX_BYTES`) through ``server/codex/thread_move.py``.
 
 Three halves, one module:
 
@@ -34,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from viberpit.engines import AgentEngine, parse_agent_engine
+from server.codex.thread_move import HISTORY_MAX_BYTES, ThreadBundle
 
 log = logging.getLogger(__name__)
 
@@ -68,12 +74,17 @@ MOVE_UNPUSHED_PUBLIC_REPO = "MOVE_UNPUSHED_PUBLIC_REPO"
 UNPUSHED_PUBLIC_REPO_COPY = ("This repository is public — push the session's commits to "
                              "its branch before moving")
 MOVE_BACKGROUND_NEEDS_CONFIRM = "MOVE_BACKGROUND_NEEDS_CONFIRM"
+#: A Codex thread's history (rollout + sidecars) over :data:`HISTORY_MAX_BYTES` (#3347).
+MOVE_HISTORY_TOO_LARGE = "MOVE_HISTORY_TOO_LARGE"
 MOVE_SOURCE_UNREACHABLE = "MOVE_SOURCE_UNREACHABLE"
 MOVE_TARGET_UNAVAILABLE = "MOVE_TARGET_UNAVAILABLE"
 # Saga failures (something was touched; the outcome says where the session is).
 MOVE_EXPORT_FAILED = "MOVE_EXPORT_FAILED"
 MOVE_RESTAMP_FAILED = "MOVE_RESTAMP_FAILED"
 MOVE_IMPORT_FAILED = "MOVE_IMPORT_FAILED"
+#: The target already holds a rollout for this Codex thread id: never overwritten,
+#: the session is restored to the source (#3347).
+MOVE_HISTORY_EXISTS = "MOVE_HISTORY_EXISTS"
 MOVE_TRANSCRIPT_STALE = "MOVE_TRANSCRIPT_STALE"
 MOVE_RESUME_FAILED = "MOVE_RESUME_FAILED"
 MOVE_LEASE_HELD = "MOVE_LEASE_HELD"
@@ -194,6 +205,9 @@ class WorktreeFacts:
     #: A live permission / question / plan card (or a re-offered orphaned one) — not
     #: the resting status, which a restart seeds with no card behind it.
     pending_card: bool = False
+    #: Raw bytes the move would carry inline for a Codex thread (rollout + sidecars);
+    #: 0 for Claude and for a thread that has no rollout yet (#3347).
+    history_bytes: int = 0
 
     @classmethod
     def from_preflight(cls, d: dict) -> "WorktreeFacts":
@@ -202,7 +216,8 @@ class WorktreeFacts:
                    unpushed_commits=int(d.get("unpushedCommits") or 0),
                    repo_private=d.get("repoPrivate"),
                    background_tasks=tuple(d.get("backgroundTasks") or ()),
-                   pending_card=bool(d.get("pendingCard")))
+                   pending_card=bool(d.get("pendingCard")),
+                   history_bytes=int(d.get("historyBytes") or 0))
 
 
 @dataclass(frozen=True)
@@ -243,10 +258,7 @@ def movable(subject: MoveSubject, target: str, candidate: Any, *, caps: Any, ena
     if not enabled:
         return _no(MOVE_DISABLED, "Moving sessions between hosts is turned off.")
     if caps is None or not caps.cross_host_transfer:
-        return _no(MOVE_ENGINE_UNSUPPORTED,
-                   "Codex history stays on its host, so a Codex session cannot move."
-                   if subject.engine is AgentEngine.CODEX else
-                   "This session's engine cannot move between hosts.")
+        return _no(MOVE_ENGINE_UNSUPPORTED, "This session's engine cannot move between hosts.")
     if is_assistant_kind(subject.kind):
         return _no(MOVE_ASSISTANT, "The assistant always runs on the primary host.")
     if subject.display_mode == DISPLAY_NATIVE:
@@ -294,6 +306,11 @@ def movable(subject: MoveSubject, target: str, candidate: Any, *, caps: Any, ena
         if facts.pending_card:
             return _no(MOVE_AWAITING_ANSWER,
                        "Answer the session's open question or permission request first.")
+        if facts.history_bytes > HISTORY_MAX_BYTES:
+            return _no(MOVE_HISTORY_TOO_LARGE,
+                       "This session's Codex history is too large to move (over "
+                       f"{HISTORY_MAX_BYTES // (1024 * 1024)} MB).",
+                       historyBytes=facts.history_bytes)
         if facts.dirty_count:
             dirty = {"dirtyCount": facts.dirty_count, "dirtyPaths": list(facts.dirty_paths)}
             if facts.repo_private is not True:
@@ -570,9 +587,25 @@ async def clear_import_marker(session_id: str, host: str) -> None:
         await db.commit()
 
 
+def storable_manifest(manifest: dict | None) -> dict | None:
+    """The manifest as ``move_manifest`` stores it: a copy whose ``codexThread`` (if any)
+    is stripped to its descriptor — relPath, size, sha256, sidecar names and hashes —
+    with every base64 ``data`` field dropped. That descriptor is what a reconcile
+    verifies a holder against; the bytes (up to :data:`HISTORY_MAX_BYTES`) never
+    belong in a row."""
+    if manifest is None:
+        return None
+    out = dict(manifest)
+    raw = out.get("codexThread")
+    if raw:
+        out["codexThread"] = ThreadBundle.from_dict(raw).stripped().to_dict()
+    return out
+
+
 async def _store_manifest(session_id: str, manifest: dict | None) -> None:
     """Keep the in-flight move's manifest with its claim, for a reconcile after an edge
-    restart (the transcript marker it verifies a holder against, the WIP bundle)."""
+    restart (the transcript marker or thread descriptor it verifies a holder against,
+    the WIP bundle). Callers pass :func:`storable_manifest`'s output."""
     from sqlalchemy import update as sa_update
     from server.db import db_session
     from server.db.models import Session as DbSession
@@ -716,7 +749,7 @@ async def _saga(fleet: Any, ctx: _Context, target: str, *, identity: str, via: s
                                                restamped=False)
             raise MoveError(code, f"export on {source} failed: {exc}", outcome=outcome) from exc
         try:
-            await _store_manifest(sid, manifest)
+            await _store_manifest(sid, storable_manifest(manifest))
         except Exception:
             log.info("session.move could not store the manifest id=%s — a reconcile "
                      "after an edge restart will work without it", sid, exc_info=True)

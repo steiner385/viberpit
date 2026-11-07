@@ -4,7 +4,6 @@
 // lines all read it. It ships in the lazy dialog chunk; the few strings the entry
 // bundle needs (chip, menu) live in `@/api/sessionMove`. An unknown code shows the
 // server's own message, else a generic line — never the raw code.
-import { CODEX_STAYS_COPY } from '@/api/sessionMove'
 
 /** The exact copy the owner ruled on (revised D1): consent cannot fix a public repo. */
 export const PUBLIC_REPO_COPY = 'This repository is public — commit or stash your changes before moving'
@@ -30,6 +29,7 @@ export const MOVE_REASON_CODES = [
   'MOVE_SOURCE_UNREACHABLE', 'MOVE_EXPORT_FAILED', 'MOVE_RESTAMP_FAILED', 'MOVE_IMPORT_FAILED',
   'MOVE_TRANSCRIPT_STALE', 'MOVE_RESUME_FAILED', 'MOVE_LEASE_HELD', 'MOVE_PATH_MISMATCH',
   'MOVE_WORKTREE_MISSING', 'MOVE_NOT_STAMPED', 'MOVE_FINALIZE_REFUSED', 'SESSION_CONTROL_HUMAN_ONLY',
+  'MOVE_HISTORY_TOO_LARGE', 'MOVE_HISTORY_EXISTS',
 ] as const
 export type MoveReasonCode = (typeof MOVE_REASON_CODES)[number]
 
@@ -40,7 +40,7 @@ export const MOVE_REASON_COPY: Record<MoveReasonCode, string> = {
   MOVE_DISABLED: 'Moving sessions is turned off on this server.',
   MOVE_NO_FLEET: 'This deployment has only one host, so there is nowhere to move to.',
   MOVE_NOT_FOUND: 'This session no longer exists.',
-  MOVE_ENGINE_UNSUPPORTED: `${CODEX_STAYS_COPY}, so this session cannot move.`,
+  MOVE_ENGINE_UNSUPPORTED: "This session's agent cannot move between hosts.",
   MOVE_ASSISTANT: 'The assistant session always runs on the primary host.',
   MOVE_NATIVE_DISPLAY: "This session renders on its host's own screen, so it cannot move.",
   MOVE_IN_FLIGHT: 'A move is already running for this session.',
@@ -75,6 +75,8 @@ export const MOVE_REASON_COPY: Record<MoveReasonCode, string> = {
   MOVE_NOT_STAMPED: 'The move was not recorded before resuming.',
   MOVE_FINALIZE_REFUSED: 'The old worktree was not cleaned up.',
   SESSION_CONTROL_HUMAN_ONLY: 'Only a person can move a session.',
+  MOVE_HISTORY_TOO_LARGE: "This session's Codex history is too large to move (over 128 MB).",
+  MOVE_HISTORY_EXISTS: 'The target host already has a copy of this Codex thread; clear it there first.',
 }
 
 /** The plain-language line for a reason code. */

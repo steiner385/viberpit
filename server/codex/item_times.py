@@ -19,9 +19,11 @@ untouched). One JSON object per line:
 Append-only, so a crash mid-write costs at most one torn trailing line, which the
 reader skips. Host-local by design: the same daemon that owns the app-server (and
 so is the only one that can `thread/read` the thread) writes and reads it, so a
-replay never looks for a file another host wrote. A thread with no sidecar (history
-from before this landed, or a transferred session) simply replays with the
-coarser fallbacks in ``server/codex/replay.py``.
+replay never looks for a file another host wrote. A session moved between hosts
+(D-17, #3347) brings its sidecar with it via ``server/codex/thread_move.py``,
+written on the target only when absent. A thread with no sidecar (history from
+before this landed) simply replays with the coarser fallbacks in
+``server/codex/replay.py``.
 """
 from __future__ import annotations
 
@@ -38,17 +40,23 @@ log = logging.getLogger("server.codex.item_times")
 ITEM_TIMES_DIRNAME = "codex-item-times"
 
 # A thread id names a file, so it must be a plain token: no separators, no dots
-# that could spell a traversal, nothing the app-server would never mint anyway
-# (thread ids are UUIDv7 in practice).
+# that could spell a traversal, no glob metacharacters, nothing the app-server
+# would never mint anyway (thread ids are UUIDv7 in practice).
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+def safe_thread_id(thread_id: str) -> bool:
+    """THE id rule for every file named after a Codex thread id: the sidecars under
+    the account's root (this journal, ``turn_history``, ``thread_surface``) and the
+    rollout lookup in ``thread_move``. Never raises; a non-string answers False."""
+    return isinstance(thread_id, str) and _SAFE_ID.match(thread_id) is not None
 
 
 def thread_sidecar_path(root: Path, thread_id: str, suffix: str) -> Path | None:
     """A per-thread sidecar ``<root>/<thread id><suffix>``, or None for an id unsafe
     to name a file with (never raises — an odd id means "no sidecar", not a failure).
-    THE id rule for every ViberPit-owned per-thread file under the account's
-    sidecar root (this journal, ``thread_surface``)."""
-    if not _SAFE_ID.match(thread_id):
+    The id check is ``safe_thread_id``."""
+    if not safe_thread_id(thread_id):
         return None
     return root / f"{thread_id}{suffix}"
 

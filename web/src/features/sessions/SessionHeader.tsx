@@ -69,7 +69,6 @@ import { engineBadge, tierLabel } from '@/session/modelName'
 import { useToastAnchor } from '@/shell/toastInsets'
 import { usePageTitle } from '@/shell/usePageTitle'
 import { useEnabledFleetHosts } from '@/api/fleet'
-import { CODEX_STAYS_COPY } from '@/api/sessionMove'
 import { RenameDialog } from './RenameDialog'
 import { DiffChip } from './diff/DiffChip'
 import { MovingChip } from './move/MovingChip'
@@ -154,14 +153,13 @@ export function SessionHeader({
   // "Move to host…" (D-17): only where there is somewhere to go — more than one
   // enabled fleet host — and only for an engine that can carry its history across
   // (`crossHostTransfer`, which is also off under the server's kill switch). Codex
-  // cannot, and the menu says why rather than going quiet (D2). Everything else
-  // (mid-turn, dirty tree, children …) is the preflight's to explain in the dialog.
+  // moves too (#3347): the server carries its thread alongside the worktree. An
+  // engine without the capability simply gets no item. Everything else (mid-turn,
+  // dirty tree, children, history size …) is the preflight's to explain in the dialog.
   const [moveOpen, setMoveOpen] = useState(false)
   const enabledHosts = useEnabledFleetHosts()
   const fleetHasTargets = enabledHosts.length > 1
   const canMove = record !== undefined && canUseEngine(caps, 'crossHostTransfer')
-  const moveHostDisabledReason = fleetHasTargets && !canMove && record?.engine === 'codex'
-    ? CODEX_STAYS_COPY : undefined
 
   // Both chevrons render as a pair: the list step returns prevId/nextId both-null
   // (no list, the session is not in it, or it is the only row) or both-set (it wraps).
@@ -289,7 +287,6 @@ export function SessionHeader({
         onReload={onReload}
         onRotate={canRotate ? onRotate : undefined}
         onMoveHost={fleetHasTargets && canMove && !record?.movingTo ? () => setMoveOpen(true) : undefined}
-        moveHostDisabledReason={moveHostDisabledReason}
       />
 
       {moveOpen && (

@@ -23369,6 +23369,34 @@ class SessionOrchestrator:
             log.debug("keep_unclosed_driver: lease re-claim for %s failed", session_id,
                       exc_info=True)
 
+    @staticmethod
+    def _codex_thread_ref(*sources: Any) -> tuple[str, str] | None:
+        """``(account, thread id)`` of a Codex session read off the first of *sources*
+        (a ``SessionRecord`` or a DB row) that states an engine; None for Claude, for a
+        Codex session with no thread yet, and when nothing states an engine (#3347)."""
+        for src in sources:
+            if src is None:
+                continue
+            engine = parse_agent_engine(getattr(src, "engine", None), legacy_default=True)
+            if engine is not AgentEngine.CODEX:
+                return None
+            thread_id = getattr(src, "engine_session_id", None)
+            account = getattr(src, "account", None) or getattr(src, "account_name", None)
+            return (account, thread_id) if thread_id and account else None
+        return None
+
+    def _codex_thread_paths(self, account: str) -> tuple[Path, Path]:
+        """``(CODEX_HOME, sidecar root)`` for *account* on this host — where a move
+        reads a thread's rollout (export, finalize) or writes it (import). The home is
+        the manager's (created if absent; no runner starts), the sidecar root the one
+        ``_codex_item_times_root`` derivation. Raises ``MOVE_EXPORT_FAILED`` on a host
+        with no Codex manager (callers on the import side map it)."""
+        from server.sessions import session_move as sm
+        manager = getattr(self, "_codex", None)
+        if manager is None:
+            raise sm.MoveError(sm.MOVE_EXPORT_FAILED, "Codex is not available on this host.")
+        return Path(manager.resolve_home(account)), self._codex_item_times_root(account)
+
     async def _close_for_transfer(self, session_id: str) -> None:
         """Tear the driver down (releases the lease) and close it, bounded. A close that
         fails puts the driver back (``_keep_unclosed_driver``) and raises."""
@@ -23391,8 +23419,10 @@ class SessionOrchestrator:
         background tasks that would stop — and whether its worktree is here at all
         (the crash reconcile's question)."""
         from viberpit import worktree_transfer as wtx
+        from server.codex import thread_move
         from server.sessions import session_move as sm
         rec = self._records.get(session_id)
+        row = None
         cwd = getattr(rec, "cwd", None)
         if rec is None:
             row = await self._read_session_row(session_id)
@@ -23404,7 +23434,17 @@ class SessionOrchestrator:
                      "turnActive": bool(getattr(driver, "turn_active", False)),
                      "pendingCard": self._has_live_card(session_id),
                      "dirtyCount": 0, "dirtyPaths": [], "unpushedCommits": 0, "repo": None,
-                     "repoPrivate": None, "backgroundTasks": []}
+                     "repoPrivate": None, "backgroundTasks": [], "historyBytes": 0}
+        thread = self._codex_thread_ref(rec, row)
+        if thread is not None:
+            account, thread_id = thread
+            try:
+                home, sidecars = self._codex_thread_paths(account)
+                out["historyBytes"] = await asyncio.to_thread(
+                    thread_move.inspect, home, sidecars, thread_id)
+            except (thread_move.ThreadMoveError, sm.MoveError) as exc:
+                log.info("session.move_preflight id=%s could not size the Codex thread: %s",
+                         session_id, exc)
         if present:
             try:
                 state = await asyncio.to_thread(wtx.inspect, str(cwd))
@@ -23435,6 +23475,7 @@ class SessionOrchestrator:
     async def _transfer_export(self, session_id: str, *, target: str, carry_dirty: bool,
                                stop_background: bool) -> dict:
         from viberpit import worktree_transfer as wtx
+        from server.codex import thread_move
         from server.sessions import session_move as sm
         from server.sessions.engine import session_move_enabled
         from server.sessions.status import MID_TURN_STATUSES
@@ -23503,6 +23544,21 @@ class SessionOrchestrator:
                                    extra={"backgroundTasks": [
                                        _bg_task_wire(t)
                                        for t in tasks[:sm.BACKGROUND_LIST_CAP]]})
+            thread = self._codex_thread_ref(rec)
+            codex_paths = self._codex_thread_paths(thread[0]) if thread is not None else None
+            if thread is not None and codex_paths is not None:
+                # The cap is re-checked here, inside the slot, like the dirty checks: a
+                # thread that grew past it since preflight is refused with nothing
+                # touched. A sizing failure is left to export_thread below (→ restore).
+                try:
+                    history_bytes = await asyncio.to_thread(
+                        thread_move.inspect, *codex_paths, thread[1])
+                except thread_move.ThreadMoveError:
+                    history_bytes = 0
+                if history_bytes > sm.HISTORY_MAX_BYTES:
+                    raise sm.MoveError(sm.MOVE_HISTORY_TOO_LARGE,
+                                       "The Codex thread's history is over the cap.",
+                                       extra={"historyBytes": history_bytes})
             origin_url = await asyncio.to_thread(worktrees._origin_url, rec.cwd)
 
             # ── the driver closes from here on ──
@@ -23516,8 +23572,21 @@ class SessionOrchestrator:
                     await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
                                      .values(pending_rearm=[t.to_dict() for t in tasks]))
             await self._close_for_transfer(session_id)
+            # Claude's transcript marker (transcript_path answers None for Codex, whose
+            # history is the rollout read next — the two never both apply).
             marker = await asyncio.to_thread(
                 lambda: sm.transcript_marker(self.transcript_path(session_id)))
+            codex_thread: dict | None = None
+            if thread is not None and codex_paths is not None:
+                # Read before the tree is pushed: a thread that cannot be exported
+                # costs a restore, not a push and a restore.
+                try:
+                    exported = await asyncio.to_thread(
+                        thread_move.export_thread, *codex_paths, thread[1])
+                except thread_move.ThreadMoveError as exc:
+                    raise sm.MoveError(sm.MOVE_EXPORT_FAILED, f"{exc.code}: {exc.detail}",
+                                       extra={"historyCode": exc.code}) from exc
+                codex_thread = exported.to_dict()
             try:
                 # Only the VETTED verdict may carry bytes (revised D1): a tree that got
                 # dirty — or gained unpushed commits — after the visibility/consent
@@ -23541,7 +23610,7 @@ class SessionOrchestrator:
             self._retarget_record(session_id, target)
         return {"sessionId": session_id, "source": me, "target": target, "cwd": rec.cwd,
                 "repo": rec.repo, "originUrl": origin_url, "bundle": bundle.to_dict(),
-                "transcript": marker, "preambles": preambles,
+                "transcript": marker, "codexThread": codex_thread, "preambles": preambles,
                 "backgroundTasks": [_bg_task_wire(t) for t in tasks]}
 
     async def _clone_for_move(self, root: str, repo: str | None, origin_url: str | None) -> str:
@@ -23577,6 +23646,30 @@ class SessionOrchestrator:
         raise sm.MoveError(sm.MOVE_TRANSCRIPT_STALE,
                            "The conversation history here is behind the source's.")
 
+    async def _verify_moved_history(self, session_id: str, row, manifest: dict | None) -> None:
+        """Never resume on history that is not the source's. Claude: the transcript
+        marker (``_verify_moved_transcript``). Codex: the rollout under this host's
+        ``CODEX_HOME`` must have the bundle's size and sha256 — checked against a
+        stripped descriptor too (the reconcile verifying a holder from the stored
+        manifest), whenever the manifest carries one (#3347)."""
+        from server.codex import thread_move
+        from server.sessions import session_move as sm
+        manifest = manifest or {}
+        engine = parse_agent_engine(getattr(row, "engine", None), legacy_default=True)
+        if engine is not AgentEngine.CODEX:
+            await self._verify_moved_transcript(session_id, manifest.get("transcript"))
+            return
+        raw = manifest.get("codexThread")
+        if not raw:
+            return
+        bundle = thread_move.ThreadBundle.from_dict(raw)
+        home, _ = self._codex_thread_paths(row.account_name)
+        if await asyncio.to_thread(thread_move.verify_thread, home, bundle):
+            return
+        log.info("session.move codex thread stale id=%s thread=%s want=%s/%d", session_id,
+                 bundle.thread_id, bundle.sha256[:12], bundle.size)
+        raise sm.MoveError(sm.MOVE_TRANSCRIPT_STALE, "The Codex thread did not arrive intact.")
+
     async def transfer_import(self, session_id: str, manifest: dict | None = None, *,
                               source: str | None = None, local: bool = False) -> dict:
         """Target half (and, with ``local=True``, the restore/reconcile reuse path).
@@ -23595,12 +23688,19 @@ class SessionOrchestrator:
     async def _transfer_import(self, session_id: str, manifest: dict | None, *,
                                source: str | None, local: bool) -> dict:
         from viberpit import worktree_transfer as wtx
+        from server.codex import thread_move
         from server.sessions import session_move as sm
         me = self_host_name()
         raw_bundle = (manifest or {}).get("bundle")
         bundle = wtx.Bundle.from_dict(raw_bundle) if raw_bundle else None
         if not local and bundle is None:
             raise sm.MoveError(sm.MOVE_IMPORT_FAILED, "no transfer bundle")
+        raw_thread = (manifest or {}).get("codexThread")
+        try:
+            codex_bundle = thread_move.ThreadBundle.from_dict(raw_thread) if raw_thread else None
+        except thread_move.ThreadMoveError as exc:
+            raise sm.MoveError(sm.MOVE_IMPORT_FAILED, f"{exc.code}: {exc.detail}",
+                               extra={"historyCode": exc.code}) from exc
         row = await self._read_session_row(session_id)
         if row is None:
             raise sm.MoveError(sm.MOVE_NOT_FOUND, f"No session with id {session_id}.")
@@ -23611,6 +23711,10 @@ class SessionOrchestrator:
         created = False
         # The worktree import_ created the session's branch for (no prior ref), else None.
         branch_made_in: str | None = None
+        # The Codex thread files this import wrote here (rollout first), for _abandon.
+        written: list[Path] = []
+        is_codex = (parse_agent_engine(getattr(row, "engine", None), legacy_default=True)
+                    is AgentEngine.CODEX)
 
         async def _abandon() -> None:
             if local:
@@ -23635,6 +23739,10 @@ class SessionOrchestrator:
                 return
             await self._close_for_transfer(session_id)
             self._retarget_record(session_id, source or "")
+            if written:
+                # Exactly what import_thread wrote: a sidecar that was already here
+                # (the shared store) was never in this list (#3347).
+                await asyncio.to_thread(thread_move.remove_imported, list(written))
             if created and bundle is not None:
                 # The branch import_ just made has no record yet (it is written after
                 # the import succeeds): undoing our own creation needs none (D-22).
@@ -23666,13 +23774,28 @@ class SessionOrchestrator:
                     if os.path.abspath(info.path) != os.path.abspath(cwd):
                         raise sm.MoveError(sm.MOVE_PATH_MISMATCH,
                                            f"imported at {info.path}, row says {cwd}")
+                    if is_codex and codex_bundle is not None and codex_bundle.data is not None:
+                        # The thread's rollout (+ sidecars) into this host's CODEX_HOME
+                        # for the same account, at the source's relative path; a
+                        # rollout already here for that thread id is never overwritten.
+                        try:
+                            home, sidecars = self._codex_thread_paths(row.account_name)
+                        except sm.MoveError as exc:
+                            raise sm.MoveError(sm.MOVE_IMPORT_FAILED, exc.message) from exc
+                        try:
+                            written.extend(await asyncio.to_thread(
+                                thread_move.import_thread, home, sidecars, codex_bundle))
+                        except thread_move.ThreadMoveError as exc:
+                            code = (sm.MOVE_HISTORY_EXISTS if exc.code == "exists"
+                                    else sm.MOVE_IMPORT_FAILED)
+                            raise sm.MoveError(code, f"{exc.code}: {exc.detail}",
+                                               extra={"historyCode": exc.code}) from exc
                 self._install_row(row)
                 self._rearmed.discard(session_id)
-                # Never resume a stale transcript — also on a local adoption (the
+                # Never resume on stale history — also on a local adoption (the
                 # reconcile verifying a target that resumed outside the saga), whenever
-                # the manifest's marker is known.
-                await self._verify_moved_transcript(
-                    session_id, (manifest or {}).get("transcript"))
+                # the manifest's marker / thread descriptor is known.
+                await self._verify_moved_history(session_id, row, manifest)
                 if not await self._claim_session(session_id, why="transfer import",
                                                  adopt=True):
                     raise sm.MoveError(sm.MOVE_LEASE_HELD,
@@ -23712,7 +23835,9 @@ class SessionOrchestrator:
             self._queue_prompt_preamble(session_id, text)
         if not local and source:
             self._queue_prompt_preamble(
-                session_id, f"This session moved from {source} to {me}; the worktree and "
+                session_id, f"This session moved from {source} to {me}; the worktree, "
+                "uncommitted changes and Codex thread came with it." if is_codex else
+                f"This session moved from {source} to {me}; the worktree and "
                 "uncommitted changes came with it.")
         if cwd and os.path.isdir(cwd):
             try:
@@ -23737,6 +23862,7 @@ class SessionOrchestrator:
     async def _transfer_finalize(self, session_id: str, manifest: dict | None, *,
                                  owner: str) -> dict:
         from viberpit import worktree_transfer as wtx
+        from server.codex import thread_move
         from server.sessions import session_move as sm
         row = await self._read_session_row(session_id)
         if owner == self_host_name() or (row is not None and self._row_stamped_here(row.host)):
@@ -23744,6 +23870,7 @@ class SessionOrchestrator:
                                "This host owns the session; its worktree stays.")
         raw_bundle = (manifest or {}).get("bundle")
         bundle = wtx.Bundle.from_dict(raw_bundle) if raw_bundle else None
+        retired: Path | None = None
         async with self._transfer_slot(session_id):
             driver = self._drivers.get(session_id)
             if driver is not None and getattr(driver, "turn_active", False):
@@ -23751,8 +23878,20 @@ class SessionOrchestrator:
             rec = self._records.get(session_id)
             cwd = (getattr(rec, "cwd", None) or (row.cwd if row is not None else None)
                    or (manifest or {}).get("cwd"))
+            # Read before _retarget_record: a worker forgets the record there.
+            thread = self._codex_thread_ref(rec, row)
             await self._close_for_transfer(session_id)
             self._retarget_record(session_id, owner)
+            if thread is not None:
+                # Retire, never delete (#3347): renamed so nothing here can resume the
+                # thread while the bytes stay recoverable — the recovery ref's analogue.
+                try:
+                    home, _ = self._codex_thread_paths(thread[0])
+                    retired = await asyncio.to_thread(
+                        thread_move.retire_rollout, home, thread[1], owner)
+                except Exception:
+                    log.info("session.move_finalize could not retire the Codex thread "
+                             "id=%s thread=%s", session_id, thread[1], exc_info=True)
             if cwd and os.path.isdir(cwd):
                 try:
                     await asyncio.to_thread(wtx.delete_transfer_refs, cwd, session_id)
@@ -23766,10 +23905,12 @@ class SessionOrchestrator:
                     wtx.finalize, bundle, cwd, session_id=session_id,
                     owned_branch=owned_branch))
                 await owned_branch.settle()
-        log.info("session.move_finalize id=%s owner=%s removed=%s recovery_ref=%s",
-                 session_id, owner, done.removed, done.recovery_ref)
+        log.info("session.move_finalize id=%s owner=%s removed=%s recovery_ref=%s "
+                 "history_retired=%s", session_id, owner, done.removed, done.recovery_ref,
+                 retired)
         return {"sessionId": session_id, "removed": done.removed,
-                "recoveryRef": done.recovery_ref}
+                "recoveryRef": done.recovery_ref,
+                "historyRetired": str(retired) if retired else None}
 
     def _has_live_card(self, session_id: str) -> bool:
         """A permission / question / plan card a person could answer right now — the

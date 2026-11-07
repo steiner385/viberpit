@@ -116,10 +116,14 @@ class AgentCapabilities:
     flag_settings: bool = False
     #: Move to host (D-17): the session can be closed on one fleet host and resumed on
     #: another with the same conversation. Needs two things of the engine — its history
-    #: on the tree every host shares, and resume by conversation id from any cwd. Claude
-    #: has both (verified on CLI 2.1.293/2.1.318, docs/superpowers/specs/
-    #: 2026-11-05-d17-move-session-verification.md); Codex has neither (its history is
-    #: inside a host-local CODEX_HOME, and ``thread/resume`` takes no path). Gated by the
+    #: reachable by the target host, and resume by conversation id from any cwd. Claude
+    #: has both as-is: its transcript sits on the tree every host shares (verified on CLI
+    #: 2.1.293/2.1.318, docs/superpowers/specs/2026-11-05-d17-move-session-verification.md).
+    #: Codex gets there differently: its history is a single rollout file inside a
+    #: host-local CODEX_HOME, so the daemon RPC carries it to the target (plus ViberPit's
+    #: sidecars) and the target resumes by thread id, which ``thread/resume`` accepts with
+    #: no path (verified on codex-cli 0.153.2, docs/superpowers/specs/
+    #: 2026-11-06-codex-session-move-verification.md, #3347). Gated by the
     #: ``VIBERPIT_SESSION_MOVE_ENABLED`` kill switch (``move_supported``).
     cross_host_transfer: bool = False
 
