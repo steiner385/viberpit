@@ -54,6 +54,39 @@ async def test_forward_live_stamps_seq_and_session_id():
 
 
 @pytest.mark.asyncio
+async def test_forward_live_stamps_gen_only_when_given():
+    """#3357: the attach generation rides every forwarded frame; omitted without one."""
+    from server.bridge.ws import _forward_live
+    out_q: asyncio.Queue = asyncio.Queue()
+    await _forward_live(_FakeDriver([_FakeEvent({"type": "textDelta", "text": "a"}),
+                                     _FakeEvent({"type": "textDelta", "text": "b"})]),
+                        out_q, "sess-1", gen=7)
+    assert [out_q.get_nowait()["gen"] for _ in range(2)] == [7, 7]
+    await _forward_live(_FakeDriver([_FakeEvent({"type": "textDelta", "text": "c"})]),
+                        out_q, "sess-1")
+    assert "gen" not in out_q.get_nowait()
+
+
+@pytest.mark.asyncio
+async def test_replay_reset_carries_gen():
+    """#3357: the replayReset that opens an attach names the generation that follows."""
+    from server.bridge import ws as ws_mod
+
+    class _Orch:
+        async def transcript_source(self, sid):
+            return (None, None)
+
+        async def engine_replay_window(self, sid, **kw):
+            return None
+
+    frames: list[dict] = []
+    await ws_mod._run_replay_and_complete(_Orch(), frames.append, "sess-1",
+                                          drop_incomplete=True, gen=4)
+    reset = next(f for f in frames if f["type"] == "replayReset")
+    assert reset["gen"] == 4
+
+
+@pytest.mark.asyncio
 async def test_forward_live_resyncs_on_daemon_gap():
     """A daemon replay-gap sentinel (issue #185) must NOT be forwarded to the client
     as an event — instead it consumes a seq, leaving a hole the client's liveBatch
