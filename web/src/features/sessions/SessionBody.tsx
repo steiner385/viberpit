@@ -33,6 +33,7 @@ import { DeferredBrowserTab } from '@/features/sessions/browser/DeferredBrowserT
 import { useSessionDevServers } from '@/api/devServers'
 import { useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities, useResolveSuspectedComplete, useSessionDiff, useSetPrAutofix } from '@/api/hooks'
 import { canUseEngine } from '@/session/engineCapabilities'
+import { SANDBOX_HOLD_REASON } from '@/api/types'
 import { useFileTarget, useSessionView, type SessionView } from './sessionView'
 import { FileRefContext, type FileRefActions } from '@/features/sessions/transcript/fileRefContext'
 import { useComposerAttach } from '@/shell/sessionGestures'
@@ -161,6 +162,11 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
     }
   }, [])
 
+  // Held because its sandbox failed (D-23): the error banner offers Retry / Turn off.
+  const sandboxHold = sessionRecord?.status === 'needs_attention' && sessionRecord.pausedReason === SANDBOX_HOLD_REASON
+    ? { sessionId: sessionRecord.id, reason: sessionRecord.sandbox?.reason ?? null }
+    : null
+
   // An error card's Switch model / Lower effort / Compact (D-19).
   const recovery: ErrorRecovery = {
     rt, busy, session: sessionRecord,
@@ -200,6 +206,10 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
           cwd: sessionRecord?.cwd,
           // Offered by the card only beside a worktree path (`cwd`).
           worktree: { sessionId: rt.sessionId, busy, onDiscarded: onClosed },
+          // Strictly on (D-23): an unknown capability is an older edge with no endpoint.
+          sandbox: caps?.sandbox === true
+            ? { sessionId: rt.sessionId, busy, state: sessionRecord?.sandbox ?? null }
+            : undefined,
           prs: sessionRecord?.prs,
           prAutofix: {
             enabled: sessionRecord?.prAutofixPaused !== true,
@@ -264,7 +274,7 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
               <>
                 {/* Error banner — shared with the assistant drawer; see the component
                     for why it is transient and where the durable record lives. */}
-                <SessionErrorBanner rt={rt} />
+                <SessionErrorBanner rt={rt} sandboxHold={sandboxHold} />
                 {sessionRecord?.snooze && (
                   <SnoozeBanner sessionId={sessionRecord.id} snooze={sessionRecord.snooze} />
                 )}

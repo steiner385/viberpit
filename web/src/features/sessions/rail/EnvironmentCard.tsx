@@ -3,7 +3,7 @@
  * the account (switch / unpin, through `AccountSwitcher`), the
  * runner host, the display, the git branch and worktree, and the session's PRs —
  * with the PR auto-fix switch beside them (D-14), and the worktree's Discard / Repair
- * (D-19, `WorktreeControls`).
+ * (D-19, `WorktreeControls`) and the opt-in sandbox (D-23, `SandboxControls`).
  */
 import { useId } from 'react'
 import type { AgentEngine, PullRequestInfo } from '@/api/types'
@@ -15,6 +15,7 @@ import { CopyablePath } from '../transcript/CopyablePath'
 import { Switch } from '@/ui/Switch'
 import { RailCard, RailField, RailFields } from './RailCard'
 import { WorktreeControls, type WorktreeControlsProps } from './WorktreeControls'
+import { SandboxControls, type SandboxControlsProps } from './SandboxControls'
 
 /** Shown for a value the server does not know. */
 const UNKNOWN = '—'
@@ -41,6 +42,9 @@ interface Props {
    *  inverse of `prAutofixPaused`. Shown only while the session has a PR — the
    *  draft guard's `owns_pr` is a per-PR check, not a session field. */
   prAutofix?: { enabled: boolean; onChange: (enabled: boolean) => void; pending?: boolean }
+  /** The sandbox row (D-23): passed only where the engine reports the capability; the
+   *  row still hides unless the owning daemon's facts confirm it. */
+  sandbox?: SandboxControlsProps
 }
 
 export const PR_AUTOFIX_COPY = "PR Doctor fixes failing checks and conflicts on this session's PRs"
@@ -49,7 +53,7 @@ export const PR_AUTOFIX_COPY = "PR Doctor fixes failing checks and conflicts on 
 export function EnvironmentCard({
   engine = null, account, accounts, accountPinned, onSelectAccount, onUnpin,
   host = null, displayMode = null, displayFallbackReason = null, branch = null, cwd = null, worktree, prs = null,
-  prAutofix,
+  prAutofix, sandbox,
 }: Props) {
   const autofixLabelId = useId()
   const autofixCopyId = useId()
@@ -86,6 +90,7 @@ export function EnvironmentCard({
           {cwd ? <span className="break-all"><CopyablePath text={cwd} /></span> : UNKNOWN}
         </RailField>
       </RailFields>
+      {sandbox && <SandboxControls {...sandbox} />}
       {cwd && worktree && <WorktreeControls {...worktree} />}
       {prs && prs.length > 0 && (
         <div className="flex flex-wrap items-center gap-1">

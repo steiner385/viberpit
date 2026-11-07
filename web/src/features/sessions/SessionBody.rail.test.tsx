@@ -12,6 +12,9 @@ import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { EMPTY_BACKGROUND_WORK_VIEW } from '@/session/selectors'
 import { setElementWidth, resetElementWidth } from '@/test/elementWidth'
 import { RAIL_COLLAPSED_KEY } from './rail/railPreference'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { api } from '@/api/client'
+import * as hooks from '@/api/hooks'
 
 const { diffHook, mcpHook, sessionsHook, prAutofix } = vi.hoisted(() => ({
   diffHook: vi.fn(), mcpHook: vi.fn(), sessionsHook: vi.fn(), prAutofix: vi.fn(),
@@ -110,6 +113,55 @@ describe('SessionBody — session rail', () => {
       sessionsHook.mockReturnValue({ data: [{ ...BASE_SESSION, prs: [pr], prAutofixPaused: true }] })
       renderBody()
       expect(await screen.findByRole('switch', { name: 'PR auto-fix' })).toHaveAttribute('aria-checked', 'false')
+    })
+  })
+
+  describe('sandbox (D-23)', () => {
+    beforeEach(() => {
+      setElementWidth(1200)
+      vi.spyOn(api, 'get').mockResolvedValue({
+        sessionId: 's1', capability: true, enabled: true, state: 'active', reason: null, held: false, busy: false,
+        available: true, unavailableReason: null, preflight: null, canToggle: true, allowedDomains: [],
+      })
+    })
+    afterEach(() => { vi.mocked(hooks.useEngineCapabilities).mockReturnValue(undefined); vi.restoreAllMocks() })
+
+    function renderWithClient() {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      return render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={['/sessions/s1']}><SessionBody rt={makeRuntime()} /></MemoryRouter>
+        </QueryClientProvider>,
+      )
+    }
+
+    it('a session held on a failed sandbox shows the reason with Retry and Turn off', async () => {
+      sessionsHook.mockReturnValue({ data: [{
+        ...BASE_SESSION, status: 'needs_attention', pausedReason: 'sandbox_failed',
+        sandbox: { enabled: true, state: 'failed', reason: 'socat is not installed' },
+      }] })
+      renderWithClient()
+      const hold = await screen.findByTestId('sandbox-hold')
+      expect(hold).toHaveTextContent('socat is not installed')
+      expect(await within(hold).findByRole('button', { name: 'Retry' })).toBeVisible()
+      expect(within(hold).getByRole('button', { name: 'Turn off sandbox and continue' })).toBeVisible()
+    })
+
+    it('another pause reason shows no hold', async () => {
+      sessionsHook.mockReturnValue({ data: [{ ...BASE_SESSION, status: 'needs_attention', pausedReason: 'rotation_cap' }] })
+      renderWithClient()
+      await screen.findByRole('region', { name: 'Environment' })
+      expect(screen.queryByTestId('sandbox-hold')).toBeNull()
+    })
+
+    it('the Environment card has the Sandbox row only where the engine reports the capability', async () => {
+      const { unmount } = renderWithClient()
+      await screen.findByRole('region', { name: 'Environment' })
+      expect(screen.queryByRole('switch', { name: 'Sandbox' })).toBeNull()
+      unmount()
+      vi.mocked(hooks.useEngineCapabilities).mockReturnValue({ sandbox: true } as never)
+      renderWithClient()
+      expect(await screen.findByRole('switch', { name: 'Sandbox' })).toHaveAttribute('aria-checked', 'true')
     })
   })
 

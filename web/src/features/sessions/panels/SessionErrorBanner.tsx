@@ -1,9 +1,27 @@
+import { lazy, Suspense } from 'react'
 import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { IconButton } from '@/ui/IconButton'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 
-interface Props { rt: Pick<SessionRuntime, 'state' | 'dismissError'>; className?: string }
+/** The hold's copy, buttons and confirm load only when a session is held (D-23). */
+const SandboxHoldBanner = lazy(() => import('./SandboxHoldBanner'))
+
+/** The attach refusal a held session answers — the same fact the hold states. */
+const SANDBOX_ATTACH_REFUSAL = 'SESSION_SANDBOX_FAILED'
+
+/** A session held because its sandbox failed (D-23): `status: needs_attention`,
+ *  `pausedReason: "sandbox_failed"`. `reason` is `session.sandbox.reason`. */
+export interface SandboxHold { sessionId: string; reason: string | null }
+
+interface Props {
+  rt: Pick<SessionRuntime, 'state' | 'dismissError'>
+  /** Held on a failed sandbox: the banner states it and offers Retry / Turn off. */
+  sandboxHold?: SandboxHold | null
+  className?: string
+}
+
+const BOX = 'flex-shrink-0 flex items-start gap-2 px-4 py-3 text-sm bg-danger-wash text-danger border-b border-danger'
 
 /**
  * The runtime's session-level error banner (`rt.state.error`), rendered wherever a
@@ -18,19 +36,33 @@ interface Props { rt: Pick<SessionRuntime, 'state' | 'dismissError'>; className?
  * Transient by design: dismissable here, and retired automatically by the reducer
  * when the next prompt is sent. A turn-anchored error also gets an inline ErrorCard
  * in the transcript, which is the durable record, so closing this never loses it.
+ *
+ * The one exception is a sandbox hold (D-23), which is durable: it rides the session
+ * payload, so it is not dismissable, and it stands in for the attach refusal
+ * (`SESSION_SANDBOX_FAILED`) that states the same fact. Its two actions — Retry, and
+ * the confirmed "Turn off sandbox and continue" — are an explicit human decision.
  */
-export function SessionErrorBanner({ rt, className }: Props) {
-  const error = rt.state.error
-  if (!error) return null
+export function SessionErrorBanner({ rt, sandboxHold = null, className }: Props) {
+  const error = sandboxHold && rt.state.error?.code === SANDBOX_ATTACH_REFUSAL ? null : rt.state.error
+  return (
+    <>
+      {sandboxHold && (
+        <Suspense fallback={null}>
+          <SandboxHoldBanner {...sandboxHold} className={cn(BOX, 'flex-wrap', className)} />
+        </Suspense>
+      )}
+      {error && <ErrorRow error={error} onDismiss={rt.dismissError} className={className} />}
+    </>
+  )
+}
+
+function ErrorRow({ error, onDismiss, className }: {
+  error: NonNullable<Props['rt']['state']['error']>; onDismiss: () => void; className?: string
+}) {
   return (
     <div
       role="alert"
-      className={cn(
-        'flex-shrink-0 flex items-start gap-2 px-4 py-3 text-sm',
-        'bg-danger-wash text-danger',
-        'border-b border-danger',
-        className,
-      )}
+      className={cn(BOX, className)}
     >
       <div className="flex-1 min-w-0">
         <span className="font-medium">Error: </span>
@@ -44,7 +76,7 @@ export function SessionErrorBanner({ rt, className }: Props) {
       <IconButton
         aria-label="Dismiss"
         size="sm"
-        onClick={rt.dismissError}
+        onClick={onDismiss}
         className="-my-1 shrink-0 text-danger"
       >
         <X size={14} aria-hidden="true" />

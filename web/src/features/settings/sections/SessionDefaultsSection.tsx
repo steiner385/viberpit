@@ -15,6 +15,7 @@ import { SettingRow } from '../chassis/SettingRow'
 import { SaveBar } from '../chassis/SaveBar'
 import { PathControl } from '../chassis/PathControl'
 import { branchPrefixReason, useSettingsForm } from '../useSettingsForm'
+import { SANDBOX_DEFAULT_COPY } from '@/features/sessions/sandboxCopy'
 
 /** '' is the draft's "server default" — the payload turns it back into null. */
 type ApprovalAction = '' | 'require_approval' | 'block' | 'allow'
@@ -30,6 +31,8 @@ interface DefaultsDraft {
   repoRoot: string
   /** '' = the built-in prefix (D-22). */
   branchPrefix: string
+  /** Sandbox new sessions (D-23); the server's null reads as false. */
+  sandboxDefault: boolean
 }
 
 /** D-14 copy: one root for clones AND worktrees, and what a change does not do. */
@@ -68,6 +71,7 @@ function toDraft(s: AppSettings): DefaultsDraft {
     thinkingCollapsed: s.thinkingCollapsed,
     repoRoot: s.repoRoot ?? '',
     branchPrefix: s.branchPrefix ?? '',
+    sandboxDefault: s.sandboxDefault === true,
   }
 }
 
@@ -91,6 +95,9 @@ function toPayload(d: DefaultsDraft, saved: DefaultsDraft): Partial<AppSettings>
     // sent, and an unrelated save must never fail on the clash scan of a prefix the
     // user did not touch. Blank resets to the built-in.
     ...(prefix !== saved.branchPrefix.trim() ? { branchPrefix: prefix || null } : {}),
+    // Sent ONLY when it changed (D-23): changing it needs a person, so an unrelated
+    // save must never carry it — nor reach a server whose kill switch hides it.
+    ...(d.sandboxDefault !== saved.sandboxDefault ? { sandboxDefault: d.sandboxDefault } : {}),
   }
 }
 
@@ -206,6 +213,17 @@ export function SessionDefaultsSection() {
           <Banner tone="warning" role="alert" title="Sessions will run without prompting">
             Anyone who can reach this server can run code as you. Saving asks you to confirm.
           </Banner>
+        )}
+        {/* D-23: only where the server can sandbox at all (the kill switch, on Claude). */}
+        {settings.sandboxCapability === true && (
+          <SettingRow label="Sandbox" htmlFor="defaults-sandbox" description={SANDBOX_DEFAULT_COPY} selfLabelled>
+            <Checkbox
+              id="defaults-sandbox"
+              label="Sandbox new sessions"
+              checked={draft.sandboxDefault}
+              onChange={(v) => set('sandboxDefault', v)}
+            />
+          </SettingRow>
         )}
       </SettingsGroup>
 

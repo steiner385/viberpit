@@ -53,7 +53,7 @@ const META = [
   { id: 'sessions',      group: 'sessions',  label: 'Defaults',
     // Names the three groups AND keeps the section's own "these are defaults, not
     // locks" caveat, which the registry sentence had dropped.
-    description: 'What every new session starts with — tool approvals, model gating, transcript display and where its worktree goes — and a session can change any of them for itself once it is running.', keywords: ['permission', 'model', 'transcript', 'worktree', 'repo root', 'branch prefix'] },
+    description: 'What every new session starts with — tool approvals, model gating, transcript display and where its worktree goes — and a session can change any of them for itself once it is running.', keywords: ['permission', 'model', 'transcript', 'worktree', 'repo root', 'branch prefix', 'sandbox'] },
   { id: 'presets',       group: 'sessions',  label: 'Presets',
     description: 'Saved launch configurations for the New session dialog.' },
   { id: 'templates',     group: 'sessions',  label: 'Templates',
