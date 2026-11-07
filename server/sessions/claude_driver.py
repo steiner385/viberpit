@@ -476,6 +476,9 @@ class ClaudeAgentDriver:
         self._sandbox = bool(sandbox)
         self._on_sandbox_state = on_sandbox_state
         self._sandbox_stderr: collections.deque[str] = collections.deque(maxlen=200)
+        # Backgrounded tasks still running (tool_use ids), from the BackgroundTask events
+        # the pump already handles: a sandboxed session's file writes wait while any runs.
+        self._backgrounded: set[str] = set()
         self._on_mcp_status = on_mcp_status
         self._mcp_last: list = []                     # last snapshot, auth latch applied
         self._mcp_base: list = []                     # last sanitized snapshot, before the latch
@@ -1133,7 +1136,10 @@ class ClaudeAgentDriver:
         if self._sandbox:
             # D-23: the CLI sandbox wraps Bash only; file tools and third-party MCP tools
             # are confined here too (the spawn's PreToolUse hook is the binding layer).
-            why = sandbox_mod.confine_tool(tool_name, tool_input, self.cwd)
+            from .claude_sdk_factory import session_tmpdir_path
+            why = sandbox_mod.confine_tool(tool_name, tool_input, self.cwd,
+                                           tmpdir=session_tmpdir_path(),
+                                           background_busy=self.has_background_work)
             if why is not None:
                 log.info("driver._can_use_tool: sandbox denied tool=%s session=%s",
                          tool_name, self.session_id)
@@ -1319,7 +1325,8 @@ class ClaudeAgentDriver:
         except Exception as exc:
             return sandbox_mod.DialogVerdict(False, f"get_sandbox_dialog failed: {exc}")
         from .claude_sdk_factory import session_tmpdir_path
-        return sandbox_mod.check_dialog(resp, cwd=self.cwd, tmpdir=session_tmpdir_path())
+        return sandbox_mod.check_dialog(resp, cwd=self.cwd, tmpdir=session_tmpdir_path(),
+                                        config_dir=self.config_dir)
 
     def _sandbox_failure_texts(self, exc: BaseException | None) -> list[str]:
         """Everything that may carry the CLI's sandbox refusal: the exception chain, the
@@ -1345,6 +1352,23 @@ class ClaudeAgentDriver:
         closing = asyncio.ensure_future(client.__aexit__(None, None, None))
         await bounded_wait(closing, timeout=_CLOSE_AEXIT_TIMEOUT_S,
                            phase=f"driver.sandbox_abort:{self.session_id}")
+
+    def _note_background(self, e) -> bool:
+        """Track a BackgroundTaskStarted / Ended event; True when the backgrounded set
+        changed (a foreground Bash is a local_bash task too, and does not count)."""
+        if isinstance(e, ev.BackgroundTaskStarted):
+            if not e.backgrounded:
+                return False
+            self._subagent_tasks[e.tool_use_id] = e.task_id
+            self._backgrounded.add(e.tool_use_id)
+            return True
+        self._backgrounded.discard(e.tool_use_id)
+        return self._subagent_tasks.pop(e.tool_use_id, None) is not None
+
+    def has_background_work(self) -> bool:
+        """Is a backgrounded task (Bash ``run_in_background``, Monitor …) still running?
+        The sandbox's write guard (D-23) refuses file tools while one is."""
+        return bool(self._backgrounded)
 
     async def _report_sandbox(self, state: str, reason: str | None) -> None:
         if self._on_sandbox_state is None:
@@ -1885,13 +1909,7 @@ class ClaudeAgentDriver:
             if isinstance(e, (ev.BackgroundTaskStarted, ev.BackgroundTaskEnded)):
                 # A foreground Bash is a local_bash task too; only backgrounded work is a
                 # snapshot change, so only it registers and fires the refresh.
-                changed = False
-                if isinstance(e, ev.BackgroundTaskStarted):
-                    if e.backgrounded:
-                        self._subagent_tasks[e.tool_use_id] = e.task_id
-                        changed = True
-                else:
-                    changed = self._subagent_tasks.pop(e.tool_use_id, None) is not None
+                changed = self._note_background(e)
                 if changed and self._on_background_work_changed is not None:
                     try:
                         self._on_background_work_changed(self.session_id)

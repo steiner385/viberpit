@@ -783,6 +783,7 @@ _TERMINAL_PAUSE_REASONS: frozenset[str] = frozenset({
     "automation_ownership_stale",
     _WORKTREE_MISSING_PAUSE_REASON,
     sandbox_mod.SANDBOX_PAUSE_REASON,
+    sandbox_mod.SANDBOX_ESCAPE_REASON,
 })
 
 # Pause reason for a rebuild the session lease refused: another host holds this
@@ -825,6 +826,7 @@ PAUSE_REASONS: frozenset[str] = frozenset({
     _REASSIGN_FAILED_PAUSE_REASON,
     _WORKTREE_MISSING_PAUSE_REASON,
     sandbox_mod.SANDBOX_PAUSE_REASON,
+    sandbox_mod.SANDBOX_ESCAPE_REASON,
 })
 
 # Pause reasons that are an expected, self-healing capacity wait rather than an anomaly:
@@ -847,6 +849,8 @@ _ECHOED_PAUSE_REASONS: frozenset[str] = frozenset({
     _WORKTREE_MISSING_PAUSE_REASON,   # follows `worktree.missing` (#2913)
     # follows the driver's `sandbox.unavailable` (INFO) / `sandbox.verify_failed` (WARNING)
     sandbox_mod.SANDBOX_PAUSE_REASON,
+    # follows `sandbox.escape_suspected` (WARNING, the incident's one filed record)
+    sandbox_mod.SANDBOX_ESCAPE_REASON,
 })
 
 # Minimum spacing between recovery-triggered sweeps (an account dropping below ceiling
@@ -2660,7 +2664,14 @@ class SessionOrchestrator:
                 # Non-Bash tools are confined by an SDK PreToolUse hook (every mode). A
                 # factory that cannot take it still has the driver's can_use_tool check.
                 if "sandbox_confine" in declared:
-                    kw["sandbox_confine"] = sandbox_mod.confinement_hook(cwd)
+                    from server.sessions.claude_sdk_factory import session_tmpdir_path
+                    kw["sandbox_confine"] = sandbox_mod.confinement_hook(
+                        cwd, tmpdir=session_tmpdir_path(),
+                        background_busy=functools.partial(self._sandbox_background_busy,
+                                                          session_id))
+                if "sandbox_post_write" in declared:
+                    kw["sandbox_post_write"] = sandbox_mod.post_write_hook(
+                        cwd, functools.partial(self._on_sandbox_escape, session_id))
             if "owns_pr" in declared:
                 kw["owns_pr"] = functools.partial(self._session_opened_pr, session_id)
             if "ready_grants" in declared:
@@ -2670,7 +2681,8 @@ class SessionOrchestrator:
                 # The FULL block, whatever the flag-settings kill switch says: it is
                 # spawn-only, and a factory that cannot take it fails the after-spawn
                 # check (fail closed), never runs bare.
-                spawn_flags = {**spawn_flags, **sandbox_mod.spawn_settings_overlay(cwd)}
+                spawn_flags = {**spawn_flags,
+                               **sandbox_mod.spawn_settings_overlay(cwd, config_dir)}
             if spawn_flags and "flag_settings" in declared:
                 kw["flag_settings"] = spawn_flags
             if self._rewind_spawn(session_id):
@@ -7363,7 +7375,7 @@ class SessionOrchestrator:
     def _sandbox_result(self, rec: SessionRecord, *, respawned: bool) -> dict:
         view = sandbox_mod.session_view(rec, self._engine_registry.capabilities_for(rec.engine))
         return {"sessionId": rec.id, **view,
-                "held": rec.paused_reason == sandbox_mod.SANDBOX_PAUSE_REASON,
+                "held": rec.paused_reason in sandbox_mod.SANDBOX_HOLD_REASONS,
                 "respawned": respawned}
 
     async def sandbox_facts(self, session_id: str, *, refresh: bool = False) -> dict:
@@ -7384,7 +7396,7 @@ class SessionOrchestrator:
         return {
             "sessionId": rec.id, "host": getattr(rec, "host", None),
             "capability": capability, **view,
-            "held": rec.paused_reason == sandbox_mod.SANDBOX_PAUSE_REASON,
+            "held": rec.paused_reason in sandbox_mod.SANDBOX_HOLD_REASONS,
             "busy": busy, "available": available,
             "unavailableReason": (pf.reason if capability and pf is not None and not pf.ok
                                   else None),
@@ -7444,7 +7456,7 @@ class SessionOrchestrator:
                 rec = current
                 if await self._worktree_control_busy(session_id, rec):
                     raise self._sandbox_refusal(session_id, sandbox_mod.SANDBOX_SESSION_BUSY)
-                held = rec.paused_reason == sandbox_mod.SANDBOX_PAUSE_REASON
+                held = rec.paused_reason in sandbox_mod.SANDBOX_HOLD_REASONS
                 respawned = False
                 if (rec.sandbox is True) != enabled or held:
                     await self._persist_sandbox_setting(rec, enabled)
@@ -8873,6 +8885,30 @@ class SessionOrchestrator:
         if rec is not None:
             rec.fast_mode_state = state
             rec.fast_mode_disabled_reason = reason
+
+    def _sandbox_background_busy(self, session_id: str) -> bool:
+        """The write guard's view (D-23): does this session's live driver report a
+        backgrounded task still running? No driver yet (mid-spawn) is not busy."""
+        probe = getattr(self._drivers.get(session_id), "has_background_work", None)
+        return bool(probe()) if callable(probe) else False
+
+    def _on_sandbox_escape(self, session_id: str, tool: str, path: str) -> None:
+        """A sandboxed session's file tool wrote through a path that now resolves outside
+        its worktree (D-23 fix round 3): THE one WARNING for the incident (it should file
+        an issue), then hold the session and stop its CLI, off the hook's own call."""
+        log_event(log, logging.WARNING, "sandbox.escape_suspected", session_id=session_id,
+                  tool=tool, path=path)
+        self._spawn(self._hold_on_escape(session_id), name=f"sandbox-escape-{session_id}")
+
+    async def _hold_on_escape(self, session_id: str) -> None:
+        rec = self._records.get(session_id)
+        if rec is None:
+            return
+        await self._pause_session(rec, reason=sandbox_mod.SANDBOX_ESCAPE_REASON)
+        driver = await self._teardown_driver_state(session_id)
+        if driver is not None:
+            await bounded_wait(driver.aclose(), timeout=DRIVER_RELEASE_WAIT_S,
+                               phase=f"sandbox.escape.close:{session_id}")
 
     async def _hold_on_sandbox(self, rec: SessionRecord) -> None:
         """Park *rec* on a failed sandbox (terminal ``sandbox_failed``) — except inside a
@@ -24655,7 +24691,7 @@ class SessionOrchestrator:
         except sandbox_mod.SandboxError:
             await self._hold_on_sandbox(rec)
             raise
-        if rec.paused_reason == sandbox_mod.SANDBOX_PAUSE_REASON and wants_sandbox:
+        if rec.paused_reason in sandbox_mod.SANDBOX_HOLD_REASONS and wants_sandbox:
             log.info("session.resume id=%s refused: held on a failed sandbox", session_id)
             raise sandbox_mod.SandboxError(sandbox_mod.SANDBOX_HELD, rec.sandbox_reason)
         if not await self._claim_session(session_id, why="resume"):

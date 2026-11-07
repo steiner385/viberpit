@@ -73,6 +73,11 @@ _SECCOMP_MISSING = "seccomp not available"
 #: The one pause reason a sandbox hold uses (``orchestrator.PAUSE_REASONS``): terminal,
 #: so no automatic loop retries it; Retry / Turn off are a person's.
 SANDBOX_PAUSE_REASON = "sandbox_failed"
+#: A file tool's target resolved outside the worktree AFTER the write (fix round 3):
+#: terminal like ``sandbox_failed``, and a held session either way.
+SANDBOX_ESCAPE_REASON = "sandbox_escape_suspected"
+SANDBOX_HOLD_REASONS: frozenset[str] = frozenset({SANDBOX_PAUSE_REASON,
+                                                   SANDBOX_ESCAPE_REASON})
 
 # The session's sandbox state, as stored (``sessions.sandbox_state``) and served.
 STATE_OFF = "off"
@@ -231,19 +236,27 @@ def protected_git_paths(cwd: str | None) -> list[str]:
     return [os.path.join(common, "hooks"), os.path.join(common, "config")] if common else []
 
 
-def settings_block(cwd: str | None = None) -> dict[str, Any]:
+def settings_block(cwd: str | None = None,
+                   config_dir: str | None = None) -> dict[str, Any]:
     """``{"sandbox": {...}}`` — the full block for one spawn's ``--settings`` JSON (spike
     §2.1, plus the pins). A fresh deep copy every call: nothing a caller does to it
     reaches the next. With *cwd*, ``filesystem.denyWrite`` names that worktree's git
-    ``hooks``/``config``."""
+    ``hooks``/``config``; with *config_dir*, ``filesystem.denyRead`` / ``allowRead``
+    hide the secrets a sandboxed shell could otherwise read (:func:`read_policy`;
+    2.1.319 filesystem schema ``gh`` @282524116, ``denyRead`` @282524433)."""
     block = copy.deepcopy(_SETTINGS_BLOCK)
     deny = protected_git_paths(cwd)
     if deny:
         block["filesystem"]["denyWrite"] = deny
+    if config_dir is not None:
+        deny_read, allow_read = read_policy(config_dir)
+        block["filesystem"]["denyRead"] = deny_read
+        block["filesystem"]["allowRead"] = allow_read
     return {SANDBOX_KEY: block}
 
 
-def spawn_settings_overlay(cwd: str | None = None) -> dict[str, Any]:
+def spawn_settings_overlay(cwd: str | None = None,
+                           config_dir: str | None = None) -> dict[str, Any]:
     """Everything a SANDBOXED spawn adds to its ``--settings`` JSON (flag layer):
 
     * the sandbox block (:func:`settings_block`);
@@ -257,8 +270,12 @@ def spawn_settings_overlay(cwd: str | None = None) -> dict[str, Any]:
       ``setting_sources`` is NOT used, since it would also drop CLAUDE.md;
     * ``enableAllProjectMcpServers: false`` — a repo's ``.mcp.json`` servers would start
       as host processes outside bwrap; the unsandboxed default auto-trusts them.
+
+    Trade-off (acknowledged, fix round 3): ``disableAllHooks`` also stops the operator's
+    USER hooks in sandboxed sessions; the only one in use is the WebSearch transformer,
+    and WebSearch is denied there anyway.
     """
-    return {**settings_block(cwd), "disableAllHooks": True,
+    return {**settings_block(cwd, config_dir), "disableAllHooks": True,
             "enableAllProjectMcpServers": False}
 
 
@@ -348,8 +365,8 @@ def _str_list(value: Any) -> list[str] | None:
     return [str(v) for v in value] if isinstance(value, list) else None
 
 
-def check_dialog(resp: Any, *, cwd: str | None = None,
-                 tmpdir: str | None = None) -> DialogVerdict:
+def check_dialog(resp: Any, *, cwd: str | None = None, tmpdir: str | None = None,
+                 config_dir: str | None = None) -> DialogVerdict:
     """Require every condition of spike §2.4, and that the restrictions the CLI says it
     applied are exactly ViberPit's block. The reply's restriction lists are "the
     settings' lists, not the runtime's built-in defaults" (2.1.319 schema @284671000),
@@ -363,6 +380,8 @@ def check_dialog(resp: Any, *, cwd: str | None = None,
       (``filesystem.allowWrite``), so anything there was added by some settings layer;
     * ``restrictions.fs_deny_write`` includes the worktree's ``<common>/hooks`` and
       ``<common>/config`` (sent in the block's ``filesystem.denyWrite``).
+    * with *config_dir*: ``restrictions.fs_deny_read`` includes every :func:`read_policy`
+      denial and ``fs_allow_read`` is exactly its re-allows (sent in the block).
 
     *tmpdir* is accepted for the caller's symmetry and unused: the temp roots are
     runtime defaults, never in the settings' lists."""
@@ -421,57 +440,253 @@ def check_dialog(resp: Any, *, cwd: str | None = None,
     if missing:
         return DialogVerdict(False, "git hooks/config are not write-denied: "
                              + ", ".join(missing))
+    if config_dir is not None:
+        want_deny, want_allow = read_policy(config_dir)
+        deny_read = _str_list(restrictions.get("fs_deny_read"))
+        allow_read = _str_list(restrictions.get("fs_allow_read"))
+        if deny_read is None or allow_read is None:
+            return DialogVerdict(False, "get_sandbox_dialog did not report the read rules")
+        unread = [p for p in want_deny if p not in deny_read]
+        if unread:
+            return DialogVerdict(False, "secrets are not read-denied: " + ", ".join(unread))
+        if sorted(set(allow_read)) != sorted(set(want_allow)):
+            return DialogVerdict(False, "the read re-allows differ from the block: "
+                                 + ", ".join(sorted(set(allow_read) ^ set(want_allow))))
     return DialogVerdict(True)
 
 
-# ── non-Bash tools (D22d: the sandbox contains a full-auto session) ──────────
-# The CLI sandbox wraps Bash only. Edit/Write/MultiEdit/NotebookEdit and MCP tools run in
-# the CLI process itself, so a sandboxed session confines them here, through an SDK
-# PreToolUse callback hook (binds in EVERY permission mode, bypassPermissions included:
-# 2.1.319 runs PreToolUse hooks before the permission pipeline and ``Nds`` @296090015
-# returns a hook "deny" before it ever calls canUseTool or reads the mode) and again in
-# the driver's can_use_tool (defence in depth for the modes that reach it).
+# ── tools (D22d: the sandbox contains a full-auto session) ───────────────────
+# The CLI sandbox wraps Bash only; every other tool runs in the CLI host process. So a
+# sandboxed session runs a DENY-BY-DEFAULT allowlist (``confine_tool``), enforced by an
+# SDK PreToolUse callback hook — it binds in EVERY permission mode, bypassPermissions
+# included (2.1.319: PreToolUse hooks run before the permission pipeline, and ``Nds``
+# @296090015 returns a hook "deny" before it calls canUseTool or reads the mode) — and
+# again in the driver's can_use_tool. Sub-agents run their tools through the same
+# executor (``e8t``), whose only hook gate is ``q0`` @295954344 (internal always-allowed
+# tools, a ``bareFork`` — set only for the resume cache-warm fork @322680079 — or
+# ``settingsHooksOff``, never set to true in this binary), so the hook sees their calls.
+
+#: Tools a sandboxed session may run with no further constraint: the kernel-sandboxed
+#: shell and its background-output controls, conversation tools, sub-agents.
+PLAIN_TOOLS: frozenset[str] = frozenset({
+    "Bash", "BashOutput", "KillShell", "KillBash", "TaskOutput", "TaskStop",
+    "Task", "Agent", "TodoWrite", "ExitPlanMode", "AskUserQuestion",
+})
+#: Read-only file tools, confined to the worktree, its common git dir and the Claude temp
+#: root, and refused for secrets.
+READ_TOOLS: frozenset[str] = frozenset({"Read", "Glob", "Grep", "LS", "NotebookRead"})
+
+_GLOB_CHARS = frozenset("*?[{")
 
 
-def confine_tool(tool_name: str, tool_input: Any, cwd: str | None) -> str | None:
+class _Refused(Exception):
+    pass
+
+
+def _lexical_abs(raw: str, cwd: str) -> str:
+    """*raw* as an absolute, lexically normalised path, relative to *cwd* and re-based
+    onto ``realpath(cwd)`` when it names a place under *cwd* (the model writes the path
+    the CLI gave it, which may run through a symlinked parent). Refuses a NUL, a leading
+    ``~`` (the CLI expands it to $HOME) and any ``..`` component: the CLI may normalise
+    ``..`` before the kernel resolves symlinks, so the two readings can disagree."""
+    if not raw or "\x00" in raw or raw.startswith("~") or ".." in raw.split(os.sep):
+        raise _Refused(f"{raw!r} is not an acceptable path")
+    cwd_abs = os.path.abspath(cwd)
+    path = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(cwd_abs, raw))
+    if _within(path, cwd_abs):
+        path = os.path.normpath(os.path.join(os.path.realpath(cwd_abs),
+                                             os.path.relpath(path, cwd_abs)))
+    return path
+
+
+def _within(path: str, root: str) -> bool:
+    return os.path.commonpath([path, root]) == root
+
+
+def _no_symlink_below(base: str, path: str) -> None:
+    """Refuse when any component of *path* below *base* (both real, lexical) is a symlink,
+    or the target is a multiply-linked file: a racing sandboxed process could swap a link
+    in after the check (TOCTOU), and a hard link names a file outside the tree."""
+    rel = os.path.relpath(path, base)
+    cur = base
+    for part in ([] if rel == "." else rel.split(os.sep)):
+        cur = os.path.join(cur, part)
+        if os.path.islink(cur):
+            raise _Refused(f"{cur!r} is a symlink")
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return                       # a file the tool will create
+    import stat as _stat
+    if _stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
+        raise _Refused(f"{path!r} has other hard links")
+
+
+def _resolve_in_worktree(raw: str, cwd: str) -> tuple[str, str]:
+    """``(absolute path, worktree-relative path)`` for a target inside the worktree, with
+    no symlink component and no extra hard link; raises ``_Refused`` otherwise."""
+    base = os.path.realpath(cwd)
+    path = _lexical_abs(raw, cwd)
+    if not _within(path, base) or path == base:
+        raise _Refused(f"{raw!r} is outside this session's worktree")
+    _no_symlink_below(base, path)
+    if os.path.realpath(path) != path:
+        raise _Refused(f"{raw!r} does not resolve to itself")
+    return path, os.path.relpath(path, base).replace(os.sep, "/")
+
+
+def _read_target_ok(raw: str, cwd: str, tmpdir: str | None) -> None:
+    """A read target must be inside the worktree (not a protected path), the clone's
+    common git dir (read-only) or the Claude temp root; symlink-safe like writes."""
+    from server.permission_rules.patterns import is_protected_path
+    base = os.path.realpath(cwd)
+    path = _lexical_abs(raw, cwd)
+    if _within(path, base):
+        if path == base:
+            return
+        _no_symlink_below(base, path)
+        rel = os.path.relpath(path, base).replace(os.sep, "/")
+        if is_protected_path(rel):
+            raise _Refused(f"{raw!r} is protected (secrets, git internals and tool "
+                           "configuration are not readable from a sandboxed session)")
+        return
+    for extra in (git_common_dir(base), tmpdir):
+        if not extra:
+            continue
+        root = os.path.realpath(extra)
+        if _within(path, root):
+            _no_symlink_below(root, path)
+            return
+    raise _Refused(f"{raw!r} is outside this session's worktree")
+
+
+def _read_paths(tool: str, inp: Mapping[str, Any]) -> list[str]:
+    """Every path a read tool would touch; ``[]`` = the worktree itself."""
+    from server.permission_rules.patterns import tool_path_arg
+    if tool in ("Read", "NotebookRead"):
+        key = "notebook_path" if tool == "NotebookRead" else "file_path"
+        raw = (tool_path_arg("NotebookEdit", inp) if tool == "NotebookRead"
+               else tool_path_arg("Read", inp))
+        if raw is None:
+            raise _Refused(f"{tool} needs one {key}")
+        return [raw]
+    out: list[str] = []
+    path = inp.get("path")
+    if path is not None:
+        if not isinstance(path, str) or not path:
+            raise _Refused(f"{tool} has an unreadable path")
+        out.append(path)
+    if tool == "Glob":
+        pattern = inp.get("pattern")
+        if not isinstance(pattern, str) or not pattern:
+            raise _Refused("Glob needs a pattern")
+        if ".." in pattern.split("/"):
+            raise _Refused("a Glob pattern may not climb with ..")
+        if os.path.isabs(pattern):
+            # The fixed directory prefix before the first glob character.
+            prefix: list[str] = []
+            for part in pattern.split("/"):
+                if any(c in _GLOB_CHARS for c in part):
+                    break
+                prefix.append(part)
+            out.append("/".join(prefix) or "/")
+    return out
+
+
+def _webfetch_ok(inp: Mapping[str, Any]) -> None:
+    import ipaddress
+    from urllib.parse import urlsplit
+    url = inp.get("url")
+    if not isinstance(url, str) or not url:
+        raise _Refused("WebFetch needs a url")
+    parts = urlsplit(url)
+    if parts.scheme.lower() != "https":
+        raise _Refused("WebFetch is https-only in a sandboxed session")
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        raise _Refused("WebFetch URLs may not carry credentials")
+    try:
+        port = parts.port
+    except ValueError as exc:
+        raise _Refused("WebFetch URL has an invalid port") from exc
+    if port not in (None, 443):
+        raise _Refused("WebFetch may use only the https port")
+    host = (parts.hostname or "").rstrip(".").lower()
+    if not host or not host.isascii():
+        raise _Refused("WebFetch URL has no usable host")
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        pass
+    else:
+        raise _Refused("WebFetch may not fetch an IP address")
+    for domain in ALLOWED_DOMAINS:
+        if domain.startswith("*."):
+            if host.endswith(domain[1:]) and host != domain[2:]:
+                return
+        elif host == domain:
+            return
+    raise _Refused(f"WebFetch is limited to {', '.join(ALLOWED_DOMAINS)}; {host!r} is not")
+
+
+def confine_tool(tool_name: str, tool_input: Any, cwd: str | None, *,
+                 tmpdir: str | None = None,
+                 background_busy: Callable[[], bool] | None = None) -> str | None:
     """Why a sandboxed session may not run this tool call, or None when it may.
+    Deny-by-default (fix round 3):
 
-    * A file-writing tool (``FILE_TOOLS``) must target a path whose realpath is inside
-      the worktree (``patterns.worktree_rel``: symlinks resolved, ``..``/``~``/NUL
-      refused, containment by ``commonpath``), and neither the literal nor the resolved
-      path may be protected (``.git``, ``.claude/**``, secrets …: ``is_protected_path``).
-      The clone's common git dir is outside the worktree, so it is refused too.
-    * An MCP tool is allowed only from ViberPit's own in-process server.
+    * :data:`PLAIN_TOOLS` and ViberPit's own MCP tools: allowed.
+    * Edit / Write / MultiEdit / NotebookEdit: one unambiguous path inside the worktree,
+      no symlink component, no extra hard link, not protected (``.git``, ``.claude``,
+      secrets: ``patterns.is_protected_path``), and refused outright while the session
+      has backgrounded work (*background_busy*): the write happens in the host process
+      after this check, and a still-running sandboxed process could race it (TOCTOU).
+    * :data:`READ_TOOLS`: inside the worktree (not protected), the clone's common git
+      dir or the Claude temp root (*tmpdir*), symlink-safe.
+    * WebFetch: https, no userinfo, no IP literal, host in :data:`ALLOWED_DOMAINS`.
+    * Everything else — WebSearch, third-party MCP tools, Skill, Monitor … — denied.
     """
     from server.mcp_spec import is_mcp_tool
-    from server.permission_rules.patterns import (FILE_TOOLS, is_protected_path,
-                                                  tool_path_arg, worktree_rel)
-    if tool_name in FILE_TOOLS:
-        raw = tool_path_arg(tool_name, tool_input if isinstance(tool_input, Mapping) else {})
-        if raw is None:
-            return f"{tool_name} needs one unambiguous file path in a sandboxed session"
-        resolved = worktree_rel(raw, cwd)
-        if resolved is None:
-            return (f"{tool_name} is confined to this session's worktree while it runs "
-                    f"in the sandbox; {raw!r} is outside it")
-        literal = os.path.normpath(raw if not os.path.isabs(raw)
-                                   else os.path.relpath(raw, cwd or "/"))
-        if is_protected_path(resolved) or is_protected_path(literal.replace(os.sep, "/")):
-            return (f"{tool_name} may not change {raw!r} in a sandboxed session (git "
-                    "internals, .claude settings and hooks, and secrets are protected)")
-        return None
-    if tool_name.startswith("mcp__") and not is_mcp_tool(tool_name):
-        return (f"{tool_name} is a third-party MCP tool; a sandboxed session may use only "
-                "its built-in tools")
-    return None
+    from server.permission_rules.patterns import FILE_TOOLS, is_protected_path, tool_path_arg
+    inp = tool_input if isinstance(tool_input, Mapping) else {}
+    if not cwd:
+        return f"{tool_name} cannot be checked: the session has no worktree"
+    try:
+        if tool_name in PLAIN_TOOLS or is_mcp_tool(tool_name):
+            return None
+        if tool_name in FILE_TOOLS:
+            if background_busy is not None and background_busy():
+                raise _Refused("the session has a background task running; file edits "
+                               "wait until it ends (a running sandboxed process could "
+                               "race the write)")
+            raw = tool_path_arg(tool_name, inp)
+            if raw is None:
+                raise _Refused("it needs one unambiguous file path")
+            _path, rel = _resolve_in_worktree(raw, cwd)
+            if is_protected_path(rel):
+                raise _Refused(f"{raw!r} is protected (git internals, .claude settings "
+                               "and hooks, and secrets cannot be changed)")
+            return None
+        if tool_name in READ_TOOLS:
+            for raw in _read_paths(tool_name, inp):
+                _read_target_ok(raw, cwd, tmpdir)
+            return None
+        if tool_name == "WebFetch":
+            _webfetch_ok(inp)
+            return None
+    except _Refused as exc:
+        return f"{tool_name} is not allowed in a sandboxed session: {exc}"
+    return (f"{tool_name} is not available in a sandboxed session (only the shell, file "
+            "tools inside the worktree, GitHub web fetches and the built-in session "
+            "tools are)")
 
 
-def confinement_hook(cwd: str | None):
+def confinement_hook(cwd: str | None, *, tmpdir: str | None = None,
+                     background_busy: Callable[[], bool] | None = None):
     """The SDK ``PreToolUse`` callback enforcing :func:`confine_tool` for one spawn."""
     async def _hook(input_data, tool_use_id=None, context=None) -> dict:
         data = input_data or {}
         reason = confine_tool(str(data.get("tool_name") or ""), data.get("tool_input") or {},
-                              cwd)
+                              cwd, tmpdir=tmpdir, background_busy=background_busy)
         if reason is None:
             return {}
         log.info("sandbox.tool_denied tool=%s", data.get("tool_name"))
@@ -479,6 +694,66 @@ def confinement_hook(cwd: str | None):
                                        "permissionDecision": "deny",
                                        "permissionDecisionReason": reason}}
     return _hook
+
+
+def written_path_escaped(tool_name: str, tool_input: Any, cwd: str | None) -> str | None:
+    """After a file tool ran: the path it wrote when that path now resolves OUTSIDE the
+    worktree (a symlink swapped in between the check and the write), else None."""
+    from server.permission_rules.patterns import FILE_TOOLS, tool_path_arg
+    if tool_name not in FILE_TOOLS or not cwd:
+        return None
+    raw = tool_path_arg(tool_name, tool_input if isinstance(tool_input, Mapping) else {})
+    if raw is None:
+        return None
+    base = os.path.realpath(cwd)
+    target = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(base, raw))
+    return None if _within(target, base) and target != base else target
+
+
+def post_write_hook(cwd: str | None, on_escape: Callable[[str, str], Any]):
+    """The SDK ``PostToolUse`` callback: a file tool whose target now resolves outside
+    the worktree calls ``on_escape(tool_name, resolved_path)`` (the orchestrator holds
+    the session ``sandbox_escape_suspected``)."""
+    async def _hook(input_data, tool_use_id=None, context=None) -> dict:
+        data = input_data or {}
+        tool = str(data.get("tool_name") or "")
+        escaped = written_path_escaped(tool, data.get("tool_input") or {}, cwd)
+        if escaped is not None:
+            res = on_escape(tool, escaped)
+            if asyncio.iscoroutine(res):
+                await res
+        return {}
+    return _hook
+
+
+def read_policy(config_dir: str | None) -> tuple[list[str], list[str]]:
+    """``(denyRead, allowRead)`` for a sandboxed shell (bwrap ro-binds ``/``): secrets
+    are hidden — ``~/.ssh``, the account stores (``~/.claude-accounts``, ``~/.claude``,
+    ``~/.claude.json``), ``/etc/viberpit``, gh's default config and this session's own
+    ``CLAUDE_CONFIG_DIR`` — and two things the session needs are re-allowed:
+
+    * ``<CLAUDE_CONFIG_DIR>/shell-snapshots``: the Bash tool sources its shell snapshot
+      from there before every command (PATH, functions, shell options; no secrets);
+    * the gh config the session's git authenticates with (``session_env``'s
+      ``GH_CONFIG_DIR``, else the ambient file-backed one) when it sits under a denial.
+    """
+    home = os.path.expanduser("~")
+    deny = [os.path.join(home, ".ssh"), os.path.join(home, ".claude-accounts"),
+            os.path.join(home, ".claude"), os.path.join(home, ".claude.json"),
+            "/etc/viberpit", os.path.join(home, ".config", "gh")]
+    allow: list[str] = []
+    if config_dir:
+        for d in dict.fromkeys([os.path.abspath(config_dir), os.path.realpath(config_dir)]):
+            if d not in deny:
+                deny.append(d)
+        allow.append(os.path.join(os.path.realpath(config_dir), "shell-snapshots"))
+    dedicated = _viberpit_gh_config_dir()
+    gh = (dedicated if dedicated and gh_file_backed(dedicated)
+          else _ambient_gh_config_dir())
+    gh = os.path.realpath(gh)
+    if any(_within(gh, os.path.realpath(d)) for d in deny):
+        allow.append(gh)
+    return deny, allow
 
 
 def startup_failure(texts: Iterable[str | None]) -> str | None:

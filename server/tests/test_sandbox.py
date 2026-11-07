@@ -391,8 +391,25 @@ class _Client(FakeSDKClient):
         return await super().__aexit__(*exc)
 
 
+def _echo(reply: Any, cwd: str | None, config_dir: str | None) -> Any:
+    """A CLI that applied the block reports its lists back: fill the restriction lists a
+    scripted reply left at their empty defaults with what this spawn's block sends."""
+    if not isinstance(reply, dict) or not isinstance(reply.get("restrictions"), dict):
+        return reply
+    out = json.loads(json.dumps(reply))
+    r = out["restrictions"]
+    deny_read, allow_read = sb.read_policy(config_dir)
+    for key, want in (("fs_deny_read", deny_read), ("fs_allow_read", allow_read),
+                      ("fs_deny_write", sb.protected_git_paths(cwd))):
+        if r.get(key) == []:
+            r[key] = want
+    return out
+
+
 def _sandboxed_driver(control: FakeControl | None, *, enter_error=None,
                       stderr_lines=(), sandbox=True):
+    if control is not None:
+        control.replies = [_echo(r, "/tmp/r", "/tmp/cfg") for r in control.replies]
     calls: list[dict] = []
     clients: list[_Client] = []
     states: list[tuple[str, str | None]] = []
@@ -526,7 +543,8 @@ class _World:
                 options_overlay=None, flag_settings=None, extra_env=None, stderr=None):
         self.spawns.append({"flag_settings": flag_settings, "extra_env": extra_env,
                             "stderr": stderr, "resume": resume})
-        reply = self.dialogs.pop(0) if len(self.dialogs) > 1 else self.dialogs[0]
+        reply = _echo(self.dialogs.pop(0) if len(self.dialogs) > 1 else self.dialogs[0],
+                      cwd, cfg)
         control = FakeControl(reply)
         self.controls.append(control)
         return _Client(control)
@@ -627,7 +645,13 @@ def test_a_sandboxed_spawn_sends_the_block_and_the_env_and_is_verified(orch_env,
         return row, rec
     row, rec = asyncio.run(go())
     spawn = world.spawns[0]
-    assert spawn["flag_settings"]["sandbox"] == SPIKE_BLOCK["sandbox"]
+    sent = spawn["flag_settings"]["sandbox"]
+    fs = sent.pop("filesystem")
+    want = dict(SPIKE_BLOCK["sandbox"])
+    want_fs = want.pop("filesystem")
+    assert sent == want
+    deny_read, allow_read = sb.read_policy(str(orch_env))
+    assert fs == {**want_fs, "denyRead": deny_read, "allowRead": allow_read}
     assert spawn["extra_env"]["GH_NO_UPDATE_NOTIFIER"] == "1"
     assert spawn["extra_env"]["GH_CONFIG_DIR"] == str(tmp_path / "vp")
     assert callable(spawn["stderr"])
@@ -1638,7 +1662,7 @@ MODES = ["interactive", "acceptEdits", "full-auto", "bypassPermissions"]
     ("Edit", {}, True),
     ("mcp__github__create_issue", {}, True),
     ("mcp__viberpit__session_context", {}, False),
-    ("Read", {"file_path": "/etc/hosts"}, False),           # reads are not confined
+    ("Read", {"file_path": "/etc/hosts"}, True),            # reads are confined (round 3)
     ("Bash", {"command": "ls"}, False),                     # the sandbox's own job
 ])
 def test_confine_tool(tmp_path, tool, inp, denied):
@@ -1713,8 +1737,9 @@ def test_the_orchestrator_spawn_wires_the_hook_and_the_overlay(orch_env, tmp_pat
 
     def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None,
                 options_overlay=None, flag_settings=None, extra_env=None, stderr=None,
-                sandbox_confine=None):
+                sandbox_confine=None, sandbox_post_write=None):
         seen["confine"] = sandbox_confine
+        seen["post"] = sandbox_post_write
         return real(cwd, cfg, can_use_tool, mode, resume, flag_settings=flag_settings,
                     extra_env=extra_env, stderr=stderr)
     world.factory = factory  # type: ignore[method-assign]
@@ -1724,7 +1749,7 @@ def test_the_orchestrator_spawn_wires_the_hook_and_the_overlay(orch_env, tmp_pat
         await orch.ensure_driver(SID)
         await orch.stop()
     asyncio.run(go())
-    assert callable(seen["confine"])
+    assert callable(seen["confine"]) and callable(seen["post"])
     flags = world.spawns[0]["flag_settings"]
     assert flags["disableAllHooks"] is True and flags["enableAllProjectMcpServers"] is False
 
@@ -2012,3 +2037,290 @@ def test_a_sandbox_refusal_keeps_its_code_in_the_move_preflight_wire():
     assert wire["sandboxReason"] == "socat is not installed"
     clash = sm.MoveVerdict(False, "MOVE_X", "m", {"reason": "oops", "ok": True})
     assert clash.to_wire()["reason"] == "MOVE_X" and clash.to_wire()["ok"] is False
+
+
+# ══ fix round 3 (security scan of 862a5238) ══════════════════════════════════
+
+
+def _tree(tmp_path):
+    """A linked worktree with a file, a secret, a symlinked dir inside it, a Claude temp
+    root and a config dir; returns the paths the matrix needs."""
+    clone, wt = _linked_worktree(tmp_path)
+    (wt / "src").mkdir()
+    (wt / "src" / "a.py").write_text("x\n")
+    (wt / ".env").write_text("TOKEN=1\n")
+    (wt / "real").mkdir()
+    os.symlink(wt / "real", wt / "linkdir")              # points INSIDE the worktree
+    tmp = tmp_path / "claude-tmp"
+    tmp.mkdir()
+    (tmp / "out.txt").write_text("o\n")
+    (clone / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    return clone, wt, tmp
+
+
+ALLOW_MATRIX = [
+    ("Bash", {"command": "curl https://evil.example"}, True),
+    ("BashOutput", {"bash_id": "1"}, True),
+    ("Task", {"prompt": "x"}, True),
+    ("Agent", {"prompt": "x"}, True),
+    ("TodoWrite", {"todos": []}, True),
+    ("ExitPlanMode", {}, True),
+    ("AskUserQuestion", {}, True),
+    ("mcp__viberpit__session_context", {}, True),
+    ("Edit", {"file_path": "src/a.py"}, True),
+    ("Read", {"file_path": "src/a.py"}, True),
+    ("Read", {"file_path": "{wt}/src/a.py"}, True),
+    ("Read", {"file_path": "{common}/HEAD"}, True),        # common git dir: read-only ok
+    ("Read", {"file_path": "{tmp}/out.txt"}, True),         # the Claude temp root
+    ("Read", {"file_path": ".env"}, False),                 # secrets
+    ("Read", {"file_path": "/etc/passwd"}, False),
+    ("Read", {"file_path": "{home}/.ssh/id_rsa"}, False),
+    ("Read", {"file_path": "linkdir/x"}, False),            # symlinked component
+    ("NotebookRead", {"notebook_path": "nb.ipynb"}, True),
+    ("Glob", {"pattern": "**/*.py"}, True),
+    ("Glob", {"pattern": "/etc/**"}, False),
+    ("Glob", {"pattern": "../**"}, False),
+    ("Glob", {"pattern": "*.py", "path": "/home"}, False),
+    ("Grep", {"pattern": "x"}, True),
+    ("Grep", {"pattern": "x", "path": "/"}, False),
+    ("LS", {"path": "src"}, True),
+    ("LS", {"path": "/root"}, False),
+    ("WebFetch", {"url": "https://github.com/x/y"}, True),
+    ("WebFetch", {"url": "https://api.github.com/repos/x"}, True),
+    ("WebFetch", {"url": "https://raw.githubusercontent.com/x"}, True),
+    ("WebFetch", {"url": "https://githubusercontent.com/x"}, False),   # *. needs a label
+    ("WebFetch", {"url": "https://github.com.evil.example/x"}, False),
+    ("WebFetch", {"url": "https://evilgithub.com/x"}, False),
+    ("WebFetch", {"url": "http://github.com/x"}, False),
+    ("WebFetch", {"url": "https://user:pw@github.com/x"}, False),
+    ("WebFetch", {"url": "https://140.82.112.3/x"}, False),
+    ("WebFetch", {"url": "https://[::1]/x"}, False),
+    ("WebFetch", {"url": "https://github.com:8443/x"}, False),
+    ("WebFetch", {"url": "https://GitHub.COM./x"}, True),   # normalised host
+    ("WebSearch", {"query": "x"}, False),
+    ("Skill", {"skill": "x"}, False),
+    ("Monitor", {"command": "x"}, False),
+    ("mcp__github__create_issue", {}, False),
+    ("SomeFutureTool", {}, False),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_the_allowlist_matrix_in_every_mode(mode, tmp_path):
+    """Deny-by-default, the same verdicts in every permission mode, from both layers:
+    the spawn's PreToolUse hook and the driver's can_use_tool."""
+    from claude_agent_sdk import PermissionResultDeny
+    from server.sessions import claude_sdk_factory as csf
+    clone, wt, tmp = _tree(tmp_path)
+    fmt = {"wt": str(wt), "common": str(clone / ".git"), "tmp": str(tmp),
+           "home": os.path.expanduser("~")}
+    hook = sb.confinement_hook(str(wt), tmpdir=str(tmp))
+    with patch.object(csf, "session_tmpdir_path", lambda: str(tmp)):
+        d = ClaudeAgentDriver(SID, "acct1", str(wt), "/tmp/cfg", mode=mode,
+                              sdk_factory=lambda *a, **k: _Client(FakeControl()),
+                              registry=PermissionRegistry(), identity="u", sandbox=True)
+        for tool, inp, allowed in ALLOW_MATRIX:
+            inp = {k: (v.format(**fmt) if isinstance(v, str) else v) for k, v in inp.items()}
+            out = await hook({"tool_name": tool, "tool_input": inp}, "t", None)
+            assert (out == {}) is allowed, (mode, tool, inp, out)
+            if not allowed:
+                res = await asyncio.wait_for(d._can_use_tool(tool, inp), timeout=5)
+                assert isinstance(res, PermissionResultDeny), (mode, tool, inp)
+
+
+# ── item 2 (b): symlink components and hard links are refused at check time ──
+
+
+def test_a_write_through_a_symlinked_component_is_refused_even_inside(tmp_path):
+    clone, wt, tmp = _tree(tmp_path)
+    why = sb.confine_tool("Write", {"file_path": "linkdir/new.py"}, str(wt))
+    assert why and "symlink" in why
+    os.symlink(wt / "src" / "a.py", wt / "alias.py")
+    assert "symlink" in sb.confine_tool("Edit", {"file_path": "alias.py"}, str(wt))
+    assert sb.confine_tool("Write", {"file_path": "real/new.py"}, str(wt)) is None
+
+
+def test_a_write_to_a_multiply_linked_file_is_refused(tmp_path):
+    clone, wt, tmp = _tree(tmp_path)
+    os.link(wt / "src" / "a.py", tmp_path / "outside-hardlink")
+    why = sb.confine_tool("Edit", {"file_path": "src/a.py"}, str(wt))
+    assert why and "hard links" in why
+
+
+def test_paths_through_a_symlinked_worktree_parent_are_rebased(tmp_path):
+    clone, wt, tmp = _tree(tmp_path)
+    os.symlink(tmp_path, tmp_path.parent / f"{tmp_path.name}-alias")
+    alias_wt = str(tmp_path.parent / f"{tmp_path.name}-alias" / "wt")
+    assert sb.confine_tool("Write", {"file_path": f"{alias_wt}/src/b.py"}, alias_wt) is None
+
+
+# ── item 2 (a): no file writes while background work runs ───────────────────
+
+
+@pytest.mark.asyncio
+async def test_file_writes_wait_while_a_background_task_runs(tmp_path):
+    from claude_agent_sdk import PermissionResultDeny
+    clone, wt, tmp = _tree(tmp_path)
+    busy = {"on": True}
+    assert "background task" in sb.confine_tool(
+        "Write", {"file_path": "src/b.py"}, str(wt), background_busy=lambda: busy["on"])
+    assert sb.confine_tool("Read", {"file_path": "src/a.py"}, str(wt),
+                           background_busy=lambda: busy["on"]) is None
+    busy["on"] = False
+    assert sb.confine_tool("Write", {"file_path": "src/b.py"}, str(wt),
+                           background_busy=lambda: busy["on"]) is None
+    d = ClaudeAgentDriver(SID, "acct1", str(wt), "/tmp/cfg", mode="full-auto",
+                          sdk_factory=lambda *a, **k: _Client(FakeControl()),
+                          registry=PermissionRegistry(), identity="u", sandbox=True)
+    d._backgrounded.add("tu1")
+    assert d.has_background_work() is True
+    res = await asyncio.wait_for(d._can_use_tool("Write", {"file_path": "src/b.py"}), 5)
+    assert isinstance(res, PermissionResultDeny) and "background" in res.message
+
+
+def test_the_driver_tracks_backgrounded_tasks_from_its_events(tmp_path):
+    from server.sessions import events as ev
+    d = ClaudeAgentDriver(SID, "acct1", str(tmp_path), "/tmp/cfg", mode="full-auto",
+                          sdk_factory=lambda *a, **k: _Client(FakeControl()),
+                          registry=PermissionRegistry(), identity="u", sandbox=True)
+    d._note_background(ev.BackgroundTaskStarted(
+        tool_use_id="tu1", task_id="t1", description="d", task_type="local_bash",
+        backgrounded=True))
+    d._note_background(ev.BackgroundTaskStarted(
+        tool_use_id="tu2", task_id="t2", description="d", task_type="local_bash",
+        backgrounded=False))
+    assert d.has_background_work() is True and d._backgrounded == {"tu1"}
+    d._note_background(ev.BackgroundTaskEnded(tool_use_id="tu1", task_id="t1",
+                                              status="completed"))
+    assert d.has_background_work() is False
+
+
+def test_the_orchestrator_hook_reads_the_live_drivers_background_state(orch_env, tmp_path):
+    world = _World()
+
+    async def go():
+        orch = await _orch(tmp_path, world)
+        await orch.ensure_driver(SID)
+        before = orch._sandbox_background_busy(SID)
+        orch._drivers[SID]._backgrounded.add("tu1")
+        after = orch._sandbox_background_busy(SID)
+        await orch.stop()
+        return before, after, orch._sandbox_background_busy("nope")
+    assert asyncio.run(go()) == (False, True, False)
+
+
+# ── item 2 (d): a write that resolved outside holds the session ─────────────
+
+
+@pytest.mark.asyncio
+async def test_the_post_write_hook_reports_an_escaped_write(tmp_path):
+    clone, wt, tmp = _tree(tmp_path)
+    seen: list = []
+    hook = sb.post_write_hook(str(wt), lambda tool, path: seen.append((tool, path)))
+    assert await hook({"tool_name": "Write", "tool_input": {"file_path": "src/a.py"}},
+                      "t", None) == {}
+    assert seen == []
+    # The race: after the check, a sandboxed process swapped the target for a link out.
+    (tmp_path / "victim").write_text("v\n")
+    os.remove(wt / "src" / "a.py")
+    os.symlink(tmp_path / "victim", wt / "src" / "a.py")
+    await hook({"tool_name": "Write", "tool_input": {"file_path": "src/a.py"}}, "t", None)
+    assert seen == [("Write", str(tmp_path / "victim"))]
+    await hook({"tool_name": "Read", "tool_input": {"file_path": "src/a.py"}}, "t", None)
+    assert len(seen) == 1
+
+
+def test_an_escape_holds_the_session_closes_its_cli_and_files_one_warning(orch_env, tmp_path,
+                                                                          caplog):
+    caplog.set_level(logging.INFO)
+    world = _World()
+
+    async def go():
+        orch = await _orch(tmp_path, world)
+        driver = await orch.ensure_driver(SID)
+        orch._on_sandbox_escape(SID, "Write", "/home/x/.bashrc")
+        for _ in range(100):
+            if SID not in orch._drivers and orch._records[SID].paused_reason:
+                break
+            await asyncio.sleep(0.02)
+        rec = orch._records[SID]
+        with pytest.raises(sb.SandboxError) as ei:
+            await orch.ensure_driver(SID)
+        facts = await orch.sandbox_facts(SID)
+        await orch.stop()
+        return rec, ei.value, driver, facts
+    rec, err, driver, facts = asyncio.run(go())
+    assert rec.paused_reason == sb.SANDBOX_ESCAPE_REASON and rec.status == "needs_attention"
+    assert err.code == sb.SANDBOX_HELD and facts["held"] is True
+    assert driver._client is None or driver._closing
+    warns = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warns == ["sandbox.escape_suspected"]
+    assert sb.SANDBOX_ESCAPE_REASON in _TERMINAL_PAUSE_REASONS
+
+
+@pytest.mark.asyncio
+async def test_the_spawn_registers_the_post_write_hook(tmp_path):
+    post = sb.post_write_hook(str(tmp_path), lambda t, p: None)
+    client = await claude_sdk_factory.real_sdk_factory(
+        str(tmp_path), str(tmp_path / "cfg"), None, "bypassPermissions", None,
+        sandbox_post_write=post)
+    assert [m.hooks for m in client.options.hooks["PostToolUse"]] == [[post]]
+
+
+# ── item 1: shell read denials, sent and verified ───────────────────────────
+
+
+def test_the_read_policy_hides_secrets_and_keeps_what_the_session_needs(tmp_path,
+                                                                        monkeypatch):
+    home = os.path.expanduser("~")
+    cfg = tmp_path / "accts" / "cfg" / "acct1"
+    cfg.mkdir(parents=True)
+    monkeypatch.setenv("VIBERPIT_GH_CONFIG_DIR", _gh_dir(tmp_path, "vp-gh", True))
+    deny, allow = sb.read_policy(str(cfg))
+    for p in (".ssh", ".claude-accounts", ".claude", ".claude.json", ".config/gh"):
+        assert os.path.join(home, p) in deny
+    assert "/etc/viberpit" in deny and str(cfg) in deny
+    assert allow == [str(cfg / "shell-snapshots")]          # dedicated gh is not denied
+    # An ambient file-backed gh under ~/.config/gh (rocky) stays readable.
+    monkeypatch.delenv("VIBERPIT_GH_CONFIG_DIR")
+    ambient = os.path.join(home, ".config", "gh")
+    os.makedirs(ambient, exist_ok=True)
+    with open(os.path.join(ambient, "hosts.yml"), "w") as fh:
+        fh.write("github.com:\n    oauth_token: gho_x\n")
+    monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    deny, allow = sb.read_policy(str(cfg))
+    assert os.path.realpath(ambient) in allow
+
+
+def test_the_block_sends_the_read_rules_and_the_check_requires_them(tmp_path):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    deny, allow = sb.read_policy(str(cfg))
+    fs = sb.settings_block(None, str(cfg))["sandbox"]["filesystem"]
+    assert fs["denyRead"] == deny and fs["allowRead"] == allow
+    good = _dialog(restrictions__fs_deny_read=deny, restrictions__fs_allow_read=allow)
+    assert sb.check_dialog(good, config_dir=str(cfg)).ok is True
+    short = _dialog(restrictions__fs_deny_read=deny[1:], restrictions__fs_allow_read=allow)
+    assert "not read-denied" in sb.check_dialog(short, config_dir=str(cfg)).reason
+    wide = _dialog(restrictions__fs_deny_read=deny,
+                   restrictions__fs_allow_read=[*allow, os.path.expanduser("~/.ssh")])
+    assert "re-allows differ" in sb.check_dialog(wide, config_dir=str(cfg)).reason
+    gone = json.loads(json.dumps(good))
+    gone["restrictions"].pop("fs_deny_read")
+    assert "did not report the read rules" in sb.check_dialog(gone,
+                                                             config_dir=str(cfg)).reason
+
+
+@pytest.mark.parametrize("url,why", [
+    ("https://140.82.112.3/x", "IP address"),
+    ("https://[::1]/x", "IP address"),
+    ("https://user:pw@github.com/x", "credentials"),
+    ("http://github.com/x", "https-only"),
+    ("https://github.com:8443/x", "https port"),
+    ("https://evil.example/x", "limited to"),
+])
+def test_each_webfetch_refusal_names_its_reason(url, why, tmp_path):
+    reason = sb.confine_tool("WebFetch", {"url": url}, str(tmp_path))
+    assert reason and why in reason

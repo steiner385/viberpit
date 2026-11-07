@@ -128,7 +128,8 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
                      on_pre_compact=None, options_overlay=None, owns_pr=None,
                      ready_grants=None, fork_session=False, extra_args=None,
                      enable_file_checkpointing=False, platform_guide=None,
-                     flag_settings=None, stderr=None, sandbox_confine=None):
+                     flag_settings=None, stderr=None, sandbox_confine=None,
+                     sandbox_post_write=None):
     """Build the real ``ClaudeSDKClient`` for one session.
 
     *owns_pr*: the session's ``(repo, number, head_ref) -> bool`` ownership check for
@@ -154,6 +155,10 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     sandboxed spawn (``sandbox.confinement_hook``). Registered with no matcher, so it
     sees every tool call (2.1.319: a matcher-less hook matches all, @295677744); it
     binds in every permission mode (see ``sandbox``).
+
+    *sandbox_post_write* (D-23): the PostToolUse callback that holds the session when a
+    file tool's target resolved outside the worktree after the write
+    (``sandbox.post_write_hook``).
 
     *stderr* (D-23): a per-line callback for the CLI's stderr, passed only for a
     sandboxed spawn, so the driver can read the CLI's own sandbox refusal ("❌ Sandbox
@@ -183,6 +188,8 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
         merge_hold_guard()])]}
     if sandbox_confine is not None:
         hooks["PreToolUse"].append(HookMatcher(hooks=[sandbox_confine]))
+    if sandbox_post_write is not None:
+        hooks["PostToolUse"] = [HookMatcher(hooks=[sandbox_post_write])]
     if on_pre_compact is not None:
         hooks["PreCompact"] = [HookMatcher(hooks=[on_pre_compact])]
     kwargs = dict(
