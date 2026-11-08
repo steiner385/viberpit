@@ -148,7 +148,8 @@ def is_sandbox_error(exc: BaseException) -> bool:
 
 
 def sandbox_enabled() -> bool:
-    """The ``VIBERPIT_SANDBOX_ENABLED`` kill switch (D-23, default on)."""
+    """The ``VIBERPIT_SANDBOX_ENABLED`` kill switch (D-23). Default OFF while the host
+    blockers in #3367 stand."""
     from server.config import get_settings
     return bool(get_settings().sandbox_enabled)
 
@@ -1083,8 +1084,8 @@ def _run(run: Runner, argv: list[str]) -> tuple[int | None, str]:
     return cp.returncode, ((cp.stdout or "") + (cp.stderr or "")).strip()
 
 
-#: The preflight reasons for the two host blockers the live probe found (spike §5.3);
-#: the web copy matches these strings. see #3367
+#: The preflight reasons for the two host blockers the live probe found (spike §5.3).
+#: The web shows the server's ``reason`` verbatim, so these strings ARE the copy. see #3367
 SECCOMP_HELPER_BLOCKED = ("Host AppArmor blocks the sandbox's seccomp helper "
                           "(bwrap-userns-restrict)")
 PROXY_SOCKETS_HIDDEN = ("The CLI's proxy socket directory is under the home directory, "

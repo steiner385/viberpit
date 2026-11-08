@@ -435,6 +435,9 @@ def test_create_driver_flags_a_resume_after_restart():
     seen: list[AgentDriverConfig] = []
 
     class _Reg:
+        def capabilities_for(self, engine):  # D-23 reads it per build; unknown = not capable
+            return None
+
         def create(self, engine, config):
             seen.append(config)
             return object()

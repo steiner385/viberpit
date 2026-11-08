@@ -2397,7 +2397,10 @@ def test_an_escape_holds_the_session_closes_its_cli_and_files_one_warning(orch_e
     assert rec.paused_reason == sb.SANDBOX_ESCAPE_REASON and rec.status == "needs_attention"
     assert err.code == sb.SANDBOX_HELD and facts["held"] is True
     assert driver._client is None or driver._closing
-    warns = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    # claude_bin's one-time "no system claude" WARNING depends on test order and the
+    # host PATH (it fires once per process), so it is not this escape's to count.
+    warns = [r.getMessage() for r in caplog.records
+             if r.levelno >= logging.WARNING and not r.name.endswith("claude_bin")]
     assert warns == ["sandbox.escape_suspected"]
     assert sb.SANDBOX_ESCAPE_REASON in _TERMINAL_PAUSE_REASONS
 
@@ -2705,3 +2708,19 @@ def test_a_blocked_host_disables_the_toggle_even_with_the_switch_on(orch_env, tm
     assert facts["unavailableReason"] == sb.SECCOMP_HELPER_BLOCKED
     assert facts["canToggle"] is False
     assert err.code == sb.SANDBOX_UNAVAILABLE and err.reason == sb.SECCOMP_HELPER_BLOCKED
+
+
+# ══ final review: no dark default ════════════════════════════════════════════
+
+def test_the_default_cannot_be_turned_on_while_the_sandbox_ships_dark(monkeypatch):
+    """A stored sandboxDefault=true would sandbox every new session the moment the
+    switch is flipped (#3367): refused while the switch is off; turning it off works."""
+    monkeypatch.setenv("VIBERPIT_SANDBOX_ENABLED", "false")
+    from server.config import get_settings
+    get_settings.cache_clear() if hasattr(get_settings, "cache_clear") else None
+    client, _ = _make_client()
+    with patch.dict(os.environ, {**_ENV, "VIBERPIT_SANDBOX_ENABLED": "false"}), client:
+        on = client.put("/api/settings", json={"sandboxDefault": True}, headers=_H)
+        off = client.put("/api/settings", json={"sandboxDefault": False}, headers=_H)
+    assert on.status_code == 409 and on.json()["detail"]["code"] == "SANDBOX_DISABLED"
+    assert off.status_code == 200 and off.json()["sandboxDefault"] is False

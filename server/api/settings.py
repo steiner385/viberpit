@@ -316,6 +316,13 @@ async def put_settings_row(
         except ActionError as exc:
             raise HTTPException(status_code=exc.http,
                                 detail={"code": exc.code, "message": exc.message}) from exc
+        from server.sessions import sandbox as sandbox_mod
+        if body.sandboxDefault and not sandbox_mod.sandbox_enabled():
+            # While the sandbox ships dark (#3367) a stored "on" would silently sandbox
+            # every new session the moment the switch is flipped. Turning it off is fine.
+            raise HTTPException(status_code=409, detail={
+                "code": "SANDBOX_DISABLED",
+                "message": "The sandbox is turned off on this server, so it can't be the default."})
         row.sandbox_default = body.sandboxDefault
     if "branchPrefix" in body.model_fields_set:
         from server.sessions import branch_prefix as bp

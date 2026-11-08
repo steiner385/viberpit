@@ -1377,7 +1377,7 @@ export interface SessionSandbox {
 }
 
 
-/** One host preflight check. `name`: bwrap, bwrap_version, socat, bwrap_probe, gh, cli_version. */
+/** One host preflight check. `name`: bwrap, bwrap_version, socat, bwrap_probe, seccomp_helper, proxy_socket_dir, gh, cli_version. */
 export interface SandboxCheck {
   name: string
   ok: boolean
