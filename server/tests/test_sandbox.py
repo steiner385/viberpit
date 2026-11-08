@@ -94,6 +94,13 @@ def _fresh_preflight():
     sb.reset_preflight_cache()
 
 
+@pytest.fixture(autouse=True)
+def _switch_on(monkeypatch):
+    """The kill switch ships OFF (dark, see #3367); these tests exercise the feature,
+    so they turn it on. A test that needs it off sets it itself."""
+    monkeypatch.setenv("VIBERPIT_SANDBOX_ENABLED", "true")
+
+
 def _ok_preflight() -> sb.Preflight:
     return sb.Preflight(ok=True, reason=None, checks=(sb.PreflightCheck("bwrap", True),),
                         cli_version="2.1.319", checked_at=1.0)
@@ -183,14 +190,21 @@ class _Run:
     """A fake ``subprocess.run``: ``bwrap --version`` answers *version*, the namespace
     probe answers *probe_rc* (or raises TimeoutExpired)."""
 
-    def __init__(self, version="bubblewrap 0.11.1", probe_rc: int | None = 0):
-        self.version, self.probe_rc = version, probe_rc
+    def __init__(self, version="bubblewrap 0.11.1", probe_rc: int | None = 0,
+                 helper_rc: int | None = 0):
+        self.version, self.probe_rc, self.helper_rc = version, probe_rc, helper_rc
         self.calls: list[tuple[list[str], float]] = []
 
     def __call__(self, argv, *, capture_output, text, timeout):
         self.calls.append((list(argv), timeout))
         if "--version" in argv:
             return SimpleNamespace(returncode=0, stdout=self.version, stderr="")
+        if "--cap-drop" in argv:              # the seccomp-helper stand-in (F4)
+            if self.helper_rc is None:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            return SimpleNamespace(returncode=self.helper_rc, stdout="",
+                                   stderr="" if self.helper_rc == 0 else
+                                   "unshare: unshare failed: Operation not permitted")
         if self.probe_rc is None:
             raise subprocess.TimeoutExpired(argv, timeout)
         return SimpleNamespace(returncode=self.probe_rc, stdout="",
@@ -206,14 +220,15 @@ def _gh_dir(tmp_path, name: str, token: bool):
 
 
 def _preflight(monkeypatch, tmp_path, *, which=None, run=None, cli="2.1.319",
-               dedicated_token=True, ambient_token=False):
+               dedicated_token=True, ambient_token=False, socket_dir="/tmp/vpsbx"):
     monkeypatch.setenv("VIBERPIT_GH_CONFIG_DIR",
                        _gh_dir(tmp_path, "vp-gh", dedicated_token))
     monkeypatch.setenv("GH_CONFIG_DIR", _gh_dir(tmp_path, "gh", ambient_token))
-    present = which or {"bwrap": "/usr/bin/bwrap", "socat": "/usr/bin/socat"}
+    present = which or {"bwrap": "/usr/bin/bwrap", "socat": "/usr/bin/socat",
+                        "unshare": "/usr/bin/unshare"}
     return sb.run_preflight(which=present.get, run=run or _Run(),
                             cli_version=lambda: cli, sysctls=lambda: {"k": "1"},
-                            clock=lambda: 5.0)
+                            clock=lambda: 5.0, socket_dir=lambda: socket_dir)
 
 
 def test_preflight_passes_on_a_ready_host_and_bounds_every_subprocess(monkeypatch, tmp_path):
@@ -221,7 +236,8 @@ def test_preflight_passes_on_a_ready_host_and_bounds_every_subprocess(monkeypatc
     pf = _preflight(monkeypatch, tmp_path, run=run)
     assert pf.ok is True and pf.reason is None and pf.cli_version == "2.1.319"
     assert [c.name for c in pf.checks] == ["bwrap", "bwrap_version", "socat", "bwrap_probe",
-                                           "gh", "cli_version"]
+                                           "seccomp_helper", "proxy_socket_dir", "gh",
+                                           "cli_version"]
     probe = ["/usr/bin/bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--unshare-net", "true"]
     assert (probe, sb.PROBE_TIMEOUT_S) in run.calls
     assert all(t == sb.PROBE_TIMEOUT_S for _, t in run.calls)
@@ -2591,3 +2607,101 @@ async def test_the_driver_confines_reads_to_its_own_temp_root(tmp_path, monkeypa
         "Read", {"file_path": str(tmp_path / "cache" / "claude-tmp" / "other.txt")}), 5)
     assert isinstance(other, PermissionResultDeny)
     sb.remove_session_tmp(SID)
+
+
+# ══ shipped dark: the kill switch is off by default; the preflight sees F4 / F5 ═
+
+
+def test_the_kill_switch_ships_off(monkeypatch):
+    monkeypatch.delenv("VIBERPIT_SANDBOX_ENABLED", raising=False)
+    from server.config import get_settings
+    assert get_settings().sandbox_enabled is False
+    assert sb.sandbox_enabled() is False
+    assert capabilities_to_wire(ClaudeAgentDriver.capabilities)["sandbox"] is False
+
+
+def test_a_recorded_sandbox_row_is_held_under_the_default_switch(orch_env, tmp_path,
+                                                                 monkeypatch):
+    """Dark by default, still fail-closed: a row recorded sandboxed is held, and the
+    human exit (turn it off) still works."""
+    monkeypatch.delenv("VIBERPIT_SANDBOX_ENABLED", raising=False)
+    world = _World()
+
+    async def go():
+        orch = await _orch(tmp_path, world, sandbox=True)
+        with pytest.raises(sb.SandboxError) as ei:
+            await orch.ensure_driver(SID)
+        out = await orch.set_session_sandbox(SID, False, identity="u@x", via=None)
+        await orch.stop()
+        return ei.value, out
+    err, out = asyncio.run(go())
+    assert err.code == sb.SANDBOX_DISABLED
+    assert out["enabled"] is False and out["held"] is False
+    assert [world.sandboxed(i) for i in range(len(world.spawns))] == [False]
+
+
+def test_the_seccomp_helper_probe_reports_the_apparmor_blocker(monkeypatch, tmp_path):
+    run = _Run(helper_rc=1)
+    pf = _preflight(monkeypatch, tmp_path, run=run)
+    assert pf.ok is False
+    assert pf.reason == "Host AppArmor blocks the sandbox's seccomp helper (bwrap-userns-restrict)"
+    assert pf.reason == sb.SECCOMP_HELPER_BLOCKED
+    helper = ["/usr/bin/bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+              "--unshare-user", "--unshare-pid", "--cap-drop", "ALL", "/usr/bin/unshare",
+              "-U", "-r", "-p", "-m", "--fork", "--mount-proc", "true"]
+    assert (helper, sb.PROBE_TIMEOUT_S) in run.calls
+    (tmp_path / "again").mkdir()
+    timed_out = _preflight(monkeypatch, tmp_path / "again", run=_Run(helper_rc=None))
+    assert timed_out.reason == sb.SECCOMP_HELPER_BLOCKED
+
+
+def test_the_seccomp_helper_probe_fails_closed_without_unshare(monkeypatch, tmp_path):
+    pf = _preflight(monkeypatch, tmp_path,
+                    which={"bwrap": "/usr/bin/bwrap", "socat": "/usr/bin/socat"})
+    assert pf.ok is False and pf.reason.startswith(sb.SECCOMP_HELPER_BLOCKED)
+    assert "unshare is not installed" in pf.reason
+
+
+def test_the_proxy_socket_dir_under_home_is_reported(monkeypatch, tmp_path):
+    home = os.path.expanduser("~")
+    pf = _preflight(monkeypatch, tmp_path, socket_dir=os.path.join(home, ".cache", "x"))
+    assert pf.ok is False
+    assert pf.reason == ("The CLI's proxy socket directory is under the home directory, "
+                         "which the sandbox hides")
+    assert pf.reason == sb.PROXY_SOCKETS_HIDDEN
+    (tmp_path / "again").mkdir()
+    assert _preflight(monkeypatch, tmp_path / "again", socket_dir="/tmp/vpsbx").ok is True
+
+
+def test_a_symlink_into_home_still_counts_as_under_home(monkeypatch, tmp_path):
+    home = os.path.realpath(os.path.expanduser("~"))
+    os.makedirs(os.path.join(home, "sockets"), exist_ok=True)
+    link = tmp_path / "looks-outside"
+    os.symlink(os.path.join(home, "sockets"), link)
+    pf = _preflight(monkeypatch, tmp_path, socket_dir=str(link))
+    assert pf.reason == sb.PROXY_SOCKETS_HIDDEN
+
+
+def test_the_default_socket_dir_is_the_per_session_roots_parent(monkeypatch, tmp_path):
+    monkeypatch.setenv("VIBERPIT_SESSION_TMPDIR", str(tmp_path / "c" / "claude-tmp"))
+    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
+    assert sb._default_socket_dir() == str(tmp_path / "c" / sb.SESSION_TMP_PARENT)
+
+
+def test_a_blocked_host_disables_the_toggle_even_with_the_switch_on(orch_env, tmp_path,
+                                                                    monkeypatch):
+    world = _World()
+    monkeypatch.setattr(sb, "preflight", _async(_bad_preflight(sb.SECCOMP_HELPER_BLOCKED)))
+
+    async def go():
+        orch = await _orch(tmp_path, world, sandbox=False)
+        facts = await orch.sandbox_facts(SID)
+        with pytest.raises(sb.SandboxError) as ei:
+            await orch.set_session_sandbox(SID, True, identity="u@x", via=None)
+        await orch.stop()
+        return facts, ei.value
+    facts, err = asyncio.run(go())
+    assert facts["capability"] is True and facts["available"] is False
+    assert facts["unavailableReason"] == sb.SECCOMP_HELPER_BLOCKED
+    assert facts["canToggle"] is False
+    assert err.code == sb.SANDBOX_UNAVAILABLE and err.reason == sb.SECCOMP_HELPER_BLOCKED

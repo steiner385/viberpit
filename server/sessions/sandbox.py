@@ -1083,11 +1083,27 @@ def _run(run: Runner, argv: list[str]) -> tuple[int | None, str]:
     return cp.returncode, ((cp.stdout or "") + (cp.stderr or "")).strip()
 
 
+#: The preflight reasons for the two host blockers the live probe found (spike §5.3);
+#: the web copy matches these strings. see #3367
+SECCOMP_HELPER_BLOCKED = ("Host AppArmor blocks the sandbox's seccomp helper "
+                          "(bwrap-userns-restrict)")
+PROXY_SOCKETS_HIDDEN = ("The CLI's proxy socket directory is under the home directory, "
+                        "which the sandbox hides")
+
+
+def _default_socket_dir() -> str:
+    """Where a sandboxed CLI creates its proxy bridge sockets: its ``os.tmpdir()``
+    (sandbox runtime ``a1()``), which the sandboxed spawn pins to the session's temp root
+    (flag-layer ``env.TMPDIR``) — the per-session roots' parent stands for every session."""
+    return os.path.dirname(session_tmp_path("preflight"))
+
+
 def run_preflight(*, which: Callable[[str], str | None] = shutil.which,
                   run: Runner = subprocess.run,
                   cli_version: Callable[[], str | None] = _default_cli_version,
                   sysctls: Callable[[], dict[str, str | None]] = _read_sysctls,
-                  clock: Callable[[], float] = time.time) -> Preflight:
+                  clock: Callable[[], float] = time.time,
+                  socket_dir: Callable[[], str] = _default_socket_dir) -> Preflight:
     """The spike §2.3 checks, in order, all run (so the card can list each); ``reason``
     is the first failure. Blocking — call through :func:`preflight`."""
     checks: list[PreflightCheck] = []
@@ -1116,6 +1132,38 @@ def run_preflight(*, which: Callable[[str], str | None] = shutil.which,
             "bwrap_probe", rc == 0,
             None if rc == 0 else
             f"bwrap could not create a network namespace ({out or f'exit {rc}'})"))
+        # F4 (spike §5.3; see #3367). The CLI's apply-seccomp helper (the unix-socket
+        # filter) runs inside bwrap and builds a nested user, PID and mount namespace;
+        # Ubuntu's bwrap-userns-restrict profile puts bwrap's children in unpriv_bwrap
+        # ("audit deny capability"), so it dies at /proc/self/setgroups and every
+        # sandboxed command fails while the dialog still says enabled. The helper's own
+        # binary and argv are internal to the CLI, so this runs the spike's proven
+        # stand-in: the same nested `unshare -U -r -p -m` (writes setgroups and the id
+        # maps, mounts a fresh /proc — the capabilities the helper needs) inside
+        # `bwrap --unshare-user --cap-drop ALL`. It fails under the confined
+        # /usr/bin/bwrap and succeeds under an unconfined copy (spike §5.3, F4 proof).
+        unshare = which("unshare")
+        if unshare is None:
+            checks.append(PreflightCheck(
+                "seccomp_helper", False,
+                f"{SECCOMP_HELPER_BLOCKED}: could not be probed (unshare is not installed)"))
+        else:
+            rc, out = _run(run, [bwrap, "--ro-bind", "/", "/", "--dev", "/dev",
+                                 "--proc", "/proc", "--unshare-user", "--unshare-pid",
+                                 "--cap-drop", "ALL", unshare, "-U", "-r", "-p", "-m",
+                                 "--fork", "--mount-proc", "true"])
+            checks.append(PreflightCheck("seccomp_helper", rc == 0,
+                                         None if rc == 0 else SECCOMP_HELPER_BLOCKED))
+    # F5 (spike §5.3; see #3367). The CLI binds its proxy bridge sockets into bwrap
+    # before the filesystem arguments, so the home read-deny's tmpfs covers them when
+    # they live under home, and every connection fails ("Proxy CONNECT aborted"). A
+    # path comparison, not a subprocess: where the sockets go is decided by our own
+    # spawn env, and realpath settles symlinked homes.
+    sockets = os.path.realpath(socket_dir())
+    home = os.path.realpath(os.path.expanduser("~"))
+    hidden = _within(sockets, home)
+    checks.append(PreflightCheck("proxy_socket_dir", not hidden,
+                                 PROXY_SOCKETS_HIDDEN if hidden else sockets))
     dedicated = _viberpit_gh_config_dir()
     gh_ok = ((bool(dedicated) and gh_file_backed(dedicated))
              or gh_file_backed(_ambient_gh_config_dir()))
