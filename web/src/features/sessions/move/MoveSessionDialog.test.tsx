@@ -388,3 +388,62 @@ describe('MoveSessionDialog — consent answers one preflight', () => {
     expect(moveButton()).toBeDisabled()
   })
 })
+
+describe('MoveSessionDialog — a target that cannot run the sandbox (D-23)', () => {
+  const WHY = 'socat is not installed'
+  const MESSAGE = `rocky cannot run this session's sandbox (${WHY}).`
+  const LINE = `That host can't run this session's sandbox (${WHY}).`
+
+  it('the copy names the host reason when the refusal carries one', () => {
+    expect(moveReasonText('MOVE_TARGET_SANDBOX')).toBe("That host can't run this session's sandbox.")
+    expect(moveReasonText('MOVE_TARGET_SANDBOX', MESSAGE, WHY)).toBe(LINE)
+    // Only the codes that carry a reason append one.
+    expect(moveReasonText('MOVE_TARGET_FULL', 'x', WHY)).toBe(MOVE_REASON_COPY.MOVE_TARGET_FULL)
+  })
+
+  it('a host the per-host preflight refused is greyed out with the sandbox reason', async () => {
+    get.mockResolvedValue(preflight({
+      hosts: [{ name: 'rocky', ok: true, reason: null, message: '' },
+        { name: 'win11', ok: false, reason: 'MOVE_TARGET_SANDBOX', message: MESSAGE, sandboxReason: WHY }],
+    }))
+    renderDialog([host('dobby'), host('rocky'), host('win11')])
+    await pick()
+    await waitFor(() => expect(screen.getByRole('option', { name: `win11 — ${LINE}` })).toBeDisabled())
+  })
+
+  it("the picked target's refusal reads sandboxReason beside the code (fix round 2)", async () => {
+    get.mockResolvedValue(preflight({ verdict: { ok: false, reason: 'MOVE_TARGET_SANDBOX', message: MESSAGE, sandboxReason: WHY } }))
+    renderDialog()
+    await pick()
+    expect(await screen.findByTestId('move-refusal')).toHaveTextContent(LINE)
+    expect(moveButton()).toBeDisabled()
+  })
+
+  it('a verdict without sandboxReason still reads the plain line', async () => {
+    get.mockResolvedValue(preflight({ verdict: { ok: false, reason: 'MOVE_TARGET_SANDBOX', message: MESSAGE } }))
+    renderDialog()
+    await pick()
+    expect(await screen.findByTestId('move-refusal')).toHaveTextContent("That host can't run this session's sandbox.")
+  })
+
+  it('a POST refused with MOVE_TARGET_SANDBOX shows sandboxReason before anything moved', async () => {
+    get.mockResolvedValueOnce(preflight()).mockImplementationOnce(() => new Promise(() => {}))
+    post.mockRejectedValue(new ApiRequestError(409, { detail: { code: 'MOVE_TARGET_SANDBOX', message: MESSAGE, sandboxReason: WHY } }))
+    renderDialog()
+    await pick()
+    await waitFor(() => expect(moveButton()).toBeEnabled())
+    await userEvent.click(moveButton())
+    expect(await screen.findByTestId('move-refusal')).toHaveTextContent(LINE)
+  })
+
+  it("an import that failed on the target's sandbox is restored, with the reason", async () => {
+    post.mockRejectedValue(new ApiRequestError(409, { detail: {
+      code: 'MOVE_TARGET_SANDBOX', message: 'x', sandboxReason: 'the sandbox did not start', outcome: 'restored' } }))
+    get.mockResolvedValue(preflight())
+    renderDialog()
+    await pick()
+    await waitFor(() => expect(moveButton()).toBeEnabled())
+    await userEvent.click(moveButton())
+    expect(await screen.findByTestId('move-outcome')).toHaveTextContent("That host can't run this session's sandbox (the sandbox did not start).")
+  })
+})

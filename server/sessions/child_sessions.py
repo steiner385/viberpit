@@ -139,12 +139,20 @@ def notice_next_step(status: str, session_id: str) -> str | None:
 
 
 def check_reply(*, parent_id: str, child: object | None, child_id: str,
-                message: str) -> None:
+                message: str, parent_sandboxed: bool = False) -> None:
     """Refuse a parent's reply the child cannot take (#2911). Raises ChildSessionLimit
-    with the model-readable reason; returns None when the reply may be delivered."""
+    with the model-readable reason; returns None when the reply may be delivered.
+
+    *parent_sandboxed* (D-23): a sandboxed parent may not steer a child that runs
+    without the sandbox — its prompt would run unconfined. A plain child dispatched
+    before the parent's sandbox was turned on keeps running, unsteerable from here."""
     if steering_parent(child) != parent_id:
         raise ChildSessionLimit(f"{child_id} is not a child of this session; call "
                                 "session_context to list your children")
+    if parent_sandboxed and getattr(child, "sandbox", None) is not True:
+        raise ChildSessionLimit(f"child {child_id} runs without the sandbox and this "
+                                "session runs in it, so it cannot be steered from here; "
+                                "hand back to the user instead")
     status = getattr(child, "status", None)
     if status in CHILD_UNREPLYABLE:
         raise ChildSessionLimit(f"child {child_id} has {status}; dispatch a new child "

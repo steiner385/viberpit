@@ -23,6 +23,7 @@ from server.sessions.completion import (FINISHED_STATE_CLAUSE, HAND_BACK_TURN_NO
 from server.sessions.permissions import MODE_WIDTH
 from server.sessions.feedback import CATEGORIES, IMPACTS, record_feedback, validate_item
 from server.sessions.model_request import MODEL_TIERS, parse_request_model
+from server.sessions.sandbox import SandboxError
 
 from .context import SessionToolContext, context_snapshot
 from .registry import SESSION_TOOL_SPECS, mounted_names
@@ -435,6 +436,14 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
             return await ctx.dispatch_child(name=name, prompt=prompt, model=model, permission_mode=mode)
         except ChildSessionLimit as e:
             raise ToolArgError(str(e)) from e
+        except SandboxError as e:
+            # D-23: this session is sandboxed, so its child must be — and this host
+            # cannot run one. An expected refusal: no WARNING.
+            log.info("dispatch_session: child refused, sandbox session=%s code=%s",
+                     ctx.session_id, e.code)
+            raise ToolArgError("could not start the child session: it must run in the "
+                               f"sandbox, as this session does, and cannot here "
+                               f"({e.reason or e.code})") from e
         except Exception as e:  # noqa: BLE001 - a refused/failed create (busy accounts, clone,
             # branch, model gate) must reach the model as its message, not a class name
             log.warning("dispatch_session: child create failed session=%s", ctx.session_id,

@@ -20,6 +20,7 @@ import { appSettings } from '@/test/factories'
 import { queryResult, idleQueryResult, loadingQueryResult, mutationResult } from '@/test/reactQuery'
 import { ApiRequestError } from '@/api/client'
 import { BRANCH_PREFIX_COPY, SessionDefaultsSection } from './SessionDefaultsSection'
+import { SANDBOX_DEFAULT_COPY, SANDBOX_HUMAN_ONLY } from '@/features/sessions/sandboxCopy'
 
 expect.extend(toHaveNoViolations)
 
@@ -246,6 +247,64 @@ describe('SessionDefaultsSection', () => {
       await userEvent.type(screen.getByRole('textbox', { name: 'Branch prefix' }), 'agent/')
       await userEvent.click(screen.getByRole('button', { name: 'Save' }))
       expect(await screen.findByText('Not saved')).toBeInTheDocument()
+    })
+  })
+
+  describe('Sandbox new sessions (D-23)', () => {
+    it('is hidden without the capability (the kill switch, or an older server)', () => {
+      mount()
+      expect(screen.queryByRole('checkbox', { name: 'Sandbox new sessions' })).toBeNull()
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ sandboxCapability: false })))
+      mount()
+      expect(screen.queryByRole('checkbox', { name: 'Sandbox new sessions' })).toBeNull()
+    })
+
+    it('shows off by default with the host requirements, and saves only a change', async () => {
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ sandboxCapability: true })))
+      const { container } = mount()
+      const box = screen.getByRole('checkbox', { name: 'Sandbox new sessions' })
+      expect(box).not.toBeChecked()
+      expect(screen.getByText(SANDBOX_DEFAULT_COPY)).toBeInTheDocument()
+      expect(SANDBOX_DEFAULT_COPY).toMatch(/Off by default/)
+      expect(SANDBOX_DEFAULT_COPY).toMatch(/bwrap/)
+      expect(SANDBOX_DEFAULT_COPY).toMatch(/socat/)
+      await userEvent.click(box)
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ sandboxDefault: true }))
+      expect(await axe(container)).toHaveNoViolations()
+    })
+
+    it('a person-only refusal (403) is shown under the sandbox row, in the server words or a plain line', async () => {
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ sandboxCapability: true })))
+      const err = new ApiRequestError(403, { detail: { code: 'SESSION_CONTROL_HUMAN_ONLY' } })
+      mutateAsync.mockRejectedValueOnce(err)
+      vi.mocked(hooks.useUpdateSettings).mockReturnValue(mutationResult({ mutateAsync, error: err }))
+      mount()
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Sandbox new sessions' }))
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(await screen.findByText(SANDBOX_HUMAN_ONLY)).toBeInTheDocument()
+      expect(screen.queryByText('Not saved')).toBeNull()
+    })
+
+    it('the server words win when it sends them (they say to use another device)', async () => {
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ sandboxCapability: true })))
+      const words = 'This request came from the ViberPit host itself. … use a browser on another device on your tailnet (phone, laptop).'
+      const err = new ApiRequestError(403, { detail: { code: 'SESSION_CONTROL_HUMAN_ONLY', message: words } })
+      mutateAsync.mockRejectedValueOnce(err)
+      vi.mocked(hooks.useUpdateSettings).mockReturnValue(mutationResult({ mutateAsync, error: err }))
+      mount()
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Sandbox new sessions' }))
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(await screen.findByText(words)).toBeInTheDocument()
+    })
+
+    it('an unrelated save never sends the sandbox default', async () => {
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ sandboxCapability: true, sandboxDefault: true })))
+      mount()
+      expect(screen.getByRole('checkbox', { name: 'Sandbox new sessions' })).toBeChecked()
+      await userEvent.click(screen.getByRole('radio', { name: 'Expand all' }))
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(mutateAsync.mock.calls[0][0]).not.toHaveProperty('sandboxDefault')
     })
   })
 })

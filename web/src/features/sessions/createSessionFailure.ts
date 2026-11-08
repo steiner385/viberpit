@@ -26,6 +26,14 @@ export const MODELS_UNAVAILABLE_MESSAGE =
 export const ALL_LIMITED_MESSAGE =
   'Every account is at its usage limit — the banner above says when the next one resets.'
 
+/** D-23: the default ("Sandbox new sessions") is on — or the session inherits a
+ *  sandboxed parent's — and this host can't run the sandbox (`SANDBOX_UNAVAILABLE`,
+ *  `_DISABLED`, `_UNSUPPORTED`), or a started CLI's sandbox failed (`_UNVERIFIED`).
+ *  `reason` names why. One short sentence: this module is on the entry chunk. */
+export function sandboxCreateMessage(reason: string | null): string {
+  return `Not started: "Sandbox new sessions" is on and the sandbox can't run on this host${reason ? ` (${reason})` : ''}.`
+}
+
 export type CreateSessionFailure =
   /** The user picked a branch the server could not switch to. Recoverable in place. */
   | { kind: 'branch'; message: string }
@@ -41,6 +49,10 @@ export type CreateSessionFailure =
    * which runner to fix (empty when the server did not say).
    */
   | { kind: 'engine'; message: string; hostReasons: Record<string, string> }
+  /** D-23: the new session had to run in the sandbox and this host can't (or it
+   *  failed to start). Fixed on the host or in Settings → Sessions, not by retrying.
+   *  The code is kept for callers that branch on it. */
+  | { kind: 'sandbox'; code: string; message: string }
   /** The model/effort pair the account's catalog rejected. */
   | { kind: 'model'; message: string; model: string | null; effort: string | null }
   /** Anything else: the body's message if it has one, a fixed line if not. */
@@ -61,13 +73,14 @@ export type CreateSessionFailure =
 function readErrorBody(body: unknown): {
   code?: string
   message?: string
+  reason: string | null
   model: string | null
   effort: string | null
   hostReasons: Record<string, string>
   earliestReset: string | null
 } {
   if (typeof body !== 'object' || body === null) {
-    return { model: null, effort: null, hostReasons: {}, earliestReset: null }
+    return { reason: null, model: null, effort: null, hostReasons: {}, earliestReset: null }
   }
   const record: Record<string, unknown> = { ...body }
   const nested = (key: string): Record<string, unknown> =>
@@ -95,6 +108,7 @@ function readErrorBody(body: unknown): {
     // (@/api/client owns ApiRequestError, so it owns its body's shape).
     code: apiErrorCode(body) ?? undefined,
     message: pick('message'),
+    reason: pick('reason') ?? null,
     model: pick('model') ?? null,
     effort: pick('effort') ?? null,
     hostReasons,
@@ -110,7 +124,7 @@ export function apiErrorMessage(err: unknown): string | undefined {
 
 export function describeCreateSessionFailure(err: unknown): CreateSessionFailure {
   if (err instanceof ApiRequestError) {
-    const { code, message, model, effort, hostReasons, earliestReset } = readErrorBody(err.body)
+    const { code, message, reason, model, effort, hostReasons, earliestReset } = readErrorBody(err.body)
 
     if (code === 'codex_models_unavailable') {
       return { kind: 'engine', message: MODELS_UNAVAILABLE_MESSAGE, hostReasons }
@@ -122,6 +136,9 @@ export function describeCreateSessionFailure(err: unknown): CreateSessionFailure
     // account quotas. `engine_unavailable` is the in-process twin (no fleet).
     if (code === 'no_engine_host_available' || code === 'engine_unavailable') {
       return { kind: 'engine', message: message ?? ENGINE_UNAVAILABLE_FALLBACK, hostReasons }
+    }
+    if (code?.startsWith('SANDBOX_')) {
+      return { kind: 'sandbox', code, message: sandboxCreateMessage(reason) }
     }
     if (code === 'model_effort_mismatch') {
       return { kind: 'model', message: MODEL_EFFORT_MISMATCH_FALLBACK, model, effort }

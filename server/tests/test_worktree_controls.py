@@ -1364,13 +1364,13 @@ def test_an_audit_write_failure_logs_one_stable_warning(env, monkeypatch, caplog
 
     async def run():
         orch = await _orch(env)
-        await orch._audit_worktree_control("session.worktree_repair", "u@x", None,
+        await orch._audit_session_control("session.worktree_repair", "u@x", None,
                                            {"sessionId": SID})
 
     with caplog.at_level("INFO"):
         asyncio.run(run())
     warns = [r for r in caplog.records if r.levelno >= logging.WARNING]
-    assert [r.getMessage() for r in warns] == ["session.worktree_control_audit_failed"]
+    assert [r.getMessage() for r in warns] == ["session.control_audit_failed"]
 
 
 def test_a_failed_discard_snapshot_files_one_warning(env, monkeypatch, caplog):

@@ -26,7 +26,7 @@ from server.sessions.orchestrator import (DRIVER_RELEASE_WAIT_S, DRIVER_SWAP_TIM
 from server.sessions.rewind import REWIND_CODES, REWIND_CONTROL_TIMEOUT_S, RewindError
 from server.sessions.flag_settings import SETTINGS_CODES, SettingsError
 from server.sessions import worktree_files
-from server.sessions import dev_servers, memory_files, worktree_controls
+from server.sessions import dev_servers, memory_files, sandbox, worktree_controls
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
@@ -73,6 +73,13 @@ DEV_SERVERS_RPC_TIMEOUT = 10.0
 # and the removal, plus a margin. Repair: a swap plus a `git worktree add`. Discard runs
 # to completion on the daemon either way; this only keeps the edge waiting for its answer.
 WORKTREE_CONTROL_RPC_TIMEOUT = DRIVER_SWAP_TIMEOUT_S + DRIVER_RELEASE_WAIT_S + 8 * 60.0 + 120.0
+
+# D-23 sandbox. Facts: a cached read, or a preflight re-run (each subprocess bounded at
+# sandbox.PROBE_TIMEOUT_S; four of them) plus the busy check. Toggle: a preflight, a swap
+# waited out and a respawn (DRIVER_SWAP_TIMEOUT_S covers claim through verified start),
+# plus a margin. The toggle runs to completion on the daemon either way.
+SANDBOX_FACTS_RPC_TIMEOUT = 4 * sandbox.PROBE_TIMEOUT_S + 15.0
+SANDBOX_TOGGLE_RPC_TIMEOUT = 2 * DRIVER_SWAP_TIMEOUT_S + 4 * sandbox.PROBE_TIMEOUT_S + 30.0
 
 # PR mutations on the owning daemon (D-15): ``merge_pr`` = a 15s live label read + a 60s
 # ``gh pr merge``; ``ready_merge`` = that read + two 60s ``gh`` calls. Over the 30s client
@@ -1190,6 +1197,42 @@ class RemoteOrchestrator:
                               via: str | None = None) -> dict:
         return await self._worktree_control("repair_worktree", session_id,
                                             identity=identity, via=via)
+
+    async def sandbox_facts(self, session_id, *, refresh: bool = False) -> dict:
+        """Proxy sandbox_facts (D-23) to the daemon that owns the session. An unknown
+        session is re-raised as KeyError; an old daemon's UnknownMethod stays a
+        DaemonError, which the route maps."""
+        try:
+            return await self._client.call("sandbox_facts", timeout=SANDBOX_FACTS_RPC_TIMEOUT,
+                                           session_id=session_id, refresh=refresh)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            raise
+
+    async def sandbox_host_readiness(self) -> dict:
+        """This daemon's ``{ok, reason}`` sandbox readiness (D-23), for a move's target
+        preflight. An old daemon's UnknownMethod stays a DaemonError; the move refuses."""
+        return await self._client.call("sandbox_host_readiness",
+                                       timeout=SANDBOX_FACTS_RPC_TIMEOUT)
+
+    async def set_session_sandbox(self, session_id, enabled: bool, *,
+                                  identity: str = SYSTEM_IDENTITY,
+                                  via: str | None = None) -> dict:
+        """The toggle (D-23) on the owning daemon, with the verified caller: the daemon
+        writes the audit row. An unknown session is re-raised as KeyError and a refusal
+        as SandboxError (known codes only); anything else stays a DaemonError."""
+        try:
+            return await self._client.call(
+                "set_session_sandbox", timeout=SANDBOX_TOGGLE_RPC_TIMEOUT,
+                session_id=session_id, enabled=enabled, identity=identity, via=via)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            data = exc.data or {}
+            if exc.err_type == "SandboxError" and data.get("code") in sandbox.SANDBOX_CODES:
+                raise sandbox.SandboxError(data["code"], data.get("reason")) from exc
+            raise
 
     async def fork_session(self, session_id, *, at_turn_id: str | None, mode: str,
                            request_id: str, prefill: str | None = None,

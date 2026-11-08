@@ -358,6 +358,12 @@ def register_orchestrator_rpc(app, orch) -> None:
         # daemon that owns the session's worktree. A refusal raises WorktreeControlError,
         # whose error_data carries the code (and, after a snapshot, the recovery refs).
         "worktree_preflight", "discard_worktree", "repair_worktree",
+        # D-23 sandbox: the facts ({..., preflight}) and the toggle, run on the daemon that
+        # owns the session (its record, its host's preflight, its live client). A refusal
+        # raises SandboxError, whose error_data carries the code and reason.
+        "sandbox_facts", "set_session_sandbox",
+        # ...and THIS host's {ok, reason} readiness, asked of a move's target (D-17).
+        "sandbox_host_readiness",
         # D-8 Fork from here: {sessionId, prefill}, created on the daemon that owns
         # the source (its transcript, turn anchors and worktree). A refusal raises
         # ForkError / ForkWorktreeError, whose error_data carries the code.

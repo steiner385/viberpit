@@ -246,6 +246,13 @@ class SessionRecord:
     output_style: str | None = None
     output_styles: list[str] | None = None
     output_style_live: str | None = None
+    # Sandbox (D-23, ``server/sessions/sandbox.py``): the session's recorded setting — the
+    # effective value written at its first spawn (True/False), NULL for a row spawned
+    # before D-23 (read as off) — and the last verification of its CLI: ``pending`` |
+    # ``active`` | ``failed`` with the reason. All persisted; all ride to_dict.
+    sandbox: bool | None = None
+    sandbox_state: str | None = None
+    sandbox_reason: str | None = None
     # The CLI's last ``initialize`` model rows (``flag_settings.model_options``), so a
     # detached session can still check an effort against its model's levels. Daemon-
     # local ONLY — not in to_dict, never a column: ``set_model_for_session`` runs on the
@@ -407,6 +414,9 @@ class SessionRecord:
             "outputStyle": self.output_style,
             "outputStyles": self.output_styles,
             "outputStyleLive": self.output_style_live,
+            "sandbox": self.sandbox,
+            "sandboxState": self.sandbox_state,
+            "sandboxReason": self.sandbox_reason,
             "supportedEffortLevels": self.effort_levels_now(),
             # Carried over RPC so a fleet mirror of an assistant session is still
             # recognised by is_assistant() on the edge (list filtering, sweeps).
@@ -489,6 +499,9 @@ class SessionRecord:
             output_style=d.get("outputStyle"),
             output_styles=d.get("outputStyles"),
             output_style_live=d.get("outputStyleLive"),
+            sandbox=d.get("sandbox"),
+            sandbox_state=d.get("sandboxState"),
+            sandbox_reason=d.get("sandboxReason"),
             supported_effort_levels=d.get("supportedEffortLevels"),
             kind=d.get("kind"),
             owner_identity=d.get("ownerIdentity"),

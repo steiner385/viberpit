@@ -465,6 +465,11 @@ export interface AppSettings {
   /** Session-branch prefix (D-22); null = the built-in. PUT validates it (400
    *  `BRANCH_PREFIX_INVALID` with a reason); null or blank resets. */
   branchPrefix?: string | null
+  /** Sandbox new sessions (D-23); the server's NULL reads as false. A PUT that changes
+   *  it needs a person (403 `SESSION_CONTROL_HUMAN_ONLY`). */
+  sandboxDefault?: boolean
+  /** The sandbox kill switch, on Claude (D-23). The toggle above shows only when true. */
+  sandboxCapability?: boolean
   /** The modes PUT accepts, in display order. The client's PERMISSION_MODES must equal this set. */
   acceptedPermissionModes: string[]
   effectiveDefaults: EffectiveDefaults

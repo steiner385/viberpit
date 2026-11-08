@@ -624,6 +624,33 @@ None of this affects host health. A runner with no Codex binary stays `healthy`,
 taking Claude sessions, and remains a deploy target — Codex unavailability is dropped
 from Codex dispatch only.
 
+## Claude session sandbox (D-23, shipped dark)
+
+An opt-in, fail-closed sandbox for Claude sessions. It is the CLI's built-in bubblewrap sandbox, launched by
+ViberPit with a fixed policy: GitHub-only network, worktree-only writes, home unreadable apart from re-allowed
+toolchains, non-Bash tools confined, and edits serialised against running Bash. Design and evidence:
+`docs/superpowers/specs/2026-11-06-d23-sandbox-spike.md`.
+
+- **Off by default.** It stays off until `VIBERPIT_SANDBOX_ENABLED=true` is set on the edge and the daemons. A
+  session recorded as sandboxed is held while the switch is off, and turning its sandbox off still works.
+- **Host requirements:**
+  - `bubblewrap` ≥ 0.5 and `socat`;
+  - a file-backed gh config (`VIBERPIT_GH_CONFIG_DIR` with a `hosts.yml` token), because the sandbox has no
+    D-Bus or keyring access;
+  - the CLI at ≥ 2.1.293.
+
+  The per-host preflight shown on the session's Environment card checks every one of these.
+- **Why it is dark (#3367).** On Ubuntu 24.04+ the `bwrap-userns-restrict` AppArmor profile, the same one the
+  Codex fix above enforces, strips the capabilities the CLI's seccomp helper needs. Every sandboxed command fails,
+  and the preflight reports `Host AppArmor blocks the sandbox's seccomp helper`. The CLI's proxy sockets also sit
+  under its temp root, which is under the home the sandbox hides, so the preflight reports
+  `The CLI's proxy socket directory is under the home directory`. Do not turn the switch on until #3367 lands.
+- **Known limits:**
+  - A venv in another checkout is unreadable inside the sandbox, so sandboxed worktrees need their own environment.
+  - Your user-level hooks do not run in sandboxed sessions.
+  - User-level MCP servers still start, but their tools are denied.
+  - Automations a sandboxed session triggers through GitHub follow "Sandbox new sessions".
+
 ## Deploy controller (`viberpit-deploy-controller.service`)
 
 Long-lived service that polls `origin/master` (notify-only) and runs user-triggered deploys.

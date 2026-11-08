@@ -52,8 +52,10 @@ _MCP_TRUST_SETTINGS = {"enableAllProjectMcpServers": True}
 def spawn_settings(flag_settings: dict | None = None) -> str:
     """The ``--settings`` JSON for one spawn: the MCP trust above plus the session's own
     flag-layer settings (D-14: ``fastMode``, ``effortLevel``). Spawn-time only — it is
-    never written to the shared account ``settings.json``. The trust key always wins."""
-    return json.dumps({**(flag_settings or {}), **_MCP_TRUST_SETTINGS})
+    never written to the shared account ``settings.json``. The session's settings win
+    over the trust default: a sandboxed spawn (D-23,
+    ``sandbox.spawn_settings_overlay``) turns project-MCP auto-trust OFF."""
+    return json.dumps({**_MCP_TRUST_SETTINGS, **(flag_settings or {})})
 
 # Per-line cap on the SDK's stdout reader (``ClaudeAgentOptions.max_buffer_size``). The
 # SDK default is 1 MiB, and ONE line over it kills the reader for good while the CLI
@@ -93,6 +95,15 @@ def merge_options_overlay(kwargs: dict, overlay: dict | None) -> dict:
     return merged
 
 
+def session_tmpdir_path() -> str:
+    """The Claude temp root a session's CLI runs with: the daemon's own
+    ``CLAUDE_CODE_TMPDIR`` if set, else ``VIBERPIT_SESSION_TMPDIR``, else
+    ``~/.cache/viberpit/claude-tmp``. ``session_tmpdir_env`` sets it; the sandbox check
+    (D-23) allows writes under it."""
+    return (os.environ.get("CLAUDE_CODE_TMPDIR") or os.environ.get("VIBERPIT_SESSION_TMPDIR")
+            or os.path.join(os.path.expanduser("~"), ".cache", "viberpit", "claude-tmp"))
+
+
 def session_tmpdir_env() -> dict[str, str]:
     """``CLAUDE_CODE_TMPDIR`` for a coding session, off the shared ``/tmp`` tmpfs.
 
@@ -105,8 +116,7 @@ def session_tmpdir_env() -> dict[str, str]:
     """
     if os.environ.get("CLAUDE_CODE_TMPDIR"):
         return {}
-    path = os.environ.get("VIBERPIT_SESSION_TMPDIR") or os.path.join(
-        os.path.expanduser("~"), ".cache", "viberpit", "claude-tmp")
+    path = session_tmpdir_path()
     try:
         os.makedirs(path, mode=0o700, exist_ok=True)
     except OSError:
@@ -118,7 +128,8 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
                      on_pre_compact=None, options_overlay=None, owns_pr=None,
                      ready_grants=None, fork_session=False, extra_args=None,
                      enable_file_checkpointing=False, platform_guide=None,
-                     flag_settings=None):
+                     flag_settings=None, stderr=None, sandbox_confine=None,
+                     sandbox_post_write=None, sandbox_done=None):
     """Build the real ``ClaudeSDKClient`` for one session.
 
     *owns_pr*: the session's ``(repo, number, head_ref) -> bool`` ownership check for
@@ -139,6 +150,23 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     *flag_settings* (D-14): the session's stored flag-layer settings (``fastMode``,
     ``effortLevel``), merged into the ``--settings`` JSON so a resume or respawn starts
     with them; live changes go through ``ClaudeAgentDriver.apply_flag_settings``.
+
+    *sandbox_confine* (D-23): the PreToolUse callback confining non-Bash tools for a
+    sandboxed spawn (``sandbox.confinement_hook``). Registered with no matcher, so it
+    sees every tool call (2.1.319: a matcher-less hook matches all, @295677744); it
+    binds in every permission mode (see ``sandbox``).
+
+    *sandbox_post_write* (D-23): the PostToolUse callback that holds the session when a
+    file tool's target resolved outside the worktree after the write
+    (``sandbox.post_write_hook``).
+
+    *sandbox_done* (D-23): the PostToolUseFailure callback that takes a failed call out
+    of the sandbox gate's in-flight registry (``sandbox.done_hook``).
+
+    *stderr* (D-23): a per-line callback for the CLI's stderr, passed only for a
+    sandboxed spawn, so the driver can read the CLI's own sandbox refusal ("❌ Sandbox
+    Error", "sandbox required but unavailable") when the spawn fails. The sandbox block
+    itself rides *flag_settings*.
 
     *platform_guide*: the session's per-platform guide text (``platform_guide.py``),
     appended to the system prompt; ``None`` for a Linux session.
@@ -161,6 +189,12 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     hooks: dict = {"PreToolUse": [HookMatcher(matcher="Bash", hooks=[
         human_hold_pre_tool_use, draft_ready_guard(owns_pr, grants=ready_grants),
         merge_hold_guard()])]}
+    if sandbox_confine is not None:
+        hooks["PreToolUse"].append(HookMatcher(hooks=[sandbox_confine]))
+    if sandbox_post_write is not None:
+        hooks["PostToolUse"] = [HookMatcher(hooks=[sandbox_post_write])]
+    if sandbox_done is not None:
+        hooks["PostToolUseFailure"] = [HookMatcher(hooks=[sandbox_done])]
     if on_pre_compact is not None:
         hooks["PreCompact"] = [HookMatcher(hooks=[on_pre_compact])]
     kwargs = dict(
@@ -179,6 +213,8 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
         },
         **(await asyncio.to_thread(_cli_path_kwargs)),
     )
+    if stderr is not None:
+        kwargs["stderr"] = stderr
     opts = ClaudeAgentOptions(**merge_options_overlay(kwargs, options_overlay))
     return ClaudeSDKClient(options=opts)
 

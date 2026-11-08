@@ -32,7 +32,7 @@ def test_capability_set_covers_every_declared_field():
         "account_rotation", "account_switch_new_thread",
         "vendor_commands", "vendor_skills", "durable_tool_surface",
         "library_management", "mcp_status", "rewind", "flag_settings",
-        "cross_host_transfer",
+        "cross_host_transfer", "sandbox",
     }
 
 

@@ -54,6 +54,9 @@ const SessionRail = lazy(() => import('./rail/SessionRail').then((m) => ({ defau
 /** Local alias: the shared gate now lives beside the hook that feeds it. */
 const can = canUseEngine
 
+/** The escape-suspected hold (D-23 fix round 3); the banner is told `escaped`, not the token. */
+const SANDBOX_ESCAPE = 'sandbox_escape_suspected'
+
 /** The pane width (rem) from which the rail is a column, not the Details tab. */
 const RAIL_MIN_REM = 64
 
@@ -107,6 +110,16 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
   // Transcript paths under the cwd open the Files tab and attach to the dock
   // composer (D-7, `transcript/PathRef`); without a cwd they stay click-to-copy.
   const attachMention = useComposerAttach()
+  // Held on its sandbox (D-23) — it failed, or a write left the worktree: the error
+  // banner offers Retry / Turn off. Every server pause reason starting `sandbox_` is one
+  // of `server/sessions/sandbox.py:SANDBOX_HOLD_REASONS` (`sandbox_failed`,
+  // `sandbox_escape_suspected`); a prefix, not a list, because this is the entry chunk.
+  // Read BEFORE the memo below: the React Compiler treats a later method call on the
+  // record as a possible mutation of its memo dependencies.
+  const pausedReason = sessionRecord?.pausedReason
+  const sandboxHold = sessionRecord?.status === 'needs_attention' && pausedReason?.startsWith('sandbox_')
+    ? { sessionId: sessionRecord.id, reason: sessionRecord.sandbox?.reason ?? null, escaped: pausedReason === SANDBOX_ESCAPE }
+    : null
   const fileRefActions = useMemo<FileRefActions | null>(
     () => (cwd ? { cwd, openFile: setFile, attachMention } : null),
     [cwd, setFile, attachMention],
@@ -161,6 +174,7 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
     }
   }, [])
 
+
   // An error card's Switch model / Lower effort / Compact (D-19).
   const recovery: ErrorRecovery = {
     rt, busy, session: sessionRecord,
@@ -200,6 +214,12 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
           cwd: sessionRecord?.cwd,
           // Offered by the card only beside a worktree path (`cwd`).
           worktree: { sessionId: rt.sessionId, busy, onDiscarded: onClosed },
+          // Strictly on (D-23): an unknown capability is an older edge with no endpoint.
+          // An enabled sandbox shows even without it (the kill switch turned off under
+          // it), so it can always be turned off.
+          sandbox: caps?.sandbox === true || sessionRecord?.sandbox?.enabled === true
+            ? { sessionId: rt.sessionId, busy, state: sessionRecord?.sandbox ?? null, held: !!sandboxHold }
+            : undefined,
           prs: sessionRecord?.prs,
           prAutofix: {
             enabled: sessionRecord?.prAutofixPaused !== true,
@@ -264,7 +284,7 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
               <>
                 {/* Error banner — shared with the assistant drawer; see the component
                     for why it is transient and where the durable record lives. */}
-                <SessionErrorBanner rt={rt} />
+                <SessionErrorBanner rt={rt} sandboxHold={sandboxHold} />
                 {sessionRecord?.snooze && (
                   <SnoozeBanner sessionId={sessionRecord.id} snooze={sessionRecord.snooze} />
                 )}

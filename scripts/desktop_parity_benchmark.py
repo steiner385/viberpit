@@ -67,7 +67,7 @@ D=[
  ("Notification levels per event type",1,"P","quiet hours, channels, routing rules"),
  ("Appearance: theme, font + transcript size",1,"P","theme + widths"),
  ("Presets / environments selectable at new session",2,"Y","dispatch bar + menu (removable chip) and ⌘K \"New session from preset\"; no chord — every digit family is taken (D-14)"),
- ("Sandbox settings",1,"N","adopted (2026-11-06, D22a): opt-in, fail-closed — offered only where the host preflight passes, Bash auto-allow off so permission cards still show, gh/git sockets and GitHub hosts allowed; spike first, not built yet"),
+ ("Sandbox settings",1,"N","built and shipped dark (D-23): opt-in per session, fail-closed, GitHub-only network, worktree-only writes, home unreadable, non-Bash tools confined; off until host blockers are fixed — AppArmor bwrap-userns-restrict breaks the CLI seccomp helper and the CLI proxy socket sits under the hidden home (#3367)"),
 ]),
 ("6 User feedback",[
  ("Permission card: once / this session / always / deny",3,"Y",""),
@@ -91,7 +91,7 @@ D=[
  ("Spin off parallel / child sessions",1,"Y",""),
  ("Archive / unarchive / auto-archive",2,"Y",""),
  ("Rename + AI titles",1,"Y",""),
- ("Move session to cloud / other host",1,"Y","other fleet host, idle Claude sessions (D-17); the self-hosted fleet stands in for Desktop's cloud (owner, 2026-11-06, D22c); moving Codex sessions tracked in #3347"),
+ ("Move session to cloud / other host",1,"Y","other fleet host, idle Claude and Codex sessions (D-17; Codex built 2026-11-06, #3347); the self-hosted fleet stands in for Desktop's cloud (owner, 2026-11-06, D22c)"),
  ("Scheduled tasks / routines",1,"P","Delivery automations"),
 ]),
 ("8 Code review & dev",[

@@ -230,6 +230,10 @@ export interface AgentCapabilities {
    *  engine declares it AND `VIBERPIT_SESSION_MOVE_ENABLED` is on. False for Codex, whose
    *  history stays on its host. */
   crossHostTransfer: boolean
+  /** The opt-in sandbox (D-23): `server/sessions/engine.py` — Claude only, AND
+   *  `VIBERPIT_SANDBOX_ENABLED` is on. Absent from an older edge: off, never assumed —
+   *  unlike the other keys, the controls it gates would call an endpoint that is not there. */
+  sandbox?: boolean
 }
 
 /**
@@ -423,6 +427,11 @@ export interface Session {
   /** Per-session PR auto-fix opt-out (D-14): true = PR Doctor leaves this session's
    *  PRs alone (manual fixes still run). `POST /sessions/{id}/pr-autofix {enabled}`. */
   prAutofixPaused?: boolean
+  /** The sandbox (D-23): what this session asked for and where it stands. `off` also
+   *  covers Codex, the assistant and the kill switch. A session whose sandbox failed is
+   *  held (`needs_attention`, `pausedReason: "sandbox_failed"`). Absent from an older
+   *  server: treated as off. */
+  sandbox?: SessionSandbox | null
   /** Fast mode (D-14): the session's stored choice. Off unless set. */
   fastMode?: boolean
   /** Whether fast mode can be on right now — the CLI listed the session's current
@@ -1357,6 +1366,53 @@ export interface WorktreePreflight {
   busy: boolean
   canDiscard: boolean
   canRepair: boolean
+}
+
+/** A session's sandbox (D-23), from the session payload. `reason` is set only when
+ *  `state === 'failed'`. `pending`: asked for, not verified yet (e.g. detached). */
+export interface SessionSandbox {
+  enabled: boolean
+  state: 'off' | 'pending' | 'active' | 'failed'
+  reason: string | null
+}
+
+
+/** One host preflight check. `name`: bwrap, bwrap_version, socat, bwrap_probe, seccomp_helper, proxy_socket_dir, gh, cli_version. */
+export interface SandboxCheck {
+  name: string
+  ok: boolean
+  detail: string | null
+}
+
+/** `GET /sessions/{id}/sandbox` (D-23): the Environment card's facts, read on the owning
+ *  daemon. `capability` false hides the toggle. `unavailableReason` is the first failed
+ *  preflight check's detail. `canToggle`: capable, not busy, not ended, and either on
+ *  already (off is always allowed) or `available`. */
+export interface SandboxFacts {
+  sessionId: string
+  host?: string | null
+  capability: boolean
+  enabled: boolean
+  state: SessionSandbox['state']
+  reason: string | null
+  held: boolean
+  busy: boolean
+  available: boolean
+  unavailableReason: string | null
+  preflight: { ok: boolean; reason: string | null; checks: SandboxCheck[]; cliVersion: string | null } | null
+  canToggle: boolean
+  allowedDomains: string[]
+}
+
+/** `POST /sessions/{id}/sandbox`: both directions respawn. A respawn whose sandbox failed
+ *  still answers 200, with `state: 'failed'`, `held: true` and `respawned: false`. */
+export interface SandboxToggleResult {
+  sessionId: string
+  enabled: boolean
+  state: SessionSandbox['state']
+  reason: string | null
+  held: boolean
+  respawned: boolean
 }
 
 /** `POST /sessions/{id}/worktree/discard` — the session is archived. `recoveryRefs`

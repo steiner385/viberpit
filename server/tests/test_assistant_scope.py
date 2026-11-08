@@ -760,6 +760,9 @@ def test_a_rebuilt_driver_is_seeded_eagerly_and_its_first_scoped_write_raises_no
     built: list = []
 
     class _Registry:
+        def capabilities_for(self, engine):  # D-23 reads it per build; unknown = not capable
+            return None
+
         def create(self, engine, config):
             d = ClaudeAgentDriver(config.session_id, config.account, config.cwd,
                                   config.config_dir, mode="interactive",
@@ -797,6 +800,9 @@ def test_a_coding_driver_is_never_seeded():
             seeded.append(scope)
 
     class _Registry:
+        def capabilities_for(self, engine):  # D-23 reads it per build; unknown = not capable
+            return None
+
         def create(self, engine, config):
             return _D()
 
@@ -941,6 +947,9 @@ def _claude_registry(reg):
     from server.sessions.claude_driver import ClaudeAgentDriver
 
     class _Registry:
+        def capabilities_for(self, engine):  # D-23 reads it per build; unknown = not capable
+            return None
+
         def create(self, engine, config):
             return ClaudeAgentDriver(config.session_id, config.account, config.cwd,
                                      config.config_dir, mode="interactive",

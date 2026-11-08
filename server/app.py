@@ -994,8 +994,24 @@ def create_app(
             "code": _exc.code, "message": f"This session is moving to {_exc.target}.",
             "movingTo": _exc.target}})
 
+    from server.sessions import sandbox as _sandbox
+
+    def _sandbox_response(code: str, reason: str | None) -> JSONResponse:
+        return JSONResponse(status_code=_sandbox.http_status(code), content={"detail": {
+            "code": code, "message": _sandbox.MESSAGES[code], "reason": reason}})
+
+    @app.exception_handler(_sandbox.SandboxError)
+    async def _sandbox_error_handler(_request, _exc):  # noqa: ANN001
+        # D-23: a call that would build a driver (a prompt, a resume) for a session whose
+        # sandbox could not start or be verified, or that is held on it. Nothing ran.
+        return _sandbox_response(_exc.code, _exc.reason)
+
     @app.exception_handler(DaemonError)
     async def _daemon_error_handler(_request, _exc):  # noqa: ANN001
+        if _exc.err_type == "SandboxError" and (_exc.data or {}).get("code") in \
+                _sandbox.SANDBOX_CODES:
+            # The same refusal from the owning daemon (D-23), rebuilt from its envelope.
+            return _sandbox_response(_exc.data["code"], _exc.data.get("reason"))
         # Most DaemonErrors are the daemon reporting a genuine local conflict (bad
         # session id, malformed request) — `.message` IS the right client-facing
         # detail, and 409 is the right status. But a handful of RPC paths (notably

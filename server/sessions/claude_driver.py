@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import base64
+import collections
 import contextlib
 import dataclasses
 import functools
@@ -18,7 +19,8 @@ from claude_agent_sdk._errors import CLIConnectionError
 from viberpit import brand
 from viberpit import copilot as _copilot_mod
 from viberpit.accounts import provider_or_none as _provider_of
-from server.aio import bounded_wait, cancel_and_reap, format_task_dump, run_to_completion
+from server.aio import (bounded_wait, cancel_and_reap, format_task_dump, iter_exception_chain,
+                        run_to_completion)
 from server.assistant.context import PromptContext, render_context_header
 from server.sessions.prompt_origin import PromptOrigin, render_origin_header
 from server.hostname import self_host_name
@@ -29,7 +31,7 @@ from server.mcp_health.status import (apply_auth_latch, observed_auth_failure, r
                                       token_fingerprint)
 from server.mcp_spec import is_mcp_tool
 from server.obs.metrics import assistant_sessions_live, assistant_ttft_ms, assistant_turn_ms
-from server.obs.context import bind_session
+from server.obs.context import bind_session, log_event
 from .automation_execution import AutomationExecutionFence
 from .background_tasks import _AGENT_TOOLS, _is_background_launch
 from . import events as ev
@@ -44,6 +46,7 @@ from .flag_settings import (EFFORT_KEY, FAST_MODE_KEY, MCP_TOOLS_NOT_APPLIED,
                             SettingsError, compose_permissions, effort_levels, live_fast_mode,
                             live_output_style, model_options, output_styles)
 from .memory_files import normalize_memory_files
+from . import sandbox as sandbox_mod
 from .plugin_reload import (RELOAD_BUSY, RELOAD_CONTROL_TIMEOUT_S, RELOAD_FAILED, RELOAD_REFUSED,
                             RELOAD_UNAVAILABLE, ReloadError)
 from .plugin_reload import outcome as reload_outcome
@@ -375,6 +378,11 @@ class ClaudeAgentDriver:
         # `--resume <id>` loads it from any cwd — verified on CLI 2.1.293 and 2.1.318.
         # Also gated by VIBERPIT_SESSION_MOVE_ENABLED (engine.move_supported).
         cross_host_transfer=True,
+        # Sandbox (D-23): the CLI's own sandbox through the spawn's `--settings` JSON,
+        # verified with the internal `get_sandbox_dialog` control request — verified on
+        # CLI 2.1.293 and 2.1.319. Also gated by VIBERPIT_SANDBOX_ENABLED
+        # (sandbox.sandbox_supported).
+        sandbox=True,
     )
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
@@ -391,7 +399,9 @@ class ClaudeAgentDriver:
                  automation_execution_id=None, after_execution_close=None,
                  resumed_after_restart: bool = False,
                  fork_resume_at: str | None = None,
-                 load_mcp_tool_rules=None):
+                 load_mcp_tool_rules=None,
+                 sandbox: bool = False,
+                 on_sandbox_state=None):
         self.automation_execution_id = automation_execution_id
         self._automation_fence = AutomationExecutionFence(before_execution, after_execution_close)
         self._automation_tasks: set[str] = set()
@@ -460,6 +470,19 @@ class ClaudeAgentDriver:
         # Serializes ``apply_flag_settings``: each reply is awaited before the next write
         # goes out, since back-to-back writes read stale values (D-14 spike §1.3).
         self._flag_settings_lock = asyncio.Lock()
+        # Sandbox (D-23): this driver's spawn carries the sandbox block and start() does
+        # not return until the CLI proves it is running (`_enter_sandboxed`). The stderr
+        # tail is where the CLI's own refusal text lands when the spawn fails.
+        self._sandbox = bool(sandbox)
+        self._on_sandbox_state = on_sandbox_state
+        self._sandbox_stderr: collections.deque[str] = collections.deque(maxlen=200)
+        self._sandbox_tmp: str | None = None
+        # The in-flight registry a sandboxed CLI's hooks share (owner decision
+        # 2026-11-07): writes are serialised against running Bash in every thread.
+        self._sandbox_gate: sandbox_mod.SandboxGate | None = (
+            sandbox_mod.SandboxGate(alive=lambda: self._client is not None
+                                    and not self._stream_ended)
+            if self._sandbox else None)
         self._on_mcp_status = on_mcp_status
         self._mcp_last: list = []                     # last snapshot, auth latch applied
         self._mcp_base: list = []                     # last sanitized snapshot, before the latch
@@ -1114,6 +1137,18 @@ class ClaudeAgentDriver:
         # inside that sub-agent's thread. Best-effort: unmapped → unattributed, as before.
         agent_id = getattr(ctx, "agent_id", None) if ctx is not None else None
         pid = self.subagent_tool_use_id(agent_id) if agent_id is not None else None
+        if self._sandbox:
+            # D-23: the CLI sandbox wraps Bash only; file tools and third-party MCP tools
+            # are confined here too (the spawn's PreToolUse hook is the binding layer).
+            from server.permission_rules.patterns import FILE_TOOLS
+            why = sandbox_mod.confine_tool(tool_name, tool_input, self.cwd,
+                                           tmpdir=self._sandbox_tmp)
+            if why is None and tool_name in FILE_TOOLS and self._sandbox_gate is not None:
+                why = self._sandbox_gate.write_blocked()
+            if why is not None:
+                log.info("driver._can_use_tool: sandbox denied tool=%s session=%s",
+                         tool_name, self.session_id)
+                return PermissionResultDeny(message=why)
         if tool_name == "AskUserQuestion":
             return await self._handle_ask_user_question(tool_input, turn_id, parent_tool_use_id=pid)
         if is_assistant_kind(self.kind) and not is_mcp_tool(tool_name):
@@ -1207,18 +1242,159 @@ class ClaudeAgentDriver:
         if self.resume and self._fork_resume_at:
             fork_kw = {"fork_session": True,
                        "extra_args": {"resume-session-at": self._fork_resume_at}}
+        if self._sandbox:
+            if not sandbox_mod.sandbox_enabled():
+                # Kill switch off (D-23): a session that asked for the sandbox is
+                # refused — held, never spawned plain. No CLI is started.
+                reason = "the sandbox is turned off on this host"
+                log_event(log, logging.INFO, "sandbox.start_refused",
+                          session_id=self.session_id, reason=reason)
+                self._closing = True
+                self._stream_ended = True
+                await self._report_sandbox(sandbox_mod.STATE_FAILED, reason)
+                raise sandbox_mod.SandboxError(sandbox_mod.SANDBOX_DISABLED, reason)
+            # The orchestrator's factory merges the sandbox block and env for exactly
+            # this flag, so the spawn that carries the block is the one verified below.
+            fork_kw["sandbox"] = True
+            fork_kw["stderr"] = self._sandbox_stderr.append
+            fork_kw["sandbox_gate"] = self._sandbox_gate
+            # Its own temp root (CLAUDE_CODE_TMPDIR), created private for this CLI.
+            self._sandbox_tmp = await asyncio.to_thread(sandbox_mod.prepare_session_tmp,
+                                                        self.session_id)
+            fork_kw["sandbox_tmp"] = self._sandbox_tmp
+            await self._report_sandbox(sandbox_mod.STATE_PENDING, None)
         client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode,
                                self.resume, on_pre_compact=self._on_pre_compact, **fork_kw)
         if inspect.isawaitable(client):
             client = await client
         self._client = client
-        await self._client.__aenter__()
+        if self._sandbox:
+            await self._enter_sandboxed()
+        else:
+            await self._client.__aenter__()
         self._source = _MessageSource(self._client)
         self._closing = False
         self._start_listener()
         self._start_mcp_settle()
         await self._report_model_options()
         await self._apply_mcp_tool_denies()
+
+    # ── Sandbox (D-23) ───────────────────────────────────────────────────────────
+
+    async def _enter_sandboxed(self) -> None:
+        """Connect a sandboxed CLI and prove the sandbox runs before anything can: a
+        spawn the CLI refused (``failIfUnavailable``) or a ``get_sandbox_dialog`` that
+        fails, is absent or errors closes the client and raises ``SandboxError``. Never
+        retried here, least of all without the sandbox (spike §2.5)."""
+        client = self._client
+        assert client is not None   # start() assigned it
+        try:
+            await client.__aenter__()
+        except Exception as exc:
+            refusal = sandbox_mod.startup_failure(self._sandbox_failure_texts(exc))
+            if refusal is None:
+                raise   # not the sandbox's refusal: the existing start-failure paths own it
+            log_event(log, logging.INFO, "sandbox.start_refused",
+                      session_id=self.session_id, reason=refusal)
+            await self._abort_sandboxed_start()
+            await self._report_sandbox(sandbox_mod.STATE_FAILED, refusal)
+            raise sandbox_mod.SandboxError(sandbox_mod.SANDBOX_START_FAILED, refusal) from exc
+        verdict = await self._read_sandbox_dialog()
+        if verdict.ok:
+            log_event(log, logging.INFO, "sandbox.verified", session_id=self.session_id)
+            if self._sandbox_gate is not None:
+                # A fresh CLI has no sandboxed process running: every one dies with the
+                # CLI that spawned it (bwrap --die-with-parent), so empty is true now.
+                self._sandbox_gate.known = True
+            await self._report_sandbox(sandbox_mod.STATE_ACTIVE, None)
+            return
+        # The CLI may have answered initialize and then refused: its own words win.
+        refusal = sandbox_mod.startup_failure(self._sandbox_failure_texts(None))
+        reason = refusal or verdict.reason or "the sandbox could not be verified"
+        if refusal is None and not verdict.expected:
+            # The host passed preflight and the CLI did not refuse, yet the check failed:
+            # an anomaly (a reshaped @internal reply, settings not applied). One bare event
+            # name, the cause in the fields, so the sink files one issue per cause.
+            log_event(log, logging.WARNING, "sandbox.verify_failed",
+                      session_id=self.session_id, reason=reason)
+        else:
+            log_event(log, logging.INFO, "sandbox.unavailable",
+                      session_id=self.session_id, reason=reason)
+        await self._abort_sandboxed_start()
+        await self._report_sandbox(sandbox_mod.STATE_FAILED, reason)
+        raise sandbox_mod.SandboxError(sandbox_mod.SANDBOX_UNVERIFIED, reason)
+
+    async def _read_sandbox_dialog(self) -> sandbox_mod.DialogVerdict:
+        """One ``get_sandbox_dialog`` on the control channel (the ``apply_flag_settings``
+        seam), checked against spike §2.4. The request is ``@internal``: no channel, a
+        refusal or a timeout fails the check like any unmet condition."""
+        send = getattr(getattr(self._client, "_query", None), "_send_control_request", None)
+        if send is None:
+            return sandbox_mod.DialogVerdict(
+                False, "the SDK client has no control channel, so the sandbox could not "
+                       "be verified")
+        try:
+            resp = await send({"subtype": "get_sandbox_dialog"},
+                              timeout=sandbox_mod.SANDBOX_CONTROL_TIMEOUT_S)
+        except Exception as exc:
+            return sandbox_mod.DialogVerdict(False, f"get_sandbox_dialog failed: {exc}")
+        return sandbox_mod.check_dialog(resp, cwd=self.cwd, config_dir=self.config_dir)
+
+    def _sandbox_failure_texts(self, exc: BaseException | None) -> list[str]:
+        """Everything that may carry the CLI's sandbox refusal: the exception chain, the
+        SDK's last error result (``startup_failure_reason``'s message) and stderr."""
+        texts: list[str] = [str(e) for e in iter_exception_chain(exc)] if exc else []
+        last = getattr(getattr(self._client, "_query", None), "_last_error_result_text",
+                       None)
+        if isinstance(last, str):
+            texts.append(last)
+        texts.extend(self._sandbox_stderr)
+        return texts
+
+    async def _abort_sandboxed_start(self) -> None:
+        """Close the CLI of a sandboxed start that failed, before start() raises: no
+        build site may be left holding a live, unverified process. Bounded like
+        ``aclose``'s own exit; the client is dropped so a later ``aclose`` has nothing
+        left to exit."""
+        self._closing = True
+        self._stream_ended = True
+        client, self._client = self._client, None
+        if client is None:
+            return
+        closing = asyncio.ensure_future(client.__aexit__(None, None, None))
+        await bounded_wait(closing, timeout=_CLOSE_AEXIT_TIMEOUT_S,
+                           phase=f"driver.sandbox_abort:{self.session_id}")
+        await self._remove_sandbox_tmp()
+
+    def _note_background(self, e) -> bool:
+        """Track a BackgroundTaskStarted / Ended event; True when the backgrounded set
+        changed (a foreground Bash is a local_bash task too, and does not count). A
+        sandboxed session's gate holds the same tasks until they end."""
+        if isinstance(e, ev.BackgroundTaskStarted):
+            if not e.backgrounded:
+                return False
+            self._subagent_tasks[e.tool_use_id] = e.task_id
+            if self._sandbox_gate is not None:
+                self._sandbox_gate.background_started(e.tool_use_id)
+            return True
+        if self._sandbox_gate is not None:
+            self._sandbox_gate.background_ended(e.tool_use_id)
+        return self._subagent_tasks.pop(e.tool_use_id, None) is not None
+
+    async def _remove_sandbox_tmp(self) -> None:
+        """The CLI is gone: drop its private temp root (close, archive, respawn)."""
+        if self._sandbox_tmp is None:
+            return
+        self._sandbox_tmp = None
+        await asyncio.to_thread(sandbox_mod.remove_session_tmp, self.session_id)
+
+    async def _report_sandbox(self, state: str, reason: str | None) -> None:
+        if self._on_sandbox_state is None:
+            return
+        try:
+            await self._on_sandbox_state(self.session_id, state, reason)
+        except Exception:
+            log.info("on_sandbox_state failed session=%s", self.session_id, exc_info=True)
 
     async def send_prompt(self, text: str, images: list[dict] | None = None, *,
                           interrupt: bool = False,
@@ -1748,16 +1924,14 @@ class ClaudeAgentDriver:
                     except Exception:  # noqa: BLE001 - a summary refresh must never break the pump
                         log.debug("driver.on_sub_agents_changed failed session=%s",
                                   self.session_id, exc_info=True)
+            if isinstance(e, ev.ToolResult) and self._sandbox_gate is not None:
+                # Every finished call has a result — also one the permission flow denied
+                # after our PreToolUse hook admitted it (no PostToolUse then).
+                self._sandbox_gate.done(e.tool_id)
             if isinstance(e, (ev.BackgroundTaskStarted, ev.BackgroundTaskEnded)):
                 # A foreground Bash is a local_bash task too; only backgrounded work is a
                 # snapshot change, so only it registers and fires the refresh.
-                changed = False
-                if isinstance(e, ev.BackgroundTaskStarted):
-                    if e.backgrounded:
-                        self._subagent_tasks[e.tool_use_id] = e.task_id
-                        changed = True
-                else:
-                    changed = self._subagent_tasks.pop(e.tool_use_id, None) is not None
+                changed = self._note_background(e)
                 if changed and self._on_background_work_changed is not None:
                     try:
                         self._on_background_work_changed(self.session_id)
@@ -1809,6 +1983,8 @@ class ClaudeAgentDriver:
         """Settle a turn that just closed (prompt or CLI-initiated alike): sync back,
         clear turn flags, then either dequeue the next prompt or go idle — status
         refresh, suggestions, and the listener back on the cursor."""
+        if self._sandbox_gate is not None:
+            self._sandbox_gate.end_turn()   # no foreground call outlives its turn
         # Capture any token rotation the SDK performed during this turn.
         await self._call_sync_back()
         # Before any turn-scoped flag is cleared below (either branch): this turn
@@ -2266,6 +2442,8 @@ class ClaudeAgentDriver:
         (interrupt-and-post) leaves the queue for the settling turn to drain."""
         self._reg.deny_all(self.session_id)
         self._qreg.deny_all(self.session_id)
+        if self._sandbox_gate is not None:
+            self._sandbox_gate.end_turn()
         if not keep_queue:
             self._queue.clear()
         self._cancel_suggest()
@@ -3208,6 +3386,7 @@ class ClaudeAgentDriver:
                 self._automation_close_ok = (completed and closing.done()
                                              and not closing.cancelled()
                                              and closing.exception() is None)
+            await self._remove_sandbox_tmp()
             # Final sync_back: capture any token rotation that occurred during the
             # session (e.g. a long-running session where the SDK refreshed but the
             # drain's finally sync_back already ran before the close was requested).
@@ -3276,4 +3455,6 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             resumed_after_restart=config.resumed_after_restart,
             fork_resume_at=config.fork_resume_at,
             load_mcp_tool_rules=config.load_mcp_tool_rules,
+            sandbox=config.sandbox,
+            on_sandbox_state=config.on_sandbox_state,
         )
