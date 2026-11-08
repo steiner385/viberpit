@@ -91,7 +91,7 @@ D=[
  ("Spin off parallel / child sessions",1,"Y",""),
  ("Archive / unarchive / auto-archive",2,"Y",""),
  ("Rename + AI titles",1,"Y",""),
- ("Move session to cloud / other host",1,"Y","other fleet host, idle Claude sessions (D-17); the self-hosted fleet stands in for Desktop's cloud (owner, 2026-11-06, D22c); moving Codex sessions tracked in #3347"),
+ ("Move session to cloud / other host",1,"Y","other fleet host, idle Claude and Codex sessions (D-17; Codex built 2026-11-06, #3347); the self-hosted fleet stands in for Desktop's cloud (owner, 2026-11-06, D22c)"),
  ("Scheduled tasks / routines",1,"P","Delivery automations"),
 ]),
 ("8 Code review & dev",[
