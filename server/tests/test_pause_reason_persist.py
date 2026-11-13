@@ -59,6 +59,23 @@ def test_pause_session_persists_reason_and_reset(tmp_path):
     assert status_frames[-1]["usageStalled"] is True
 
 
+def test_a_non_usage_hold_rides_the_same_status_frame(tmp_path):
+    """#3364: a hold that is not a usage stall (e.g. D-23's ``sandbox_failed``) must
+    still carry ``pausedReason`` beside ``usageStalled`` in its status frame: the web's
+    status patcher applies the pause fields only when ``usageStalled`` is present."""
+    async def run():
+        orch = await _build_orch(tmp_path)
+        frames = []
+        orch._publish_event = frames.append
+        await orch._pause_session(orch.record("s1"), reason="sandbox_failed")
+        return frames
+    frames = asyncio.run(run())
+    last = [f for f in frames if f.get("type") == "status"][-1]
+    assert last["status"] == "needs_attention"
+    assert last["pausedReason"] == "sandbox_failed"
+    assert last["usageStalled"] is False
+
+
 def test_pause_session_without_reset_leaves_until_null(tmp_path):
     async def run():
         orch = await _build_orch(tmp_path)

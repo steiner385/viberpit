@@ -83,6 +83,14 @@ describe('SessionSocket stall fields', () => {
     expect(row(qc).pausedReason).toBe('all_accounts_busy')
     expect(row(qc).pausedUntil).toBe('2026-09-04T16:10:00+00:00')
   })
+  it('applies a non-usage hold reason too (#3364: usageStalled false still carries it)', () => {
+    const { s, qc } = makeSocket(); seed(qc, { revAt: T1 })
+    s._handleInbound({ type: 'status', sessionId: 's1', status: 'needs_attention', revAt: T2,
+      pausedReason: 'sandbox_failed', pausedUntil: null, usageStalled: false })
+    expect(row(qc).status).toBe('needs_attention')
+    expect(row(qc).pausedReason).toBe('sandbox_failed')
+    expect(row(qc).usageStalled).toBe(false)
+  })
   it('a rotated frame clears the stall', () => {
     const { s, qc } = makeSocket()
     seed(qc, { revAt: T1, status: 'needs_attention', usageStalled: true, pausedReason: 'rotation_cap', pausedUntil: T2 })
