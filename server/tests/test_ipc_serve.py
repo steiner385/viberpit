@@ -59,6 +59,37 @@ async def test_orphan_clis_are_reaped_before_anything_resumes():
     assert calls.index("reap_orphan_clis") < calls.index("auto_resume_interrupted")
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.asyncio
+async def test_leaked_sandbox_temp_roots_are_swept_after_the_reap_before_rehydrate(
+        enabled, monkeypatch):
+    """#3367: a crash leaks sandboxed sessions' temp roots. Once the old CLIs are
+    reaped none is live, so all are swept before rehydrate re-makes its own; only
+    with the sandbox switch on, and a failure never blocks the boot."""
+    from server.sessions import sandbox as sb
+    monkeypatch.setenv("VIBERPIT_SANDBOX_ENABLED", "true" if enabled else "false")
+    calls: list[str] = []
+
+    def sweep(live):
+        calls.append(f"sweep:{list(live)}")
+        raise OSError("boom")
+    monkeypatch.setattr(sb, "sweep_session_tmp", sweep)
+    monkeypatch.setattr(sb, "preflight", mock.AsyncMock())
+    orch = mock.MagicMock()
+    for name in ("reap_orphan_clis", "rehydrate", "start", "stop"):
+        setattr(orch, name, mock.AsyncMock(side_effect=
+                                           lambda _n=name, *a, **k: calls.append(_n)))
+    with mock.patch("server.ipc.serve.build_x11_manager", return_value=_FAKE_X11):
+        app, _ = build_daemon(orchestrator=orch)
+    with mock.patch("server.ipc.serve.init_db", new=mock.AsyncMock()):
+        async with daemon_lifespan(app, orch):
+            orch.start.assert_awaited_once()
+    if enabled:
+        assert calls[:3] == ["reap_orphan_clis", "sweep:[]", "rehydrate"]
+    else:
+        assert not [c for c in calls if c.startswith("sweep")]
+
+
 @pytest.mark.asyncio
 async def test_a_failing_orphan_reap_never_blocks_the_boot():
     """Same contract as the Codex and X11 orphan sweeps it sits beside: a

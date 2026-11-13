@@ -265,6 +265,17 @@ async def daemon_lifespan(app, orchestrator):
                         "previous daemon", reaped)
     except Exception:
         log.warning("daemon startup: orphan CLI reap failed", exc_info=True)
+    if _sandbox.sandbox_enabled():
+        # D-23 (#3367): a crash leaks sandboxed sessions' temp roots (their dirs and
+        # proxy sockets). No CLI runs yet — the previous incarnation's were just reaped,
+        # and rehydrate below re-makes a root for each sandboxed session it respawns —
+        # so none is live. Never fatal.
+        try:
+            swept = await asyncio.to_thread(_sandbox.sweep_session_tmp, ())
+            if swept:
+                log.info("daemon startup: swept %d leaked sandbox temp root(s)", swept)
+        except Exception:
+            log.info("daemon startup: sandbox temp sweep failed", exc_info=True)
     try:
         await orchestrator.rehydrate()
     except Exception as exc:

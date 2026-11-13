@@ -253,6 +253,14 @@ if not os.environ.get("VIBERPIT_HELPER_SCRATCH_ROOT"):
 
 
 # --------------------------------------------------------------------------- #
+# The D-23 sandbox temp parent (#3367) defaults to the host's /var/tmp/vpsbx,  #
+# which the daemon's startup sweep empties: a test must never create or sweep  #
+# the live one. Short (the CLI's 44-byte limit) and per process.               #
+# --------------------------------------------------------------------------- #
+os.environ["VIBERPIT_SANDBOX_TMP_PARENT"] = tempfile.mkdtemp(prefix="vp", dir="/tmp")
+
+
+# --------------------------------------------------------------------------- #
 # Auth env must not leak from the dev machine into tests.                      #
 #                                                                              #
 # A developer box runs with VIBERPIT_TAILNET_ALLOWLIST set to the owner's own  #

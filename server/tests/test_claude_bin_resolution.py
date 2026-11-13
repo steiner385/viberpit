@@ -171,3 +171,30 @@ def test_resolve_warns_when_nothing_found(monkeypatch, caplog):
 def test_min_version_env_override(monkeypatch):
     monkeypatch.setenv("VIBERPIT_CLAUDE_MIN_VERSION", "9.9.9")
     assert claude_bin._min_version() == (9, 9, 9)
+
+
+# --- cli_fingerprint: the sandbox preflight's cache key (#3367) ----------------
+
+
+def test_cli_fingerprint_follows_the_installers_symlink_without_a_subprocess(
+        monkeypatch, isolated_home):
+    """An auto-update repoints ``~/.local/bin/claude`` at a new ``versions/<ver>``:
+    the fingerprint changes with it, and reading it runs nothing."""
+    import subprocess
+    monkeypatch.delenv("VIBERPIT_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda c: None)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("ran a subprocess"))
+    assert claude_bin.cli_fingerprint() is None
+    versions = isolated_home / ".local" / "share" / "claude" / "versions"
+    old = _make_exe(versions / "2.1.319")
+    new = _make_exe(versions / "2.1.320")
+    new.write_text("#!/bin/sh\n# a newer build\n")
+    link = isolated_home / ".local" / "bin" / "claude"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(old)
+    first = claude_bin.cli_fingerprint()
+    assert first is not None and first.startswith(f"{old}:")
+    assert claude_bin.cli_fingerprint() == first
+    link.unlink()
+    link.symlink_to(new)
+    assert claude_bin.cli_fingerprint().startswith(f"{new}:")

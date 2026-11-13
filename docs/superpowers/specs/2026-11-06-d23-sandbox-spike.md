@@ -513,3 +513,26 @@ Notes:
 - **Model refusals.** haiku refused the read and escape probes as evasive until each prompt said the run was the
   owner's authorised verification. This is not a product issue.
 - **Benchmark row.** "Sandbox settings" should not become Y until F4 and F5 are resolved.
+
+## 6. Enablement design (#3367)
+
+The design that clears F4–F6 and the rocky push is in
+`docs/superpowers/plans/2026-11-13-sandbox-enablement-3367.md`. The owner approved option A on 2026-11-13.
+
+- **F4 (host).** A root-owned bwrap copy, `/usr/local/libexec/viberpit/bwrap`, with its own AppArmor profile
+  `viberpit-sbx-bwrap`, selected by `sandbox.bwrapPath` in `/etc/claude-code/managed-settings.json` and kept
+  in step by an apt hook. The files and install script are in `deploy/sandbox/`, and the steps and rollback are
+  in `deploy/README.md` § "Claude session sandbox".
+- **F5 (code).** The per-session temp root moves to `VIBERPIT_SANDBOX_TMP_PARENT` (default `/var/tmp/vpsbx`)
+  as `<parent>/<sha256(id)[:12]>/{t,s}`: `t/` is `CLAUDE_CODE_TMPDIR`, and `s/` is `TMPDIR`, where the proxy
+  sockets go. The parent is read-denied and only the session's own `s/` is re-allowed. Path lengths are
+  checked against 44 and 107 bytes.
+- **F6 (code).** The real path of every home symlink that leaves home is read-denied (this closes a leak:
+  `~/.docker` → `/mnt/ssk-ssd/...`). The real paths of toolchain re-allows are re-allowed, and the sandboxed
+  `PATH` uses them.
+- **Rocky push (code).** `GIT_CONFIG_*` env makes gh git's only github.com credential helper.
+- **Preflight (code).** It runs the installed CLI's real `apply-seccomp` helper through the configured bwrap,
+  replacing the `unshare` stand-in. A new `bwrap_copy` check compares the copy's sha256 with `/usr/bin/bwrap`.
+  The cached verdict re-runs when the CLI binary changes.
+
+The benchmark row stays ❌ until the live re-run (plan §5) is recorded here as §5.4.

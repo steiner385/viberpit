@@ -158,20 +158,10 @@ def _well_known_candidates() -> list[str]:
     return candidates
 
 
-def resolve_claude_bin() -> str | None:
-    """Absolute path to the system ``claude`` executable, or ``None`` if none is
-    usable.
-
-    Resolution order: ``VIBERPIT_CLAUDE_BIN`` (first token) → ``claude`` on PATH →
-    the native installer's well-known locations (``_well_known_candidates``). The
-    explicit/PATH forms stay authoritative so an operator override is never shadowed.
-
-    Returns ``None`` (rather than a bare name, bogus path, or a binary older than the
-    SDK's bundled CLI) when nothing usable resolves, so callers fall back to the SDK's
-    own — newer — CLI discovery instead of crashing or pinning a stale binary. Both
-    ``None`` paths log loudly (once) so the degradation is visible before a session
-    400s mid-turn.
-    """
+def _find_candidate() -> str | None:
+    """The ``claude`` resolution order of :func:`resolve_claude_bin` without its version
+    floor: ``VIBERPIT_CLAUDE_BIN`` (first token) → ``claude`` on PATH → the native
+    installer's well-known locations. No subprocess."""
     raw = os.environ.get("VIBERPIT_CLAUDE_BIN") or "claude"
     parts = shlex.split(raw)
     exe = parts[0] if parts else "claude"
@@ -187,7 +177,24 @@ def resolve_claude_bin() -> str | None:
                 log.debug("claude_bin: `%s` not on PATH; using well-known %s", exe, path)
                 candidate = path
                 break
+    return candidate
 
+
+def resolve_claude_bin() -> str | None:
+    """Absolute path to the system ``claude`` executable, or ``None`` if none is
+    usable.
+
+    Resolution order: ``VIBERPIT_CLAUDE_BIN`` (first token) → ``claude`` on PATH →
+    the native installer's well-known locations (``_well_known_candidates``). The
+    explicit/PATH forms stay authoritative so an operator override is never shadowed.
+
+    Returns ``None`` (rather than a bare name, bogus path, or a binary older than the
+    SDK's bundled CLI) when nothing usable resolves, so callers fall back to the SDK's
+    own — newer — CLI discovery instead of crashing or pinning a stale binary. Both
+    ``None`` paths log loudly (once) so the degradation is visible before a session
+    400s mid-turn.
+    """
+    candidate = _find_candidate()
     if not candidate:
         _warn_once(
             "not-found",
@@ -226,6 +233,22 @@ def cli_version() -> Version | None:
     ``None`` when nothing resolves or its ``--version`` cannot be read. Blocking."""
     binary = resolve_claude_bin()
     return _probe_version(binary) if binary else None
+
+
+def cli_fingerprint() -> str | None:
+    """A cheap identity of the ``claude`` a session would run — its real path, size and
+    mtime — with no subprocess, or ``None`` when nothing resolves. An auto-update
+    repoints the installer's symlink at a new ``versions/<ver>``, so this changes with
+    the CLI version (the sandbox preflight is keyed by it, #3367)."""
+    candidate = _find_candidate()
+    if not candidate:
+        return None
+    real = os.path.realpath(candidate)
+    try:
+        st = os.stat(real)
+    except OSError:
+        return None
+    return f"{real}:{st.st_size}:{st.st_mtime_ns}"
 
 
 def cli_path_kwargs() -> dict:
