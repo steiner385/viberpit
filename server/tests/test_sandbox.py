@@ -2682,8 +2682,11 @@ def test_an_escape_holds_the_session_closes_its_cli_and_files_one_warning(orch_e
         orch = await _orch(tmp_path, world)
         driver = await orch.ensure_driver(SID)
         orch._on_sandbox_escape(SID, "Write", "/home/x/.bashrc")
-        for _ in range(100):
-            if SID not in orch._drivers and orch._records[SID].paused_reason:
+        # The hold pops the driver before it awaits aclose(): wait for the close too, or a
+        # loaded runner reaches stop() first and the assert below races it.
+        for _ in range(500):
+            if (SID not in orch._drivers and orch._records[SID].paused_reason
+                    and (driver._client is None or driver._closing)):
                 break
             await asyncio.sleep(0.02)
         rec = orch._records[SID]
