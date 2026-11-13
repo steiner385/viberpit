@@ -447,9 +447,20 @@ def test_a_root_owned_closed_symlink_target_is_not_hidden(monkeypatch, tmp_path)
     system software any local user can read, not home data moved off home; hiding it
     only breaks toolchains. A user-owned target (dobby's /mnt/ssk-ssd/...) still is."""
     home, ext = _symlinked_home(tmp_path, monkeypatch)
-    root_owned = "/usr/share"                       # root:root 0755 on every host
-    st = os.stat(root_owned)
-    assert st.st_uid == 0 and not st.st_mode & 0o022
+    # A real root-owned, closed, world-readable dir. Not every host has one at a fixed
+    # path (GitHub's runner image ships /usr/share as 0777), so pick the first that
+    # qualifies rather than asserting the host's layout.
+    def qualifies(p: str) -> bool:
+        try:
+            st = os.stat(p)
+        except OSError:
+            return False
+        return (st.st_uid == 0 and not st.st_mode & 0o022
+                and st.st_mode & 0o005 == 0o005)
+    root_owned = next((p for p in ("/usr/share", "/usr/lib", "/usr/bin", "/etc", "/usr")
+                       if qualifies(p)), None)
+    if root_owned is None:
+        pytest.skip("no root-owned, closed, world-readable directory on this host")
     os.symlink(root_owned, home / "share-link")
     escapes = sb.home_escapes()
     assert root_owned not in escapes
