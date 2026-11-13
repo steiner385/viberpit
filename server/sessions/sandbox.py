@@ -1248,13 +1248,16 @@ def home_escapes(home: str | None = None) -> list[str]:
     Dangling links and links that stay in home are skipped, and so is a target that
     is (or contains) a system directory or the sandbox temp parent — hiding it would
     break the shell, and it holds no home data. So is a target that is itself
-    root-owned and not group/other-writable (``~/tool -> /opt/tool``,
-    ``/usr/local/x`` installed by root): that is system-installed software, readable by
-    any local user, not data the user moved off home — hiding it only breaks
-    toolchains. A target the user owns (``/mnt/ssk-ssd/...``, a tony-owned
-    ``/usr/local/x``) is still hidden. Only top-level entries are scanned, and a
-    dangling link's target is not hidden (see deploy/README.md "Known limits").
-    Resolved at spawn time."""
+    root-owned, not group/other-writable AND world-readable — a file ``o+r``, a
+    directory ``o+rx`` (``~/tool -> /opt/tool``, ``/usr/local/x`` installed by root):
+    that is system-installed software every local user can already read, not data the
+    user moved off home, and hiding it only breaks toolchains. Anything else is hidden:
+    a target the user owns (``/mnt/ssk-ssd/...``, a tony-owned ``/usr/local/x``), and a
+    root-owned one readable only by a group (``root:tony 0640``) or closed to others.
+    The exemption looks at the target itself only: a user-owned file INSIDE an exempt
+    directory (``/opt/aws/credentials``, tony 0600) stays readable. Only top-level
+    entries are scanned, and a dangling link's target is not hidden (see
+    deploy/README.md "Known limits"). Resolved at spawn time."""
     home = os.path.realpath(home or os.path.expanduser("~"))
     keep = [*_SYSTEM_ROOTS]
     try:
@@ -1278,7 +1281,9 @@ def home_escapes(home: str | None = None) -> list[str]:
             st = os.stat(real)
         except OSError:
             continue
-        if st.st_uid == 0 and not stat.S_IMODE(st.st_mode) & 0o022:
+        mode = stat.S_IMODE(st.st_mode)
+        world = 0o005 if stat.S_ISDIR(st.st_mode) else 0o004
+        if st.st_uid == 0 and not mode & 0o022 and mode & world == world:
             continue
         out.append(real)
     return sorted(dict.fromkeys(out))
@@ -1515,6 +1520,40 @@ def _sha256(path: str) -> str:
     return h.hexdigest()
 
 
+#: sha256 by stat identity (path, dev, inode, size, mtime, ctime): a respawn of an
+#: unchanged copy never re-reads it; any rewrite changes the key.
+_hash_cache: dict[tuple[str, int, int, int, int, int], str] = {}
+_HASH_CACHE_MAX = 16
+
+
+def _cached_sha256(path: str) -> str:
+    st = os.stat(path)
+    key = (path, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    digest = _hash_cache.get(key)
+    if digest is None:
+        digest = _sha256(path)
+        if len(_hash_cache) >= _HASH_CACHE_MAX:
+            _hash_cache.clear()
+        _hash_cache[key] = digest
+    return digest
+
+
+def copy_is_stale(managed: str, stock: str) -> bool:
+    """Does the managed copy differ from *stock*? Cheap first: a different size is
+    stale and the same size and mtime is current; only otherwise (``install`` gives the
+    copy its own mtime) are the sha256s compared, cached by stat identity. Unreadable
+    counts as stale (fail closed)."""
+    try:
+        a, b = os.stat(managed), os.stat(stock)
+        if a.st_size != b.st_size:
+            return True
+        if a.st_mtime_ns == b.st_mtime_ns:
+            return False
+        return _cached_sha256(managed) != _cached_sha256(stock)
+    except OSError:
+        return True
+
+
 def root_chain_problem(path: str, *, owner_uid: int = 0,
                        lstat: Callable[[str], os.stat_result] = os.lstat) -> str | None:
     """Why *path* could be replaced by anyone but *owner_uid* (root), or None: it must
@@ -1542,15 +1581,18 @@ def root_chain_problem(path: str, *, owner_uid: int = 0,
 
 
 def bwrap_copy_spawn_problem() -> str | None:
-    """The spawn-time half of ``bwrap_copy``: the stat-only :func:`root_chain_problem`
-    over the managed copy the CLI is about to run, re-read now rather than trusted from
-    the cached preflight. None when there is no managed copy (the CLI runs stock bwrap;
-    the helper probe gates that)."""
+    """The spawn-time half of ``bwrap_copy``, re-read now rather than trusted from the
+    cached preflight: :func:`root_chain_problem` over the managed copy the CLI is about
+    to run, then :func:`copy_is_stale` against stock bwrap (a bubblewrap update the
+    apt hook missed holds a respawn with :data:`BWRAP_COPY_STALE`). None when there is
+    no managed copy (the CLI runs stock bwrap; the helper probe gates that)."""
     managed = managed_bwrap_path()
     if not managed or os.path.normpath(managed) == os.path.normpath(STOCK_BWRAP):
         return None
     problem = root_chain_problem(managed)
-    return f"{BWRAP_COPY_UNSAFE}: {problem}" if problem else None
+    if problem:
+        return f"{BWRAP_COPY_UNSAFE}: {problem}"
+    return BWRAP_COPY_STALE if copy_is_stale(managed, STOCK_BWRAP) else None
 
 
 def check_bwrap_copy(managed: str | None, *, stock: str | None = None,
@@ -1565,10 +1607,7 @@ def check_bwrap_copy(managed: str | None, *, stock: str | None = None,
     problem = root_chain_problem(managed, owner_uid=owner_uid, lstat=lstat)
     if problem:
         return PreflightCheck("bwrap_copy", False, f"{BWRAP_COPY_UNSAFE}: {problem}")
-    try:
-        same = _sha256(managed) == _sha256(stock)
-    except OSError:
-        same = False
+    same = not copy_is_stale(managed, stock)
     return PreflightCheck("bwrap_copy", same, managed if same else BWRAP_COPY_STALE)
 
 

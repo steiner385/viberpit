@@ -667,7 +667,9 @@ toolchains, non-Bash tools confined, and edits serialised against running Bash. 
   ```
 
   It validates the user and refuses, before changing anything, if any directory on the copy's path is not
-  root-owned or is writable by group or others.
+  root-owned or is writable by group or others, or if `/etc/claude-code/managed-settings.json` already exists
+  with other content. Merge `"sandbox": {"bwrapPath": "/usr/libexec/viberpit/bwrap"}` into that file by hand,
+  then re-run. An identical file is left as it is.
 
   Verify:
   1. `sudo grep viberpit-sbx-bwrap /sys/kernel/security/apparmor/profiles` shows `viberpit-sbx-bwrap (enforce)`.
@@ -680,8 +682,10 @@ toolchains, non-Bash tools confined, and edits serialised against running Bash. 
   6. After a deploy of this code, the Environment card's preflight shows every check OK, including
      `seccomp_helper` and `bwrap_copy`.
 
-  Roll back with `deploy/sandbox/uninstall.sh`. It removes the managed file, the copy and the apt hook, then
-  unloads and removes the profile; every step runs even if an earlier one fails (an unloaded profile is fine). The CLI then falls back to `/usr/bin/bwrap`, the preflight fails, and
+  Roll back with `deploy/sandbox/uninstall.sh`. It removes the managed file (only if it is byte-identical to
+  ours; a merged file is left in place with a note, so remove its `sandbox.bwrapPath` by hand), the copy and
+  the apt hook, then unloads and removes the profile. Every step runs even if an earlier one fails (an unloaded
+  profile is fine). The CLI then falls back to `/usr/bin/bwrap`, the preflight fails, and
   the toggle is disabled.
 - **Still dark (#3367).** Do not turn the switch on until the host change is in on both hosts, this code is
   deployed, and the live re-run (plan §5) has passed. Without the host change, the preflight reports
@@ -696,8 +700,11 @@ toolchains, non-Bash tools confined, and edits serialised against running Bash. 
     `~/.local/share/...` path still miss it.
   - Only top-level home symlinks are followed: a nested one (`~/.config/x -> /mnt/...`) leaves its target
     readable. A dangling link's target is not hidden, so a target that appears later stays readable until the
-    next spawn. A root-owned, non-writable target (`~/tool -> /opt/tool`) is not hidden: it is system
-    software any local user can read.
+    next spawn. A target that is root-owned, not group/other-writable and world-readable (a file `o+r`, a
+    directory `o+rx`, e.g. `~/tool -> /opt/tool`) is not hidden: it is system software any local user can read.
+    The exemption looks at the target only: a user-owned file inside an exempt root-owned directory
+    (`/opt/aws/credentials`, tony 0600) stays readable inside the sandbox. A root-owned target readable only
+    by a group (`root:tony 0640`) is hidden.
   - `VIBERPIT_SANDBOX_TMP_PARENT` must be a path ViberPit creates (it writes a `.viberpit-sandbox-tmp` marker).
     An existing directory without the marker is refused, and the startup sweep never empties it.
   - Your user-level hooks do not run in sandboxed sessions.

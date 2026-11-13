@@ -440,8 +440,11 @@ Also needed: tests for each step with a `tmp_path` home containing a symlink out
 **Known gaps (accepted, fix round 1).** Only top-level home entries are scanned, so a nested link such as
 `~/.config/x -> /mnt/...` leaves its target readable. A dangling link's target is not denied, so a target that
 appears later stays readable until the next spawn (the policy is resolved at spawn time). A target that is itself
-root-owned and not group/other-writable (`~/tool -> /opt/tool`, a root-installed `/usr/local/x`) is not denied:
-it is system-installed software any local user can read, and hiding it only breaks toolchains. A user-owned
+root-owned, not group/other-writable and world-readable (a file `o+r`, a directory `o+rx`; `~/tool ->
+/opt/tool`, a root-installed `/usr/local/x`) is not denied: it is system-installed software any local user can
+read, and hiding it only breaks toolchains. The exemption looks at the target only, so a user-owned file inside an
+exempt directory (`/opt/aws/credentials`, tony 0600) stays readable. A group-only target (`root:tony 0640`) is
+denied. A user-owned
 target (dobby's `/mnt/ssk-ssd/...`, a tony-owned `/usr/local/x`) is still denied.
 
 **Residual.** Tools that find data through `$HOME/.local/share/...`, such as uv-managed Pythons, still look in the

@@ -18,6 +18,8 @@ cd "$(dirname "$0")"
 
 DEST_DIR=/usr/libexec/viberpit
 DEST=$DEST_DIR/bwrap
+# The CLI reads only /etc/claude-code; the override exists for the tests.
+MANAGED=${VIBERPIT_SANDBOX_MANAGED_SETTINGS:-/etc/claude-code/managed-settings.json}
 
 refuse() {
     echo "install.sh: $*" >&2
@@ -50,11 +52,26 @@ while :; do
     d=$(dirname "$d")
 done
 
+# Host-wide CLI policy may already exist (another admin's settings): never overwrite
+# it. Identical to ours is fine (a re-run); anything else is merged by hand.
+install_managed=1
+if [ -e "$MANAGED" ] || [ -L "$MANAGED" ]; then
+    if [ ! -L "$MANAGED" ] && cmp -s managed-settings.json "$MANAGED"; then
+        install_managed=0
+    else
+        refuse "$MANAGED already exists and differs from deploy/sandbox/managed-settings.json; merge \"sandbox\": {\"bwrapPath\": \"$DEST\"} into it by hand, then re-run"
+    fi
+fi
+
 sudo install -d -o root -g root -m 0755 "$DEST_DIR"
 sudo install -o root -g root -m 0644 viberpit-sbx-bwrap /etc/apparmor.d/viberpit-sbx-bwrap
 sudo apparmor_parser -Q -K -T /etc/apparmor.d/viberpit-sbx-bwrap     # parse again in place
 sudo apparmor_parser -r -W /etc/apparmor.d/viberpit-sbx-bwrap        # load and cache; persists via apparmor.service
 sudo install -o root -g "$group" -m 0750 /usr/bin/bwrap "$DEST"
 sudo install -o root -g root -m 0644 80viberpit-sbx-bwrap /etc/apt/apt.conf.d/80viberpit-sbx-bwrap
-sudo install -d -o root -g root -m 0755 /etc/claude-code
-sudo install -o root -g root -m 0644 managed-settings.json /etc/claude-code/managed-settings.json
+if [ "$install_managed" = 1 ]; then
+    sudo install -d -o root -g root -m 0755 "$(dirname "$MANAGED")"
+    sudo install -o root -g root -m 0644 managed-settings.json "$MANAGED"
+else
+    echo "install.sh: $MANAGED already names the copy; left as it is"
+fi

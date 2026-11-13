@@ -38,8 +38,12 @@ def _shims(tmp_path: Path, *, sudo_fails_on: str | None = None,
     return bindir, log
 
 
-def _run(script: str, bindir: Path, *args: str, sudo_user: str | None = None):
-    env = {"PATH": f"{bindir}:/usr/bin:/bin", "HOME": str(bindir)}
+def _run(script: str, bindir: Path, *args: str, sudo_user: str | None = None,
+         managed: Path | None = None):
+    """Run *script*; *managed* stands in for /etc/claude-code/managed-settings.json
+    (default: a path that does not exist), so the host's real file never matters."""
+    env = {"PATH": f"{bindir}:/usr/bin:/bin", "HOME": str(bindir),
+           "VIBERPIT_SANDBOX_MANAGED_SETTINGS": str(managed or bindir / "absent.json")}
     if sudo_user is not None:
         env["SUDO_USER"] = sudo_user
     return subprocess.run(["/bin/sh", str(ASSETS / script), *args], env=env,
@@ -144,6 +148,46 @@ def test_install_runs_the_plan_steps_with_the_users_group(tmp_path):
     assert copy in calls and load in calls
     assert calls.index(load) < calls.index(copy), "the profile is loaded before the copy"
     assert calls[0] == "install -d -o root -g root -m 0755 /usr/libexec/viberpit"
+    absent = bindir / "absent.json"
+    assert f"install -o root -g root -m 0644 managed-settings.json {absent}" in calls
+
+
+def _settings(tmp_path: Path, body: str | None) -> Path:
+    path = tmp_path / "etc" / "managed-settings.json"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(body if body is not None else (ASSETS / "managed-settings.json").read_text())
+    return path
+
+
+def test_install_refuses_to_overwrite_someone_elses_managed_settings(tmp_path):
+    """Re-review N2: /etc/claude-code/managed-settings.json is host-wide CLI policy;
+    another admin's file is merged by hand, never replaced."""
+    if os.getuid() == 0:
+        pytest.skip("needs an unprivileged user to name")
+    user, _group = _me()
+    theirs = '{"permissions": {"deny": ["WebSearch"]}}\n'
+    managed = _settings(tmp_path, theirs)
+    bindir, log = _shims(tmp_path)
+    cp = _run("install.sh", bindir, user, managed=managed)
+    assert cp.returncode != 0
+    assert "differs from deploy/sandbox/managed-settings.json" in cp.stderr
+    assert "merge" in cp.stderr and "bwrapPath" in cp.stderr and COPY in cp.stderr
+    assert _calls(log) == [], "refused before anything changed"
+    assert managed.read_text() == theirs
+
+
+def test_install_leaves_identical_managed_settings_alone(tmp_path):
+    if os.getuid() == 0:
+        pytest.skip("needs an unprivileged user to name")
+    if not _chain_is_root_owned():
+        pytest.skip("this host's /usr/libexec chain is not root-owned")
+    user, _group = _me()
+    managed = _settings(tmp_path, None)
+    bindir, log = _shims(tmp_path)
+    cp = _run("install.sh", bindir, user, managed=managed)
+    assert cp.returncode == 0, cp.stderr
+    assert not [c for c in _calls(log) if str(managed) in c], "not rewritten"
+    assert "left as it is" in cp.stdout
 
 
 # ── uninstall.sh ─────────────────────────────────────────────────────────────
@@ -152,12 +196,39 @@ def test_install_runs_the_plan_steps_with_the_users_group(tmp_path):
 def test_uninstall_removes_the_copy_and_the_hook_even_if_the_unload_fails(tmp_path):
     """Fix round 1 [minor]: an already-unloaded profile must not strand the copy."""
     bindir, log = _shims(tmp_path, sudo_fails_on="apparmor_parser")
-    cp = _run("uninstall.sh", bindir)
+    managed = _settings(tmp_path, None)                   # ours, byte for byte
+    cp = _run("uninstall.sh", bindir, managed=managed)
     assert cp.returncode == 0, cp.stderr
     calls = _calls(log)
-    assert calls[0] == "rm -f /etc/claude-code/managed-settings.json"
+    assert calls[0] == f"rm -f {managed}"
     assert f"rm -f {COPY} /etc/apt/apt.conf.d/80viberpit-sbx-bwrap" in calls
     assert "rm -f /etc/apparmor.d/viberpit-sbx-bwrap" in calls
+
+
+@pytest.mark.parametrize("body", ['{"sandbox": {"bwrapPath": "/usr/libexec/viberpit/bwrap"}, '
+                                  '"permissions": {"deny": ["WebSearch"]}}\n', "link"])
+def test_uninstall_leaves_managed_settings_that_are_not_ours(body, tmp_path):
+    """Re-review N2: only a byte-identical copy of our file is deleted; a merged file
+    (or a symlink) is left in place with a note."""
+    bindir, log = _shims(tmp_path)
+    if body == "link":
+        managed = tmp_path / "etc" / "managed-settings.json"
+        managed.parent.mkdir()
+        managed.symlink_to(ASSETS / "managed-settings.json")
+    else:
+        managed = _settings(tmp_path, body)
+    cp = _run("uninstall.sh", bindir, managed=managed)
+    assert cp.returncode == 0, cp.stderr
+    assert "not ViberPit's file; left in place" in cp.stderr
+    calls = _calls(log)
+    assert not [c for c in calls if str(managed) in c]
+    assert f"rm -f {COPY} /etc/apt/apt.conf.d/80viberpit-sbx-bwrap" in calls
+
+
+def test_uninstall_without_managed_settings_skips_that_step(tmp_path):
+    bindir, log = _shims(tmp_path)
+    cp = _run("uninstall.sh", bindir)
+    assert cp.returncode == 0 and "absent.json" not in "".join(_calls(log))
 
 
 def test_uninstall_keeps_going_past_a_failed_step_and_says_so(tmp_path):

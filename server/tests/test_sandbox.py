@@ -456,6 +456,30 @@ def test_a_root_owned_closed_symlink_target_is_not_hidden(monkeypatch, tmp_path)
     assert escapes == sorted([str(ext / ".docker"), str(ext / ".local")])
 
 
+@pytest.mark.parametrize("target,want_hidden,shape", [
+    ("/etc/passwd", False, (0o644, False)),    # root, world-readable file: exempt
+    ("/etc/shadow", True, (0o640, False)),     # root:shadow 0640: group-readable only
+    ("/root", True, (0o700, True)),            # root dir closed to others
+])
+def test_only_a_world_readable_root_owned_target_is_exempt(target, want_hidden, shape,
+                                                           monkeypatch, tmp_path):
+    """Re-review N1: root-owned and closed to writers is not enough — a root-owned
+    target readable only by a group (``root:tony 0640``) or closed to others may hold
+    user-only secrets. A file must be ``o+r``, a directory ``o+rx``."""
+    import stat as st_mod
+    try:
+        st = os.stat(target)
+    except OSError:
+        pytest.skip(f"{target} is not here")
+    mode, is_dir = shape
+    if (st.st_uid != 0 or st_mod.S_IMODE(st.st_mode) & 0o777 != mode
+            or st_mod.S_ISDIR(st.st_mode) != is_dir):
+        pytest.skip(f"{target} is not {oct(mode)} root on this host")
+    home, _ext = _symlinked_home(tmp_path, monkeypatch)
+    os.symlink(target, home / "link")
+    assert (target in sb.home_escapes()) is want_hidden
+
+
 def test_toolchain_reads_behind_a_home_symlink_are_also_re_allowed_by_real_path(
         monkeypatch, tmp_path):
     home, ext = _symlinked_home(tmp_path, monkeypatch)
@@ -3096,6 +3120,55 @@ def _rooted(*paths, owner: int = 0, overrides: dict | None = None):
                                    st_mode=r.st_mode)
         return SimpleNamespace(st_uid=0, st_mode=st_mod.S_IFDIR | 0o755)
     return fake
+
+
+def _stock_and_copy(tmp_path, monkeypatch, same=True):
+    stock = tmp_path / "stock-bwrap"
+    stock.write_bytes(b"bwrap 0.11.1")
+    copy = tmp_path / "copy-bwrap"
+    copy.write_bytes(b"bwrap 0.11.1" if same else b"bwrap 0.11.2")
+    os.utime(copy, ns=(1, 1))                  # install(1) gives the copy its own mtime
+    monkeypatch.setattr(sb, "STOCK_BWRAP", str(stock))
+    monkeypatch.setattr(sb, "_hash_cache", {})
+    return stock, copy
+
+
+def test_a_stale_copy_holds_a_respawn(tmp_path, monkeypatch):
+    """Re-review N3: a bubblewrap update the apt hook missed is caught at the next
+    spawn, not only when the cached preflight next runs."""
+    _stock, copy = _stock_and_copy(tmp_path, monkeypatch, same=False)
+    _managed(tmp_path, monkeypatch, str(copy))
+    monkeypatch.setattr(sb, "root_chain_problem", lambda *a, **k: None)
+    assert sb.bwrap_copy_spawn_problem() == sb.BWRAP_COPY_STALE
+    d, calls, _clients, states = _sandboxed_driver(FakeControl(GOOD_DIALOG))
+    with pytest.raises(sb.SandboxError) as ei:
+        asyncio.run(d.start())
+    assert ei.value.code == sb.SANDBOX_START_FAILED
+    assert ei.value.reason == "the sandbox's bwrap copy is stale; reinstall it"
+    assert calls == [] and states == [("failed", sb.BWRAP_COPY_STALE)]
+
+
+def test_the_spawn_staleness_check_is_cheap_and_hashes_once(tmp_path, monkeypatch):
+    """Size first; the same size and mtime is current with no read; otherwise the
+    sha256s, cached by stat identity so a respawn does not re-hash."""
+    stock, copy = _stock_and_copy(tmp_path, monkeypatch, same=True)
+    _managed(tmp_path, monkeypatch, str(copy))
+    monkeypatch.setattr(sb, "root_chain_problem", lambda *a, **k: None)
+    hashed: list[str] = []
+    real = sb._sha256
+    monkeypatch.setattr(sb, "_sha256", lambda p: hashed.append(p) or real(p))
+    assert sb.bwrap_copy_spawn_problem() is None
+    assert sb.bwrap_copy_spawn_problem() is None
+    assert sorted(hashed) == sorted([str(copy), str(stock)]), "hashed once, then cached"
+    hashed.clear()
+    st = os.stat(stock)
+    os.utime(copy, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert sb.bwrap_copy_spawn_problem() is None and hashed == [], "same size+mtime"
+    stock.write_bytes(b"bwrap 0.11.22")                # a different size: no hash needed
+    assert sb.bwrap_copy_spawn_problem() == sb.BWRAP_COPY_STALE and hashed == []
+    stock.write_bytes(b"bwrap 0.11.9")                 # same size, new bytes and mtime
+    assert sb.bwrap_copy_spawn_problem() == sb.BWRAP_COPY_STALE
+    assert str(stock) in hashed, "a rewrite changes the stat identity: re-hashed"
 
 
 def test_the_bwrap_copy_must_match_stock_bwrap_and_be_root_owned(tmp_path):
