@@ -796,9 +796,10 @@ class _World:
         self.controls: list[FakeControl] = []
 
     def factory(self, cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None,
-                options_overlay=None, flag_settings=None, extra_env=None, stderr=None):
+                options_overlay=None, flag_settings=None, extra_env=None, stderr=None,
+                sandboxed=None):
         self.spawns.append({"flag_settings": flag_settings, "extra_env": extra_env,
-                            "stderr": stderr, "resume": resume})
+                            "stderr": stderr, "resume": resume, "sandboxed": sandboxed})
         sent = ((flag_settings or {}).get("sandbox") or {}).get("filesystem")
         reply = _echo(self.dialogs.pop(0) if len(self.dialogs) > 1 else self.dialogs[0],
                       cwd, cfg, sent=sent)
@@ -913,6 +914,7 @@ def test_a_sandboxed_spawn_sends_the_block_and_the_env_and_is_verified(orch_env,
     assert spawn["extra_env"]["GH_NO_UPDATE_NOTIFIER"] == "1"
     assert spawn["extra_env"]["GH_CONFIG_DIR"] == str(tmp_path / "vp")
     assert callable(spawn["stderr"])
+    assert spawn["sandboxed"] is True
     assert world.controls[0].sent[0] == {"subtype": "get_sandbox_dialog"}
     assert rec.sandbox_state == "active" and row.sandbox_state == "active"
 
@@ -927,6 +929,7 @@ def test_an_unsandboxed_session_spawns_exactly_as_before(orch_env, tmp_path):
     asyncio.run(go())
     assert not world.sandboxed(0)
     assert world.spawns[0]["stderr"] is None
+    assert world.spawns[0]["sandboxed"] is None
     assert "GH_NO_UPDATE_NOTIFIER" not in (world.spawns[0]["extra_env"] or {})
     assert world.controls[0].sent == []
 
@@ -1972,6 +1975,60 @@ async def test_an_unsandboxed_spawn_has_no_confinement_and_keeps_project_mcp_tru
     assert settings["enableAllProjectMcpServers"] is True and "disableAllHooks" not in settings
 
 
+def test_the_withheld_env_empties_the_daemon_namespace_in_both_spellings():
+    """Live re-run 2026-11-13: a sandboxed shell listed the legacy-prefix master key — the
+    daemon's env (and env_compat's legacy mirror of it) rode the CLI's env into bwrap."""
+    from viberpit import brand
+    env = {"PATH": "/usr/bin", "HOME": "/home/u",
+           f"{brand.ENV_PREFIX}MASTER_KEY": "k", f"{brand.LEGACY_ENV_PREFIX}MASTER_KEY": "k",
+           f"{brand.ENV_PREFIX}DB_URL": "postgresql://u:pw@h/db"}
+    assert sb.withheld_env(env) == {f"{brand.ENV_PREFIX}MASTER_KEY": "",
+                                    f"{brand.LEGACY_ENV_PREFIX}MASTER_KEY": "",
+                                    f"{brand.ENV_PREFIX}DB_URL": ""}
+
+
+async def _cli_process_env(client) -> dict[str, str]:
+    """The env the SDK would start the CLI with, from its own transport (it merges
+    ``os.environ`` under ``options.env``), captured at the process spawn."""
+    from claude_agent_sdk._internal.transport import subprocess_cli
+    seen: dict[str, str] = {}
+
+    async def fake_open_process(cmd, **kw):
+        seen.update(kw["env"])
+        raise OSError("captured")
+    t = subprocess_cli.SubprocessCLITransport(prompt="", options=client.options)
+    with patch.object(subprocess_cli.anyio, "open_process", fake_open_process), \
+            patch.dict(os.environ, {"CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK": "1"}):
+        with pytest.raises(Exception):
+            await t.connect()
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_sandboxed_cli_does_not_get_the_daemon_namespace(tmp_path, monkeypatch):
+    from viberpit import brand
+    monkeypatch.setenv(f"{brand.ENV_PREFIX}MASTER_KEY", "secret")
+    monkeypatch.setenv(f"{brand.LEGACY_ENV_PREFIX}MASTER_KEY", "secret")
+    monkeypatch.setenv("D23_KEEP_ME", "1")
+    fake_cli = tmp_path / "claude"
+    fake_cli.write_text("#!/bin/sh\n")
+    fake_cli.chmod(0o755)
+    monkeypatch.setattr(claude_sdk_factory, "_cli_path_kwargs",
+                        lambda: {"cli_path": str(fake_cli)})
+    client = await claude_sdk_factory.real_sdk_factory(
+        str(tmp_path), str(tmp_path / "cfg"), None, "full-auto", None,
+        extra_env={"GH_NO_UPDATE_NOTIFIER": "1"}, sandboxed=True)
+    env = await _cli_process_env(client)
+    leaked = {k: v for k, v in env.items()
+              if k.startswith((brand.ENV_PREFIX, brand.LEGACY_ENV_PREFIX)) and v}
+    assert leaked == {}
+    assert env["D23_KEEP_ME"] == "1" and env["GH_NO_UPDATE_NOTIFIER"] == "1"
+    assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "cfg")
+    plain = await claude_sdk_factory.real_sdk_factory(
+        str(tmp_path), str(tmp_path / "cfg"), None, "full-auto", None)
+    assert (await _cli_process_env(plain))[f"{brand.ENV_PREFIX}MASTER_KEY"] == "secret"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", MODES)
 async def test_the_driver_also_denies_in_can_use_tool_in_every_mode(mode, tmp_path):
@@ -2625,8 +2682,11 @@ def test_an_escape_holds_the_session_closes_its_cli_and_files_one_warning(orch_e
         orch = await _orch(tmp_path, world)
         driver = await orch.ensure_driver(SID)
         orch._on_sandbox_escape(SID, "Write", "/home/x/.bashrc")
-        for _ in range(100):
-            if SID not in orch._drivers and orch._records[SID].paused_reason:
+        # The hold pops the driver before it awaits aclose(): wait for the close too, or a
+        # loaded runner reaches stop() first and the assert below races it.
+        for _ in range(500):
+            if (SID not in orch._drivers and orch._records[SID].paused_reason
+                    and (driver._client is None or driver._closing)):
                 break
             await asyncio.sleep(0.02)
         rec = orch._records[SID]

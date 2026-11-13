@@ -399,6 +399,26 @@ def git_credential_env(path: str | None = None) -> dict[str, str]:
     return env
 
 
+def withheld_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """``{name: ""}`` for every key of ViberPit's own configuration namespace in
+    *environ*, in both spellings (``env_compat`` mirrors one into the other): what a
+    SANDBOXED session's CLI env overrides (``real_sdk_factory``). The sandboxed shell
+    inherits the CLI's env, and that namespace carries the daemon's secrets —
+    ``VIBERPIT_MASTER_KEY``, ``VIBERPIT_DB_URL`` with its password,
+    ``VIBERPIT_GH_PROJECT_TOKEN`` — which :func:`read_policy` hides on disk (live re-run
+    2026-11-13: the sandboxed shell listed the master key under its legacy-prefix name).
+
+    Emptied, not dropped: the SDK builds the CLI's env as ``{**os.environ, ...,
+    **options.env}`` (claude-agent-sdk 0.2.105 ``SubprocessCLITransport.connect``), so a
+    key left out of ``options.env`` is inherited anyway; only an override removes the
+    value. The names stay visible. Nothing the CLI runs reads the namespace: the
+    session tools and SDK hooks run in the daemon, and settings-file hooks are off
+    (:func:`spawn_settings_overlay`). The spawn's own ``extra_env`` is applied after."""
+    from viberpit import brand
+    prefixes = (brand.ENV_PREFIX, brand.LEGACY_ENV_PREFIX)
+    return {k: "" for k in environ if k.startswith(prefixes)}
+
+
 def session_env() -> dict[str, str]:
     """The env a SANDBOXED session's CLI gets on top of the usual one.
 
