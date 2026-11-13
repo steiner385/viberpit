@@ -1,1 +1,1 @@
-DPkg::Post-Invoke { "if [ -x /usr/bin/bwrap ] && ! cmp -s /usr/bin/bwrap /usr/local/libexec/viberpit/bwrap; then install -o root -g tony -m 0750 /usr/bin/bwrap /usr/local/libexec/viberpit/bwrap; fi"; };
+DPkg::Post-Invoke { "if [ -d /usr/libexec/viberpit ] && [ -f /usr/libexec/viberpit/bwrap ] && [ -x /usr/bin/bwrap ] && ! cmp -s /usr/bin/bwrap /usr/libexec/viberpit/bwrap; then g=$(stat -c %G /usr/libexec/viberpit/bwrap) && install -o root -g $g -m 0750 /usr/bin/bwrap /usr/libexec/viberpit/bwrap; fi || true"; };

@@ -1,6 +1,6 @@
 # ViberPit D-23 (#3367): a dedicated bubblewrap for the Claude CLI's sandbox.
 #
-# /usr/local/libexec/viberpit/bwrap is a root-owned copy of /usr/bin/bwrap that the CLI
+# /usr/libexec/viberpit/bwrap is a root-owned copy of /usr/bin/bwrap that the CLI
 # uses through managed settings (sandbox.bwrapPath). Stock /usr/bin/bwrap keeps Ubuntu's
 # bwrap-userns-restrict profile (Codex, flatpak, glycin are unchanged).
 #
@@ -11,13 +11,15 @@
 # userns) before it runs the sandboxed command.
 #
 # Exposure: whoever can execute the copy gets bubblewrap without the Ubuntu userns
-# restriction. The copy is mode 0750 root:tony, so only the ViberPit user can.
+# restriction. The copy is mode 0750 root:<ViberPit user's group>, so only that user can.
+# It lives under /usr/libexec, a root-owned chain: a user-writable ancestor (dobby's
+# /usr/local is tony-owned) would let that user swap the binary at this path.
 
 abi <abi/5.0>,
 
 include <tunables/global>
 
-profile viberpit-sbx-bwrap /usr/local/libexec/viberpit/bwrap flags=(attach_disconnected,mediate_deleted) {
+profile viberpit-sbx-bwrap /usr/libexec/viberpit/bwrap flags=(attach_disconnected,mediate_deleted) {
   allow capability,
   allow file rwlkm /{**,},
   allow network,

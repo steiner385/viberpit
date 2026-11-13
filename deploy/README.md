@@ -651,30 +651,37 @@ toolchains, non-Bash tools confined, and edits serialised against running Bash. 
 - **Host change (#3367; both hosts, dobby first, then rocky).** It is safe while the switch is off and
   touches no live session. The files are in `deploy/sandbox/`, and the reasoning is in
   `docs/superpowers/plans/2026-11-13-sandbox-enablement-3367.md` §1.
-  - It installs a root-owned copy of bwrap at `/usr/local/libexec/viberpit/bwrap` (mode 0750 root:tony), with
-    its own AppArmor profile `viberpit-sbx-bwrap` that does not stack `unpriv_bwrap` on its children.
+  - It installs a root-owned copy of bwrap at `/usr/libexec/viberpit/bwrap` (mode 0750, group = the ViberPit
+    user's), with its own AppArmor profile `viberpit-sbx-bwrap` that does not stack `unpriv_bwrap` on its
+    children. The path must be a root-owned chain: not `/usr/local`, which is tony-owned on dobby. The
+    preflight's `bwrap_copy` check and every sandboxed spawn re-check that each directory up to `/` is
+    root-owned and not group/other-writable.
   - It points the CLI at the copy with `sandbox.bwrapPath` in `/etc/claude-code/managed-settings.json`.
   - It adds the apt hook `/etc/apt/apt.conf.d/80viberpit-sbx-bwrap`, which re-copies `/usr/bin/bwrap` after
-    a bubblewrap update.
+    a bubblewrap update (group taken from the existing copy). It is a no-op without the copy and never fails
+    apt; a missed update shows as the preflight's stale-copy failure.
   - Stock `/usr/bin/bwrap` and `bwrap-userns-restrict` are untouched, so Codex is unaffected.
 
   ```bash
-  deploy/sandbox/install.sh     # loads the profile before the copy exists
+  deploy/sandbox/install.sh <viberpit-user>   # default $SUDO_USER; loads the profile before the copy exists
   ```
+
+  It validates the user and refuses, before changing anything, if any directory on the copy's path is not
+  root-owned or is writable by group or others.
 
   Verify:
   1. `sudo grep viberpit-sbx-bwrap /sys/kernel/security/apparmor/profiles` shows `viberpit-sbx-bwrap (enforce)`.
-  2. `/usr/local/libexec/viberpit/bwrap --ro-bind / / --dev /dev --unshare-user -- cat /proc/self/attr/current`
+  2. `/usr/libexec/viberpit/bwrap --ro-bind / / --dev /dev --unshare-user -- cat /proc/self/attr/current`
      prints `viberpit-sbx-bwrap (enforce)`.
   3. The same command with `/usr/bin/bwrap` still prints `bwrap//&unpriv_bwrap (enforce)`. On rocky,
      `codex sandbox -c 'sandbox_mode="workspace-write"' -- true` exits 0.
-  4. `sudo -u nobody /usr/local/libexec/viberpit/bwrap --version` gets `Permission denied`.
+  4. `sudo -u nobody /usr/libexec/viberpit/bwrap --version` gets `Permission denied`.
   5. An unsandboxed `claude -p` still works as before.
   6. After a deploy of this code, the Environment card's preflight shows every check OK, including
      `seccomp_helper` and `bwrap_copy`.
 
-  Roll back with `deploy/sandbox/uninstall.sh`. It removes the managed file, unloads and removes the profile,
-  and removes the copy and the apt hook. The CLI then falls back to `/usr/bin/bwrap`, the preflight fails, and
+  Roll back with `deploy/sandbox/uninstall.sh`. It removes the managed file, the copy and the apt hook, then
+  unloads and removes the profile; every step runs even if an earlier one fails (an unloaded profile is fine). The CLI then falls back to `/usr/bin/bwrap`, the preflight fails, and
   the toggle is disabled.
 - **Still dark (#3367).** Do not turn the switch on until the host change is in on both hosts, this code is
   deployed, and the live re-run (plan §5) has passed. Without the host change, the preflight reports
@@ -687,6 +694,12 @@ toolchains, non-Bash tools confined, and edits serialised against running Bash. 
     `~/.local`, …). Toolchains under `~/.local`, `~/.cargo` and the like are re-allowed by their real paths,
     and a sandboxed session's `PATH` uses those paths. Tools that look up data through the lexical
     `~/.local/share/...` path still miss it.
+  - Only top-level home symlinks are followed: a nested one (`~/.config/x -> /mnt/...`) leaves its target
+    readable. A dangling link's target is not hidden, so a target that appears later stays readable until the
+    next spawn. A root-owned, non-writable target (`~/tool -> /opt/tool`) is not hidden: it is system
+    software any local user can read.
+  - `VIBERPIT_SANDBOX_TMP_PARENT` must be a path ViberPit creates (it writes a `.viberpit-sandbox-tmp` marker).
+    An existing directory without the marker is refused, and the startup sweep never empties it.
   - Your user-level hooks do not run in sandboxed sessions.
   - User-level MCP servers still start, but their tools are denied.
   - Automations a sandboxed session triggers through GitHub follow "Sandbox new sessions".

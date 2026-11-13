@@ -519,7 +519,7 @@ Notes:
 The design that clears F4–F6 and the rocky push is in
 `docs/superpowers/plans/2026-11-13-sandbox-enablement-3367.md`. The owner approved option A on 2026-11-13.
 
-- **F4 (host).** A root-owned bwrap copy, `/usr/local/libexec/viberpit/bwrap`, with its own AppArmor profile
+- **F4 (host).** A root-owned bwrap copy, `/usr/libexec/viberpit/bwrap` (a root-owned directory chain), with its own AppArmor profile
   `viberpit-sbx-bwrap`, selected by `sandbox.bwrapPath` in `/etc/claude-code/managed-settings.json` and kept
   in step by an apt hook. The files and install script are in `deploy/sandbox/`, and the steps and rollback are
   in `deploy/README.md` § "Claude session sandbox".

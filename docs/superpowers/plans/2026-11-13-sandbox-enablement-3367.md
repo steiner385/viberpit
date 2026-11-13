@@ -1,3 +1,12 @@
+> **Fix round 1 (2026-11-13, security review of 9581c603).** The copy moved from `/usr/local/libexec` to
+> `/usr/libexec/viberpit/bwrap`: dobby's `/usr/local` is `tony:tony 0755`, so tony could rename the tree and plant
+> a bwrap of their own at the managed path (and the root apt hook would write into it). `/usr/libexec` is
+> `root:root 0755` down from `/` on dobby (checked with `stat`, read-only). The preflight and every sandboxed spawn
+> now require a root-owned, non-writable chain up to `/`; `install.sh` refuses otherwise. Also: the startup sweep
+> only empties a parent carrying ViberPit's `.viberpit-sandbox-tmp` marker, and only key-named roots with a `.sid`;
+> the preflight cache is keyed by the bwrap copy and stock bwrap as well as the CLI; the apt hook cannot fail apt;
+> no asset hard-codes the group `tony`.
+
 > **Owner decision (2026-11-13): option A approved.** This covers the host change on both hosts: the private bwrap copy, the narrow AppArmor profile, the managed-settings `bwrapPath`, and the apt hook. It also covers the code PR. Following the recommendations, temp dirs go in `/var/tmp` and F6 is fixed in code. Rollout order is code PR → dobby host → rocky host → deploy → live re-run → flip.
 
 # #3367 — Enabling the D-23 Claude sandbox: plan
@@ -16,7 +25,7 @@ marked "rocky" are into `2.1.293`.
 
 | Item | Fix | Where |
 |---|---|---|
-| F4 AppArmor vs seccomp helper | Add a root-owned **copy of bwrap** at `/usr/local/libexec/viberpit/bwrap` (mode 0750 root:tony) with its **own AppArmor profile**, `viberpit-sbx-bwrap`. Its children are not stacked with `unpriv_bwrap`. Point the CLI at it with `sandbox.bwrapPath` in `/etc/claude-code/managed-settings.json`. Stock `/usr/bin/bwrap` and its profile stay untouched, so Codex is unaffected. Add an apt hook to keep the copy in step with `/usr/bin/bwrap`. | host (both) |
+| F4 AppArmor vs seccomp helper | Add a root-owned **copy of bwrap** at `/usr/libexec/viberpit/bwrap` (mode 0750 root:<ViberPit user's group>) with its **own AppArmor profile**, `viberpit-sbx-bwrap`. Its children are not stacked with `unpriv_bwrap`. Point the CLI at it with `sandbox.bwrapPath` in `/etc/claude-code/managed-settings.json`. Stock `/usr/bin/bwrap` and its profile stay untouched, so Codex is unaffected. Add an apt hook to keep the copy in step with `/usr/bin/bwrap`. | host (both) |
 | F5 proxy socket hidden | Move the per-session root to `/var/tmp/vpsbx/<12-hex>/` with sibling dirs `t/` (`CLAUDE_CODE_TMPDIR`) and `s/` (`TMPDIR` = the CLI's `os.tmpdir()`, where the sockets live). Deny `/var/tmp/vpsbx` and re-allow only `<own>/s`. **Verified with a bwrap stand-in.** | code |
 | F6 symlinked `~/.local`, `~/.npm` | Re-allowing the symlink targets alone does nothing, because they are not denied. Do three things: deny the real path of every home symlink that leaves home (this closes a **secret leak found here**: `~/.docker` points to `/mnt/ssk-ssd/.../.docker/config.json`); re-allow the real paths of the toolchain entries; and give the sandboxed spawn a PATH that uses those real paths. | code |
 | Rocky push credential | Inject the git config `credential.helper=` (reset), then `credential.https://github.com.helper=!/usr/bin/gh auth git-credential`, via `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` in the sandboxed `session_env()`. This needs no host change. **Verified on rocky:** the store helper is cleared. | code |
@@ -141,7 +150,7 @@ bwrap binary pass for a plain copy: not setuid (`F8`, `mode&2048`), `--version` 
 ```
 # ViberPit D-23 (#3367): a dedicated bubblewrap for the Claude CLI's sandbox.
 #
-# /usr/local/libexec/viberpit/bwrap is a root-owned copy of /usr/bin/bwrap that the CLI
+# /usr/libexec/viberpit/bwrap is a root-owned copy of /usr/bin/bwrap that the CLI
 # uses through managed settings (sandbox.bwrapPath). Stock /usr/bin/bwrap keeps Ubuntu's
 # bwrap-userns-restrict profile (Codex, flatpak, glycin are unchanged).
 #
@@ -152,13 +161,15 @@ bwrap binary pass for a plain copy: not setuid (`F8`, `mode&2048`), `--version` 
 # userns) before it runs the sandboxed command.
 #
 # Exposure: whoever can execute the copy gets bubblewrap without the Ubuntu userns
-# restriction. The copy is mode 0750 root:tony, so only the ViberPit user can.
+# restriction. The copy is mode 0750 root:<ViberPit user's group>, so only that user can.
+# It lives under /usr/libexec, a root-owned chain: a user-writable ancestor (dobby's
+# /usr/local is tony-owned) would let that user swap the binary at this path.
 
 abi <abi/5.0>,
 
 include <tunables/global>
 
-profile viberpit-sbx-bwrap /usr/local/libexec/viberpit/bwrap flags=(attach_disconnected,mediate_deleted) {
+profile viberpit-sbx-bwrap /usr/libexec/viberpit/bwrap flags=(attach_disconnected,mediate_deleted) {
   allow capability,
   allow file rwlkm /{**,},
   allow network,
@@ -192,23 +203,27 @@ rocky$ sudo apparmor_parser -Q -K -T /tmp/3367-viberpit-sbx-bwrap        → rc=
 **`/etc/claude-code/managed-settings.json`** (neither host has `/etc/claude-code` today):
 
 ```json
-{ "sandbox": { "bwrapPath": "/usr/local/libexec/viberpit/bwrap" } }
+{ "sandbox": { "bwrapPath": "/usr/libexec/viberpit/bwrap" } }
 ```
 
-**`/etc/apt/apt.conf.d/80viberpit-sbx-bwrap`** keeps the copy current after a bubblewrap security update:
+**`/etc/apt/apt.conf.d/80viberpit-sbx-bwrap`** keeps the copy current after a bubblewrap security update. It is a
+no-op without the copy, reads the group from the existing copy, and never fails apt (`|| true`); a missed update shows
+as the preflight's stale-copy failure:
 
 ```
-DPkg::Post-Invoke { "if [ -x /usr/bin/bwrap ] && ! cmp -s /usr/bin/bwrap /usr/local/libexec/viberpit/bwrap; then install -o root -g tony -m 0750 /usr/bin/bwrap /usr/local/libexec/viberpit/bwrap; fi"; };
+DPkg::Post-Invoke { "if [ -d /usr/libexec/viberpit ] && [ -f /usr/libexec/viberpit/bwrap ] && [ -x /usr/bin/bwrap ] && ! cmp -s /usr/bin/bwrap /usr/libexec/viberpit/bwrap; then g=$(stat -c %G /usr/libexec/viberpit/bwrap) && install -o root -g $g -m 0750 /usr/bin/bwrap /usr/libexec/viberpit/bwrap; fi || true"; };
 ```
 
-**Install** (dobby first, then rocky; nothing here touches a live session):
+**Install** (dobby first, then rocky; nothing here touches a live session): `deploy/sandbox/install.sh
+<viberpit-user>` (default `$SUDO_USER`). It validates the user, and refuses unless every existing directory from
+`/usr/libexec/viberpit` up to `/` is root-owned, not a symlink and not group/other-writable. Then it runs:
 
 ```
-sudo install -d -o root -g root -m 0755 /usr/local/libexec/viberpit
+sudo install -d -o root -g root -m 0755 /usr/libexec/viberpit
 sudo install -o root -g root -m 0644 viberpit-sbx-bwrap /etc/apparmor.d/viberpit-sbx-bwrap
 sudo apparmor_parser -Q -K -T /etc/apparmor.d/viberpit-sbx-bwrap     # parse again in place
 sudo apparmor_parser -r -W /etc/apparmor.d/viberpit-sbx-bwrap        # load and cache; persists via apparmor.service
-sudo install -o root -g tony -m 0750 /usr/bin/bwrap /usr/local/libexec/viberpit/bwrap
+sudo install -o root -g <user's group> -m 0750 /usr/bin/bwrap /usr/libexec/viberpit/bwrap
 sudo install -o root -g root -m 0644 80viberpit-sbx-bwrap /etc/apt/apt.conf.d/80viberpit-sbx-bwrap
 sudo install -d -o root -g root -m 0755 /etc/claude-code
 sudo install -o root -g root -m 0644 managed-settings.json /etc/claude-code/managed-settings.json
@@ -220,14 +235,14 @@ fails anyway (`loopback: Failed RTM_NEWADDR`, spike row 28).
 **Verify:**
 
 1. `sudo grep viberpit-sbx-bwrap /sys/kernel/security/apparmor/profiles` → `viberpit-sbx-bwrap (enforce)`.
-2. `/usr/local/libexec/viberpit/bwrap --ro-bind / / --dev /dev --unshare-user -- cat /proc/self/attr/current` →
+2. `/usr/libexec/viberpit/bwrap --ro-bind / / --dev /dev --unshare-user -- cat /proc/self/attr/current` →
    `viberpit-sbx-bwrap (enforce)`.
-3. The real-helper probe from §1.2, with `/usr/local/libexec/viberpit/bwrap` in place of `bwrap-copy`, must print
+3. The real-helper probe from §1.2, with `/usr/libexec/viberpit/bwrap` in place of `bwrap-copy`, must print
    `helper-ok`, `CapEff: 0`, `Seccomp: 2`, a blocked `AF_UNIX` and a blocked nested userns. **Run it on rocky
    too.** That is the case the spike could not cover (sysctl=1).
 4. Stock is unchanged: `/usr/bin/bwrap ... cat /proc/self/attr/current` → `bwrap//&unpriv_bwrap (enforce)`. On
    rocky, `codex sandbox -c 'sandbox_mode="workspace-write"' -- true` exits 0 (the README's Codex check).
-5. Other users are excluded: `sudo -u nobody /usr/local/libexec/viberpit/bwrap --version` → `Permission denied`.
+5. Other users are excluded: `sudo -u nobody /usr/libexec/viberpit/bwrap --version` → `Permission denied`.
 6. Run a non-sandboxed `claude -p` smoke test as tony. It must behave as before: the managed file sets only a key
    used when the sandbox is on.
 7. After the code PR: the preflight's `seccomp_helper` check passes (§6 step 1, preflight).
@@ -238,13 +253,9 @@ dobby's 2.1.317, 2.1.318 and 2.1.319 sit side by side today. What a CLI update *
 protocol (`ARGV0` dispatch, fd 3), or the CLI dropping `bwrapPath`. The preflight probe runs the real helper of the
 installed version and fails closed. The preflight must also re-run when the CLI version changes (§6 step 1, preflight).
 
-**Rollback:**
-
-```
-sudo rm /etc/claude-code/managed-settings.json            # the CLI falls back to /usr/bin/bwrap; preflight fails; toggle disabled
-sudo apparmor_parser -R /etc/apparmor.d/viberpit-sbx-bwrap
-sudo rm /etc/apparmor.d/viberpit-sbx-bwrap /usr/local/libexec/viberpit/bwrap /etc/apt/apt.conf.d/80viberpit-sbx-bwrap
-```
+**Rollback:** `deploy/sandbox/uninstall.sh`. It removes the managed file first (the CLI falls back to
+`/usr/bin/bwrap`; the preflight fails; the toggle is disabled), then the copy and the apt hook, then unloads
+(`apparmor_parser -R`, allowed to fail) and removes the profile. Every step runs even if an earlier one fails.
 
 **Residual exposure.** Anyone who can run the copy gets bwrap without the userns restriction.
 - On dobby that adds nothing, because the restriction is already off host-wide.
@@ -425,6 +436,13 @@ In `read_policy`:
 
 Also needed: tests for each step with a `tmp_path` home containing a symlink out; a `check_dialog` echo test
 (the lists still match exactly); and a preflight diagnostic `home_escapes: N`, informational.
+
+**Known gaps (accepted, fix round 1).** Only top-level home entries are scanned, so a nested link such as
+`~/.config/x -> /mnt/...` leaves its target readable. A dangling link's target is not denied, so a target that
+appears later stays readable until the next spawn (the policy is resolved at spawn time). A target that is itself
+root-owned and not group/other-writable (`~/tool -> /opt/tool`, a root-installed `/usr/local/x`) is not denied:
+it is system-installed software any local user can read, and hiding it only breaks toolchains. A user-owned
+target (dobby's `/mnt/ssk-ssd/...`, a tony-owned `/usr/local/x`) is still denied.
 
 **Residual.** Tools that find data through `$HOME/.local/share/...`, such as uv-managed Pythons, still look in the
 lexical place. Today's venvs use `/usr/bin` Pythons (`pyvenv.cfg home = /usr/bin` for `~/GitHub/viberpit` and

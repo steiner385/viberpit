@@ -108,9 +108,18 @@ def _short_tmp_parent(monkeypatch):
     import shutil
     import tempfile
     parent = tempfile.mkdtemp(prefix="v", dir="/tmp")
+    # As ViberPit made it (ensure_tmp_parent): the marker is what makes it ours.
+    open(os.path.join(parent, sb.TMP_PARENT_MARKER), "w").close()
     monkeypatch.setenv("VIBERPIT_SANDBOX_TMP_PARENT", parent)
     yield parent
     shutil.rmtree(parent, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _no_host_managed_settings(monkeypatch, tmp_path):
+    """Never read the host's /etc/claude-code (after the host change it names the
+    real bwrap copy): a test that needs managed settings writes its own."""
+    monkeypatch.setattr(sb, "MANAGED_SETTINGS_DIR", str(tmp_path / "no-managed-settings"))
 
 
 def _ok_preflight() -> sb.Preflight:
@@ -431,6 +440,20 @@ def test_every_home_symlink_that_leaves_home_is_read_denied_by_its_real_path(mon
     deny, _allow = sb.read_policy(None, None)
     assert str(ext / ".docker") in deny and str(ext / ".local") in deny
     assert "/usr" not in deny and str(home / "real") not in deny
+
+
+def test_a_root_owned_closed_symlink_target_is_not_hidden(monkeypatch, tmp_path):
+    """Fix round 1: ``~/x -> /opt/<tool>`` or a root-installed ``/usr/local/<x>`` is
+    system software any local user can read, not home data moved off home; hiding it
+    only breaks toolchains. A user-owned target (dobby's /mnt/ssk-ssd/...) still is."""
+    home, ext = _symlinked_home(tmp_path, monkeypatch)
+    root_owned = "/usr/share"                       # root:root 0755 on every host
+    st = os.stat(root_owned)
+    assert st.st_uid == 0 and not st.st_mode & 0o022
+    os.symlink(root_owned, home / "share-link")
+    escapes = sb.home_escapes()
+    assert root_owned not in escapes
+    assert escapes == sorted([str(ext / ".docker"), str(ext / ".local")])
 
 
 def test_toolchain_reads_behind_a_home_symlink_are_also_re_allowed_by_real_path(
@@ -2723,7 +2746,8 @@ def test_the_session_temp_root_is_keyed_private_and_split_into_t_and_s(_short_tm
             sb.session_tmp_key(bad)
 
 
-@pytest.mark.parametrize("plant", ["parent-symlink", "parent-loose", "root-symlink",
+@pytest.mark.parametrize("plant", ["parent-symlink", "parent-loose", "parent-unmarked",
+                                   "root-symlink",
                                    "root-loose", "sock-symlink", "sid-collision"])
 def test_a_planted_or_loose_temp_dir_fails_closed(plant, tmp_path, monkeypatch,
                                                   _short_tmp_parent):
@@ -2735,6 +2759,8 @@ def test_a_planted_or_loose_temp_dir_fails_closed(plant, tmp_path, monkeypatch,
         shutil.rmtree(_short_tmp_parent)
         if plant == "parent-symlink":
             os.symlink(elsewhere, _short_tmp_parent)
+        elif plant == "parent-unmarked":
+            os.mkdir(_short_tmp_parent, 0o700)       # private and ours, but not made by us
         else:
             os.mkdir(_short_tmp_parent, 0o700)
             os.chmod(_short_tmp_parent, 0o755)
@@ -2786,13 +2812,50 @@ def test_the_sweep_removes_every_temp_root_but_the_live_ones(_short_tmp_parent, 
     (tmp_path / "target").mkdir()
     link = os.path.join(_short_tmp_parent, "planted")
     os.symlink(tmp_path / "target", link)
-    stray = os.path.join(_short_tmp_parent, "nosid")
-    os.mkdir(stray, 0o700)
-    assert sb.sweep_session_tmp({SID}) == 3
+    # Fix round 1: anything not shaped like a leaked root is left alone.
+    keep = [os.path.join(_short_tmp_parent, "nosid0000000"),     # not 12 hex
+            os.path.join(_short_tmp_parent, "abcdef012345"),     # 12 hex, no .sid
+            os.path.join(_short_tmp_parent, "notes.txt")]
+    os.mkdir(keep[0], 0o700)
+    os.mkdir(keep[1], 0o700)
+    open(keep[2], "w").close()
+    assert sb.sweep_session_tmp({SID}) == 2
     assert os.path.isdir(live.root)
     assert not os.path.exists(dead.root) and not os.path.lexists(link)
-    assert not os.path.exists(stray) and (tmp_path / "target").is_dir()
+    assert (tmp_path / "target").is_dir(), "the symlink was unlinked, not followed"
+    assert all(os.path.lexists(k) for k in keep)
+    assert os.path.isfile(os.path.join(_short_tmp_parent, sb.TMP_PARENT_MARKER))
     sb.remove_session_tmp(SID)
+
+
+@pytest.mark.parametrize("shape", ["no-marker", "under-home", "too-long"])
+def test_the_sweep_deletes_nothing_in_a_parent_viberpit_did_not_make(shape, monkeypatch,
+                                                                     tmp_path):
+    """Fix round 1 [major]: VIBERPIT_SANDBOX_TMP_PARENT pointed at an existing 0700 dir
+    (someone's data, shaped like our roots) must not be emptied at daemon start."""
+    import tempfile
+    if shape == "under-home":
+        parent = os.path.join(os.path.expanduser("~"), "v")
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+        open(os.path.join(parent, sb.TMP_PARENT_MARKER), "w").close()
+    elif shape == "too-long":
+        parent = str(tmp_path / ("p" * 40))
+        os.mkdir(parent, 0o700)
+        open(os.path.join(parent, sb.TMP_PARENT_MARKER), "w").close()
+    else:
+        parent = tempfile.mkdtemp(prefix="v", dir="/tmp")       # 0700, ours, no marker
+    foreign = os.path.join(parent, "0123456789ab")
+    os.mkdir(foreign, 0o700)
+    with open(os.path.join(foreign, ".sid"), "w") as fh:
+        fh.write("not-a-session")
+    (tmp_path / "t").mkdir()
+    os.symlink(tmp_path / "t", os.path.join(parent, "link"))
+    open(os.path.join(parent, "data.txt"), "w").close()
+    before = sorted(os.listdir(parent))
+    monkeypatch.setenv("VIBERPIT_SANDBOX_TMP_PARENT", parent)
+    assert sb.sweep_session_tmp(set()) == 0
+    assert sorted(os.listdir(parent)) == before
+    assert os.path.isfile(os.path.join(foreign, ".sid"))
 
 
 def test_the_sweep_of_a_missing_parent_does_nothing(monkeypatch, tmp_path):
@@ -3014,30 +3077,113 @@ def test_managed_settings_are_read_like_the_cli_reads_them(tmp_path):
     assert sb.managed_bwrap_path(str(d)) is None
 
 
+def _rooted(*paths, owner: int = 0, overrides: dict | None = None):
+    """An ``lstat`` that reports the real stat for *paths* and a root-owned 0755
+    directory for every ancestor of them — except the *overrides* (path -> (uid, mode,
+    kind)) — so the chain walk can be exercised under tmp_path."""
+    import stat as st_mod
+    real = {os.path.normpath(str(p)) for p in paths}
+    over = {os.path.normpath(k): v for k, v in (overrides or {}).items()}
+
+    def fake(path):
+        path = os.path.normpath(path)
+        if path in over:
+            uid, mode, kind = over[path]
+            return SimpleNamespace(st_uid=uid, st_mode=kind | mode)
+        if path in real:
+            r = os.lstat(path)
+            return SimpleNamespace(st_uid=owner if st_mod.S_ISREG(r.st_mode) else r.st_uid,
+                                   st_mode=r.st_mode)
+        return SimpleNamespace(st_uid=0, st_mode=st_mod.S_IFDIR | 0o755)
+    return fake
+
+
 def test_the_bwrap_copy_must_match_stock_bwrap_and_be_root_owned(tmp_path):
+    import stat as st_mod
     stock = tmp_path / "stock"
     stock.write_bytes(b"\x7fELF bwrap 0.11.1")
-    copy = tmp_path / "copy"
+    copy = tmp_path / "lib" / "viberpit" / "bwrap"
+    copy.parent.mkdir(parents=True)
     copy.write_bytes(stock.read_bytes())
     copy.chmod(0o750)
-    me = os.getuid()
-    assert sb.check_bwrap_copy(str(copy), stock=str(stock), owner_uid=me).ok is True
-    none = sb.check_bwrap_copy(None, stock=str(stock), owner_uid=me)
-    assert none.ok is True, "no managed copy: the helper probe is the gate"
-    same = sb.check_bwrap_copy(str(stock), stock=str(stock), owner_uid=me)
-    assert same.ok is True
-    assert sb.check_bwrap_copy(str(copy), stock=str(stock), owner_uid=0).detail == \
-        sb.BWRAP_COPY_UNSAFE
-    copy.chmod(0o770)
-    assert sb.check_bwrap_copy(str(copy), stock=str(stock), owner_uid=me).detail == \
-        sb.BWRAP_COPY_UNSAFE
-    copy.chmod(0o750)
+    kw = {"stock": str(stock)}
+    ok = sb.check_bwrap_copy(str(copy), lstat=_rooted(copy), **kw)
+    assert ok.ok is True and ok.detail == str(copy)
+    assert sb.check_bwrap_copy(None, **kw).ok is True, "no managed copy: the probe gates"
+    assert sb.check_bwrap_copy(str(stock), **kw).ok is True
+    # The file itself: owned by someone else, group-writable, or a symlink.
+    for bad in (_rooted(copy, owner=1000),
+                _rooted(copy, overrides={copy: (0, 0o770, st_mod.S_IFREG)}),
+                _rooted(copy, overrides={copy: (0, 0o777, st_mod.S_IFLNK)})):
+        check = sb.check_bwrap_copy(str(copy), lstat=bad, **kw)
+        assert check.ok is False and check.detail.startswith(sb.BWRAP_COPY_UNSAFE)
     stock.write_bytes(b"\x7fELF bwrap 0.11.2 (security update)")
-    stale = sb.check_bwrap_copy(str(copy), stock=str(stock), owner_uid=me)
+    stale = sb.check_bwrap_copy(str(copy), lstat=_rooted(copy), **kw)
     assert stale.ok is False and stale.detail == "the sandbox's bwrap copy is stale; reinstall it"
-    os.symlink(stock, tmp_path / "link")
-    assert sb.check_bwrap_copy(str(tmp_path / "link"), stock=str(stock),
-                               owner_uid=me).detail == sb.BWRAP_COPY_UNSAFE
+
+
+@pytest.mark.parametrize("ancestor,uid,mode,kind", [
+    ("lib/viberpit", 1000, 0o755, "dir"),     # a user-owned dir right above it
+    ("lib", 1000, 0o755, "dir"),              # dobby: /usr/local is tony:tony 0755
+    ("lib", 0, 0o775, "dir"),                 # group-writable
+    ("", 0, 0o1777, "dir"),                   # world-writable, even sticky
+    ("lib", 0, 0o777, "link"),                # a symlinked ancestor
+])
+def test_every_ancestor_of_the_bwrap_copy_must_be_root_owned_and_closed(
+        ancestor, uid, mode, kind, tmp_path):
+    """Fix round 1 [major]: whoever can write ANY directory above the copy can rename
+    the tree away and plant their own bwrap at the managed path, which then runs under
+    the unrestricted profile — and the root apt hook writes into a dir they chose."""
+    import stat as st_mod
+    copy = tmp_path / "lib" / "viberpit" / "bwrap"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(b"bwrap")
+    copy.chmod(0o750)
+    target = os.path.normpath(os.path.join(str(tmp_path), ancestor))
+    ftype = st_mod.S_IFDIR if kind == "dir" else st_mod.S_IFLNK
+    fake = _rooted(copy, overrides={target: (uid, mode, ftype)})
+    problem = sb.root_chain_problem(str(copy), lstat=fake)
+    assert problem and problem.startswith(target)
+    assert sb.root_chain_problem(str(copy), lstat=_rooted(copy)) is None
+    check = sb.check_bwrap_copy(str(copy), stock=str(copy), lstat=fake)
+    assert check.ok is True, "the stock path itself is not a managed copy"
+
+
+def test_the_real_root_chain_check_passes_stock_bwrap_paths_and_refuses_tmp(tmp_path):
+    """Against the real filesystem: /etc/passwd sits in a root-owned chain on any
+    Linux host; a file under /tmp (1777) never does."""
+    assert sb.root_chain_problem("/etc/passwd") is None
+    f = tmp_path / "bwrap"
+    f.write_text("x")
+    assert sb.root_chain_problem(str(f)) is not None
+
+
+def _managed(tmp_path, monkeypatch, bwrap_path: str) -> None:
+    d = tmp_path / "managed"
+    d.mkdir(exist_ok=True)
+    (d / "managed-settings.json").write_text(json.dumps({"sandbox": {"bwrapPath": bwrap_path}}))
+    monkeypatch.setattr(sb, "MANAGED_SETTINGS_DIR", str(d))
+
+
+def test_the_bwrap_chain_is_re_checked_at_spawn_and_fails_closed(tmp_path, monkeypatch):
+    """Fix round 1: not only in the cached preflight — every sandboxed spawn re-stats
+    the copy the CLI is about to run."""
+    assert sb.bwrap_copy_spawn_problem() is None, "no managed copy: nothing to check"
+    _managed(tmp_path, monkeypatch, "/usr/bin/bwrap")
+    assert sb.bwrap_copy_spawn_problem() is None, "stock bwrap is not a managed copy"
+    planted = tmp_path / "bwrap"                       # under /tmp: never a root chain
+    planted.write_text("x")
+    _managed(tmp_path, monkeypatch, str(planted))
+    problem = sb.bwrap_copy_spawn_problem()
+    assert problem and problem.startswith(sb.BWRAP_COPY_UNSAFE)
+
+    d, calls, clients, states = _sandboxed_driver(FakeControl(GOOD_DIALOG))
+    with pytest.raises(sb.SandboxError) as ei:
+        asyncio.run(d.start())
+    assert ei.value.code == sb.SANDBOX_START_FAILED and ei.value.reason == problem
+    assert calls == [], "no CLI was spawned"
+    assert states == [("failed", problem)]
+    assert not os.path.exists(sb.session_tmp(SID).root)
 
 
 def test_a_stale_bwrap_copy_is_the_toggles_reason(monkeypatch, tmp_path):
@@ -3097,23 +3243,49 @@ def test_the_preflight_counts_home_escapes_for_diagnosis(monkeypatch, tmp_path):
     assert pf.ok is True and pf.diagnostics["home_escapes"] == "2"
 
 
-def test_the_preflight_re_runs_when_the_cli_changes(monkeypatch):
-    """Plan §1.4 "CLI auto-update": the helper protocol is internal to the CLI, so the
-    cached verdict is keyed by the CLI the sessions will run."""
+def test_the_preflight_re_runs_when_the_cli_or_its_bwrap_changes(monkeypatch, tmp_path):
+    """Plan §1.4 "CLI auto-update", fix round 1: the cached verdict is keyed by the CLI
+    the sessions will run AND the bwrap it runs — the managed path and the identity of
+    the copy and of stock bwrap — so an uninstall, a bubblewrap update or a failed apt
+    hook re-runs it."""
+    from server.sessions import claude_bin
     runs: list[int] = []
-    key = ["2.1.319"]
+    cli = ["2.1.319"]
     monkeypatch.setattr(sb, "run_preflight", lambda: runs.append(1) or _ok_preflight())
-    monkeypatch.setattr(sb, "_cli_key", lambda: key[0])
+    monkeypatch.setattr(claude_bin, "cli_fingerprint", lambda: cli[0])
+    stock = tmp_path / "stock-bwrap"
+    stock.write_bytes(b"bwrap 0.11.1")
+    monkeypatch.setattr(sb, "STOCK_BWRAP", str(stock))
+    copy = tmp_path / "copy-bwrap"
+    copy.write_bytes(b"bwrap 0.11.1")
+    _managed(tmp_path, monkeypatch, str(copy))
+
+    async def step(change=None):
+        if change:
+            change()
+        return await sb.preflight()
+
+    def bump_cli():
+        cli[0] = "2.1.320"
+
+    def update_stock():                       # a bubblewrap update the hook missed
+        stock.write_bytes(b"bwrap 0.11.2")
+
+    def fix_copy():                           # the hook (or a reinstall) caught up
+        copy.write_bytes(b"bwrap 0.11.2")
+
+    def uninstall():
+        (tmp_path / "managed" / "managed-settings.json").unlink()
 
     async def go():
-        a = await sb.preflight()
-        b = await sb.preflight()
-        key[0] = "2.1.320"
-        c = await sb.preflight()
-        d = await sb.preflight()
-        return a, b, c, d
-    a, b, c, d = asyncio.run(go())
-    assert len(runs) == 2 and a is b and c is d and a is not c
+        out = [await step(), await step()]
+        for change in (bump_cli, update_stock, fix_copy, uninstall):
+            out.append(await step(change))
+        out.append(await step())
+        return out
+    results = asyncio.run(go())
+    assert len(runs) == 5, "first run + one per change, none for the unchanged calls"
+    assert results[0] is results[1] and results[-1] is results[-2]
 
 
 def test_a_blocked_host_disables_the_toggle_even_with_the_switch_on(orch_env, tmp_path,

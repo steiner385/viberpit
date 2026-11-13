@@ -1254,6 +1254,17 @@ class ClaudeAgentDriver:
                 self._stream_ended = True
                 await self._report_sandbox(sandbox_mod.STATE_FAILED, reason)
                 raise sandbox_mod.SandboxError(sandbox_mod.SANDBOX_DISABLED, reason)
+            # The managed bwrap copy the CLI is about to run must still sit in a
+            # root-owned chain (#3367 fix round 1): re-read now, not trusted from the
+            # cached preflight. Held, never spawned with a swappable binary.
+            unsafe = await asyncio.to_thread(sandbox_mod.bwrap_copy_spawn_problem)
+            if unsafe is not None:
+                log_event(log, logging.INFO, "sandbox.start_refused",
+                          session_id=self.session_id, reason=unsafe)
+                self._closing = True
+                self._stream_ended = True
+                await self._report_sandbox(sandbox_mod.STATE_FAILED, unsafe)
+                raise sandbox_mod.SandboxError(sandbox_mod.SANDBOX_START_FAILED, unsafe)
             # The orchestrator's factory merges the sandbox block and env for exactly
             # this flag, so the spawn that carries the block is the one verified below.
             fork_kw["sandbox"] = True

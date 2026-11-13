@@ -1,1 +1,1 @@
-{ "sandbox": { "bwrapPath": "/usr/local/libexec/viberpit/bwrap" } }
+{ "sandbox": { "bwrapPath": "/usr/libexec/viberpit/bwrap" } }
