@@ -2670,6 +2670,10 @@ class SessionOrchestrator:
                     extra["TMPDIR"] = sandbox_tmp.sock
                 if stderr_sink is not None and "stderr" in declared:
                     kw["stderr"] = stderr_sink
+                # The daemon's own config namespace is emptied in the CLI's env (its
+                # secrets would reach the sandboxed shell; live re-run 2026-11-13).
+                if "sandboxed" in declared:
+                    kw["sandboxed"] = True
                 # Non-Bash tools are confined by an SDK PreToolUse hook (every mode). A
                 # factory that cannot take it still has the driver's can_use_tool check.
                 # The driver's in-flight gate (owner decision 2026-11-07) is shared by

@@ -535,4 +535,134 @@ The design that clears F4–F6 and the rocky push is in
   replacing the `unshare` stand-in. A new `bwrap_copy` check compares the copy's sha256 with `/usr/bin/bwrap`.
   The cached verdict re-runs when the CLI binary changes.
 
-The benchmark row stays ❌ until the live re-run (plan §5) is recorded here as §5.4.
+The benchmark row stays ❌ until the live re-run (plan §5) is recorded here. It is §7.
+
+## 7. Live re-verification (2026-11-13)
+
+The plan §5 re-run, after the host install (bwrap copy `/usr/libexec/viberpit/bwrap`, AppArmor profile
+`viberpit-sbx-bwrap`, `/etc/claude-code/managed-settings.json` with `bwrapPath`, apt hook) on both hosts and with
+PR #3383 merged. `VIBERPIT_SANDBOX_ENABLED` stayed off in the live services; it was set in the harness env only.
+
+### 7.1 Versions and method
+
+| Host | CLI | Kernel | bwrap / socat | `apparmor_restrict_unprivileged_userns` | Python (harness venv) |
+|---|---|---|---|---|---|
+| dobby | **2.1.323** | 7.0.0-42 | 0.11.1 (the copy) / present | 0 | 3.14.4 (`viberpit-deploy/.venv`) |
+| rocky | **2.1.293** | 7.0.0-38 | 0.11.1 (the copy) / present | **1** | 3.14.4 (`viberpit/.venv`) |
+
+- `claude-agent-sdk==0.2.105`. Model: haiku. Code: `origin/master` 356f6fe7 (#3383), then this branch's fix (§7.3 F8).
+- **Harness.** The §5.1 shape, with **no stand-ins**: a real `SessionOrchestrator` with the real
+  `real_sdk_factory`, `ensure_driver` on a scratch row with `sandbox=True`, so the driver's own
+  `bwrap_copy_spawn_problem`, `prepare_session_tmp`, `get_sandbox_dialog` check, gate and hooks all ran.
+  - Scratch SQLite DB and `VIBERPIT_HOME`; a scratch `CLAUDE_CONFIG_DIR` (0700): one account's `.claude.json`
+    without `mcpServers`, plus that host's `settings.json` symlink. Auth: the account's setup token in
+    `CLAUDE_CODE_OAUTH_TOKEN` (`compose`, `trust_project` and `oauth_env_for` patched to the scratch dir and
+    token).
+  - A shallow throwaway clone with a linked worktree, under `~/.cache/d23probe` (so the home deny applies as for
+    real clones).
+  - The daemon's `PATH` on each host. dobby: `VIBERPIT_GH_CONFIG_DIR=/home/tony/.config/viberpit/gh`; rocky:
+    the ambient file-backed `~/.config/gh`, and `VIBERPIT_CLAUDE_BIN` as its daemon sets it.
+  - Most shell rows ran from one probe script in the worktree (`bash .d23probe.sh`). It prints names, counts and
+    status codes only (`head -c0` for readability, `env | cut -d= -f1` for env).
+- **Probe-only variants**, marked in the table:
+  - **(C)** row 21: a copy of the shared `settings.json` without the `Edit`/`Write`/`MultiEdit`/`NotebookEdit`
+    allow rules. The shared settings allow them, so with the real file no card is ever shown for a file write.
+  - **(L)** row 27: `SandboxGate.background_ended` replaced by a no-op for that driver, to simulate the lost end
+    event (plan §5.3).
+- **Clean-up.** `sandbox-probe/20261113113554` (dobby) and `sandbox-probe/20261113114920` (rocky) were deleted
+  from an unsandboxed shell (`gh api -X DELETE …/git/refs/heads/…`). `git ls-remote` shows no
+  `sandbox-probe/*` ref, and the branches API answers 404. Every scratch dir (both hosts) and the staged token
+  file on rocky were removed, and `/var/tmp/vpsbx` holds only its marker on both hosts.
+
+### 7.2 Results
+
+Rows 1–28 are §5.2's, on dobby unless the row says otherwise; rocky ran the same probe script (rows 1–14, 22–26,
+28). N1–N9 are the PR #3383 list and this run's extra checks.
+
+| # | Check | Expected | Observed | Result |
+|---|---|---|---|---|
+| 1 | `get_sandbox_dialog` echo, dobby | The block's lists back exactly | `check_dialog` ok; `fs_deny_read` **equal** (same order) to `read_policy`, `fs_allow_read` the same set. Deny: home, the eight daemon dirs, the scratch `VIBERPIT_HOME`, `/var/tmp/vpsbx` and the 12 `home_escapes` targets (`/mnt/ssk-ssd/tony/cache/{.claude,.docker,.local,.npm,.wine*}`, `.steam`, `.verdaccio`, two `/mnt/hdd-storage` dirs). Allow: worktree, common `.git`, `shell-snapshots`, the dedicated gh dir, the toolchain list with the real `/mnt/ssk-ssd/tony/cache/.local/{bin,share/uv}` and `…/.npm` beside the lexical ones, and the session's own `/var/tmp/vpsbx/<key>/s`. `fs_allow_write` `[]`; `fs_deny_write` = `<common>/hooks`, `<common>/config`; the three GitHub domains; `allow_all_unix_sockets:false`; `mode:"regular"`; `unsandboxed_fallback:false`; `policy_origins:["file"]`. State `active` | PASS |
+| 2 | Same, rocky | Same | Same on 2.1.293; `home_escapes` 0, so no `/mnt` entries; ambient `~/.config/gh` is the gh re-allow | PASS |
+| 3 | `dependencies` | `errors` `[]`, `warnings` `[]` | `[]` / `[]` on both hosts (the seccomp helper is present and usable) | PASS |
+| 4 | Sandboxed Bash runs at all | It runs | Every Bash ran on both hosts (F4 is gone): `bash_ok uid=1000` | PASS |
+| 5 | Reads | Denied | `ls -A ~` shows only the re-allow stubs (dobby `.cache .cargo .config .gitconfig .rustup`; rocky `.cache .config .gitconfig .local .npm`). `~/.ssh`, `~/.claude-accounts`, `~/.claude`, `~/.aws`, `~/.cache/viberpit` absent; `/etc/viberpit`, `/etc/ccswitch`, `/var/lib/viberpit` empty. `~/.ssh/id_*`, `~/.aws/credentials`, `accounts.json`, `~/.git-credentials`, `/etc/viberpit/viberpit.env` unreadable. dobby: ambient `~/.config/gh` absent; only the dedicated `~/.config/viberpit/gh` is visible | PASS |
+| 6 | Re-allows of absent paths | bwrap still starts | `~/.nvm`, `~/.pyenv` absent on both hosts; bwrap started | PASS |
+| 7 | Shell snapshot and `PATH` | Snapshot sources, `PATH` intact | dobby `PATH` = the daemon's + `/mnt/ssk-ssd/tony/cache/.local/bin:/home/tony/.cargo/bin` (`sandbox_path`, real path); rocky = the daemon's + `~/.local/bin` | PASS |
+| 8 | `uv`, `node`, `cargo` | All run | dobby: `uv 0.9.26` (from the real path), node v22.23.4, cargo 1.98.0, gh 2.103.0. rocky: uv, node, gh run; cargo is not installed on rocky (no `~/.cargo`) | PASS (F6 fixed) |
+| 9 | `git fetch` | Works | `* branch master -> FETCH_HEAD`, rc 0, both hosts | PASS |
+| 10 | `git commit` | Works, into the common git dir | `commit_ok 2c3b8e7` (dobby), `21d4438` and `376feec` (rocky) | PASS |
+| 11 | `git push origin HEAD:sandbox-probe/<ts>` | Works | dobby: `* [new branch] HEAD -> sandbox-probe/20261113113554`, rc 0. rocky: see N5 | PASS |
+| 12 | `gh api user` / `gh pr view` | Authenticate | `steiner385` / `3383 MERGED` on both hosts | PASS |
+| 13 | `git push -u`, `git config`, hooks | Push works; `.git/config` writes fail | Push "Everything up-to-date" and a `--set-upstream-to` hint (no upstream written); `git config probe.x 1` → `could not lock config file …/.git/config: File exists`, rc 255; touching `<common>/hooks/probe` → `Read-only file system` | PASS (as predicted) |
+| 14 | Network allowlist | `api.github.com` allowed, `example.com` denied | `api_http=200`; `example.com` → `CONNECT tunnel failed, response 403` and `<sandbox_violations> deny network-outbound example.com:443 (host is not on the allow list)`; both hosts | PASS |
+| 15 | WebFetch `api.github.com` / `example.com` | Allowed / denied | **Not offered (F7 stands on 2.1.323).** Unsandboxed `claude -p` init `tools` lacks `WebFetch` for haiku, sonnet and opus (24 tools each; `WebSearch` and `ToolSearch` present), and `ToolSearch` `select:WebFetch` answers "No matching deferred tools found". Per plan §5.1.3 the confine path stays unit-tested (`test_the_allowlist_matrix_*`); egress is proven by row 14 | N/A (F7) |
+| 16 | `Write /tmp/x`, main thread | Denied | `PreToolUse:Write hook error: Write is not allowed in a sandboxed session: '/tmp/d23probe-x.txt' is outside this session's worktree`; not on the host | PASS |
+| 17 | `Write /tmp/x`, sub-agent | Denied | The same denial inside a foreground sub-agent; not on the host. (In the first conversation haiku refused to delegate a write it had just seen denied; a fresh conversation was used) | PASS |
+| 18 | Edit while a sub-agent's Bash runs | The retry message | A background sub-agent's **foreground** Bash (`python3 … time.sleep(45)`; 2.1.323 still blocks `sleep N; echo`) was in `gate.bash` when the main thread's Edit arrived: `PreToolUse:Edit hook error: Another command is running in this session; retry this edit when it finishes.` The same refusal held while a sub-agent's `run_in_background` Bash was in `gate.background` | PASS |
+| 19 | Write during `run_in_background` | Refused until the end event | Refused with the same message; the entry stayed in `background` across the turn end and was cleared at `BackgroundTaskEnded`; the next Write was admitted (file created) | PASS |
+| 20 | A failed Bash leaves no stale entry | Gate empty afterwards | `ls /nonexistent; exit 3` → `Exit code 3`; gate `{bash:[], writes:[], background:[]}` after it and after every other turn | PASS |
+| 21 | Bash refused while an Edit waits on a card | Refused | (C) Interactive mode. The main thread's Write was admitted and its card held 60 s (`gate.writes` = that call). A background sub-agent's Bash during the hold: `PreToolUse:Bash hook error: A file edit is being written in this session; retry this command when it finishes.`, twice (its retry too). Card approved → Write ran; gate empty at turn end. Note: the CLI does not start a message's other tool calls until a pending card in that message resolves, so the race only arises across threads | PASS (C) |
+| 22 | Backgrounded process gone after return | None left | `timeout 300 tail -f /dev/null &` → `started_pid=237` (own PID namespace); host `pgrep -af 'tail -f /dev/null'` empty after the turn, both hosts | PASS |
+| 23 | `TMPDIR` is the session's own | `/var/tmp/vpsbx/<key>/t/claude-1000` | `TMPDIR` = `CLAUDE_CODE_TMPDIR` = `/var/tmp/vpsbx/448608251ab5/t/claude-1000` (key = `sha256(id)[:12]`); `mktemp` works there | PASS |
+| 24 | Temp root removed at close | Gone | 0700 while running; gone after `close_session` in every run (11 sessions, both hosts) | PASS |
+| 25 | `~/.cache/viberpit/claude-tmp` denied | Not readable | Absent inside, as is the shared `~/.cache/claude-tmp` | PASS |
+| 26 | Shared venv | Known gap | `~/GitHub/viberpit{,-deploy}/.venv/bin/python`: No such file or directory | As expected (known limit) |
+| 27 | Reload releases a gate whose end event was lost | Released | (L) Background `timeout 600 tail -f /dev/null`; `TaskStop` → `BackgroundTaskEnded` arrived but was dropped, so `gate.background` kept the id; the host had no `tail` left. Write → `Another command is running…` (fail closed). `reload_session` → `reloaded`, new driver, gate empty and `known`, state `active`; the root was recreated with a matching `.sid`, and its sockets are new (the old CLI's are gone). Write → created | PASS (L) |
+| 28 | Rocky: sandboxed `git fetch` | Works through gh | `* branch master -> FETCH_HEAD`, rc 0, under `apparmor_restrict_unprivileged_userns=1` | PASS |
+| N1 | Real seccomp helper through the copy | Preflight `seccomp_helper` ok on both hosts | `run_preflight()` on both hosts: all ten checks ok (`bwrap` = `/usr/libexec/viberpit/bwrap`, `bwrap_copy`, `seccomp_helper`, `proxy_socket_dir`, `sandbox_tmp_parent`, `gh`, …). The dialog's empty `warnings` and row 4 show the helper running for real | PASS |
+| N2 | Exact read lists in the echo | Equal to `read_policy` | Rows 1–2: `deny_exact` and `allow_exact` true on both hosts | PASS |
+| N3 | F5 inside the sandbox | Own key only; sibling invisible; `s/` read-only; `t/` writable; proxy works | `ls /var/tmp/vpsbx` shows only `448608251ab5`. A sibling root (`prepare_session_tmp("d23-sibling-probe")`, with a file in `t/`) → `No such file or directory`. `s/` holds `claude-http-<16>.sock` and `srt-mux-<pid>-0.sock` (2.1.323 names); `touch s/x` → `Read-only file system`; `touch t/x` ok. The proxy works (rows 9, 11, 14) | PASS |
+| N4 | F6 | `.docker` hidden; `uv` runs; PATH survives the snapshot | `/mnt/ssk-ssd/tony/cache/.docker` is an empty tmpfs inside (0 entries; `config.json` unreadable), as is `…/.claude`. `uv --version` runs; row 7 PATH | PASS |
+| N5 | Push from rocky through gh | Works without `~/.git-credentials` | `* [new branch] HEAD -> sandbox-probe/20261113114920`, and after the F8 fix `21d4438..376feec`; `~/.git-credentials` unreadable inside, so gh (the `GIT_CONFIG_*` helper) authenticated | PASS |
+| N6 | A CLI update re-runs the preflight | Fresh run on a new binary | `VIBERPIT_CLAUDE_BIN` → a symlink to `versions/2.1.323`: `preflight()` ran once, then returned the cached object. Repointed to `versions/2.1.319` (an auto-update's shape): the next `preflight()` re-ran (`cli_version` 2.1.319, newer `checked_at`, `seccomp_helper` ok through 2.1.319's helper) | PASS |
+| N7 | Unsandboxed `claude -p` with the managed file present | As before | With `/etc/claude-code/managed-settings.json` (`bwrapPath` only): rc 0, `~/.ssh` visible, `accounts.json` readable, `TMPDIR=~/.cache/claude-tmp` (the shared settings), `SANDBOX_RUNTIME` and `HTTPS_PROXY` unset, `/tmp` writable: unsandboxed | PASS |
+| N8 | Startup sweep removes leftover roots | Leaked roots go; nothing else | With no live sandboxed session: two `prepare_session_tmp` roots, a planted symlink to `~`, the real leftover sibling root, a key-shaped dir without `.sid` and a non-key dir. `sweep_session_tmp(())` removed 4 (the three `.sid` roots and the symlink, not followed: `~` intact); the two foreign dirs stayed. `serve.py` calls it at daemon start, gated on the kill switch, after the orphan-CLI reap and before `rehydrate()` | PASS |
+| N9 | The daemon's env in the sandboxed shell | No daemon secrets | **Before the fix:** the shell's env listed the daemon namespace, including the master key under its legacy-prefix name (the harness had unset the canonical one; `env_compat` had mirrored it). The live daemons carry `VIBERPIT_MASTER_KEY` and `VIBERPIT_DB_URL` (both hosts), `VIBERPIT_GH_PROJECT_TOKEN` (dobby) and more. **After F8:** every `VIBERPIT_*` / legacy-prefix variable is present but **empty** on both hosts, and git, gh and push still work. `CLAUDE_CODE_OAUTH_TOKEN` was never visible (the CLI withholds it) | FAIL → PASS after F8 |
+
+### 7.3 Findings
+
+**F8 (fixed on `fix/sandbox-live-3367`): the daemon's env reached the sandboxed shell.**
+
+- `real_sdk_factory` builds the CLI's env from `os.environ`, and the sandboxed shell inherits the CLI's env.
+- So every secret the daemon holds in its env was readable to a sandboxed session (row N9). The secrets are
+  `VIBERPIT_MASTER_KEY` (which decrypts every stored account token), `VIBERPIT_DB_URL` with its password, and
+  `VIBERPIT_GH_PROJECT_TOKEN`. GitHub egress is allowed, so they could leave the host.
+- `read_policy` hides the files those secrets live in, but env is a separate channel.
+- A first fix that left the namespace out of `options.env` had **no effect**. claude-agent-sdk 0.2.105
+  (`SubprocessCLITransport.connect`) builds the child env as `{**os.environ, …, **options.env}`, so only an
+  override removes a value.
+- The fix: `sandbox.withheld_env()` maps every key of both spellings of the namespace to `""`.
+  `real_sdk_factory(sandboxed=True)` applies it, and the orchestrator passes `sandboxed=True` for a sandboxed spawn.
+- The names stay visible with empty values.
+- The tests assert on the env the SDK's own transport would spawn the CLI with, and they fail against the first
+  attempt.
+- **Not changed (owner):** unsandboxed sessions still inherit the full daemon env, master key included. That
+  predates D-23 and needs its own issue: does any session need any `VIBERPIT_*` value?
+
+**F9 (owner decision): `git add -A` fails inside the sandbox.**
+
+- The CLI masks a set of dangerous paths in the worktree when they do not exist. On 2.1.323 these are
+  `.bashrc`, `.bash_profile`, `.profile`, `.zshrc`, `.zprofile`, `.gitconfig`, `.gitmodules`, `.ripgreprc`,
+  `.mcp.json`, `.idea`, `.vscode`, `.claude/commands` and other `.claude/*` entries.
+- It masks each one with a `/dev/null` character device bound in place. These do not exist on the host.
+- So `git status` lists them as untracked, and `git add -A` (or `git add .`) fails with
+  `error: .bash_profile: can only add regular files, symbolic links or git-directories` and
+  `fatal: adding files failed` (rc 128).
+- `git add <path>` and `git commit -a` work. A model sees the error and adapts, but agent workflows that stage
+  everything will fail on the first try.
+- Options:
+  - **(a)** For sandboxed sessions, add the CLI's mask list to git's excludes through the existing `GIT_CONFIG_*`
+    env, for example a `core.excludesFile` in the session's `s/` that also includes the user's global ignore.
+    The list is CLI-internal and can change between releases (Principle I).
+  - **(b)** Say it in the sandboxed session's prompt ("stage paths explicitly").
+  - **(c)** Accept it.
+- Not changed here.
+
+**F7 stands** on 2.1.323 (row 15). WebFetch is not even deferred.
+
+**Ordering note (row 21).** In interactive mode, a message's other tool calls wait until a pending card resolves.
+So the Bash/Edit race only happens across threads, and the gate handles it.
+
+**Ready to switch on?** Every §5 row except row 15 (N/A, F7) passes on both hosts with no stand-ins, and all
+eight items of the PR #3383 list pass. With F8 merged and deployed, the remaining step is plan §6 step 6, flipping
+the switch, subject to the owner's call on F9. The benchmark row (plan §6 step 7) can then change.

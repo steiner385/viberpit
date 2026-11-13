@@ -10,6 +10,7 @@ from .draft_hold_guard import draft_ready_guard
 from .human_hold_guard import human_hold_pre_tool_use
 from .merge_hold_guard import merge_hold_guard
 from .permissions import to_sdk_permission_mode
+from .sandbox import withheld_env
 
 
 def _build_append_string(platform_guide: str | None = None) -> str:
@@ -129,7 +130,7 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
                      ready_grants=None, fork_session=False, extra_args=None,
                      enable_file_checkpointing=False, platform_guide=None,
                      flag_settings=None, stderr=None, sandbox_confine=None,
-                     sandbox_post_write=None, sandbox_done=None):
+                     sandbox_post_write=None, sandbox_done=None, sandboxed=False):
     """Build the real ``ClaudeSDKClient`` for one session.
 
     *owns_pr*: the session's ``(repo, number, head_ref) -> bool`` ownership check for
@@ -168,6 +169,10 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     Error", "sandbox required but unavailable") when the spawn fails. The sandbox block
     itself rides *flag_settings*.
 
+    *sandboxed* (D-23): the spawn is sandboxed, so the daemon's own configuration
+    namespace is emptied in the CLI's env (``sandbox.withheld_env``) — the sandboxed
+    shell inherits that env, secrets included. *extra_env* is applied on top either way.
+
     *platform_guide*: the session's per-platform guide text (``platform_guide.py``),
     appended to the system prompt; ``None`` for a Linux session.
 
@@ -180,6 +185,8 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     """
     ClaudeSDKClient, ClaudeAgentOptions = _import_sdk()
     env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir, **session_tmpdir_env())
+    if sandboxed:
+        env.update(withheld_env(os.environ))
     if extra_env:
         env.update(extra_env)
     from claude_agent_sdk import HookMatcher
