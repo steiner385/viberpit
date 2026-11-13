@@ -63,14 +63,14 @@ Full inventories, with an evidence tag on every item:
 | 2 Transcript | 21 / 21 | 100% |
 | 3 Composer | 28.5 / 29 | 98% |
 | 4 Commands & config | 15 / 15 | 100% |
-| 5 Settings | 6 / 8 | 75% |
+| 5 Settings | 7 / 8 | 88% |
 | 6 User feedback | 19 / 19 | 100% |
 | 7 Lifecycle & branching | 24.5 / 25 | 98% |
 | 8 Code review & dev | 9.5 / 12 | 79% |
 | 9 Shortcuts & a11y | 8 / 8 | 100% |
 | 10 Remote & multi-device | 8 / 8 | 100% |
-| **Overall (weighted)** | **152 / 161** | **94%** |
-| **Target completion** (excl. rejected rows) | **149.5 / 150.5** | **99%** |
+| **Overall (weighted)** | **153 / 161** | **95%** |
+| **Target completion** (excl. rejected rows) | **150.5 / 150.5** | **100%** |
 
 ### 1 Shell & IA
 
@@ -145,7 +145,7 @@ Full inventories, with an evidence tag on every item:
 | Notification levels per event type | 1 | ◐ | quiet hours, channels, routing rules · *rejected for target* |
 | Appearance: theme, font + transcript size | 1 | ◐ | theme + widths · *rejected for target* |
 | Presets / environments selectable at new session | 2 | ✅ | dispatch bar + menu (removable chip) and ⌘K "New session from preset"; no chord — every digit family is taken (D-14) |
-| Sandbox settings | 1 | ❌ | built and shipped dark (D-23): opt-in per session, fail-closed, GitHub-only network, worktree-only writes, home unreadable, non-Bash tools confined; off until host blockers are fixed — AppArmor bwrap-userns-restrict breaks the CLI seccomp helper and the CLI proxy socket sits under the hidden home (#3367) |
+| Sandbox settings | 1 | ✅ | opt-in per session and as a default (D-23); fail-closed; GitHub-only network, worktree-only writes, home unreadable, non-Bash tools confined, daemon secrets withheld; enabled 2026-11-13 after the host change and a live re-run on both hosts (#3367); `git add -A` fails inside it (F9, accepted) |
 
 ### 6 User feedback
 
@@ -216,13 +216,12 @@ Full inventories, with an evidence tag on every item:
 | 1 | Split view / tiled panes | 1 Shell & IA | 2 |
 | 2 | Integrated terminal | 8 Code review & dev | 2 |
 | 3 | Pin / star sessions | 1 Shell & IA | 1 |
-| 4 | Sandbox settings | 5 Settings | 1 |
-| 5 | Pop session into own window | 1 Shell & IA | 0.5 |
-| 6 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
-| 7 | Notification levels per event type | 5 Settings | 0.5 |
-| 8 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
-| 9 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
-| 10 | Files pane: edit | 8 Code review & dev | 0.5 |
+| 4 | Pop session into own window | 1 Shell & IA | 0.5 |
+| 5 | Prompt history (↑/↓ + Ctrl+R search) | 3 Composer | 0.5 |
+| 6 | Notification levels per event type | 5 Settings | 0.5 |
+| 7 | Appearance: theme, font + transcript size | 5 Settings | 0.5 |
+| 8 | Scheduled tasks / routines | 7 Lifecycle & branching | 0.5 |
+| 9 | Files pane: edit | 8 Code review & dev | 0.5 |
 
 ## 4. Where ViberPit leads (not scored)
 
@@ -299,4 +298,6 @@ The three target rows left open after D-21, reviewed one at a time.
 | D22e | Automations reached through GitHub from a sandboxed session (spike follow-up) | **Accept and document (owner, 2026-11-07):** a sandboxed session can comment or file issues; the automation session that results follows "Sandbox new sessions". |
 | D22f | Sub-agent write race in sandboxed sessions | **Serialise writes against running Bash (owner, 2026-11-07):** Edit/Write are refused while any Bash runs in any thread of the session. |
 | D22g | Live run found host blockers (AppArmor seccomp helper, proxy socket under home) | **Ship dark (owner, 2026-11-08):** merged with the kill switch off by default; the preflight names both blockers; enablement tracked in #3367. |
+| D22h | `git add -A` fails inside the sandbox (F9) | **Accept and document (owner, 2026-11-13).** The CLI masks sensitive dot-files with `/dev/null`; staging by name and `git commit -a` work. |
+| D22i | Switch the sandbox on (#3367) | **On, once #3385 is deployed (owner, 2026-11-13).** Both hosts have the bwrap copy and AppArmor profile, and the live re-run passed (spike §7). |
 

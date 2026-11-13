@@ -67,7 +67,7 @@ D=[
  ("Notification levels per event type",1,"P","quiet hours, channels, routing rules"),
  ("Appearance: theme, font + transcript size",1,"P","theme + widths"),
  ("Presets / environments selectable at new session",2,"Y","dispatch bar + menu (removable chip) and ⌘K \"New session from preset\"; no chord — every digit family is taken (D-14)"),
- ("Sandbox settings",1,"N","built and shipped dark (D-23): opt-in per session, fail-closed, GitHub-only network, worktree-only writes, home unreadable, non-Bash tools confined; off until host blockers are fixed — AppArmor bwrap-userns-restrict breaks the CLI seccomp helper and the CLI proxy socket sits under the hidden home (#3367)"),
+ ("Sandbox settings",1,"Y","opt-in per session and as a default (D-23); fail-closed; GitHub-only network, worktree-only writes, home unreadable, non-Bash tools confined, daemon secrets withheld; enabled 2026-11-13 after the host change and a live re-run on both hosts (#3367); `git add -A` fails inside it (F9, accepted)"),
 ]),
 ("6 User feedback",[
  ("Permission card: once / this session / always / deny",3,"Y",""),

@@ -450,14 +450,14 @@ ways into it from the composer and the transcript.
   a common team namespace (`feature/`, `fix/`, `release/`, …) or a ref namespace (`refs/`, `origin/`, …),
   or when it would collide with branches that already exist in your clones (including a branch named
   like one of its folders). If ViberPit can't check your clones in time, it refuses rather than guesses.
-- **Sandbox (D-23, off until #3367):** when the host supports it, the Environment card has a Sandbox row
+- **Sandbox (D-23, #3367):** when the host supports it, the Environment card has a Sandbox row
   (Off / Starting… / Active / Failed: reason) and a toggle. Turning it on or off restarts the session. A sandboxed
   session can reach only GitHub over the network and write only inside its worktree. Your home directory is
   unreadable apart from toolchains, and file tools stay inside the worktree. In full-auto there are no prompts;
   the sandbox only contains commands. If the sandbox can't start or verify, the session is held, and the banner
   offers **Retry** or **Turn off sandbox and continue**. Settings › Sessions can make new sessions sandboxed by
   default. When the host can't run it, the toggle is disabled and names the reason, with **Re-check host**.
-  Sessions started by a sandboxed session inherit its sandbox, and a move to a host that can't sandbox is refused.
+  Sessions started by a sandboxed session inherit its sandbox, and a move to a host that can't sandbox is refused. Inside the sandbox, `git add -A` fails because the CLI masks sensitive dot-files, so stage files by name or use `git commit -a`.
 
 **Output styles and app slash commands (D-16a)** — output styles are Claude only; `/plan` works on both engines.
 - **Style ›** in the composer's `+` menu lists the styles the session's CLI reports (built-ins, your own, and

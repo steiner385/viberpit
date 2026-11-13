@@ -687,12 +687,14 @@ toolchains, non-Bash tools confined, and edits serialised against running Bash. 
   the apt hook, then unloads and removes the profile. Every step runs even if an earlier one fails (an unloaded
   profile is fine). The CLI then falls back to `/usr/bin/bwrap`, the preflight fails, and
   the toggle is disabled.
-- **Still dark (#3367).** Do not turn the switch on until the host change is in on both hosts, this code is
-  deployed, and the live re-run (plan §5) has passed. Without the host change, the preflight reports
-  `Host AppArmor blocks the sandbox's seccomp helper`. With a `VIBERPIT_SANDBOX_TMP_PARENT` under home, it
-  reports `The CLI's proxy socket directory is under the home directory`. With a stale copy, it reports
-  `the sandbox's bwrap copy is stale; reinstall it`.
+- **Enabled (#3367, 2026-11-13).** The host change is in on dobby and rocky, and the live re-run (spike §7) passed. `VIBERPIT_SANDBOX_ENABLED=true` is set on the edge and both daemons once the #3385 deploy is live. Sessions are still unsandboxed unless a person turns the sandbox on for a session, or turns on "Sandbox new sessions". If the preflight later fails, the toggle is disabled with the reason:
+  - without the host change: `Host AppArmor blocks the sandbox's seccomp helper`;
+  - with a `VIBERPIT_SANDBOX_TMP_PARENT` under home: `The CLI's proxy socket directory is under the home directory`;
+  - with a stale copy: `the sandbox's bwrap copy is stale; reinstall it`.
+
+  To turn it off fleet-wide, set `VIBERPIT_SANDBOX_ENABLED=false` and restart. Sessions recorded as sandboxed are then held, and turning off their sandbox still works.
 - **Known limits:**
+  - `git add -A` fails inside the sandbox (exit 128). The CLI masks sensitive dot-files in the worktree with `/dev/null` (`.bashrc`, `.mcp.json`, `.gitmodules`, …), and git refuses to stage them. Staging by name and `git commit -a` work. Accepted (owner, 2026-11-13, F9). Ignoring those names would also hide real edits to them, and the list is internal to the CLI.
   - A venv in another checkout is unreadable inside the sandbox, so sandboxed worktrees need their own environment.
   - The home read-deny also hides the real target of every home symlink that leaves home (dobby: `~/.docker`,
     `~/.local`, …). Toolchains under `~/.local`, `~/.cargo` and the like are re-allowed by their real paths,
