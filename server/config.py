@@ -463,6 +463,12 @@ try:
         # helper; proxy sockets under home), which the preflight now reports.
         # see #3367
         sandbox_enabled: bool = Field(default=False, alias="VIBERPIT_SANDBOX_ENABLED")
+        # Parent of every sandboxed session's private temp root (#3367, plan §2.2):
+        # ``<parent>/<sha256(session_id)[:12]>/{t,s}``. Outside home, so the proxy
+        # sockets in ``s/`` survive the home read-deny; on disk, not the /tmp tmpfs; and
+        # short enough for the CLI's 44-byte child-tmpdir limit (checked at spawn).
+        sandbox_tmp_parent: str = Field(default="/var/tmp/vpsbx",
+                                        alias="VIBERPIT_SANDBOX_TMP_PARENT")
         # Live (not complete/done/ended/archived) children one parent may have at once.
         child_session_cap: int = Field(default=3, alias="VIBERPIT_CHILD_SESSION_CAP")
         # Deepest nesting: 1 = children only, 2 = grandchildren, …
@@ -850,6 +856,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         sandbox_enabled: bool = dataclasses.field(  # default OFF (shipped dark); see #3367
             default_factory=lambda: os.environ.get("VIBERPIT_SANDBOX_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+        )
+        sandbox_tmp_parent: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_SANDBOX_TMP_PARENT") or "/var/tmp/vpsbx"
         )
         child_session_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("VIBERPIT_CHILD_SESSION_CAP", "")) and v.isdigit() else 3

@@ -101,6 +101,27 @@ def _switch_on(monkeypatch):
     monkeypatch.setenv("VIBERPIT_SANDBOX_ENABLED", "true")
 
 
+@pytest.fixture(autouse=True)
+def _short_tmp_parent(monkeypatch):
+    """A private per-test sandbox temp parent (#3367), short enough for the CLI's
+    44-byte child-tmpdir limit: never the host's /var/tmp/vpsbx."""
+    import shutil
+    import tempfile
+    parent = tempfile.mkdtemp(prefix="v", dir="/tmp")
+    # As ViberPit made it (ensure_tmp_parent): the marker is what makes it ours.
+    open(os.path.join(parent, sb.TMP_PARENT_MARKER), "w").close()
+    monkeypatch.setenv("VIBERPIT_SANDBOX_TMP_PARENT", parent)
+    yield parent
+    shutil.rmtree(parent, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _no_host_managed_settings(monkeypatch, tmp_path):
+    """Never read the host's /etc/claude-code (after the host change it names the
+    real bwrap copy): a test that needs managed settings writes its own."""
+    monkeypatch.setattr(sb, "MANAGED_SETTINGS_DIR", str(tmp_path / "no-managed-settings"))
+
+
 def _ok_preflight() -> sb.Preflight:
     return sb.Preflight(ok=True, reason=None, checks=(sb.PreflightCheck("bwrap", True),),
                         cli_version="2.1.319", checked_at=1.0)
@@ -188,7 +209,8 @@ def test_startup_failure_reads_the_clis_own_refusal():
 
 class _Run:
     """A fake ``subprocess.run``: ``bwrap --version`` answers *version*, the namespace
-    probe answers *probe_rc* (or raises TimeoutExpired)."""
+    probe answers *probe_rc*, the real seccomp-helper probe answers *helper_rc* (None:
+    raises TimeoutExpired)."""
 
     def __init__(self, version="bubblewrap 0.11.1", probe_rc: int | None = 0,
                  helper_rc: int | None = 0):
@@ -199,12 +221,14 @@ class _Run:
         self.calls.append((list(argv), timeout))
         if "--version" in argv:
             return SimpleNamespace(returncode=0, stdout=self.version, stderr="")
-        if "--cap-drop" in argv:              # the seccomp-helper stand-in (F4)
+        if any("ARGV0=apply-seccomp" in a for a in argv):   # the CLI's own helper (F4)
             if self.helper_rc is None:
                 raise subprocess.TimeoutExpired(argv, timeout)
             return SimpleNamespace(returncode=self.helper_rc, stdout="",
                                    stderr="" if self.helper_rc == 0 else
-                                   "unshare: unshare failed: Operation not permitted")
+                                   "apply-seccomp: write /proc/self/setgroups (nested "
+                                   "userns is capability-restricted; caller must provide "
+                                   "CAP_SYS_ADMIN): Permission denied")
         if self.probe_rc is None:
             raise subprocess.TimeoutExpired(argv, timeout)
         return SimpleNamespace(returncode=self.probe_rc, stdout="",
@@ -219,30 +243,53 @@ def _gh_dir(tmp_path, name: str, token: bool):
     return str(d)
 
 
+CLI_BIN = "/opt/claude/versions/2.1.319"
+
+
+def _copy_ok(path):
+    return sb.PreflightCheck("bwrap_copy", True, path)
+
+
 def _preflight(monkeypatch, tmp_path, *, which=None, run=None, cli="2.1.319",
-               dedicated_token=True, ambient_token=False, socket_dir="/tmp/vpsbx"):
+               dedicated_token=True, ambient_token=False, tmp_parent=None,
+               managed=None, claude_bin=CLI_BIN, bwrap_copy=_copy_ok):
     monkeypatch.setenv("VIBERPIT_GH_CONFIG_DIR",
                        _gh_dir(tmp_path, "vp-gh", dedicated_token))
     monkeypatch.setenv("GH_CONFIG_DIR", _gh_dir(tmp_path, "gh", ambient_token))
     present = which or {"bwrap": "/usr/bin/bwrap", "socat": "/usr/bin/socat",
-                        "unshare": "/usr/bin/unshare"}
+                        "bash": "/usr/bin/bash"}
+    parent = tmp_parent or sb.sandbox_tmp_parent()
     return sb.run_preflight(which=present.get, run=run or _Run(),
                             cli_version=lambda: cli, sysctls=lambda: {"k": "1"},
-                            clock=lambda: 5.0, socket_dir=lambda: socket_dir)
+                            clock=lambda: 5.0, tmp_parent=lambda: parent,
+                            managed_bwrap=lambda: managed, claude_bin=lambda: claude_bin,
+                            bwrap_copy=bwrap_copy)
+
+
+def _helper_argv(bwrap: str, cli: str = CLI_BIN) -> list[str]:
+    """Plan §6 step 1: the CLI's real apply-seccomp helper, through the bwrap the CLI
+    will use, exactly as the CLI composes it (fd 3 = the CLI binary)."""
+    return [bwrap, "--new-session", "--die-with-parent", "--ro-bind", "/", "/",
+            "--dev", "/dev", "--proc", "/proc", "--unshare-user", "--unshare-pid",
+            "--unshare-net", "--", "/usr/bin/bash", "-c",
+            'exec 3<"$1"; SRT_ALLOW_NESTED_USERNS=0 ARGV0=apply-seccomp '
+            '/proc/self/fd/3 /bin/true', "probe", cli]
 
 
 def test_preflight_passes_on_a_ready_host_and_bounds_every_subprocess(monkeypatch, tmp_path):
     run = _Run()
     pf = _preflight(monkeypatch, tmp_path, run=run)
     assert pf.ok is True and pf.reason is None and pf.cli_version == "2.1.319"
-    assert [c.name for c in pf.checks] == ["bwrap", "bwrap_version", "socat", "bwrap_probe",
-                                           "seccomp_helper", "proxy_socket_dir", "gh",
+    assert [c.name for c in pf.checks] == ["bwrap", "bwrap_version", "bwrap_copy", "socat",
+                                           "bwrap_probe", "seccomp_helper",
+                                           "proxy_socket_dir", "sandbox_tmp_parent", "gh",
                                            "cli_version"]
     probe = ["/usr/bin/bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--unshare-net", "true"]
     assert (probe, sb.PROBE_TIMEOUT_S) in run.calls
+    assert (_helper_argv("/usr/bin/bwrap"), sb.PROBE_TIMEOUT_S) in run.calls
     assert all(t == sb.PROBE_TIMEOUT_S for _, t in run.calls)
     wire = pf.to_wire()
-    assert wire["ok"] is True and wire["diagnostics"] == {"k": "1"}
+    assert wire["ok"] is True and wire["diagnostics"] == {"k": "1", "home_escapes": "0"}
     assert wire["checkedAt"].startswith("1970-01-01T00:00:05")
 
 
@@ -288,14 +335,201 @@ def test_preflight_is_cached_per_host_and_refreshed_on_demand(monkeypatch):
 
 def test_session_env_gives_gh_a_file_backed_config_only_when_there_is_one(monkeypatch,
                                                                           tmp_path):
+    monkeypatch.setenv("GH_CONFIG_DIR", _gh_dir(tmp_path, "ambient", False))
     monkeypatch.setenv("VIBERPIT_GH_CONFIG_DIR", _gh_dir(tmp_path, "a", True))
     env = sb.session_env()
-    assert env == {"GH_NO_UPDATE_NOTIFIER": "1",
-                   "GH_CONFIG_DIR": str(tmp_path / "a")}
+    assert env["GH_NO_UPDATE_NOTIFIER"] == "1"
+    assert env["GH_CONFIG_DIR"] == str(tmp_path / "a")
     monkeypatch.setenv("VIBERPIT_GH_CONFIG_DIR", _gh_dir(tmp_path, "b", False))
-    assert sb.session_env() == {"GH_NO_UPDATE_NOTIFIER": "1"}
+    assert "GH_CONFIG_DIR" not in sb.session_env()
     monkeypatch.delenv("VIBERPIT_GH_CONFIG_DIR")
-    assert sb.session_env() == {"GH_NO_UPDATE_NOTIFIER": "1"}
+    assert "GH_CONFIG_DIR" not in sb.session_env()
+
+
+# ── #3367: rocky push — gh as the git credential helper, via git's env config ──
+
+
+def _fake_gh(tmp_path) -> str:
+    bindir = tmp_path / "ghbin"
+    bindir.mkdir()
+    gh = bindir / "gh"
+    gh.write_text("#!/bin/sh\nexit 0\n")
+    gh.chmod(0o755)
+    return str(bindir)
+
+
+def test_sandboxed_git_uses_gh_as_its_credential_helper_and_never_a_token(monkeypatch,
+                                                                          tmp_path):
+    """Plan §4.2: reset ``credential.helper`` (rocky's global ``store`` holds a token
+    under the hidden home), then gh's helper for github.com. Verified on rocky."""
+    bindir = _fake_gh(tmp_path)
+    monkeypatch.setenv("PATH", f"{bindir}:/usr/bin:/bin")
+    monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
+    monkeypatch.setenv("VIBERPIT_GH_CONFIG_DIR", _gh_dir(tmp_path, "vp", True))
+    env = sb.session_env()
+    assert {k: v for k, v in env.items() if k.startswith("GIT_CONFIG_")} == {
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "",
+        "GIT_CONFIG_KEY_1": "credential.https://github.com.helper",
+        "GIT_CONFIG_VALUE_1": f"!{bindir}/gh auth git-credential",
+    }
+    assert not any("gho_" in v for v in env.values()), "never a token in the env"
+
+
+def test_the_gh_helper_falls_back_to_a_file_backed_ambient_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", f"{_fake_gh(tmp_path)}:/usr/bin:/bin")
+    monkeypatch.delenv("VIBERPIT_GH_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("GH_CONFIG_DIR", _gh_dir(tmp_path, "ambient", True))
+    assert sb.session_env()["GIT_CONFIG_COUNT"] == "2"
+
+
+@pytest.mark.parametrize("why", ["keyring-only", "no gh"])
+def test_the_gh_helper_is_omitted_when_gh_cannot_authenticate(why, monkeypatch, tmp_path):
+    bindir = _fake_gh(tmp_path) if why == "keyring-only" else str(tmp_path / "empty")
+    monkeypatch.setenv("PATH", f"{bindir}:/nonexistent")
+    monkeypatch.setenv("VIBERPIT_GH_CONFIG_DIR", _gh_dir(tmp_path, "vp", why != "keyring-only"))
+    monkeypatch.setenv("GH_CONFIG_DIR", _gh_dir(tmp_path, "ambient", False))
+    monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
+    assert not [k for k in sb.session_env() if k.startswith("GIT_CONFIG_")]
+
+
+def test_the_gh_helper_appends_to_an_inherited_git_config_env(monkeypatch, tmp_path):
+    bindir = _fake_gh(tmp_path)
+    monkeypatch.setenv("PATH", f"{bindir}:/usr/bin:/bin")
+    monkeypatch.setenv("VIBERPIT_GH_CONFIG_DIR", _gh_dir(tmp_path, "vp", True))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "safe.directory")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "*")
+    env = sb.session_env()
+    assert env["GIT_CONFIG_COUNT"] == "3"
+    assert "GIT_CONFIG_KEY_0" not in env, "the inherited entry is kept, not clobbered"
+    assert env["GIT_CONFIG_KEY_1"] == "credential.helper" and env["GIT_CONFIG_VALUE_1"] == ""
+    assert env["GIT_CONFIG_KEY_2"] == "credential.https://github.com.helper"
+
+
+# ── #3367 F6: home symlinks that leave home; the sandboxed PATH ──────────────
+
+
+def _symlinked_home(tmp_path, monkeypatch):
+    """A home shaped like dobby's: ``.local``/``.docker`` symlinked out to another disk,
+    plus a dangling link, a link inside home and a link to a system dir."""
+    home = tmp_path / "home"
+    home.mkdir()
+    ext = tmp_path / "ssd" / "cache"
+    (ext / ".local" / "bin").mkdir(parents=True)
+    (ext / ".local" / "share" / "uv").mkdir(parents=True)
+    (ext / ".docker").mkdir(parents=True)
+    (ext / ".docker" / "config.json").write_text("{}")
+    os.symlink(ext / ".local", home / ".local")
+    os.symlink(ext / ".docker", home / ".docker")
+    os.symlink(tmp_path / "gone", home / ".dangling")
+    (home / "real").mkdir()
+    os.symlink(home / "real", home / ".inside")
+    os.symlink("/usr", home / "usr-link")
+    monkeypatch.setenv("HOME", str(home))
+    return home, ext
+
+
+def test_every_home_symlink_that_leaves_home_is_read_denied_by_its_real_path(monkeypatch,
+                                                                             tmp_path):
+    """Plan §3: the home deny is lexical, so ``~/.docker -> /mnt/.../.docker`` left
+    ``config.json`` readable inside the sandbox. Deny each target that leaves home;
+    dangling links, links inside home and system dirs are not targets."""
+    home, ext = _symlinked_home(tmp_path, monkeypatch)
+    assert sb.home_escapes() == sorted([str(ext / ".docker"), str(ext / ".local")])
+    deny, _allow = sb.read_policy(None, None)
+    assert str(ext / ".docker") in deny and str(ext / ".local") in deny
+    assert "/usr" not in deny and str(home / "real") not in deny
+
+
+def test_a_root_owned_closed_symlink_target_is_not_hidden(monkeypatch, tmp_path):
+    """Fix round 1: ``~/x -> /opt/<tool>`` or a root-installed ``/usr/local/<x>`` is
+    system software any local user can read, not home data moved off home; hiding it
+    only breaks toolchains. A user-owned target (dobby's /mnt/ssk-ssd/...) still is."""
+    home, ext = _symlinked_home(tmp_path, monkeypatch)
+    # A real root-owned, closed, world-readable dir. Not every host has one at a fixed
+    # path (GitHub's runner image ships /usr/share as 0777), so pick the first that
+    # qualifies rather than asserting the host's layout.
+    def qualifies(p: str) -> bool:
+        try:
+            st = os.stat(p)
+        except OSError:
+            return False
+        return (st.st_uid == 0 and not st.st_mode & 0o022
+                and st.st_mode & 0o005 == 0o005)
+    root_owned = next((p for p in ("/usr/share", "/usr/lib", "/usr/bin", "/etc", "/usr")
+                       if qualifies(p)), None)
+    if root_owned is None:
+        pytest.skip("no root-owned, closed, world-readable directory on this host")
+    os.symlink(root_owned, home / "share-link")
+    escapes = sb.home_escapes()
+    assert root_owned not in escapes
+    assert escapes == sorted([str(ext / ".docker"), str(ext / ".local")])
+
+
+@pytest.mark.parametrize("target,want_hidden,shape", [
+    ("/etc/passwd", False, (0o644, False)),    # root, world-readable file: exempt
+    ("/etc/shadow", True, (0o640, False)),     # root:shadow 0640: group-readable only
+    ("/root", True, (0o700, True)),            # root dir closed to others
+])
+def test_only_a_world_readable_root_owned_target_is_exempt(target, want_hidden, shape,
+                                                           monkeypatch, tmp_path):
+    """Re-review N1: root-owned and closed to writers is not enough — a root-owned
+    target readable only by a group (``root:tony 0640``) or closed to others may hold
+    user-only secrets. A file must be ``o+r``, a directory ``o+rx``."""
+    import stat as st_mod
+    try:
+        st = os.stat(target)
+    except OSError:
+        pytest.skip(f"{target} is not here")
+    mode, is_dir = shape
+    if (st.st_uid != 0 or st_mod.S_IMODE(st.st_mode) & 0o777 != mode
+            or st_mod.S_ISDIR(st.st_mode) != is_dir):
+        pytest.skip(f"{target} is not {oct(mode)} root on this host")
+    home, _ext = _symlinked_home(tmp_path, monkeypatch)
+    os.symlink(target, home / "link")
+    assert (target in sb.home_escapes()) is want_hidden
+
+
+def test_toolchain_reads_behind_a_home_symlink_are_also_re_allowed_by_real_path(
+        monkeypatch, tmp_path):
+    home, ext = _symlinked_home(tmp_path, monkeypatch)
+    _deny, allow = sb.read_policy(None, None)
+    for rel in (".local/bin", ".local/share/uv"):
+        assert str(home / rel) in allow, "the lexical entry stays (rocky has no symlink)"
+        assert str(ext / rel) in allow, "the real path is restored inside its deny"
+    # A toolchain entry that does not exist, or does not leave home, has no real twin.
+    assert not [a for a in allow if a.startswith(str(ext)) and ".cargo" in a]
+
+
+def test_the_check_requires_the_escape_denials_and_real_re_allows_exactly(monkeypatch,
+                                                                          tmp_path):
+    _home, ext = _symlinked_home(tmp_path, monkeypatch)
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    deny, allow = sb.read_policy(str(cfg), None)
+    good = _dialog(restrictions__fs_deny_read=deny, restrictions__fs_allow_read=allow)
+    assert sb.check_dialog(good, config_dir=str(cfg)).ok is True
+    leak = _dialog(restrictions__fs_deny_read=[d for d in deny if d != str(ext / ".docker")],
+                   restrictions__fs_allow_read=allow)
+    assert "not read-denied" in sb.check_dialog(leak, config_dir=str(cfg)).reason
+    short = _dialog(restrictions__fs_deny_read=deny,
+                    restrictions__fs_allow_read=[a for a in allow
+                                                 if a != str(ext / ".local" / "bin")])
+    assert "re-allows differ" in sb.check_dialog(short, config_dir=str(cfg)).reason
+
+
+def test_the_sandboxed_path_uses_real_paths_for_entries_behind_home_symlinks(monkeypatch,
+                                                                             tmp_path):
+    home, ext = _symlinked_home(tmp_path, monkeypatch)
+    (home / ".cargo" / "bin").mkdir(parents=True)
+    monkeypatch.setenv("PATH", f"/usr/bin:{home}/.local/bin:/bin")
+    path = sb.sandbox_path().split(":")
+    assert path == ["/usr/bin", str(ext / ".local" / "bin"), "/bin",
+                    str(home / ".cargo" / "bin")]
+    env = sb.session_env()
+    assert env["PATH"] == sb.sandbox_path()
+    assert sb.spawn_settings_overlay(str(tmp_path), None)["env"]["PATH"] == sb.sandbox_path()
 
 
 # ── capability, Codex, kill switch (Review Focus 5) ──────────────────────────
@@ -407,14 +641,19 @@ class _Client(FakeSDKClient):
         return await super().__aexit__(*exc)
 
 
-def _echo(reply: Any, cwd: str | None, config_dir: str | None) -> Any:
+def _echo(reply: Any, cwd: str | None, config_dir: str | None,
+          sock_dir: str | None = None, sent: dict | None = None) -> Any:
     """A CLI that applied the block reports its lists back: fill the restriction lists a
-    scripted reply left at their empty defaults with what this spawn's block sends."""
+    scripted reply left at their empty defaults with what this spawn's block sends
+    (*sent*, the spawn's ``filesystem`` block, when the caller has it)."""
     if not isinstance(reply, dict) or not isinstance(reply.get("restrictions"), dict):
         return reply
     out = json.loads(json.dumps(reply))
     r = out["restrictions"]
-    deny_read, allow_read = sb.read_policy(config_dir, cwd)
+    if sent is not None and "denyRead" in sent:
+        deny_read, allow_read = sent["denyRead"], sent["allowRead"]
+    else:
+        deny_read, allow_read = sb.read_policy(config_dir, cwd, sock_dir)
     for key, want in (("fs_deny_read", deny_read), ("fs_allow_read", allow_read),
                       ("fs_deny_write", sb.protected_git_paths(cwd))):
         if r.get(key) == []:
@@ -425,7 +664,8 @@ def _echo(reply: Any, cwd: str | None, config_dir: str | None) -> Any:
 def _sandboxed_driver(control: FakeControl | None, *, enter_error=None,
                       stderr_lines=(), sandbox=True):
     if control is not None:
-        control.replies = [_echo(r, "/tmp/r", "/tmp/cfg") for r in control.replies]
+        sock = sb.session_tmp(SID).sock
+        control.replies = [_echo(r, "/tmp/r", "/tmp/cfg", sock) for r in control.replies]
     calls: list[dict] = []
     clients: list[_Client] = []
     states: list[tuple[str, str | None]] = []
@@ -559,8 +799,9 @@ class _World:
                 options_overlay=None, flag_settings=None, extra_env=None, stderr=None):
         self.spawns.append({"flag_settings": flag_settings, "extra_env": extra_env,
                             "stderr": stderr, "resume": resume})
+        sent = ((flag_settings or {}).get("sandbox") or {}).get("filesystem")
         reply = _echo(self.dialogs.pop(0) if len(self.dialogs) > 1 else self.dialogs[0],
-                      cwd, cfg)
+                      cwd, cfg, sent=sent)
         control = FakeControl(reply)
         self.controls.append(control)
         return _Client(control)
@@ -666,7 +907,8 @@ def test_a_sandboxed_spawn_sends_the_block_and_the_env_and_is_verified(orch_env,
     want = dict(SPIKE_BLOCK["sandbox"])
     want_fs = want.pop("filesystem")
     assert sent == want
-    deny_read, allow_read = sb.read_policy(str(orch_env), str(tmp_path / "wt"))
+    deny_read, allow_read = sb.read_policy(str(orch_env), str(tmp_path / "wt"),
+                                           sb.session_tmp(SID).sock)
     assert fs == {**want_fs, "denyRead": deny_read, "allowRead": allow_read}
     assert spawn["extra_env"]["GH_NO_UPDATE_NOTIFIER"] == "1"
     assert spawn["extra_env"]["GH_CONFIG_DIR"] == str(tmp_path / "vp")
@@ -2499,117 +2741,276 @@ def test_each_webfetch_refusal_names_its_reason(url, why, tmp_path):
     assert reason and why in reason
 
 
-# ══ fix round 5: a per-session temp root ══════════════════════════════════════
+# ══ #3367 F5: the per-session temp root under /var/tmp/vpsbx ══════════════════
 
 
-def test_the_session_temp_root_is_private_beside_the_shared_one(tmp_path, monkeypatch):
+def test_the_tmp_parent_defaults_to_var_tmp_and_fits_the_clis_limits(monkeypatch):
+    """Plan §2.2: ``/var/tmp/vpsbx/<12>/t/claude-<uid>`` is 41 bytes for uid 1000 (≤ 44,
+    so the shell's TMPDIR is the session's own write root) and the longest socket path
+    is 64 bytes (≤ 107, ``sun_path``)."""
+    monkeypatch.delenv("VIBERPIT_SANDBOX_TMP_PARENT")
+    assert sb.sandbox_tmp_parent() == os.path.join(os.path.realpath("/var/tmp"), "vpsbx")
+    assert sb.tmp_length_problem("/var/tmp/vpsbx") is None
+    assert len("/var/tmp/vpsbx/aaaaaaaaaaaa/t/claude-1000") == 41
+    assert len(f"/var/tmp/vpsbx/aaaaaaaaaaaa/s/claude-socks-{'0' * 16}.sock") == 64
+    monkeypatch.setenv("VIBERPIT_SANDBOX_TMP_PARENT", "relative/dir")
+    with pytest.raises(ValueError):
+        sb.sandbox_tmp_parent()
+
+
+def test_the_session_temp_root_is_keyed_private_and_split_into_t_and_s(_short_tmp_parent):
+    import hashlib
     import stat
-    from server.sessions import claude_sdk_factory as csf
-    monkeypatch.setenv("VIBERPIT_SESSION_TMPDIR", str(tmp_path / "cache" / "claude-tmp"))
-    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
-    path = sb.session_tmp_path(SID)
-    assert path == str(tmp_path / "cache" / "viberpit-sbx" / SID)
-    assert os.path.dirname(os.path.dirname(path)) == os.path.dirname(csf.session_tmpdir_path())
-    assert sb.prepare_session_tmp(SID) == path
-    assert stat.S_IMODE(os.stat(path).st_mode) == 0o700
-    os.chmod(path, 0o755)
-    sb.prepare_session_tmp(SID)                    # re-made private
-    assert stat.S_IMODE(os.stat(path).st_mode) == 0o700
+    key = hashlib.sha256(SID.encode()).hexdigest()[:12]
+    assert sb.session_tmp_key(SID) == key
+    want = sb.SessionTmp(root=os.path.join(_short_tmp_parent, key),
+                         tmp=os.path.join(_short_tmp_parent, key, "t"),
+                         sock=os.path.join(_short_tmp_parent, key, "s"))
+    assert sb.session_tmp(SID) == want
+    assert sb.prepare_session_tmp(SID) == want
+    for d in (_short_tmp_parent, want.root, want.tmp, want.sock):
+        st = os.lstat(d)
+        assert stat.S_ISDIR(st.st_mode) and stat.S_IMODE(st.st_mode) == 0o700, d
+    with open(os.path.join(want.root, ".sid")) as fh:
+        assert fh.read() == SID
+    assert sb.prepare_session_tmp(SID) == want, "a respawn reuses its own root"
     sb.remove_session_tmp(SID)
-    assert not os.path.exists(path)
+    assert not os.path.exists(want.root) and os.path.isdir(_short_tmp_parent)
     for bad in ("", "../x", "a/b", ".."):
         with pytest.raises(ValueError):
-            sb.session_tmp_path(bad)
+            sb.session_tmp_key(bad)
 
 
-def test_a_planted_symlink_is_never_used_as_the_temp_root(tmp_path, monkeypatch):
-    monkeypatch.setenv("VIBERPIT_SESSION_TMPDIR", str(tmp_path / "cache" / "claude-tmp"))
-    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
-    path = sb.session_tmp_path(SID)
-    os.makedirs(os.path.dirname(path))
-    (tmp_path / "elsewhere").mkdir()
-    os.symlink(tmp_path / "elsewhere", path)
+@pytest.mark.parametrize("plant", ["parent-symlink", "parent-loose", "parent-unmarked",
+                                   "root-symlink",
+                                   "root-loose", "sock-symlink", "sid-collision"])
+def test_a_planted_or_loose_temp_dir_fails_closed(plant, tmp_path, monkeypatch,
+                                                  _short_tmp_parent):
+    import shutil
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    tmp = sb.session_tmp(SID)
+    if plant.startswith("parent"):
+        shutil.rmtree(_short_tmp_parent)
+        if plant == "parent-symlink":
+            os.symlink(elsewhere, _short_tmp_parent)
+        elif plant == "parent-unmarked":
+            os.mkdir(_short_tmp_parent, 0o700)       # private and ours, but not made by us
+        else:
+            os.mkdir(_short_tmp_parent, 0o700)
+            os.chmod(_short_tmp_parent, 0o755)
+    elif plant == "root-symlink":
+        os.symlink(elsewhere, tmp.root)
+    elif plant == "root-loose":
+        os.mkdir(tmp.root)
+        os.chmod(tmp.root, 0o750)
+    elif plant == "sock-symlink":
+        os.mkdir(tmp.root, 0o700)
+        os.symlink(elsewhere, tmp.sock)
+    else:
+        os.mkdir(tmp.root, 0o700)
+        (tmp_path / "x").write_text("another-session")
+        with open(os.path.join(tmp.root, ".sid"), "w") as fh:
+            fh.write("another-session")
     with pytest.raises(sb.SandboxError) as ei:
         sb.prepare_session_tmp(SID)
     assert ei.value.code == sb.SANDBOX_START_FAILED
-    sb.remove_session_tmp(SID)                     # unlinks the link, not its target
-    assert not os.path.lexists(path) and (tmp_path / "elsewhere").is_dir()
+    assert list(elsewhere.iterdir()) == [], "nothing was written through a planted link"
+    if plant == "root-symlink":
+        sb.remove_session_tmp(SID)                 # unlinks the link, not its target
+        assert not os.path.lexists(tmp.root) and elsewhere.is_dir()
+    if plant == "sid-collision":
+        sb.remove_session_tmp(SID)                 # never another session's dir
+        assert os.path.isdir(tmp.root)
+
+
+def test_a_parent_too_long_for_the_clis_limits_refuses_to_start(monkeypatch, tmp_path):
+    """The two length guards (plan §2.4): the CLI falls back to the SHARED os.tmpdir()
+    past 44 bytes, and a unix socket path cannot exceed 107."""
+    long_parent = "/tmp/" + "p" * 30
+    monkeypatch.setenv("VIBERPIT_SANDBOX_TMP_PARENT", long_parent)
+    assert "44" in sb.tmp_length_problem(long_parent)
+    with pytest.raises(sb.SandboxError) as ei:
+        sb.prepare_session_tmp(SID)
+    assert ei.value.code == sb.SANDBOX_START_FAILED and long_parent in ei.value.reason
+    assert not os.path.exists(long_parent), "checked before anything is created"
+    monkeypatch.setattr(sb, "_CLI_CHILD_TMPDIR_MAX", 10_000)
+    assert sb.tmp_length_problem(long_parent) is None
+    longer = "/tmp/" + "q" * 60
+    assert "107" in sb.tmp_length_problem(longer)
+
+
+def test_the_sweep_removes_every_temp_root_but_the_live_ones(_short_tmp_parent, tmp_path):
+    live = sb.prepare_session_tmp(SID)
+    other = "5a4db0c5-0000-0000-0000-000000000002"
+    dead = sb.prepare_session_tmp(other)
+    (tmp_path / "target").mkdir()
+    link = os.path.join(_short_tmp_parent, "planted")
+    os.symlink(tmp_path / "target", link)
+    # Fix round 1: anything not shaped like a leaked root is left alone.
+    keep = [os.path.join(_short_tmp_parent, "nosid0000000"),     # not 12 hex
+            os.path.join(_short_tmp_parent, "abcdef012345"),     # 12 hex, no .sid
+            os.path.join(_short_tmp_parent, "notes.txt")]
+    os.mkdir(keep[0], 0o700)
+    os.mkdir(keep[1], 0o700)
+    open(keep[2], "w").close()
+    assert sb.sweep_session_tmp({SID}) == 2
+    assert os.path.isdir(live.root)
+    assert not os.path.exists(dead.root) and not os.path.lexists(link)
+    assert (tmp_path / "target").is_dir(), "the symlink was unlinked, not followed"
+    assert all(os.path.lexists(k) for k in keep)
+    assert os.path.isfile(os.path.join(_short_tmp_parent, sb.TMP_PARENT_MARKER))
+    sb.remove_session_tmp(SID)
+
+
+@pytest.mark.parametrize("shape", ["no-marker", "under-home", "too-long"])
+def test_the_sweep_deletes_nothing_in_a_parent_viberpit_did_not_make(shape, monkeypatch,
+                                                                     tmp_path):
+    """Fix round 1 [major]: VIBERPIT_SANDBOX_TMP_PARENT pointed at an existing 0700 dir
+    (someone's data, shaped like our roots) must not be emptied at daemon start."""
+    import tempfile
+    if shape == "under-home":
+        parent = os.path.join(os.path.expanduser("~"), "v")
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+        open(os.path.join(parent, sb.TMP_PARENT_MARKER), "w").close()
+    elif shape == "too-long":
+        parent = str(tmp_path / ("p" * 40))
+        os.mkdir(parent, 0o700)
+        open(os.path.join(parent, sb.TMP_PARENT_MARKER), "w").close()
+    else:
+        parent = tempfile.mkdtemp(prefix="v", dir="/tmp")       # 0700, ours, no marker
+    foreign = os.path.join(parent, "0123456789ab")
+    os.mkdir(foreign, 0o700)
+    with open(os.path.join(foreign, ".sid"), "w") as fh:
+        fh.write("not-a-session")
+    (tmp_path / "t").mkdir()
+    os.symlink(tmp_path / "t", os.path.join(parent, "link"))
+    open(os.path.join(parent, "data.txt"), "w").close()
+    before = sorted(os.listdir(parent))
+    monkeypatch.setenv("VIBERPIT_SANDBOX_TMP_PARENT", parent)
+    assert sb.sweep_session_tmp(set()) == 0
+    assert sorted(os.listdir(parent)) == before
+    assert os.path.isfile(os.path.join(foreign, ".sid"))
+
+
+def test_the_sweep_of_a_missing_parent_does_nothing(monkeypatch, tmp_path):
+    monkeypatch.setenv("VIBERPIT_SANDBOX_TMP_PARENT", str(tmp_path / "never"))
+    assert sb.sweep_session_tmp(set()) == 0
+    assert not (tmp_path / "never").exists()
+
+
+def test_the_read_policy_hides_every_session_and_re_allows_only_its_own_socket_dir(
+        _short_tmp_parent):
+    """Plan §2.2/§2.3 (verified with a bwrap stand-in): deny the parent, re-allow only
+    the session's own ``s/`` — a sibling of its write root, never an ancestor (F1)."""
+    tmp = sb.prepare_session_tmp(SID)
+    deny, allow = sb.read_policy(None, None, tmp.sock)
+    assert os.path.realpath(_short_tmp_parent) in deny
+    assert os.path.realpath(tmp.sock) in allow
+    assert not [a for a in allow if a.startswith(os.path.realpath(_short_tmp_parent))
+                and a != os.path.realpath(tmp.sock)]
+    cli_tmp = os.path.join(tmp.tmp, f"claude-{os.getuid()}")
+    assert not any(os.path.commonpath([cli_tmp, a]) == a for a in allow)
+    assert os.path.realpath(tmp.sock) not in sb.read_policy(None, None)[1]
+    sb.remove_session_tmp(SID)
+
+
+def test_the_check_requires_the_socket_re_allow_exactly(_short_tmp_parent, tmp_path):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    sock = sb.session_tmp(SID).sock
+    deny, allow = sb.read_policy(str(cfg), None, sock)
+    kw = {"config_dir": str(cfg), "sock_dir": sock}
+    good = _dialog(restrictions__fs_deny_read=deny, restrictions__fs_allow_read=allow)
+    assert sb.check_dialog(good, **kw).ok is True
+    missing = _dialog(restrictions__fs_deny_read=deny,
+                      restrictions__fs_allow_read=[a for a in allow if a != sock])
+    assert "re-allows differ" in sb.check_dialog(missing, **kw).reason
+    other = sb.session_tmp("5a4db0c5-0000-0000-0000-000000000002").sock
+    wide = _dialog(restrictions__fs_deny_read=deny,
+                   restrictions__fs_allow_read=[*allow, other])
+    assert "re-allows differ" in sb.check_dialog(wide, **kw).reason
+    no_parent = _dialog(restrictions__fs_deny_read=[d for d in deny
+                                                    if d != _short_tmp_parent],
+                        restrictions__fs_allow_read=allow)
+    assert "not read-denied" in sb.check_dialog(no_parent, **kw).reason
 
 
 def test_the_spawn_uses_its_own_temp_root_and_never_re_allows_one_read_only(orch_env, tmp_path,
                                                                             monkeypatch):
-    monkeypatch.setenv("VIBERPIT_SESSION_TMPDIR", str(tmp_path / "cache" / "claude-tmp"))
-    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
     world = _World()
 
     async def go():
         orch = await _orch(tmp_path, world)
         driver = await orch.ensure_driver(SID)
-        own = sb.session_tmp_path(SID)
-        existed = os.path.isdir(own)
+        own = sb.session_tmp(SID)
+        existed = all(os.path.isdir(p) for p in (own.tmp, own.sock))
         await orch.close_session(SID)
-        gone = not os.path.exists(own)
+        gone = not os.path.exists(own.root)
         await orch.stop()
         return own, existed, gone, driver
     own, existed, gone, driver = asyncio.run(go())
     spawn = world.spawns[0]
-    assert spawn["extra_env"]["CLAUDE_CODE_TMPDIR"] == own and existed
-    # The flag layer pins the CLI's TMPDIR (os.tmpdir()) to the session's root, so its
-    # child-process tmpdir is <root>/claude-<uid> and not the shared fallback (below).
-    assert spawn["flag_settings"]["env"] == {"TMPDIR": own}
+    assert existed
+    # t/ is the CLI's temp root (its write root t/claude-<uid>); s/ is its os.tmpdir(),
+    # where the proxy sockets go: set in the process env AND the flag layer.
+    assert spawn["extra_env"]["CLAUDE_CODE_TMPDIR"] == own.tmp
+    assert spawn["extra_env"]["TMPDIR"] == own.sock
+    assert spawn["flag_settings"]["env"] == {"TMPDIR": own.sock, "PATH": sb.sandbox_path()}
+    assert spawn["extra_env"]["PATH"] == sb.sandbox_path()
     allow = spawn["flag_settings"]["sandbox"]["filesystem"]["allowRead"]
-    # Neither the session's root nor the shared one is re-allowed: the CLI restores its
-    # writable <root>/claude-<uid> itself, and an ro re-allow above it would cover it.
-    shared = os.path.realpath(str(tmp_path / "cache" / "claude-tmp"))
-    for root in (os.path.realpath(own), shared):
-        cli_tmp = os.path.join(root, f"claude-{os.getuid()}")
-        assert not any(os.path.commonpath([cli_tmp, a]) == a for a in allow), root
+    deny = spawn["flag_settings"]["sandbox"]["filesystem"]["denyRead"]
+    assert os.path.realpath(own.sock) in allow
+    assert sb.sandbox_tmp_parent() in deny
+    cli_tmp = os.path.join(os.path.realpath(own.tmp), f"claude-{os.getuid()}")
+    assert not any(os.path.commonpath([cli_tmp, a]) == a for a in allow)
     assert gone, "closing the session removes its temp root"
 
 
-def test_the_overlay_pins_the_clis_tmpdir_to_the_sessions_root(tmp_path):
-    """2.1.319's child-process tmpdir (``j$e()`` @282251389) is
-    ``<CLAUDE_CODE_TMPDIR>/claude-<uid>`` only when that path is at most 44 bytes, else
-    ``<os.tmpdir()>/claude-<uid>``; the per-session root is always longer, and the shared
-    account settings point TMPDIR at a host-wide dir — so the live probe (2026-11-07) saw
-    the sandboxed shell's TMPDIR be the SHARED dir, writable and listing other sessions'
-    files. ``env.TMPDIR`` in the flag layer (above the user layer) makes the fallback the
-    session's own root."""
-    own = str(tmp_path / "sbx" / SID)
-    assert sb.spawn_settings_overlay(str(tmp_path), None, own)["env"] == {"TMPDIR": own}
-    assert "env" not in sb.spawn_settings_overlay(str(tmp_path), None)
+def test_the_overlay_pins_the_clis_tmpdir_to_the_sessions_socket_dir(tmp_path):
+    """``env.TMPDIR`` in the flag layer (above the user layer's shared TMPDIR) is the
+    CLI's ``os.tmpdir()``: where its proxy sockets and ``claude-empty-*`` go."""
+    tmp = sb.session_tmp(SID)
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    overlay = sb.spawn_settings_overlay(str(tmp_path), str(cfg), tmp)
+    assert overlay["env"]["TMPDIR"] == tmp.sock
+    assert os.path.realpath(tmp.sock) in overlay["sandbox"]["filesystem"]["allowRead"]
+    assert "TMPDIR" not in sb.spawn_settings_overlay(str(tmp_path), None)["env"]
 
 
 def test_the_check_fails_when_a_temp_root_is_re_allowed(tmp_path):
     cfg = tmp_path / "cfg"
     cfg.mkdir()
-    own = str(tmp_path / "sbx" / SID)
-    deny, allow = sb.read_policy(str(cfg), None)
+    own = sb.session_tmp(SID)
+    deny, allow = sb.read_policy(str(cfg), None, own.sock)
     good = _dialog(restrictions__fs_deny_read=deny, restrictions__fs_allow_read=allow)
-    assert sb.check_dialog(good, config_dir=str(cfg)).ok is True
-    wrong = _dialog(restrictions__fs_deny_read=deny, restrictions__fs_allow_read=[*allow, own])
-    assert "re-allows differ" in sb.check_dialog(wrong, config_dir=str(cfg)).reason
+    kw = {"config_dir": str(cfg), "sock_dir": own.sock}
+    assert sb.check_dialog(good, **kw).ok is True
+    for extra in (own.tmp, own.root):
+        wrong = _dialog(restrictions__fs_deny_read=deny,
+                        restrictions__fs_allow_read=[*allow, extra])
+        assert "re-allows differ" in sb.check_dialog(wrong, **kw).reason
 
 
 @pytest.mark.asyncio
 async def test_the_driver_confines_reads_to_its_own_temp_root(tmp_path, monkeypatch):
     from claude_agent_sdk import PermissionResultDeny
-    monkeypatch.setenv("VIBERPIT_SESSION_TMPDIR", str(tmp_path / "cache" / "claude-tmp"))
-    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
     clone, wt, _tmp = _tree(tmp_path)
     d = ClaudeAgentDriver(SID, "acct1", str(wt), "/tmp/cfg", mode="full-auto",
                           sdk_factory=lambda *a, **k: _Client(FakeControl()),
                           registry=PermissionRegistry(), identity="u", sandbox=True)
     d._sandbox_tmp = sb.prepare_session_tmp(SID)
-    (tmp_path / "cache" / "claude-tmp").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "cache" / "claude-tmp" / "other.txt").write_text("x")
-    ok = await asyncio.wait_for(d._can_use_tool("Read", {"file_path": f"{d._sandbox_tmp}/o"}),
-                                5)
+    other = sb.prepare_session_tmp("5a4db0c5-0000-0000-0000-000000000002")
+    (open(os.path.join(other.tmp, "other.txt"), "w")).close()
+    ok = await asyncio.wait_for(
+        d._can_use_tool("Read", {"file_path": f"{d._sandbox_tmp.tmp}/o"}), 5)
     assert not isinstance(ok, PermissionResultDeny)
-    other = await asyncio.wait_for(d._can_use_tool(
-        "Read", {"file_path": str(tmp_path / "cache" / "claude-tmp" / "other.txt")}), 5)
-    assert isinstance(other, PermissionResultDeny)
+    for path in (os.path.join(other.tmp, "other.txt"), f"{d._sandbox_tmp.sock}/x"):
+        res = await asyncio.wait_for(d._can_use_tool("Read", {"file_path": path}), 5)
+        assert isinstance(res, PermissionResultDeny), path
     sb.remove_session_tmp(SID)
+    sb.remove_session_tmp("5a4db0c5-0000-0000-0000-000000000002")
 
 
 # ══ shipped dark: the kill switch is off by default; the preflight sees F4 / F5 ═
@@ -2643,37 +3044,249 @@ def test_a_recorded_sandbox_row_is_held_under_the_default_switch(orch_env, tmp_p
     assert [world.sandboxed(i) for i in range(len(world.spawns))] == [False]
 
 
-def test_the_seccomp_helper_probe_reports_the_apparmor_blocker(monkeypatch, tmp_path):
+def test_the_seccomp_helper_probe_runs_the_clis_real_helper(monkeypatch, tmp_path):
+    """F4 (plan §1, §6 step 1): the CLI's embedded apply-seccomp helper, exec'd via
+    fd 3 exactly as the CLI composes it, through the bwrap the CLI will use. A failure
+    keeps the stable reason the toggle shows."""
     run = _Run(helper_rc=1)
     pf = _preflight(monkeypatch, tmp_path, run=run)
     assert pf.ok is False
     assert pf.reason == "Host AppArmor blocks the sandbox's seccomp helper (bwrap-userns-restrict)"
     assert pf.reason == sb.SECCOMP_HELPER_BLOCKED
-    helper = ["/usr/bin/bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
-              "--unshare-user", "--unshare-pid", "--cap-drop", "ALL", "/usr/bin/unshare",
-              "-U", "-r", "-p", "-m", "--fork", "--mount-proc", "true"]
-    assert (helper, sb.PROBE_TIMEOUT_S) in run.calls
+    assert (_helper_argv("/usr/bin/bwrap"), sb.PROBE_TIMEOUT_S) in run.calls
+    assert not [a for a, _ in run.calls if "unshare" in a[0]], "the stand-in is gone"
     (tmp_path / "again").mkdir()
     timed_out = _preflight(monkeypatch, tmp_path / "again", run=_Run(helper_rc=None))
     assert timed_out.reason == sb.SECCOMP_HELPER_BLOCKED
 
 
-def test_the_seccomp_helper_probe_fails_closed_without_unshare(monkeypatch, tmp_path):
-    pf = _preflight(monkeypatch, tmp_path,
-                    which={"bwrap": "/usr/bin/bwrap", "socat": "/usr/bin/socat"})
+@pytest.mark.parametrize("missing,why", [("claude", "the claude CLI could not be found"),
+                                         ("bash", "bash is not installed")])
+def test_the_seccomp_helper_probe_fails_closed_when_it_cannot_run(missing, why, monkeypatch,
+                                                                   tmp_path):
+    which = {"bwrap": "/usr/bin/bwrap", "socat": "/usr/bin/socat", "bash": "/usr/bin/bash"}
+    if missing == "bash":
+        which.pop("bash")
+    pf = _preflight(monkeypatch, tmp_path, which=which,
+                    claude_bin=None if missing == "claude" else CLI_BIN)
     assert pf.ok is False and pf.reason.startswith(sb.SECCOMP_HELPER_BLOCKED)
-    assert "unshare is not installed" in pf.reason
+    assert why in pf.reason
+
+
+def _exe(path) -> str:
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o750)
+    return str(path)
+
+
+def test_the_managed_bwrap_path_is_the_one_every_probe_runs(monkeypatch, tmp_path):
+    """``sandbox.bwrapPath`` is honored only from managed settings (2.1.319 schema
+    @282545730); the probes must exercise the binary the CLI will run."""
+    copy = _exe(tmp_path / "bwrap-copy")
+    run = _Run()
+    pf = _preflight(monkeypatch, tmp_path, run=run, managed=copy)
+    assert pf.ok is True
+    assert [c.detail for c in pf.checks if c.name == "bwrap"] == [copy]
+    assert ([copy, "--version"], sb.PROBE_TIMEOUT_S) in run.calls
+    assert (_helper_argv(copy), sb.PROBE_TIMEOUT_S) in run.calls
+    assert not [a for a, _ in run.calls if a[0] == "/usr/bin/bwrap"]
+    (tmp_path / "again").mkdir()
+    gone = _preflight(monkeypatch, tmp_path / "again", managed=str(tmp_path / "nope"))
+    assert gone.ok is False and "is not an executable file" in gone.reason
+
+
+def test_managed_settings_are_read_like_the_cli_reads_them(tmp_path):
+    d = tmp_path / "claude-code"
+    assert sb.managed_bwrap_path(str(d)) is None                   # no dir: stock bwrap
+    d.mkdir()
+    (d / "managed-settings.json").write_text(json.dumps(
+        {"sandbox": {"bwrapPath": "/usr/local/libexec/viberpit/bwrap"}}))
+    assert sb.managed_bwrap_path(str(d)) == "/usr/local/libexec/viberpit/bwrap"
+    (d / "managed-settings.d").mkdir()
+    (d / "managed-settings.d" / "10-x.json").write_text(json.dumps(
+        {"sandbox": {"bwrapPath": "/opt/bwrap"}}))
+    (d / "managed-settings.d" / "20-y.json").write_text("{not json")
+    assert sb.managed_bwrap_path(str(d)) == "/opt/bwrap", "drop-ins apply over the base"
+    (d / "managed-settings.json").write_text("[]")
+    (d / "managed-settings.d" / "10-x.json").write_text(json.dumps({"sandbox": {}}))
+    assert sb.managed_bwrap_path(str(d)) is None
+
+
+def _rooted(*paths, owner: int = 0, overrides: dict | None = None):
+    """An ``lstat`` that reports the real stat for *paths* and a root-owned 0755
+    directory for every ancestor of them — except the *overrides* (path -> (uid, mode,
+    kind)) — so the chain walk can be exercised under tmp_path."""
+    import stat as st_mod
+    real = {os.path.normpath(str(p)) for p in paths}
+    over = {os.path.normpath(k): v for k, v in (overrides or {}).items()}
+
+    def fake(path):
+        path = os.path.normpath(path)
+        if path in over:
+            uid, mode, kind = over[path]
+            return SimpleNamespace(st_uid=uid, st_mode=kind | mode)
+        if path in real:
+            r = os.lstat(path)
+            return SimpleNamespace(st_uid=owner if st_mod.S_ISREG(r.st_mode) else r.st_uid,
+                                   st_mode=r.st_mode)
+        return SimpleNamespace(st_uid=0, st_mode=st_mod.S_IFDIR | 0o755)
+    return fake
+
+
+def _stock_and_copy(tmp_path, monkeypatch, same=True):
+    stock = tmp_path / "stock-bwrap"
+    stock.write_bytes(b"bwrap 0.11.1")
+    copy = tmp_path / "copy-bwrap"
+    copy.write_bytes(b"bwrap 0.11.1" if same else b"bwrap 0.11.2")
+    os.utime(copy, ns=(1, 1))                  # install(1) gives the copy its own mtime
+    monkeypatch.setattr(sb, "STOCK_BWRAP", str(stock))
+    monkeypatch.setattr(sb, "_hash_cache", {})
+    return stock, copy
+
+
+def test_a_stale_copy_holds_a_respawn(tmp_path, monkeypatch):
+    """Re-review N3: a bubblewrap update the apt hook missed is caught at the next
+    spawn, not only when the cached preflight next runs."""
+    _stock, copy = _stock_and_copy(tmp_path, monkeypatch, same=False)
+    _managed(tmp_path, monkeypatch, str(copy))
+    monkeypatch.setattr(sb, "root_chain_problem", lambda *a, **k: None)
+    assert sb.bwrap_copy_spawn_problem() == sb.BWRAP_COPY_STALE
+    d, calls, _clients, states = _sandboxed_driver(FakeControl(GOOD_DIALOG))
+    with pytest.raises(sb.SandboxError) as ei:
+        asyncio.run(d.start())
+    assert ei.value.code == sb.SANDBOX_START_FAILED
+    assert ei.value.reason == "the sandbox's bwrap copy is stale; reinstall it"
+    assert calls == [] and states == [("failed", sb.BWRAP_COPY_STALE)]
+
+
+def test_the_spawn_staleness_check_is_cheap_and_hashes_once(tmp_path, monkeypatch):
+    """Size first; the same size and mtime is current with no read; otherwise the
+    sha256s, cached by stat identity so a respawn does not re-hash."""
+    stock, copy = _stock_and_copy(tmp_path, monkeypatch, same=True)
+    _managed(tmp_path, monkeypatch, str(copy))
+    monkeypatch.setattr(sb, "root_chain_problem", lambda *a, **k: None)
+    hashed: list[str] = []
+    real = sb._sha256
+    monkeypatch.setattr(sb, "_sha256", lambda p: hashed.append(p) or real(p))
+    assert sb.bwrap_copy_spawn_problem() is None
+    assert sb.bwrap_copy_spawn_problem() is None
+    assert sorted(hashed) == sorted([str(copy), str(stock)]), "hashed once, then cached"
+    hashed.clear()
+    st = os.stat(stock)
+    os.utime(copy, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert sb.bwrap_copy_spawn_problem() is None and hashed == [], "same size+mtime"
+    stock.write_bytes(b"bwrap 0.11.22")                # a different size: no hash needed
+    assert sb.bwrap_copy_spawn_problem() == sb.BWRAP_COPY_STALE and hashed == []
+    stock.write_bytes(b"bwrap 0.11.9")                 # same size, new bytes and mtime
+    assert sb.bwrap_copy_spawn_problem() == sb.BWRAP_COPY_STALE
+    assert str(stock) in hashed, "a rewrite changes the stat identity: re-hashed"
+
+
+def test_the_bwrap_copy_must_match_stock_bwrap_and_be_root_owned(tmp_path):
+    import stat as st_mod
+    stock = tmp_path / "stock"
+    stock.write_bytes(b"\x7fELF bwrap 0.11.1")
+    copy = tmp_path / "lib" / "viberpit" / "bwrap"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(stock.read_bytes())
+    copy.chmod(0o750)
+    kw = {"stock": str(stock)}
+    ok = sb.check_bwrap_copy(str(copy), lstat=_rooted(copy), **kw)
+    assert ok.ok is True and ok.detail == str(copy)
+    assert sb.check_bwrap_copy(None, **kw).ok is True, "no managed copy: the probe gates"
+    assert sb.check_bwrap_copy(str(stock), **kw).ok is True
+    # The file itself: owned by someone else, group-writable, or a symlink.
+    for bad in (_rooted(copy, owner=1000),
+                _rooted(copy, overrides={copy: (0, 0o770, st_mod.S_IFREG)}),
+                _rooted(copy, overrides={copy: (0, 0o777, st_mod.S_IFLNK)})):
+        check = sb.check_bwrap_copy(str(copy), lstat=bad, **kw)
+        assert check.ok is False and check.detail.startswith(sb.BWRAP_COPY_UNSAFE)
+    stock.write_bytes(b"\x7fELF bwrap 0.11.2 (security update)")
+    stale = sb.check_bwrap_copy(str(copy), lstat=_rooted(copy), **kw)
+    assert stale.ok is False and stale.detail == "the sandbox's bwrap copy is stale; reinstall it"
+
+
+@pytest.mark.parametrize("ancestor,uid,mode,kind", [
+    ("lib/viberpit", 1000, 0o755, "dir"),     # a user-owned dir right above it
+    ("lib", 1000, 0o755, "dir"),              # dobby: /usr/local is tony:tony 0755
+    ("lib", 0, 0o775, "dir"),                 # group-writable
+    ("", 0, 0o1777, "dir"),                   # world-writable, even sticky
+    ("lib", 0, 0o777, "link"),                # a symlinked ancestor
+])
+def test_every_ancestor_of_the_bwrap_copy_must_be_root_owned_and_closed(
+        ancestor, uid, mode, kind, tmp_path):
+    """Fix round 1 [major]: whoever can write ANY directory above the copy can rename
+    the tree away and plant their own bwrap at the managed path, which then runs under
+    the unrestricted profile — and the root apt hook writes into a dir they chose."""
+    import stat as st_mod
+    copy = tmp_path / "lib" / "viberpit" / "bwrap"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(b"bwrap")
+    copy.chmod(0o750)
+    target = os.path.normpath(os.path.join(str(tmp_path), ancestor))
+    ftype = st_mod.S_IFDIR if kind == "dir" else st_mod.S_IFLNK
+    fake = _rooted(copy, overrides={target: (uid, mode, ftype)})
+    problem = sb.root_chain_problem(str(copy), lstat=fake)
+    assert problem and problem.startswith(target)
+    assert sb.root_chain_problem(str(copy), lstat=_rooted(copy)) is None
+    check = sb.check_bwrap_copy(str(copy), stock=str(copy), lstat=fake)
+    assert check.ok is True, "the stock path itself is not a managed copy"
+
+
+def test_the_real_root_chain_check_passes_stock_bwrap_paths_and_refuses_tmp(tmp_path):
+    """Against the real filesystem: /etc/passwd sits in a root-owned chain on any
+    Linux host; a file under /tmp (1777) never does."""
+    assert sb.root_chain_problem("/etc/passwd") is None
+    f = tmp_path / "bwrap"
+    f.write_text("x")
+    assert sb.root_chain_problem(str(f)) is not None
+
+
+def _managed(tmp_path, monkeypatch, bwrap_path: str) -> None:
+    d = tmp_path / "managed"
+    d.mkdir(exist_ok=True)
+    (d / "managed-settings.json").write_text(json.dumps({"sandbox": {"bwrapPath": bwrap_path}}))
+    monkeypatch.setattr(sb, "MANAGED_SETTINGS_DIR", str(d))
+
+
+def test_the_bwrap_chain_is_re_checked_at_spawn_and_fails_closed(tmp_path, monkeypatch):
+    """Fix round 1: not only in the cached preflight — every sandboxed spawn re-stats
+    the copy the CLI is about to run."""
+    assert sb.bwrap_copy_spawn_problem() is None, "no managed copy: nothing to check"
+    _managed(tmp_path, monkeypatch, "/usr/bin/bwrap")
+    assert sb.bwrap_copy_spawn_problem() is None, "stock bwrap is not a managed copy"
+    planted = tmp_path / "bwrap"                       # under /tmp: never a root chain
+    planted.write_text("x")
+    _managed(tmp_path, monkeypatch, str(planted))
+    problem = sb.bwrap_copy_spawn_problem()
+    assert problem and problem.startswith(sb.BWRAP_COPY_UNSAFE)
+
+    d, calls, clients, states = _sandboxed_driver(FakeControl(GOOD_DIALOG))
+    with pytest.raises(sb.SandboxError) as ei:
+        asyncio.run(d.start())
+    assert ei.value.code == sb.SANDBOX_START_FAILED and ei.value.reason == problem
+    assert calls == [], "no CLI was spawned"
+    assert states == [("failed", problem)]
+    assert not os.path.exists(sb.session_tmp(SID).root)
+
+
+def test_a_stale_bwrap_copy_is_the_toggles_reason(monkeypatch, tmp_path):
+    copy = _exe(tmp_path / "bwrap-copy")
+    pf = _preflight(monkeypatch, tmp_path, managed=copy,
+                    bwrap_copy=lambda p: sb.PreflightCheck("bwrap_copy", False,
+                                                           sb.BWRAP_COPY_STALE))
+    assert pf.reason == sb.BWRAP_COPY_STALE
 
 
 def test_the_proxy_socket_dir_under_home_is_reported(monkeypatch, tmp_path):
     home = os.path.expanduser("~")
-    pf = _preflight(monkeypatch, tmp_path, socket_dir=os.path.join(home, ".cache", "x"))
+    pf = _preflight(monkeypatch, tmp_path, tmp_parent=os.path.join(home, ".cache", "x"))
     assert pf.ok is False
     assert pf.reason == ("The CLI's proxy socket directory is under the home directory, "
                          "which the sandbox hides")
     assert pf.reason == sb.PROXY_SOCKETS_HIDDEN
     (tmp_path / "again").mkdir()
-    assert _preflight(monkeypatch, tmp_path / "again", socket_dir="/tmp/vpsbx").ok is True
+    assert _preflight(monkeypatch, tmp_path / "again").ok is True     # outside home
 
 
 def test_a_symlink_into_home_still_counts_as_under_home(monkeypatch, tmp_path):
@@ -2681,14 +3294,82 @@ def test_a_symlink_into_home_still_counts_as_under_home(monkeypatch, tmp_path):
     os.makedirs(os.path.join(home, "sockets"), exist_ok=True)
     link = tmp_path / "looks-outside"
     os.symlink(os.path.join(home, "sockets"), link)
-    pf = _preflight(monkeypatch, tmp_path, socket_dir=str(link))
+    pf = _preflight(monkeypatch, tmp_path, tmp_parent=str(link))
     assert pf.reason == sb.PROXY_SOCKETS_HIDDEN
 
 
-def test_the_default_socket_dir_is_the_per_session_roots_parent(monkeypatch, tmp_path):
-    monkeypatch.setenv("VIBERPIT_SESSION_TMPDIR", str(tmp_path / "c" / "claude-tmp"))
-    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
-    assert sb._default_socket_dir() == str(tmp_path / "c" / sb.SESSION_TMP_PARENT)
+def test_the_default_socket_dir_is_the_sandbox_tmp_parent(_short_tmp_parent):
+    assert sb._default_socket_dir() == _short_tmp_parent
+
+
+@pytest.mark.parametrize("shape,why", [("long", "44"), ("symlink", "private directory"),
+                                       ("loose", "private directory")])
+def test_the_tmp_parent_check_reports_an_unusable_parent(shape, why, monkeypatch, tmp_path,
+                                                        _short_tmp_parent):
+    parent = os.path.join(_short_tmp_parent, "p")        # short: only *shape* is wrong
+    if shape == "long":
+        parent = "/tmp/" + "p" * 30
+    elif shape == "symlink":
+        (tmp_path / "t").mkdir()
+        os.symlink(tmp_path / "t", parent)
+    else:
+        os.mkdir(parent)
+        os.chmod(parent, 0o755)
+    pf = _preflight(monkeypatch, tmp_path, tmp_parent=parent)
+    check = next(c for c in pf.checks if c.name == "sandbox_tmp_parent")
+    assert check.ok is False and why in check.detail and pf.reason == check.detail
+    assert not os.path.exists("/tmp/" + "p" * 30)
+
+
+def test_the_preflight_counts_home_escapes_for_diagnosis(monkeypatch, tmp_path):
+    _symlinked_home(tmp_path, monkeypatch)
+    pf = _preflight(monkeypatch, tmp_path)
+    assert pf.ok is True and pf.diagnostics["home_escapes"] == "2"
+
+
+def test_the_preflight_re_runs_when_the_cli_or_its_bwrap_changes(monkeypatch, tmp_path):
+    """Plan §1.4 "CLI auto-update", fix round 1: the cached verdict is keyed by the CLI
+    the sessions will run AND the bwrap it runs — the managed path and the identity of
+    the copy and of stock bwrap — so an uninstall, a bubblewrap update or a failed apt
+    hook re-runs it."""
+    from server.sessions import claude_bin
+    runs: list[int] = []
+    cli = ["2.1.319"]
+    monkeypatch.setattr(sb, "run_preflight", lambda: runs.append(1) or _ok_preflight())
+    monkeypatch.setattr(claude_bin, "cli_fingerprint", lambda: cli[0])
+    stock = tmp_path / "stock-bwrap"
+    stock.write_bytes(b"bwrap 0.11.1")
+    monkeypatch.setattr(sb, "STOCK_BWRAP", str(stock))
+    copy = tmp_path / "copy-bwrap"
+    copy.write_bytes(b"bwrap 0.11.1")
+    _managed(tmp_path, monkeypatch, str(copy))
+
+    async def step(change=None):
+        if change:
+            change()
+        return await sb.preflight()
+
+    def bump_cli():
+        cli[0] = "2.1.320"
+
+    def update_stock():                       # a bubblewrap update the hook missed
+        stock.write_bytes(b"bwrap 0.11.2")
+
+    def fix_copy():                           # the hook (or a reinstall) caught up
+        copy.write_bytes(b"bwrap 0.11.2")
+
+    def uninstall():
+        (tmp_path / "managed" / "managed-settings.json").unlink()
+
+    async def go():
+        out = [await step(), await step()]
+        for change in (bump_cli, update_stock, fix_copy, uninstall):
+            out.append(await step(change))
+        out.append(await step())
+        return out
+    results = asyncio.run(go())
+    assert len(runs) == 5, "first run + one per change, none for the unchanged calls"
+    assert results[0] is results[1] and results[-1] is results[-2]
 
 
 def test_a_blocked_host_disables_the_toggle_even_with_the_switch_on(orch_env, tmp_path,

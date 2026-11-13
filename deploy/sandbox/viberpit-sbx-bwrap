@@ -1,0 +1,41 @@
+# ViberPit D-23 (#3367): a dedicated bubblewrap for the Claude CLI's sandbox.
+#
+# /usr/libexec/viberpit/bwrap is a root-owned copy of /usr/bin/bwrap that the CLI
+# uses through managed settings (sandbox.bwrapPath). Stock /usr/bin/bwrap keeps Ubuntu's
+# bwrap-userns-restrict profile (Codex, flatpak, glycin are unchanged).
+#
+# Unlike `bwrap`, this profile does not stack unpriv_bwrap on bwrap's children: the CLI's
+# embedded apply-seccomp helper (the CLI binary itself, run via /proc/self/fd/3 by the
+# shell bwrap starts) must use capabilities inside its own nested user namespace. The
+# helper drops every capability and installs a seccomp filter (no AF_UNIX, no nested
+# userns) before it runs the sandboxed command.
+#
+# Exposure: whoever can execute the copy gets bubblewrap without the Ubuntu userns
+# restriction. The copy is mode 0750 root:<ViberPit user's group>, so only that user can.
+# It lives under /usr/libexec, a root-owned chain: a user-writable ancestor (dobby's
+# /usr/local is tony-owned) would let that user swap the binary at this path.
+
+abi <abi/5.0>,
+
+include <tunables/global>
+
+profile viberpit-sbx-bwrap /usr/libexec/viberpit/bwrap flags=(attach_disconnected,mediate_deleted) {
+  allow capability,
+  allow file rwlkm /{**,},
+  allow network,
+  allow unix,
+  allow ptrace,
+  allow signal,
+  allow mqueue,
+  allow io_uring,
+  allow userns,
+  allow mount,
+  allow umount,
+  allow pivot_root,
+  allow dbus,
+
+  # Children stay in this profile (no transition, so no_new_privs is satisfied).
+  allow ix /**,
+
+  include if exists <local/viberpit-sbx-bwrap>
+}

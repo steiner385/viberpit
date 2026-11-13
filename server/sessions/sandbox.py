@@ -11,8 +11,11 @@ failure behaviour (§2.5). This module is the one vocabulary every hop agrees on
   ``allowUnsandboxedCommands: false``, ``network.strictAllowlist: true`` and
   ``network.allowAllUnixSockets: false`` are fixed here.
 * **Session env.** :func:`session_env` gives a sandboxed session ``GH_CONFIG_DIR`` (a
-  file-backed gh token, so gh and git's credential helper need no D-Bus socket) and
-  ``GH_NO_UPDATE_NOTIFIER=1``.
+  file-backed gh token, so gh and git's credential helper need no D-Bus socket),
+  ``GH_NO_UPDATE_NOTIFIER=1``, gh as git's only github.com credential helper and a
+  ``PATH`` whose entries survive the home read-deny (#3367).
+* **Temp root.** :func:`prepare_session_tmp` makes the session's private
+  ``<VIBERPIT_SANDBOX_TMP_PARENT>/<key>/{t,s}`` (#3367 F5).
 * **Host preflight.** :func:`run_preflight` (argv-only, each subprocess bounded), cached
   per process by :func:`preflight` — one daemon is one host. The first failure is the
   reason the toggle shows.
@@ -34,10 +37,14 @@ from __future__ import annotations
 import asyncio
 import copy
 import dataclasses
+import hashlib
+import json
 import logging
 import os
 import re
+import shlex
 import shutil
+import stat
 import subprocess
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -237,26 +244,28 @@ def protected_git_paths(cwd: str | None) -> list[str]:
     return [os.path.join(common, "hooks"), os.path.join(common, "config")] if common else []
 
 
-def settings_block(cwd: str | None = None, config_dir: str | None = None) -> dict[str, Any]:
+def settings_block(cwd: str | None = None, config_dir: str | None = None,
+                   sock_dir: str | None = None) -> dict[str, Any]:
     """``{"sandbox": {...}}`` — the full block for one spawn's ``--settings`` JSON (spike
     §2.1, plus the pins). A fresh deep copy every call: nothing a caller does to it
     reaches the next. With *cwd*, ``filesystem.denyWrite`` names that worktree's git
     ``hooks``/``config``; with *config_dir*, ``filesystem.denyRead`` / ``allowRead``
     hide the secrets a sandboxed shell could otherwise read (:func:`read_policy`;
-    2.1.319 filesystem schema ``gh`` @282524116, ``denyRead`` @282524433)."""
+    2.1.319 filesystem schema ``gh`` @282524116, ``denyRead`` @282524433), with
+    *sock_dir* (the session's ``s/``) the one temp dir re-allowed."""
     block = copy.deepcopy(_SETTINGS_BLOCK)
     deny = protected_git_paths(cwd)
     if deny:
         block["filesystem"]["denyWrite"] = deny
     if config_dir is not None:
-        deny_read, allow_read = read_policy(config_dir, cwd)
+        deny_read, allow_read = read_policy(config_dir, cwd, sock_dir)
         block["filesystem"]["denyRead"] = deny_read
         block["filesystem"]["allowRead"] = allow_read
     return {SANDBOX_KEY: block}
 
 
 def spawn_settings_overlay(cwd: str | None = None, config_dir: str | None = None,
-                           tmpdir: str | None = None) -> dict[str, Any]:
+                           tmp: SessionTmp | None = None) -> dict[str, Any]:
     """Everything a SANDBOXED spawn adds to its ``--settings`` JSON (flag layer):
 
     * the sandbox block (:func:`settings_block`);
@@ -270,23 +279,27 @@ def spawn_settings_overlay(cwd: str | None = None, config_dir: str | None = None
       ``setting_sources`` is NOT used, since it would also drop CLAUDE.md;
     * ``enableAllProjectMcpServers: false`` — a repo's ``.mcp.json`` servers would start
       as host processes outside bwrap; the unsandboxed default auto-trusts them;
-    * with *tmpdir* (the session's temp root), ``env.TMPDIR`` — the CLI's child-process
-      tmpdir, a default sandbox write path and the shell's ``TMPDIR``, is
-      ``<CLAUDE_CODE_TMPDIR>/claude-<uid>`` only when that path is at most 44 bytes, else
-      ``<os.tmpdir()>/claude-<uid>`` (2.1.319 ``j$e()`` @282251389, ``hNr=44``). The
-      per-session root is always longer, and the shared account settings point TMPDIR at
-      a host-wide dir, so the live probe (2026-11-07) found the sandboxed shell's TMPDIR
-      to be that SHARED dir: writable, and listing other sessions' files. The flag layer
-      outranks the user layer, so the fallback becomes the session's own root.
+    * ``env.PATH`` — :func:`sandbox_path`, the PATH whose entries exist inside;
+    * with *tmp* (the session's temp root), ``env.TMPDIR = tmp.sock``: the CLI's
+      ``os.tmpdir()``, where its proxy bridge sockets and ``claude-empty-*`` mount
+      sources go (``a1()`` @~288398673), re-allowed read-only by :func:`read_policy`.
+      The shared account settings point TMPDIR at a host-wide dir under home, which
+      the home deny hides (F5), and the flag layer outranks the user layer. The CLI's
+      child-process tmpdir (the shell's TMPDIR, its default write root) is
+      ``<CLAUDE_CODE_TMPDIR>/claude-<uid>`` = ``<tmp.tmp>/claude-<uid>`` because that
+      path is kept within 44 bytes (2.1.319 ``j$e()`` @282251389, ``hNr=44``;
+      :func:`tmp_length_problem`) — past it the CLI would fall back to ``os.tmpdir()``.
 
     Trade-off (acknowledged, fix round 3): ``disableAllHooks`` also stops the operator's
     USER hooks in sandboxed sessions; the only one in use is the WebSearch transformer,
     and WebSearch is denied there anyway.
     """
-    overlay: dict[str, Any] = {**settings_block(cwd, config_dir), "disableAllHooks": True,
-                               "enableAllProjectMcpServers": False}
-    if tmpdir:
-        overlay["env"] = {"TMPDIR": tmpdir}
+    overlay: dict[str, Any] = {
+        **settings_block(cwd, config_dir, tmp.sock if tmp is not None else None),
+        "disableAllHooks": True, "enableAllProjectMcpServers": False}
+    env = {"TMPDIR": tmp.sock} if tmp is not None else {}
+    env["PATH"] = sandbox_path()
+    overlay["env"] = env
     return overlay
 
 
@@ -322,6 +335,70 @@ def _ambient_gh_config_dir() -> str:
     return os.path.join(base, "gh")
 
 
+#: Toolchain bin dirs a sandboxed PATH gains when they exist (plan §3.2 step 3): the
+#: daemon's PATH has neither, so bare ``uv`` fails in every session today.
+PATH_TOOLCHAIN_BINS: tuple[str, ...] = (".local/bin", ".cargo/bin")
+
+
+def sandbox_path(base: str | None = None) -> str:
+    """The ``PATH`` of a sandboxed CLI and shell (#3367 F6): the daemon's own (*base*,
+    default ``os.environ["PATH"]``) plus :data:`PATH_TOOLCHAIN_BINS` when they exist,
+    with every entry under home that resolves out of it (dobby: ``~/.local`` ->
+    ``/mnt/ssk-ssd/...``) rewritten to its real path — the CLI does not restore a
+    re-allow that resolves outside its deny, so the lexical entry is empty inside
+    (:func:`read_policy` re-allows the real one). Resolved at spawn time."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    raw = (os.environ.get("PATH", "") if base is None else base).split(os.pathsep)
+    raw += [os.path.join(home, rel) for rel in PATH_TOOLCHAIN_BINS
+            if os.path.isdir(os.path.join(home, rel))]
+    out: list[str] = []
+    for entry in raw:
+        if not entry:
+            continue
+        real = os.path.realpath(entry)
+        if os.path.isabs(entry) and _within(entry, home) and not _within(real, home):
+            entry = real
+        out.append(entry)
+    return os.pathsep.join(dict.fromkeys(out))
+
+
+#: The git config a sandboxed session's git gets through ``GIT_CONFIG_COUNT`` /
+#: ``GIT_CONFIG_KEY_<n>`` / ``GIT_CONFIG_VALUE_<n>`` (plan §4.2, verified on rocky): an
+#: empty ``credential.helper`` resets the helpers the config files named (rocky's
+#: global ``store`` reads ``~/.git-credentials`` under the hidden home), then gh is
+#: github.com's helper. ``{gh}`` is gh's absolute path.
+_GIT_CREDENTIAL_CONFIG: tuple[tuple[str, str], ...] = (
+    ("credential.helper", ""),
+    ("credential.https://github.com.helper", "!{gh} auth git-credential"),
+)
+
+
+def _gh_reads_file_backed() -> bool:
+    """Is the gh config a sandboxed gh reads (ours, else the ambient one) file-backed?"""
+    dedicated = _viberpit_gh_config_dir()
+    if dedicated and gh_file_backed(dedicated):
+        return True
+    return gh_file_backed(_ambient_gh_config_dir())
+
+
+def git_credential_env(path: str | None = None) -> dict[str, str]:
+    """gh as git's github.com credential helper, appended after any inherited
+    ``GIT_CONFIG_COUNT`` entries (never clobbering them). Empty when gh does not
+    resolve on *path* or its config is keyring-only — the preflight's ``gh`` check
+    fails then. Never a token: gh reads its own config file."""
+    gh = shutil.which("gh", path=path if path is not None else sandbox_path())
+    if not gh or not _gh_reads_file_backed():
+        return {}
+    inherited = os.environ.get("GIT_CONFIG_COUNT", "")
+    n = int(inherited) if inherited.isdigit() else 0
+    env: dict[str, str] = {}
+    for i, (key, value) in enumerate(_GIT_CREDENTIAL_CONFIG, start=n):
+        env[f"GIT_CONFIG_KEY_{i}"] = key
+        env[f"GIT_CONFIG_VALUE_{i}"] = value.format(gh=shlex.quote(gh))
+    env["GIT_CONFIG_COUNT"] = str(n + len(_GIT_CREDENTIAL_CONFIG))
+    return env
+
+
 def session_env() -> dict[str, str]:
     """The env a SANDBOXED session's CLI gets on top of the usual one.
 
@@ -331,11 +408,15 @@ def session_env() -> dict[str, str]:
     is the dedicated ViberPit identity (``gitrepos._gh_env``), and pointing every
     unsandboxed session at it would change whose token their gh uses and where a
     session's own ``gh auth login`` writes. ``GH_NO_UPDATE_NOTIFIER=1`` because gh's
-    update check writes outside the worktree (risk 4)."""
-    env = {"GH_NO_UPDATE_NOTIFIER": "1"}
+    update check writes outside the worktree (risk 4). ``PATH`` is
+    :func:`sandbox_path`; the ``GIT_CONFIG_*`` entries are :func:`git_credential_env`.
+    Resolved at spawn time."""
+    path = sandbox_path()
+    env = {"GH_NO_UPDATE_NOTIFIER": "1", "PATH": path}
     dedicated = _viberpit_gh_config_dir()
     if dedicated and gh_file_backed(dedicated):
         env["GH_CONFIG_DIR"] = dedicated
+    env.update(git_credential_env(path))
     return env
 
 
@@ -376,8 +457,8 @@ def _str_list(value: Any) -> list[str] | None:
     return [str(v) for v in value] if isinstance(value, list) else None
 
 
-def check_dialog(resp: Any, *, cwd: str | None = None,
-                 config_dir: str | None = None) -> DialogVerdict:
+def check_dialog(resp: Any, *, cwd: str | None = None, config_dir: str | None = None,
+                 sock_dir: str | None = None) -> DialogVerdict:
     """Require every condition of spike §2.4, and that the restrictions the CLI says it
     applied are exactly ViberPit's block. The reply's restriction lists are "the
     settings' lists, not the runtime's built-in defaults" (2.1.319 schema @284671000),
@@ -392,7 +473,8 @@ def check_dialog(resp: Any, *, cwd: str | None = None,
     * ``restrictions.fs_deny_write`` includes the worktree's ``<common>/hooks`` and
       ``<common>/config`` (sent in the block's ``filesystem.denyWrite``).
     * with *config_dir*: ``restrictions.fs_deny_read`` is exactly the :func:`read_policy`
-      denial and ``fs_allow_read`` is exactly its re-allows (sent in the block)."""
+      denial and ``fs_allow_read`` is exactly its re-allows (sent in the block), for the
+      same *sock_dir* the spawn sent."""
     if not isinstance(resp, Mapping):
         return DialogVerdict(False, "get_sandbox_dialog returned no sandbox state")
     deps = resp.get("dependencies")
@@ -448,7 +530,7 @@ def check_dialog(resp: Any, *, cwd: str | None = None,
         return DialogVerdict(False, "git hooks/config are not write-denied: "
                              + ", ".join(missing))
     if config_dir is not None:
-        want_deny, want_allow = read_policy(config_dir, cwd)
+        want_deny, want_allow = read_policy(config_dir, cwd, sock_dir)
         deny_read = _str_list(restrictions.get("fs_deny_read"))
         allow_read = _str_list(restrictions.get("fs_allow_read"))
         if deny_read is None or allow_read is None:
@@ -847,58 +929,268 @@ def post_write_hook(cwd: str | None, on_escape: Callable[[str, str], Any],
     return _hook
 
 
-# ── per-session temp root (fix round 5) ──────────────────────────────────────
+# ── per-session temp root (#3367 F5) ─────────────────────────────────────────
 # The CLI's temp root is ``CLAUDE_CODE_TMPDIR`` (2.1.319 ``Xf()`` @282248627:
-# ``CLAUDE_CODE_TMPDIR``, else ``os.tmpdir()``); it is the sandbox's default writable temp
-# root (spike §1.6, ``$m()`` @288608093) and the sandboxed shell's ``TMPDIR``
-# (``Lpt`` @286500575). The shared root holds every session's Bash output, so a
-# sandboxed session gets its own; the CLI makes its ``<root>/claude-<uid>`` writable (and
-# so readable) over the home denial, and it is never re-allowed (see :func:`read_policy`).
+# ``CLAUDE_CODE_TMPDIR``, else ``os.tmpdir()``); its ``<root>/claude-<uid>`` is the
+# sandbox's default writable temp root (spike §1.6, ``$m()`` @288608093) and the
+# sandboxed shell's ``TMPDIR`` (``Lpt`` @286500575). Its proxy bridge sockets go in
+# ``os.tmpdir()`` (``a1()`` @~288398673), bound into bwrap BEFORE the filesystem args
+# (@288417101), so under the home read-deny they were hidden (F5). Layout (plan §2.2):
+#
+#   <parent>/               0700  read-denied for every sandboxed session
+#     <key>/                0700  key = sha256(session_id)[:12]; ``.sid`` holds the id
+#       t/                  0700  CLAUDE_CODE_TMPDIR -> write root t/claude-<uid>
+#       s/                  0700  TMPDIR (os.tmpdir()) -> proxy sockets; re-allowed RO
+#
+# ``s`` is a sibling of the write root, never its ancestor, so its read-only re-allow
+# cannot cover the write root (the F1 failure: every Bash failed "Read-only file system").
 
-#: The directory, beside the shared Claude temp root, that holds per-session roots.
-SESSION_TMP_PARENT = "viberpit-sbx"
+#: ``j$e()`` uses ``<CLAUDE_CODE_TMPDIR>/claude-<uid>`` only when it is at most this many
+#: bytes, else the SHARED ``os.tmpdir()`` (2.1.319 ``hNr=44`` @282248675; 2.1.293
+#: ``Cwr=44`` @204966957).
+_CLI_CHILD_TMPDIR_MAX = 44
+#: The longest proxy socket name, ``claude-socks-<16 hex>.sock`` (2.1.319 ``a1()``
+#: @~288398673, ``h8(8).toString("hex")``; 2.1.293 ``cw()``/``m6(8)``).
+_SOCKET_NAME_MAX = 34
+#: ``sun_path`` is 108 bytes including the NUL.
+_SUN_PATH_MAX = 107
+#: The marker naming a temp root's session (a 48-bit key collision fails closed).
+_SID_MARKER = ".sid"
 
 
-def session_tmp_path(session_id: str) -> str:
-    """``<dir of the shared Claude temp root>/viberpit-sbx/<session_id>`` — off the
-    ``/tmp`` tmpfs, like the shared root (``claude_sdk_factory.session_tmpdir_path``)."""
-    from server.sessions.claude_sdk_factory import session_tmpdir_path
+@dataclasses.dataclass(frozen=True)
+class SessionTmp:
+    """One sandboxed session's temp dirs: ``root`` holds ``tmp`` (the CLI's
+    ``CLAUDE_CODE_TMPDIR``) and ``sock`` (its ``TMPDIR``, where the proxy sockets go)."""
+    root: str
+    tmp: str
+    sock: str
+
+
+def sandbox_tmp_parent() -> str:
+    """``VIBERPIT_SANDBOX_TMP_PARENT`` (default ``/var/tmp/vpsbx``) with its directory
+    realpath'd and its last component kept as is — a symlink planted there is caught by
+    the ``lstat`` checks, never followed. Raises ``ValueError`` unless absolute."""
+    from server.config import get_settings
+    raw = str(get_settings().sandbox_tmp_parent or "")
+    if not os.path.isabs(raw):
+        raise ValueError(f"VIBERPIT_SANDBOX_TMP_PARENT must be an absolute path, not {raw!r}")
+    norm = os.path.normpath(raw)
+    return os.path.join(os.path.realpath(os.path.dirname(norm)), os.path.basename(norm))
+
+
+def session_tmp_key(session_id: str) -> str:
     if not session_id or os.sep in session_id or session_id in (".", ".."):
         raise ValueError(f"bad session id {session_id!r}")
-    return os.path.join(os.path.dirname(os.path.abspath(session_tmpdir_path())),
-                        SESSION_TMP_PARENT, session_id)
+    return hashlib.sha256(session_id.encode()).hexdigest()[:12]
 
 
-def prepare_session_tmp(session_id: str) -> str:
-    """Create the session's temp root 0700 (its parent too) and prove it is a real
-    directory owned by this user — never a symlink a racing process planted."""
-    import stat as _stat
-    path = session_tmp_path(session_id)
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+def session_tmp(session_id: str) -> SessionTmp:
+    """The session's temp dirs (paths only; :func:`prepare_session_tmp` makes them)."""
+    root = os.path.join(sandbox_tmp_parent(), session_tmp_key(session_id))
+    return SessionTmp(root=root, tmp=os.path.join(root, "t"), sock=os.path.join(root, "s"))
+
+
+def tmp_length_problem(parent: str) -> str | None:
+    """Why *parent* is too long for the CLI's limits, or None (plan §2.2: 41 ≤ 44 and
+    64 ≤ 107 for ``/var/tmp/vpsbx`` and uid 1000)."""
+    root = os.path.join(parent, "0" * 12)
+    child = f"{root}/t/claude-{os.getuid()}"
+    if len(child.encode()) > _CLI_CHILD_TMPDIR_MAX:
+        return (f"the sandbox temp parent {parent} is too long: the CLI's temp dir "
+                f"{child} must be at most {_CLI_CHILD_TMPDIR_MAX} bytes")
+    sock = f"{root}/s/" + "x" * _SOCKET_NAME_MAX
+    if len(sock.encode()) > _SUN_PATH_MAX:
+        return (f"the sandbox temp parent {parent} is too long: the CLI's proxy socket "
+                f"paths must be at most {_SUN_PATH_MAX} bytes")
+    return None
+
+
+#: The file ViberPit writes into a temp parent it CREATED. The startup sweep and every
+#: spawn require it, so a parent pointed at someone's existing directory is never used
+#: or emptied (fix round 1).
+TMP_PARENT_MARKER = ".viberpit-sandbox-tmp"
+#: The name of a session's temp root: :func:`session_tmp_key`.
+_KEY_RE = re.compile(r"^[0-9a-f]{12}$")
+
+
+def _dir_problem(path: str) -> str | None:
+    """Why *path* is not a real directory owned by this user with no group or other
+    access, or None. Read-only."""
+    try:
+        st = os.lstat(path)
+    except OSError as exc:
+        return f"{path} could not be read ({exc.strerror or exc})"
+    if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid()
+            or stat.S_IMODE(st.st_mode) & 0o077):
+        return f"{path} is not a private directory (0700, owned by this user)"
+    return None
+
+
+def _private_dir(path: str) -> str | None:
+    """Create *path* 0700 when absent, then :func:`_dir_problem`."""
     try:
         os.mkdir(path, 0o700)
     except FileExistsError:
         pass
-    st = os.lstat(path)
-    if not _stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+    except OSError as exc:
+        return f"{path} could not be created ({exc.strerror or exc})"
+    return _dir_problem(path)
+
+
+def _own_regular_file(path: str) -> bool:
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid()
+
+
+def _parent_shape_problem(parent: str) -> str | None:
+    """The checks that need no directory: the CLI's length limits, and outside home
+    (the home read-deny would hide the proxy sockets, F5)."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    if _within(os.path.realpath(parent), home):
+        return f"the sandbox temp parent {parent} is under the home directory"
+    return tmp_length_problem(parent)
+
+
+def _marker_problem(parent: str) -> str | None:
+    if _own_regular_file(os.path.join(parent, TMP_PARENT_MARKER)):
+        return None
+    return (f"{parent} is not a ViberPit sandbox temp directory (no {TMP_PARENT_MARKER} "
+            "marker); remove it or set VIBERPIT_SANDBOX_TMP_PARENT to a new path")
+
+
+def check_tmp_parent(parent: str) -> str | None:
+    """Why *parent* cannot hold (or be swept of) sandboxed sessions' temp roots, or
+    None: outside home, within the CLI's length limits, a private directory, and
+    carrying the :data:`TMP_PARENT_MARKER` ViberPit wrote when it created it.
+    Read-only: creates nothing."""
+    return (_parent_shape_problem(parent) or _dir_problem(parent)
+            or _marker_problem(parent))
+
+
+def ensure_tmp_parent(parent: str) -> str | None:
+    """:func:`check_tmp_parent`, creating *parent* (0700, with its marker) first when
+    it does not exist. An existing directory without the marker is refused, never
+    adopted. The shape checks run before anything is created."""
+    problem = _parent_shape_problem(parent)
+    if problem:
+        return problem
+    try:
+        os.mkdir(parent, 0o700)
+        created = True
+    except FileExistsError:
+        created = False
+    except OSError as exc:
+        return f"{parent} could not be created ({exc.strerror or exc})"
+    problem = _dir_problem(parent)
+    if problem:
+        return problem
+    if created:
+        try:
+            fd = os.open(os.path.join(parent, TMP_PARENT_MARKER),
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            os.close(fd)
+        except OSError as exc:
+            return f"{parent} could not be marked ({exc.strerror or exc})"
+    return _marker_problem(parent)
+
+
+def _sid_marker_ok(root: str, session_id: str, *, create: bool) -> bool:
+    path = os.path.join(root, _SID_MARKER)
+    if create:
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(session_id)
+            return True
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return False
+    with os.fdopen(fd, encoding="utf-8") as fh:
+        return fh.read(4096) == session_id
+
+
+def prepare_session_tmp(session_id: str) -> SessionTmp:
+    """Create the session's temp dirs 0700 and prove each — the parent, its root, ``t``
+    and ``s`` — is a real directory owned by this user with no group/other access,
+    never a symlink a racing process planted; and that the root is this session's
+    (``.sid``). Any failure, or a parent too long for the CLI's limits, refuses the
+    start (``SANDBOX_START_FAILED``)."""
+    try:
+        parent = sandbox_tmp_parent()
+    except ValueError as exc:
+        raise SandboxError(SANDBOX_START_FAILED, str(exc)) from exc
+    tmp = session_tmp(session_id)
+    problem = ensure_tmp_parent(parent)
+    for path in (tmp.root, tmp.tmp, tmp.sock):
+        if problem:
+            break
+        problem = _private_dir(path)
+        if not problem and path == tmp.root and not _sid_marker_ok(tmp.root, session_id,
+                                                                   create=True):
+            problem = f"{tmp.root} belongs to another session"
+    if problem:
         raise SandboxError(SANDBOX_START_FAILED,
-                           "the session's sandbox temp directory is not a private directory")
-    os.chmod(path, 0o700)
-    return path
+                           f"the session's sandbox temp directory is unusable: {problem}")
+    return tmp
 
 
 def remove_session_tmp(session_id: str) -> None:
     """Remove the session's temp root (driver close: session close, archive, respawn).
-    Best-effort: a leftover is re-made private at the next spawn."""
-    import shutil
+    A planted symlink is unlinked, never followed; a root holding another session's
+    ``.sid`` is left alone. Best-effort: a leftover is reused (or swept) later."""
     try:
-        path = session_tmp_path(session_id)
+        root = session_tmp(session_id).root
     except ValueError:
         return
-    if os.path.islink(path):
-        os.unlink(path)
-        return
-    shutil.rmtree(path, ignore_errors=True)
+    try:
+        if os.path.islink(root):
+            os.unlink(root)
+        elif os.path.isdir(root) and _sid_marker_ok(root, session_id, create=False):
+            shutil.rmtree(root, ignore_errors=True)
+    except OSError:
+        log.info("sandbox: could not remove the temp root of session=%s", session_id,
+                 exc_info=True)
+
+
+def sweep_session_tmp(live_ids: Iterable[str]) -> int:
+    """Remove the temp roots a crash leaked (daemon start). Only a parent that passes
+    :func:`check_tmp_parent` — ViberPit's marker included — is swept, and only two kinds
+    of entry go: a symlink (unlinked, never followed), and a directory named like a
+    :func:`session_tmp_key` that holds a ``.sid`` marker and is not a live session's.
+    Anything else is left alone. Never creates the parent. Returns the count removed."""
+    try:
+        parent = sandbox_tmp_parent()
+    except ValueError:
+        return 0
+    problem = check_tmp_parent(parent)
+    if problem:
+        if os.path.lexists(parent):
+            log.info("sandbox: temp parent not swept: %s", problem)
+        return 0
+    keep = {session_tmp_key(sid) for sid in live_ids if sid}
+    removed = 0
+    for entry in os.scandir(parent):
+        try:
+            if entry.is_symlink():
+                os.unlink(entry.path)
+            elif (_KEY_RE.match(entry.name) and entry.name not in keep
+                  and entry.is_dir(follow_symlinks=False)
+                  and _own_regular_file(os.path.join(entry.path, _SID_MARKER))):
+                shutil.rmtree(entry.path)
+            else:
+                continue
+            removed += 1
+        except OSError:
+            log.info("sandbox: could not sweep %s", entry.path, exc_info=True)
+    return removed
 
 
 #: Re-allows under the HOME read-deny (fix round 4): toolchains a sandboxed shell runs
@@ -942,8 +1234,63 @@ def _daemon_dirs() -> list[str]:
     return list(dict.fromkeys(os.path.abspath(p) for p in out))
 
 
-def read_policy(config_dir: str | None,
-                cwd: str | None = None) -> tuple[list[str], list[str]]:
+#: Never read-denied as a home symlink's target: an ancestor of (or one of) these is
+#: the system the sandboxed shell runs on, and the sandbox's own temp parent.
+_SYSTEM_ROOTS: tuple[str, ...] = ("/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64",
+                                  "/etc", "/opt", "/proc", "/sys", "/dev", "/run",
+                                  "/tmp", "/var/tmp", "/snap", "/nix")
+
+
+def home_escapes(home: str | None = None) -> list[str]:
+    """The real paths of the home entries that are symlinks out of home (#3367 F6), in
+    order. The home read-deny is lexical, so dobby's ``~/.docker ->
+    /mnt/ssk-ssd/.../.docker`` left ``config.json`` (registry auth) readable inside.
+    Dangling links and links that stay in home are skipped, and so is a target that
+    is (or contains) a system directory or the sandbox temp parent — hiding it would
+    break the shell, and it holds no home data. So is a target that is itself
+    root-owned, not group/other-writable AND world-readable — a file ``o+r``, a
+    directory ``o+rx`` (``~/tool -> /opt/tool``, ``/usr/local/x`` installed by root):
+    that is system-installed software every local user can already read, not data the
+    user moved off home, and hiding it only breaks toolchains. Anything else is hidden:
+    a target the user owns (``/mnt/ssk-ssd/...``, a tony-owned ``/usr/local/x``), and a
+    root-owned one readable only by a group (``root:tony 0640``) or closed to others.
+    The exemption looks at the target itself only: a user-owned file INSIDE an exempt
+    directory (``/opt/aws/credentials``, tony 0600) stays readable. Only top-level
+    entries are scanned, and a dangling link's target is not hidden (see
+    deploy/README.md "Known limits"). Resolved at spawn time."""
+    home = os.path.realpath(home or os.path.expanduser("~"))
+    keep = [*_SYSTEM_ROOTS]
+    try:
+        keep.append(sandbox_tmp_parent())
+    except ValueError:
+        pass
+    out: list[str] = []
+    try:
+        entries = sorted(os.scandir(home), key=lambda e: e.name)
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.is_symlink():
+            continue
+        real = os.path.realpath(entry.path)
+        if not os.path.exists(real) or _within(real, home) or real == "/":
+            continue
+        if any(_within(root, real) for root in keep):
+            continue
+        try:
+            st = os.stat(real)
+        except OSError:
+            continue
+        mode = stat.S_IMODE(st.st_mode)
+        world = 0o005 if stat.S_ISDIR(st.st_mode) else 0o004
+        if st.st_uid == 0 and not mode & 0o022 and mode & world == world:
+            continue
+        out.append(real)
+    return sorted(dict.fromkeys(out))
+
+
+def read_policy(config_dir: str | None, cwd: str | None = None,
+                sock_dir: str | None = None) -> tuple[list[str], list[str]]:
     """``(denyRead, allowRead)`` for a sandboxed shell (bwrap ro-binds ``/``).
 
     Deny the whole HOME directory and ViberPit's own dirs (:func:`_daemon_dirs`), then
@@ -956,7 +1303,15 @@ def read_policy(config_dir: str | None,
       there before every command: PATH, functions, shell options — no secrets);
     * the gh config git authenticates with (``session_env``'s ``GH_CONFIG_DIR``, else the
       ambient file-backed one);
-    * :data:`TOOLCHAIN_READS`.
+    * :data:`TOOLCHAIN_READS`, and the real path of each one behind a home symlink that
+      leaves home (#3367 F6: the CLI does not restore a re-allow that "resolves outside"
+      its deny, so dobby's lexical ``~/.local/bin`` is empty inside; the real one is
+      inside a denied :func:`home_escapes` target, so ``allowWithinDeny`` restores it.
+      The lexical entry stays: on a host without the symlink it is the one that works);
+    * with *sock_dir*, the session's ``s/`` (its proxy sockets, #3367 F5).
+
+    Also denied: every :func:`home_escapes` target and the sandbox temp parent (every
+    session's temp root; one uid, so 0700 alone does not keep sessions apart).
 
     NOT the session's Claude temp root. The CLI restores its own writable temp dir
     (``<CLAUDE_CODE_TMPDIR>/claude-<uid>``, ``$m()`` @287555265) with ``--bind`` over the
@@ -964,10 +1319,12 @@ def read_policy(config_dir: str | None,
     path (``H8`` @~288403900). A re-allow of the root is its PARENT, so it was mounted
     read-only on top and every sandboxed Bash failed with "Can't create file at
     <root>/claude-<uid>/claude-settings-*.json: Read-only file system" (live probe
-    2026-11-07, CLI 2.1.319). The restored write path is readable as it is.
+    2026-11-07, CLI 2.1.319). The restored write path is readable as it is; the socket
+    dir is its SIBLING, never its ancestor.
     """
     home = os.path.realpath(os.path.expanduser("~"))
-    deny = list(dict.fromkeys([home, *_daemon_dirs()]))
+    deny = list(dict.fromkeys([home, *_daemon_dirs(), sandbox_tmp_parent(),
+                               *home_escapes(home)]))
     allow: list[str] = []
     if cwd:
         allow.append(os.path.realpath(cwd))
@@ -980,7 +1337,14 @@ def read_policy(config_dir: str | None,
     gh = (dedicated if dedicated and gh_file_backed(dedicated)
           else _ambient_gh_config_dir())
     allow.append(os.path.realpath(gh))
-    allow += [os.path.join(home, rel) for rel in TOOLCHAIN_READS]
+    for rel in TOOLCHAIN_READS:
+        lexical = os.path.join(home, rel)
+        allow.append(lexical)
+        real = os.path.realpath(lexical)
+        if real != lexical and os.path.exists(real) and not _within(real, home):
+            allow.append(real)
+    if sock_dir:
+        allow.append(os.path.realpath(sock_dir))
     return deny, list(dict.fromkeys(allow))
 
 
@@ -1090,13 +1454,172 @@ SECCOMP_HELPER_BLOCKED = ("Host AppArmor blocks the sandbox's seccomp helper "
                           "(bwrap-userns-restrict)")
 PROXY_SOCKETS_HIDDEN = ("The CLI's proxy socket directory is under the home directory, "
                         "which the sandbox hides")
+#: The managed bwrap copy (#3367 plan §1.4) no longer matches stock bwrap — an apt
+#: security update the hook did not carry over.
+BWRAP_COPY_STALE = "the sandbox's bwrap copy is stale; reinstall it"
+#: The managed bwrap copy, or a directory above it, is not root-owned and closed to
+#: group/other writes — whoever could write there could swap the binary the CLI runs
+#: under the unrestricted profile (fix round 1: dobby's /usr/local is tony-owned).
+BWRAP_COPY_UNSAFE = ("the sandbox's bwrap copy is not a root-owned file closed to "
+                     "other writers; reinstall it")
+
+#: Where the CLI reads admin-controlled managed settings on Linux (2.1.319 strings
+#: @~151455136): ``managed-settings.json``, then ``managed-settings.d/*.json`` in name
+#: order. ``sandbox.bwrapPath`` is "Only honored from admin-controlled managed
+#: settings" (schema @282545730; read by ``gDr()`` @284944456).
+MANAGED_SETTINGS_DIR = "/etc/claude-code"
+#: The packaged bubblewrap a managed copy must stay byte-identical to.
+STOCK_BWRAP = "/usr/bin/bwrap"
+#: The CLI's embedded seccomp helper, as the CLI runs it (plan §1.1): the CLI binary
+#: itself on fd 3, dispatched by ``ARGV0`` (``swr()`` @288569460, ``Kce=3``), with the
+#: nested-userns switch our block pins off (``allowNestedUserNamespaces: false``).
+_HELPER_SCRIPT = ('exec 3<"$1"; SRT_ALLOW_NESTED_USERNS=0 ARGV0=apply-seccomp '
+                  '/proc/self/fd/3 /bin/true')
 
 
 def _default_socket_dir() -> str:
     """Where a sandboxed CLI creates its proxy bridge sockets: its ``os.tmpdir()``
-    (sandbox runtime ``a1()``), which the sandboxed spawn pins to the session's temp root
-    (flag-layer ``env.TMPDIR``) — the per-session roots' parent stands for every session."""
-    return os.path.dirname(session_tmp_path("preflight"))
+    (sandbox runtime ``a1()``), which the sandboxed spawn pins to the session's ``s/``
+    (flag-layer ``env.TMPDIR``) under the sandbox temp parent — the parent stands for
+    every session."""
+    return sandbox_tmp_parent()
+
+
+def managed_bwrap_path(settings_dir: str | None = None) -> str | None:
+    """``sandbox.bwrapPath`` from the managed settings the CLI reads (*settings_dir*,
+    default :data:`MANAGED_SETTINGS_DIR`), or None (the CLI then finds ``bwrap`` on
+    PATH). A drop-in overrides the base file; an unreadable or malformed file
+    contributes nothing."""
+    settings_dir = settings_dir or MANAGED_SETTINGS_DIR
+    files = [os.path.join(settings_dir, "managed-settings.json")]
+    try:
+        drop = os.path.join(settings_dir, "managed-settings.d")
+        files += [os.path.join(drop, n) for n in sorted(os.listdir(drop))
+                  if n.endswith(".json")]
+    except OSError:
+        pass
+    found: str | None = None
+    for path in files:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        sbx = data.get(SANDBOX_KEY) if isinstance(data, dict) else None
+        value = sbx.get("bwrapPath") if isinstance(sbx, dict) else None
+        if isinstance(value, str) and value:
+            found = value
+    return found
+
+
+def _sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+#: sha256 by stat identity (path, dev, inode, size, mtime, ctime): a respawn of an
+#: unchanged copy never re-reads it; any rewrite changes the key.
+_hash_cache: dict[tuple[str, int, int, int, int, int], str] = {}
+_HASH_CACHE_MAX = 16
+
+
+def _cached_sha256(path: str) -> str:
+    st = os.stat(path)
+    key = (path, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    digest = _hash_cache.get(key)
+    if digest is None:
+        digest = _sha256(path)
+        if len(_hash_cache) >= _HASH_CACHE_MAX:
+            _hash_cache.clear()
+        _hash_cache[key] = digest
+    return digest
+
+
+def copy_is_stale(managed: str, stock: str) -> bool:
+    """Does the managed copy differ from *stock*? Cheap first: a different size is
+    stale and the same size and mtime is current; only otherwise (``install`` gives the
+    copy its own mtime) are the sha256s compared, cached by stat identity. Unreadable
+    counts as stale (fail closed)."""
+    try:
+        a, b = os.stat(managed), os.stat(stock)
+        if a.st_size != b.st_size:
+            return True
+        if a.st_mtime_ns == b.st_mtime_ns:
+            return False
+        return _cached_sha256(managed) != _cached_sha256(stock)
+    except OSError:
+        return True
+
+
+def root_chain_problem(path: str, *, owner_uid: int = 0,
+                       lstat: Callable[[str], os.stat_result] = os.lstat) -> str | None:
+    """Why *path* could be replaced by anyone but *owner_uid* (root), or None: it must
+    be a regular file (not a symlink — the AppArmor profile attaches by the exec'd
+    path), and it and EVERY directory above it must be owned by *owner_uid* with no
+    group/other write and no symlink. A writable ancestor lets its owner rename the
+    tree away and plant their own binary at the same path. Stat calls only."""
+    if not os.path.isabs(path):
+        return f"{path} is not an absolute path"
+    path = os.path.normpath(path)
+    cur = path
+    while True:
+        try:
+            st = lstat(cur)
+        except OSError as exc:
+            return f"{cur} could not be read ({exc.strerror or exc})"
+        kind_ok = stat.S_ISREG(st.st_mode) if cur == path else stat.S_ISDIR(st.st_mode)
+        if not kind_ok:
+            return f"{cur} is not a {'regular file' if cur == path else 'directory'}"
+        if st.st_uid != owner_uid or stat.S_IMODE(st.st_mode) & 0o022:
+            return f"{cur} is not owned by root or is writable by group or others"
+        if cur == "/":
+            return None
+        cur = os.path.dirname(cur)
+
+
+def bwrap_copy_spawn_problem() -> str | None:
+    """The spawn-time half of ``bwrap_copy``, re-read now rather than trusted from the
+    cached preflight: :func:`root_chain_problem` over the managed copy the CLI is about
+    to run, then :func:`copy_is_stale` against stock bwrap (a bubblewrap update the
+    apt hook missed holds a respawn with :data:`BWRAP_COPY_STALE`). None when there is
+    no managed copy (the CLI runs stock bwrap; the helper probe gates that)."""
+    managed = managed_bwrap_path()
+    if not managed or os.path.normpath(managed) == os.path.normpath(STOCK_BWRAP):
+        return None
+    problem = root_chain_problem(managed)
+    if problem:
+        return f"{BWRAP_COPY_UNSAFE}: {problem}"
+    return BWRAP_COPY_STALE if copy_is_stale(managed, STOCK_BWRAP) else None
+
+
+def check_bwrap_copy(managed: str | None, *, stock: str | None = None,
+                     owner_uid: int = 0,
+                     lstat: Callable[[str], os.stat_result] = os.lstat) -> PreflightCheck:
+    """The managed bwrap copy passes :func:`root_chain_problem` and is byte-identical
+    to *stock* (default :data:`STOCK_BWRAP`). No managed copy (or the stock path
+    itself) passes: the seccomp-helper probe is then the gate."""
+    stock = stock or STOCK_BWRAP
+    if not managed or os.path.normpath(managed) == os.path.normpath(stock):
+        return PreflightCheck("bwrap_copy", True, "no managed copy")
+    problem = root_chain_problem(managed, owner_uid=owner_uid, lstat=lstat)
+    if problem:
+        return PreflightCheck("bwrap_copy", False, f"{BWRAP_COPY_UNSAFE}: {problem}")
+    same = not copy_is_stale(managed, stock)
+    return PreflightCheck("bwrap_copy", same, managed if same else BWRAP_COPY_STALE)
+
+
+def _default_claude_bin() -> str | None:
+    """The real path of the CLI binary a session runs — the helper's executable."""
+    from server.sessions.claude_bin import resolve_claude_bin
+    binary = resolve_claude_bin()
+    return os.path.realpath(binary) if binary else None
+
+
+def _is_exe(path: str) -> bool:
+    return os.path.isfile(path) and os.access(path, os.X_OK)
 
 
 def run_preflight(*, which: Callable[[str], str | None] = shutil.which,
@@ -1104,13 +1627,27 @@ def run_preflight(*, which: Callable[[str], str | None] = shutil.which,
                   cli_version: Callable[[], str | None] = _default_cli_version,
                   sysctls: Callable[[], dict[str, str | None]] = _read_sysctls,
                   clock: Callable[[], float] = time.time,
-                  socket_dir: Callable[[], str] = _default_socket_dir) -> Preflight:
+                  tmp_parent: Callable[[], str] = _default_socket_dir,
+                  managed_bwrap: Callable[[], str | None] = managed_bwrap_path,
+                  claude_bin: Callable[[], str | None] = _default_claude_bin,
+                  bwrap_copy: Callable[[str | None], PreflightCheck] = check_bwrap_copy,
+                  ) -> Preflight:
     """The spike §2.3 checks, in order, all run (so the card can list each); ``reason``
-    is the first failure. Blocking — call through :func:`preflight`."""
+    is the first failure. Every bwrap probe runs the bwrap the CLI will use: the
+    managed ``sandbox.bwrapPath``, else ``bwrap`` on PATH. Argv-only, each subprocess
+    bounded by :data:`PROBE_TIMEOUT_S`; anything that cannot be probed fails. Blocking —
+    call through :func:`preflight`."""
     checks: list[PreflightCheck] = []
-    bwrap = which("bwrap")
-    checks.append(PreflightCheck("bwrap", bwrap is not None,
-                                 None if bwrap else "bubblewrap (bwrap) is not installed"))
+    managed = managed_bwrap()
+    if managed:
+        bwrap = managed if _is_exe(managed) else None
+        checks.append(PreflightCheck(
+            "bwrap", bwrap is not None, bwrap or
+            f"the managed sandbox.bwrapPath {managed} is not an executable file"))
+    else:
+        bwrap = which("bwrap")
+        checks.append(PreflightCheck("bwrap", bwrap is not None,
+                                     bwrap or "bubblewrap (bwrap) is not installed"))
     if bwrap:
         rc, out = _run(run, [bwrap, "--version"])
         v = _version(out) if rc == 0 else None
@@ -1123,6 +1660,7 @@ def run_preflight(*, which: Callable[[str], str | None] = shutil.which,
                                          f"{_dotted(MIN_BWRAP_VERSION)}"))
         else:
             checks.append(PreflightCheck("bwrap_version", True, _dotted(v)))
+    checks.append(bwrap_copy(managed))
     socat = which("socat")
     checks.append(PreflightCheck("socat", socat is not None,
                                  None if socat else "socat is not installed"))
@@ -1133,46 +1671,58 @@ def run_preflight(*, which: Callable[[str], str | None] = shutil.which,
             "bwrap_probe", rc == 0,
             None if rc == 0 else
             f"bwrap could not create a network namespace ({out or f'exit {rc}'})"))
-        # F4 (spike §5.3; see #3367). The CLI's apply-seccomp helper (the unix-socket
-        # filter) runs inside bwrap and builds a nested user, PID and mount namespace;
-        # Ubuntu's bwrap-userns-restrict profile puts bwrap's children in unpriv_bwrap
-        # ("audit deny capability"), so it dies at /proc/self/setgroups and every
-        # sandboxed command fails while the dialog still says enabled. The helper's own
-        # binary and argv are internal to the CLI, so this runs the spike's proven
-        # stand-in: the same nested `unshare -U -r -p -m` (writes setgroups and the id
-        # maps, mounts a fresh /proc — the capabilities the helper needs) inside
-        # `bwrap --unshare-user --cap-drop ALL`. It fails under the confined
-        # /usr/bin/bwrap and succeeds under an unconfined copy (spike §5.3, F4 proof).
-        unshare = which("unshare")
-        if unshare is None:
+        # F4 (plan §1). The CLI's embedded apply-seccomp helper (the unix-socket and
+        # nested-userns filter) runs as bwrap's grandchild and needs capabilities in the
+        # nested user namespace it builds; Ubuntu's bwrap-userns-restrict profile stacks
+        # unpriv_bwrap ("audit deny capability") on stock bwrap's children, so it dies at
+        # /proc/self/setgroups and every sandboxed command fails while the dialog still
+        # says enabled. This runs THAT helper — the installed CLI's own, exec'd from fd 3
+        # under ARGV0 exactly as the CLI composes it — through the bwrap the CLI uses.
+        # The protocol is internal to the CLI: a release that changes it fails here.
+        cli = claude_bin()
+        bash = which("bash")
+        if cli is None or bash is None:
+            missing = ("the claude CLI could not be found" if cli is None
+                       else "bash is not installed")
             checks.append(PreflightCheck(
                 "seccomp_helper", False,
-                f"{SECCOMP_HELPER_BLOCKED}: could not be probed (unshare is not installed)"))
+                f"{SECCOMP_HELPER_BLOCKED}: could not be probed ({missing})"))
         else:
-            rc, out = _run(run, [bwrap, "--ro-bind", "/", "/", "--dev", "/dev",
-                                 "--proc", "/proc", "--unshare-user", "--unshare-pid",
-                                 "--cap-drop", "ALL", unshare, "-U", "-r", "-p", "-m",
-                                 "--fork", "--mount-proc", "true"])
+            rc, out = _run(run, [bwrap, "--new-session", "--die-with-parent",
+                                 "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+                                 "--unshare-user", "--unshare-pid", "--unshare-net", "--",
+                                 bash, "-c", _HELPER_SCRIPT, "probe", cli])
+            if rc != 0:
+                log.info("sandbox.preflight seccomp_helper rc=%s out=%s", rc, out[:500])
             checks.append(PreflightCheck("seccomp_helper", rc == 0,
                                          None if rc == 0 else SECCOMP_HELPER_BLOCKED))
-    # F5 (spike §5.3; see #3367). The CLI binds its proxy bridge sockets into bwrap
-    # before the filesystem arguments, so the home read-deny's tmpfs covers them when
-    # they live under home, and every connection fails ("Proxy CONNECT aborted"). A
-    # path comparison, not a subprocess: where the sockets go is decided by our own
-    # spawn env, and realpath settles symlinked homes.
-    sockets = os.path.realpath(socket_dir())
-    home = os.path.realpath(os.path.expanduser("~"))
-    hidden = _within(sockets, home)
-    checks.append(PreflightCheck("proxy_socket_dir", not hidden,
-                                 PROXY_SOCKETS_HIDDEN if hidden else sockets))
+    # F5 (plan §2). The CLI binds its proxy bridge sockets into bwrap before the
+    # filesystem arguments, so the home read-deny's tmpfs covers them when they live
+    # under home, and every connection fails ("Proxy CONNECT aborted"). A path
+    # comparison, not a subprocess: where the sockets go is decided by our own spawn
+    # env (the session's s/ under the temp parent), and realpath settles symlinks.
+    try:
+        parent: str | None = tmp_parent()
+    except ValueError as exc:
+        parent = None
+        checks.append(PreflightCheck("proxy_socket_dir", False, str(exc)))
+    if parent is not None:
+        sockets = os.path.realpath(parent)
+        home = os.path.realpath(os.path.expanduser("~"))
+        hidden = _within(sockets, home)
+        checks.append(PreflightCheck("proxy_socket_dir", not hidden,
+                                     PROXY_SOCKETS_HIDDEN if hidden else sockets))
+        problem = ensure_tmp_parent(parent)
+        checks.append(PreflightCheck("sandbox_tmp_parent", problem is None,
+                                     problem or parent))
     dedicated = _viberpit_gh_config_dir()
     gh_ok = ((bool(dedicated) and gh_file_backed(dedicated))
              or gh_file_backed(_ambient_gh_config_dir()))
     checks.append(PreflightCheck(
         "gh", gh_ok,
         None if gh_ok else "gh token is keyring-only; sandboxed git cannot authenticate"))
-    cli = cli_version()
-    cv = _version(cli)
+    cli_v = cli_version()
+    cv = _version(cli_v)
     if cv is None:
         checks.append(PreflightCheck("cli_version", False,
                                      "the claude CLI version could not be read"))
@@ -1183,12 +1733,39 @@ def run_preflight(*, which: Callable[[str], str | None] = shutil.which,
     else:
         checks.append(PreflightCheck("cli_version", True, _dotted(cv)))
     failed = next((c for c in checks if not c.ok), None)
+    diagnostics = dict(sysctls())
+    # Informational (plan §3.2): home symlinks whose targets the read policy denies.
+    diagnostics["home_escapes"] = str(len(home_escapes()))
     return Preflight(ok=failed is None, reason=failed.detail if failed else None,
                      checks=tuple(checks), cli_version=_dotted(cv) if cv else None,
-                     diagnostics=sysctls(), checked_at=clock())
+                     diagnostics=diagnostics, checked_at=clock())
+
+
+def _file_identity(path: str) -> str:
+    """``path`` with its lstat identity and content hash, or ``path:missing``."""
+    try:
+        st = os.lstat(path)
+        digest = _sha256(path)
+    except OSError:
+        return f"{path}:missing"
+    return (f"{path}:{st.st_dev}:{st.st_ino}:{st.st_size}:{st.st_mtime_ns}:{st.st_uid}:"
+            f"{st.st_mode:o}:{digest}")
+
+
+def _preflight_key() -> str:
+    """What the cached preflight is keyed by (no subprocess): the CLI binary a session
+    would run (:func:`claude_bin.cli_fingerprint` — an auto-update changes it), the
+    managed ``bwrapPath``, and the identity of that copy and of stock bwrap, so an
+    uninstall, a bubblewrap update or a failed apt hook re-runs it."""
+    from server.sessions.claude_bin import cli_fingerprint
+    managed = managed_bwrap_path()
+    return "|".join([str(cli_fingerprint()), str(managed),
+                     _file_identity(managed) if managed else "-",
+                     _file_identity(STOCK_BWRAP)])
 
 
 _cache: Preflight | None = None
+_cache_key: str | None = None
 _lock: asyncio.Lock | None = None
 
 
@@ -1198,18 +1775,21 @@ def cached_preflight() -> Preflight | None:
 
 
 async def preflight(*, refresh: bool = False) -> Preflight:
-    """This host's preflight: the cached one, or a fresh run when there is none or
-    *refresh* asks. Runs off the loop; concurrent callers share one run."""
-    global _cache, _lock
-    if _cache is not None and not refresh:
+    """This host's preflight: the cached one, or a fresh run when there is none, the
+    CLI or the bwrap it runs has changed since (:func:`_preflight_key` — the helper
+    probe exercises the installed CLI's own helper), or *refresh* asks. Runs off the loop;
+    concurrent callers share one run."""
+    global _cache, _cache_key, _lock
+    key = await asyncio.to_thread(_preflight_key)
+    if _cache is not None and not refresh and key == _cache_key:
         return _cache
     if _lock is None:
         _lock = asyncio.Lock()
     async with _lock:
-        if _cache is not None and not refresh:
+        if _cache is not None and not refresh and key == _cache_key:
             return _cache
         result = await asyncio.to_thread(run_preflight)
-        _cache = result
+        _cache, _cache_key = result, key
     # INFO either way: a host without socat is a known, reported condition (the toggle
     # says so), not an anomaly to auto-file.
     log.info("sandbox.preflight ok=%s reason=%s cli=%s", result.ok, result.reason,
@@ -1219,8 +1799,9 @@ async def preflight(*, refresh: bool = False) -> Preflight:
 
 def reset_preflight_cache() -> None:
     """Forget the cached preflight (tests)."""
-    global _cache, _lock
+    global _cache, _cache_key, _lock
     _cache = None
+    _cache_key = None
     _lock = None
 
 

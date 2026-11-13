@@ -2661,10 +2661,13 @@ class SessionOrchestrator:
             kw: dict = {"on_pre_compact": on_pre_compact, **fork_kw}
             if sandboxed:
                 extra.update(sandbox_mod.session_env())
-                if sandbox_tmp:
-                    # The session's own temp root: the CLI's writable temp
-                    # (<root>/claude-<uid>) and Bash TMPDIR, not the shared one.
-                    extra["CLAUDE_CODE_TMPDIR"] = sandbox_tmp
+                if sandbox_tmp is not None:
+                    # The session's own temp root (#3367 F5): t/ is the CLI's temp root
+                    # (its writable t/claude-<uid> and the Bash TMPDIR); s/ is its
+                    # os.tmpdir(), where the proxy sockets go — read at call time from
+                    # this env, and pinned again in the flag layer below.
+                    extra["CLAUDE_CODE_TMPDIR"] = sandbox_tmp.tmp
+                    extra["TMPDIR"] = sandbox_tmp.sock
                 if stderr_sink is not None and "stderr" in declared:
                     kw["stderr"] = stderr_sink
                 # Non-Bash tools are confined by an SDK PreToolUse hook (every mode). A
@@ -2673,7 +2676,8 @@ class SessionOrchestrator:
                 # every hook of this spawn: writes are serialised against running Bash.
                 if "sandbox_confine" in declared:
                     kw["sandbox_confine"] = sandbox_mod.confinement_hook(
-                        cwd, tmpdir=sandbox_tmp, gate=gate)
+                        cwd, tmpdir=sandbox_tmp.tmp if sandbox_tmp is not None else None,
+                        gate=gate)
                 if "sandbox_post_write" in declared:
                     kw["sandbox_post_write"] = sandbox_mod.post_write_hook(
                         cwd, functools.partial(self._on_sandbox_escape, session_id),

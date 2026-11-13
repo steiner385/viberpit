@@ -476,7 +476,7 @@ class ClaudeAgentDriver:
         self._sandbox = bool(sandbox)
         self._on_sandbox_state = on_sandbox_state
         self._sandbox_stderr: collections.deque[str] = collections.deque(maxlen=200)
-        self._sandbox_tmp: str | None = None
+        self._sandbox_tmp: sandbox_mod.SessionTmp | None = None
         # The in-flight registry a sandboxed CLI's hooks share (owner decision
         # 2026-11-07): writes are serialised against running Bash in every thread.
         self._sandbox_gate: sandbox_mod.SandboxGate | None = (
@@ -1142,7 +1142,8 @@ class ClaudeAgentDriver:
             # are confined here too (the spawn's PreToolUse hook is the binding layer).
             from server.permission_rules.patterns import FILE_TOOLS
             why = sandbox_mod.confine_tool(tool_name, tool_input, self.cwd,
-                                           tmpdir=self._sandbox_tmp)
+                                           tmpdir=(self._sandbox_tmp.tmp
+                                                   if self._sandbox_tmp else None))
             if why is None and tool_name in FILE_TOOLS and self._sandbox_gate is not None:
                 why = self._sandbox_gate.write_blocked()
             if why is not None:
@@ -1253,12 +1254,24 @@ class ClaudeAgentDriver:
                 self._stream_ended = True
                 await self._report_sandbox(sandbox_mod.STATE_FAILED, reason)
                 raise sandbox_mod.SandboxError(sandbox_mod.SANDBOX_DISABLED, reason)
+            # The managed bwrap copy the CLI is about to run must still sit in a
+            # root-owned chain (#3367 fix round 1): re-read now, not trusted from the
+            # cached preflight. Held, never spawned with a swappable binary.
+            unsafe = await asyncio.to_thread(sandbox_mod.bwrap_copy_spawn_problem)
+            if unsafe is not None:
+                log_event(log, logging.INFO, "sandbox.start_refused",
+                          session_id=self.session_id, reason=unsafe)
+                self._closing = True
+                self._stream_ended = True
+                await self._report_sandbox(sandbox_mod.STATE_FAILED, unsafe)
+                raise sandbox_mod.SandboxError(sandbox_mod.SANDBOX_START_FAILED, unsafe)
             # The orchestrator's factory merges the sandbox block and env for exactly
             # this flag, so the spawn that carries the block is the one verified below.
             fork_kw["sandbox"] = True
             fork_kw["stderr"] = self._sandbox_stderr.append
             fork_kw["sandbox_gate"] = self._sandbox_gate
-            # Its own temp root (CLAUDE_CODE_TMPDIR), created private for this CLI.
+            # Its own temp root (#3367): t/ is CLAUDE_CODE_TMPDIR, s/ the CLI's TMPDIR
+            # (proxy sockets), created private for this CLI.
             self._sandbox_tmp = await asyncio.to_thread(sandbox_mod.prepare_session_tmp,
                                                         self.session_id)
             fork_kw["sandbox_tmp"] = self._sandbox_tmp
@@ -1338,7 +1351,9 @@ class ClaudeAgentDriver:
                               timeout=sandbox_mod.SANDBOX_CONTROL_TIMEOUT_S)
         except Exception as exc:
             return sandbox_mod.DialogVerdict(False, f"get_sandbox_dialog failed: {exc}")
-        return sandbox_mod.check_dialog(resp, cwd=self.cwd, config_dir=self.config_dir)
+        return sandbox_mod.check_dialog(
+            resp, cwd=self.cwd, config_dir=self.config_dir,
+            sock_dir=self._sandbox_tmp.sock if self._sandbox_tmp else None)
 
     def _sandbox_failure_texts(self, exc: BaseException | None) -> list[str]:
         """Everything that may carry the CLI's sandbox refusal: the exception chain, the

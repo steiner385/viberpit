@@ -635,18 +635,78 @@ toolchains, non-Bash tools confined, and edits serialised against running Bash. 
   session recorded as sandboxed is held while the switch is off, and turning its sandbox off still works.
 - **Host requirements:**
   - `bubblewrap` ≥ 0.5 and `socat`;
-  - a file-backed gh config (`VIBERPIT_GH_CONFIG_DIR` with a `hosts.yml` token), because the sandbox has no
-    D-Bus or keyring access;
-  - the CLI at ≥ 2.1.293.
+  - the host change below (the CLI's seccomp helper needs a bwrap that AppArmor does not restrict);
+  - a file-backed gh config (`VIBERPIT_GH_CONFIG_DIR` with a `hosts.yml` token, or a file-backed ambient
+    `~/.config/gh`), because the sandbox has no D-Bus or keyring access. A sandboxed session's git uses gh as
+    its only github.com credential helper (`GIT_CONFIG_*` env), so rocky's global `store` helper is bypassed;
+  - the CLI at ≥ 2.1.293;
+  - `VIBERPIT_SANDBOX_TMP_PARENT` (default `/var/tmp/vpsbx`): an absolute path outside home and short enough
+    that `<parent>/<12 hex>/t/claude-<uid>` is at most 44 bytes. Each sandboxed session gets a private
+    `<parent>/<sha256(id)[:12]>/` with `t/` (the CLI's temp root) and `s/` (its proxy sockets). The daemon
+    removes leftovers when it starts.
 
-  The per-host preflight shown on the session's Environment card checks every one of these.
-- **Why it is dark (#3367).** On Ubuntu 24.04+ the `bwrap-userns-restrict` AppArmor profile, the same one the
-  Codex fix above enforces, strips the capabilities the CLI's seccomp helper needs. Every sandboxed command fails,
-  and the preflight reports `Host AppArmor blocks the sandbox's seccomp helper`. The CLI's proxy sockets also sit
-  under its temp root, which is under the home the sandbox hides, so the preflight reports
-  `The CLI's proxy socket directory is under the home directory`. Do not turn the switch on until #3367 lands.
+  The per-host preflight shown on the session's Environment card checks every one of these. It runs the
+  installed CLI's real seccomp helper through the bwrap the CLI will use, checks that the bwrap copy matches
+  `/usr/bin/bwrap`, and re-runs when the CLI changes (an auto-update).
+- **Host change (#3367; both hosts, dobby first, then rocky).** It is safe while the switch is off and
+  touches no live session. The files are in `deploy/sandbox/`, and the reasoning is in
+  `docs/superpowers/plans/2026-11-13-sandbox-enablement-3367.md` §1.
+  - It installs a root-owned copy of bwrap at `/usr/libexec/viberpit/bwrap` (mode 0750, group = the ViberPit
+    user's), with its own AppArmor profile `viberpit-sbx-bwrap` that does not stack `unpriv_bwrap` on its
+    children. The path must be a root-owned chain: not `/usr/local`, which is tony-owned on dobby. The
+    preflight's `bwrap_copy` check and every sandboxed spawn re-check that each directory up to `/` is
+    root-owned and not group/other-writable.
+  - It points the CLI at the copy with `sandbox.bwrapPath` in `/etc/claude-code/managed-settings.json`.
+  - It adds the apt hook `/etc/apt/apt.conf.d/80viberpit-sbx-bwrap`, which re-copies `/usr/bin/bwrap` after
+    a bubblewrap update (group taken from the existing copy). It is a no-op without the copy and never fails
+    apt; a missed update shows as the preflight's stale-copy failure.
+  - Stock `/usr/bin/bwrap` and `bwrap-userns-restrict` are untouched, so Codex is unaffected.
+
+  ```bash
+  deploy/sandbox/install.sh <viberpit-user>   # default $SUDO_USER; loads the profile before the copy exists
+  ```
+
+  It validates the user and refuses, before changing anything, if any directory on the copy's path is not
+  root-owned or is writable by group or others, or if `/etc/claude-code/managed-settings.json` already exists
+  with other content. Merge `"sandbox": {"bwrapPath": "/usr/libexec/viberpit/bwrap"}` into that file by hand,
+  then re-run. An identical file is left as it is.
+
+  Verify:
+  1. `sudo grep viberpit-sbx-bwrap /sys/kernel/security/apparmor/profiles` shows `viberpit-sbx-bwrap (enforce)`.
+  2. `/usr/libexec/viberpit/bwrap --ro-bind / / --dev /dev --unshare-user -- cat /proc/self/attr/current`
+     prints `viberpit-sbx-bwrap (enforce)`.
+  3. The same command with `/usr/bin/bwrap` still prints `bwrap//&unpriv_bwrap (enforce)`. On rocky,
+     `codex sandbox -c 'sandbox_mode="workspace-write"' -- true` exits 0.
+  4. `sudo -u nobody /usr/libexec/viberpit/bwrap --version` gets `Permission denied`.
+  5. An unsandboxed `claude -p` still works as before.
+  6. After a deploy of this code, the Environment card's preflight shows every check OK, including
+     `seccomp_helper` and `bwrap_copy`.
+
+  Roll back with `deploy/sandbox/uninstall.sh`. It removes the managed file (only if it is byte-identical to
+  ours; a merged file is left in place with a note, so remove its `sandbox.bwrapPath` by hand), the copy and
+  the apt hook, then unloads and removes the profile. Every step runs even if an earlier one fails (an unloaded
+  profile is fine). The CLI then falls back to `/usr/bin/bwrap`, the preflight fails, and
+  the toggle is disabled.
+- **Still dark (#3367).** Do not turn the switch on until the host change is in on both hosts, this code is
+  deployed, and the live re-run (plan §5) has passed. Without the host change, the preflight reports
+  `Host AppArmor blocks the sandbox's seccomp helper`. With a `VIBERPIT_SANDBOX_TMP_PARENT` under home, it
+  reports `The CLI's proxy socket directory is under the home directory`. With a stale copy, it reports
+  `the sandbox's bwrap copy is stale; reinstall it`.
 - **Known limits:**
   - A venv in another checkout is unreadable inside the sandbox, so sandboxed worktrees need their own environment.
+  - The home read-deny also hides the real target of every home symlink that leaves home (dobby: `~/.docker`,
+    `~/.local`, …). Toolchains under `~/.local`, `~/.cargo` and the like are re-allowed by their real paths,
+    and a sandboxed session's `PATH` uses those paths. Tools that look up data through the lexical
+    `~/.local/share/...` path still miss it.
+  - Only top-level home symlinks are followed: a nested one (`~/.config/x -> /mnt/...`) leaves its target
+    readable. A dangling link's target is not hidden, so a target that appears later stays readable until the
+    next spawn. A target that is root-owned, not group/other-writable and world-readable (a file `o+r`, a
+    directory `o+rx`, e.g. `~/tool -> /opt/tool`) is not hidden: it is system software any local user can read.
+    The exemption looks at the target only: a user-owned file inside an exempt root-owned directory
+    (`/opt/aws/credentials`, tony 0600) stays readable inside the sandbox. A root-owned target readable only
+    by a group (`root:tony 0640`) is hidden.
+  - `VIBERPIT_SANDBOX_TMP_PARENT` must be a path ViberPit creates (it writes a `.viberpit-sandbox-tmp` marker).
+    An existing directory without the marker is refused, and the startup sweep never empties it.
   - Your user-level hooks do not run in sandboxed sessions.
   - User-level MCP servers still start, but their tools are denied.
   - Automations a sandboxed session triggers through GitHub follow "Sandbox new sessions".
