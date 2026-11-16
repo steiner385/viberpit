@@ -230,6 +230,10 @@ def _log_rules_trust_local_host() -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """App startup/shutdown: init DB, install log filter, start orchestrator."""
+    # #3386: never serve on a session's blanked env (an empty DB_URL would otherwise
+    # open the default SQLite store). Non-dumpable is set at import (server/__init__.py).
+    from server.startup_guard import refuse_empty_secrets
+    refuse_empty_secrets(process="edge")
     # Structured JSON logging (stdout→journald + rotating file) with correlation
     # ids and credential redaction. Idempotent; installs the redacting filter too.
     configure_logging()

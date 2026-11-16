@@ -7,6 +7,15 @@
 # process can mirror — strictly earlier than app.py could. It is idempotent, so
 # the per-entrypoint calls (server/ipc, server/deploy, server/codex.auth_main,
 # alembic env.py, Settings) are cheap no-ops after it.
+#
+# For the same reason it is the earliest point a systemd unit's main process (the edge
+# under uvicorn, the daemon, the deploy controller) can make itself non-dumpable, before
+# any module reads a secret (#3386, server/startup_guard.py). Only the unit's main
+# process: a child that merely inherits the unit's env stays dumpable.
 from viberpit.env_compat import mirror_legacy_env
 
 mirror_legacy_env()
+
+from server.startup_guard import harden_if_service  # noqa: E402
+
+harden_if_service()

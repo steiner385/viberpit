@@ -6,6 +6,8 @@ overwrite what the process was launched with, and cover dynamically-built names.
 """
 import os
 
+import pytest
+
 from viberpit import brand, env_compat
 from viberpit.env_compat import mirror_legacy_env
 
@@ -104,3 +106,68 @@ def test_withheld_env_empties_the_namespace_in_both_spellings():
     assert env_compat.withheld_env(env) == {f"{brand.ENV_PREFIX}MASTER_KEY": "",
                                             f"{brand.LEGACY_ENV_PREFIX}MASTER_KEY": "",
                                             f"{brand.ENV_PREFIX}DB_URL": ""}
+
+
+# ── what a session's own tooling still needs (#3386 follow-up) ──────────────
+
+#: Names a session's ``viberpit``/``ccrun``/``ccmax`` and the core tests read, which the
+#: withheld env keeps (``env_compat.WITHHELD_ENV_KEEP``).
+_KEPT = {"DAEMON_ROLE": "worker", "CLAUDE_BIN": "/opt/claude --x",
+         "HOME": "/srv/accounts", "REPO_ROOT": "/srv/repos"}
+
+
+def _both(suffix_values):
+    return {f"{p}{s}": v for p in (brand.ENV_PREFIX, brand.LEGACY_ENV_PREFIX)
+            for s, v in suffix_values.items()}
+
+
+def test_withheld_env_keeps_what_a_sessions_own_tooling_reads():
+    env = {**_both(_KEPT), **_both({"MASTER_KEY": "k"})}
+    assert env_compat.withheld_env(env) == _both({"MASTER_KEY": ""})
+
+
+def test_a_kept_name_is_still_withheld_when_its_value_carries_userinfo():
+    env = _both({s: "https://user:pw@host/x" for s in env_compat.WITHHELD_ENV_KEEP})
+    assert env_compat.withheld_env(env) == {k: "" for k in env}
+
+
+def test_no_kept_name_is_secret_shaped():
+    for suffix in env_compat.WITHHELD_ENV_KEEP:
+        assert not env_compat.is_secret_shaped(f"{brand.ENV_PREFIX}{suffix}", "")
+
+
+def test_secret_shaped_names_and_values():
+    for name in ("VIBERPIT_MASTER_KEY", "VIBERPIT_GH_PROJECT_TOKEN", "VIBERPIT_SESSION_SECRET",
+                 "VIBERPIT_PG_PASSWORD", "VIBERPIT_DB_URL", "VIBERPIT_SENTRY_DSN",
+                 "VIBERPIT_SESSIOND_TLS_KEY", "VIBERPIT_CLAUDE_CREDS_DIR",
+                 "VIBERPIT_OAT_WORK_GMAIL_COM", f"{brand.LEGACY_ENV_PREFIX}GITHUB_APP_PRIVATE_KEY_PATH"):
+        assert env_compat.is_secret_shaped(name, ""), name
+    assert env_compat.is_secret_shaped("VIBERPIT_REPO_ROOT", "postgresql://u:pw@h/db")
+    assert not env_compat.is_secret_shaped("VIBERPIT_REPO_ROOT", "/srv/repos")
+
+
+@pytest.fixture
+def session_shell(monkeypatch):
+    """os.environ as a session's shell sees it: a worker daemon's env, then the override."""
+    for name, value in {**_both(_KEPT), **_both({"MASTER_KEY": "k"})}.items():
+        monkeypatch.setenv(name, value)
+    for name, value in env_compat.withheld_env(dict(os.environ)).items():
+        monkeypatch.setenv(name, value)
+
+
+def test_a_worker_session_still_knows_it_is_on_a_worker(session_shell):
+    """rocky's daemon runs with DAEMON_ROLE=worker; ``daemon_role()`` raises on ""."""
+    from viberpit import fleet_role
+    assert fleet_role.daemon_role() == "worker"
+
+
+def test_ccmax_still_finds_the_claude_command(session_shell):
+    from viberpit import launcher
+    from viberpit.config import load_config
+    assert launcher._claude_cmd(load_config()) == ["/opt/claude", "--x"]
+
+
+def test_viberpit_still_reads_the_account_store_and_repo_root(session_shell):
+    from viberpit import cli, paths
+    assert str(paths.root()) == "/srv/accounts"
+    assert cli._repo_root() == "/srv/repos"

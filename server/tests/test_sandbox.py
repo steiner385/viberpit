@@ -2008,9 +2008,16 @@ async def test_no_cli_gets_the_daemon_namespace(tmp_path, monkeypatch):
         str(tmp_path), str(tmp_path / "cfg"), None, "full-auto", None,
         extra_env={"GH_NO_UPDATE_NOTIFIER": "1"})
     env = await _cli_process_env(client)
+    # Only the non-secret names a session's own tooling reads may stay set
+    # (env_compat.WITHHELD_ENV_KEEP: role, claude command, account store, clone root).
+    from viberpit.env_compat import WITHHELD_ENV_KEEP
+    kept = {f"{p}{s}" for p in (brand.ENV_PREFIX, brand.LEGACY_ENV_PREFIX)
+            for s in WITHHELD_ENV_KEEP}
     leaked = {k: v for k, v in env.items()
-              if k.startswith((brand.ENV_PREFIX, brand.LEGACY_ENV_PREFIX)) and v}
+              if k.startswith((brand.ENV_PREFIX, brand.LEGACY_ENV_PREFIX)) and v
+              and k not in kept}
     assert leaked == {}
+    assert env[f"{brand.ENV_PREFIX}MASTER_KEY"] == ""
     assert env["D23_KEEP_ME"] == "1" and env["GH_NO_UPDATE_NOTIFIER"] == "1"
     assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "cfg")
 

@@ -24,6 +24,24 @@ from server.tests import _run_scratch
 _run_scratch.install()
 
 # --------------------------------------------------------------------------- #
+# A suite run from inside a ViberPit session inherits the daemon's namespace  #
+# as EMPTY values: every agent CLI's env withholds it that way (#3386,        #
+# env_compat.withheld_env — the SDK cannot unset a name). Settings already    #
+# reads "" as unset (env_ignore_empty), but the edge's startup guard refuses  #
+# to start on an empty secret-shaped name (server/startup_guard.py), so every #
+# TestClient lifespan would fail, and a few module-level float()/int() reads  #
+# of tuning knobs raise on "". Empty means unset here: pop them.              #
+# --------------------------------------------------------------------------- #
+def _no_withheld_namespace_names():
+    from viberpit import brand
+    prefixes = (brand.ENV_PREFIX, brand.LEGACY_ENV_PREFIX)
+    for name in [k for k, v in os.environ.items() if not v and k.startswith(prefixes)]:
+        os.environ.pop(name, None)
+
+
+_no_withheld_namespace_names()
+
+# --------------------------------------------------------------------------- #
 # The operator's HOME must not leak into tests either (#3033).                #
 #                                                                              #
 # CI runs on a fresh, empty runner HOME; a dev box's HOME holds a live         #

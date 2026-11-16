@@ -59,7 +59,7 @@ The non-secret bind (`VIBERPIT_SESSIOND_ENDPOINT`) goes in the `0644` `daemon-en
 the health watchdog (`User=tony`) reads the daemon unit's env files to learn what to probe. It skips
 a file it cannot read, and if the bind is in none it can read, it alerts `local-daemon-unprobeable`
 and does not restart the daemon. Agent CLIs also get the daemon's `VIBERPIT_*` env emptied
-(`env_compat.withheld_env`, #3386). Whatever file the daemon actually loads is the one that matters for its `PATH`; check it
+(`env_compat.withheld_env`, #3386; it keeps only the non-secret names a session's own `viberpit` tooling reads, `WITHHELD_ENV_KEEP`). The main process of each ViberPit unit (edge, daemon, deploy controller, Codex authority: `SYSTEMD_EXEC_PID` is its own pid) is non-dumpable (`server/startup_guard.py`), so its `/proc/<pid>/environ`, ptrace and core dumps are root-only; `py-spy`, `gdb` or `lsof` against it needs `sudo`. Its `claude`/`codex` children, any `python` a session runs, and a hand-run edge stay dumpable; the daemon's entrypoint hardens itself even when run by hand. The edge and daemon refuse to start when a secret-shaped `VIBERPIT_*` name is set but empty (a session's blanked env). All of this is defence in depth: a session still runs as the daemon's user and can read that user's own files (the account store, `~/.config/gh`); real containment is the sandbox. Whatever file the daemon actually loads is the one that matters for its `PATH`; check it
 with `systemctl cat viberpit-daemon.service`. The daemon does not strictly need `~/.local/bin` on that
 `PATH` any more: `server/sessions/claude_bin.py` falls back to the native installer's well-known
 locations (`~/.local/bin/claude`, newest `~/.local/share/claude/versions/*`) when `claude` is not on

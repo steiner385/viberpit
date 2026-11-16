@@ -328,7 +328,9 @@ def test_session_needs_you_watch_matches_needs_input_for_that_session():
 
 
 def test_create_watch_reports_whether_push_is_configured():
-    with _client(env={"VIBERPIT_VAPID_PRIVATE_KEY": ""}) as c:
+    # The VAPID key is the module constant patched below; an empty env value would stop
+    # the edge from starting (#3386, startup_guard).
+    with _client() as c:
         from server import config
         with patch.object(config, "VAPID_PRIVATE_KEY", ""):
             off = c.post("/api/assistant/watches",

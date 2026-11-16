@@ -116,9 +116,10 @@ def check_disk_headroom(
     VIBERPIT_MIN_FREE_INODES.
     """
     if min_free_bytes is None:
-        min_free_bytes = int(os.environ.get("VIBERPIT_MIN_FREE_BYTES", _MIN_FREE_BYTES_DEFAULT))
+        # `or`: an empty value (a session's withheld env, #3386) means unset.
+        min_free_bytes = int(os.environ.get("VIBERPIT_MIN_FREE_BYTES") or _MIN_FREE_BYTES_DEFAULT)
     if min_free_inodes is None:
-        min_free_inodes = int(os.environ.get("VIBERPIT_MIN_FREE_INODES", _MIN_FREE_INODES_DEFAULT))
+        min_free_inodes = int(os.environ.get("VIBERPIT_MIN_FREE_INODES") or _MIN_FREE_INODES_DEFAULT)
     st = os.statvfs(path)
     free_bytes = st.f_frsize * st.f_bavail
     if free_bytes < min_free_bytes:

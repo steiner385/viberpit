@@ -4,12 +4,15 @@ Reads settings from environment variables. For a dev run, copy .env.example → 
 fill in values; a systemd-managed process ignores .env (see ``_dotenv_file``).
 """
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from viberpit import brand
 from viberpit.env_compat import mirror_legacy_env
 from server.obs.logdir import default_log_dir
+
+_T = TypeVar("_T")
 
 # Every alias below spells the legacy prefix, and this module reads os.environ in its
 # body. Mirror before any of that, so a host whose env file has already moved to
@@ -55,6 +58,35 @@ def opt_csv_items(raw: str | None) -> list[str] | None:
     if raw is None:
         return None
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+
+def set_but_empty(name: str, fallback: Callable[[], _T]) -> Callable[[], str | _T]:
+    """A pydantic ``default_factory`` for a field whose SET-BUT-EMPTY value means
+    something ("carry none", "no file log", "no gated tier").
+
+    ``Settings`` ignores empty env values (``env_ignore_empty``, #3386): pydantic then
+    calls the default factory, and this one still returns ``""`` when *name* is set
+    to the empty string, else ``fallback()``. A non-empty value never reaches it.
+
+    The four users are ``VIBERPIT_REAUTH_EXTENSIONS``, ``VIBERPIT_REAUTH_COOKIE_HOSTS``,
+    ``VIBERPIT_LOG_DIR`` and ``VIBERPIT_MODEL_APPROVAL_DENYLIST``.
+
+    Two known edges of ``env_ignore_empty``:
+
+    * Inside a session, a name the daemon had set reaches the session's processes as
+      ``""`` (``env_compat.withheld_env``). For these four that reads as "set but
+      empty" — carry no extension or cookie, log to stdout only, gate no model tier —
+      not as the daemon's value or the default. Only a ViberPit process run by hand in
+      a session sees it; the edge and daemon refuse to start on a blanked env
+      (``startup_guard``), and the CLI reads none of the four.
+    * Dev runs only: outside systemd, Settings also reads a ``.env`` in the working
+      directory (``_dotenv_file``). An empty value in the shell used to override that
+      file; now it is ignored and the ``.env`` value applies. A systemd-managed process
+      never reads ``.env``, so production is unaffected."""
+    def factory() -> str | _T:
+        return "" if os.environ.get(name) == "" else fallback()
+    return factory
 
 
 def parse_public_origin(raw: str | None) -> str | None:
@@ -205,13 +237,16 @@ try:
         # Extension ids carried into the temp login profile (comma list). Unset → the
         # core default (1Password, viberpit.auth_login.REAUTH_EXTENSION_IDS); set but
         # empty → carry none. Spec: 2026-09-04-reauth-profile-fidelity-design.md D2.
-        reauth_extension_ids: str | None = Field(default=None, alias="VIBERPIT_REAUTH_EXTENSIONS")
+        reauth_extension_ids: str | None = Field(
+            default_factory=set_but_empty("VIBERPIT_REAUTH_EXTENSIONS", lambda: None),
+            alias="VIBERPIT_REAUTH_EXTENSIONS")
         # Domains whose cookies are carried into the temp login profile (comma list).
         # Unset → the core default (viberpit.auth_login.REAUTH_COOKIE_HOSTS, empty);
         # set but empty → carry none. Setting e.g. "google.com" re-presents that
         # session from a throwaway profile — see the warning on REAUTH_COOKIE_HOSTS.
         reauth_cookie_hosts: str | None = Field(
-            default=None, alias="VIBERPIT_REAUTH_COOKIE_HOSTS")
+            default_factory=set_but_empty("VIBERPIT_REAUTH_COOKIE_HOSTS", lambda: None),
+            alias="VIBERPIT_REAUTH_COOKIE_HOSTS")
         # Copy the source profile's saved-password database into the temp profile.
         # An OAuth login never needs it; off by default (#1105).
         reauth_copy_login_data: bool = Field(
@@ -308,10 +343,12 @@ try:
         # `os.access("/var/log", os.W_OK)` (the parent, root-owned, so always false
         # under User=tony) and fell through to the sshfs-shared account store, where
         # two hosts rotated one file (#1010).
-        # No os.environ.get() here: pydantic-settings reads the alias itself and only
-        # calls default_factory when the var is ABSENT, so an env read would be dead
-        # code. The dataclass fallback below has no alias machinery and needs one.
-        log_dir: str = Field(default_factory=default_log_dir, alias="VIBERPIT_LOG_DIR")
+        # Set but empty = stdout only. pydantic-settings reads the alias itself and
+        # calls default_factory when the var is absent or empty (env_ignore_empty);
+        # set_but_empty keeps the empty meaning. The dataclass fallback below has no
+        # alias machinery and reads the env itself.
+        log_dir: str = Field(default_factory=set_but_empty("VIBERPIT_LOG_DIR", default_log_dir),
+                             alias="VIBERPIT_LOG_DIR")
         client_log_level: str = Field(default="warn", alias="VIBERPIT_CLIENT_LOG_LEVEL")
         # Field Core Web Vitals (#1411). On by default: the targets in the issue are
         # stated as field p75s, and a collector nobody remembers to switch on measures
@@ -348,8 +385,9 @@ try:
         # the ops-level default (see server/sessions/model_policy.resolve_model_policy).
         model_approval_action: str = Field(
             default="require_approval", alias="VIBERPIT_MODEL_APPROVAL_ACTION")
-        model_approval_denylist: str = Field(
-            default="fable", alias="VIBERPIT_MODEL_APPROVAL_DENYLIST")
+        model_approval_denylist: str = Field(  # set but empty = no gated tier
+            default_factory=set_but_empty("VIBERPIT_MODEL_APPROVAL_DENYLIST", lambda: "fable"),
+            alias="VIBERPIT_MODEL_APPROVAL_DENYLIST")
         # Self-directed model switching: whether sessions are told they may request a
         # model change (and whether a marker found in output is acted on at all).
         self_model_switch_enabled: bool = Field(
