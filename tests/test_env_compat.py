@@ -92,3 +92,15 @@ def test_force_re_runs_against_os_environ(monkeypatch):
     assert mirror_legacy_env(force=True) == {
         "CCSWITCH_ENV_COMPAT_PROBE": "VIBERPIT_ENV_COMPAT_PROBE"}
     assert fake["CCSWITCH_ENV_COMPAT_PROBE"] == "2"
+
+
+def test_withheld_env_empties_the_namespace_in_both_spellings():
+    """Every agent CLI's env override (#3386). Live re-run 2026-11-13 (#3367): a shell
+    listed the legacy-prefix master key — the daemon's env, and env_compat's legacy
+    mirror of it, rode the CLI's env into the agent's shell."""
+    env = {"PATH": "/usr/bin", "HOME": "/home/u",
+           f"{brand.ENV_PREFIX}MASTER_KEY": "k", f"{brand.LEGACY_ENV_PREFIX}MASTER_KEY": "k",
+           f"{brand.ENV_PREFIX}DB_URL": "postgresql://u:pw@h/db"}
+    assert env_compat.withheld_env(env) == {f"{brand.ENV_PREFIX}MASTER_KEY": "",
+                                            f"{brand.LEGACY_ENV_PREFIX}MASTER_KEY": "",
+                                            f"{brand.ENV_PREFIX}DB_URL": ""}

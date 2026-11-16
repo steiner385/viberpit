@@ -272,13 +272,13 @@ def probe_mutations() -> None:  # noqa: C901 - spike probe, deliberate length
 
 
 def pat_token() -> str:
+    # From the caller's env only: daemon.env is root-only (#3391), e.g.
+    #   VIBERPIT_GH_PROJECT_TOKEN="$(sudo sed -n 's/^VIBERPIT_GH_PROJECT_TOKEN=//p' \
+    #     /etc/viberpit/daemon.env)" python scripts/spike_gh_projects_v2.py
     import os
     if os.environ.get("VIBERPIT_GH_PROJECT_TOKEN"):
         return os.environ["VIBERPIT_GH_PROJECT_TOKEN"]
-    for line in open("/etc/ccswitch/daemon.env"):
-        if line.strip().startswith("VIBERPIT_GH_PROJECT_TOKEN="):
-            return line.strip().split("=", 1)[1]
-    raise SystemExit("VIBERPIT_GH_PROJECT_TOKEN not in daemon.env")
+    raise SystemExit("VIBERPIT_GH_PROJECT_TOKEN is not set (daemon.env is root-only; see pat_token)")
 
 
 def probe_phaseb() -> None:  # noqa: C901 - spike probe, deliberate length

@@ -94,3 +94,18 @@ def test_helper_env_never_logs_token_value(monkeypatch, tmp_path, caplog):
 
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-super-secret"
     assert "sk-ant-oat01-super-secret" not in caplog.text
+
+
+def test_helper_env_withholds_the_daemon_namespace(monkeypatch, tmp_path):
+    """A helper's CLI starts the account's MCP servers and hooks; none of them may get the
+    daemon's secrets (#3386). Emptied, because the SDK merges os.environ underneath."""
+    from viberpit import brand
+    monkeypatch.setenv(f"{brand.ENV_PREFIX}MASTER_KEY", "secret")
+    monkeypatch.setenv(f"{brand.LEGACY_ENV_PREFIX}DB_URL", "postgresql://u:pw@h/db")
+    monkeypatch.setattr(account_auth._accounts, "list_accounts", lambda: [])
+
+    env = account_auth.helper_env(str(tmp_path), writes_back=True)
+
+    assert env[f"{brand.ENV_PREFIX}MASTER_KEY"] == ""
+    assert env[f"{brand.LEGACY_ENV_PREFIX}DB_URL"] == ""
+    assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path)

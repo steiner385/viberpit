@@ -38,6 +38,7 @@ from typing import Any, TypeVar
 from viberpit import accounts as _accounts
 from viberpit import credential_envelope, crypto
 from viberpit.config import load_config
+from viberpit.env_compat import withheld_env
 from viberpit import paths as _paths
 from server.aio import BlockingIOTimeout, run_blocking_io
 from server.config import env_float
@@ -76,7 +77,8 @@ def helper_env(
 ) -> dict[str, str]:
     """Build the SDK env for a helper call site that has only a ``config_dir``.
 
-    Returns ``{**os.environ, "CLAUDE_CONFIG_DIR": <scratch mirror of config_dir>}`` merged with
+    Returns ``{**os.environ, "CLAUDE_CONFIG_DIR": <scratch mirror of config_dir>}``, with the
+    daemon's own namespace emptied (``env_compat.withheld_env``, #3386), merged with
     ``oauth_env_for(account)`` for the account *config_dir* reverse-maps to (via
     ``adopt._map_account``, matching by realpath equality against each known account's config
     dir) — so a helper call against an account whose browser-OAuth refresh is dead but whose
@@ -109,7 +111,7 @@ def helper_env(
     changes, revisit.
     """
     effective_dir = config_dir if writes_back else helper_config_dir(config_dir)
-    env = {**os.environ, "CLAUDE_CONFIG_DIR": effective_dir}
+    env = {**os.environ, **withheld_env(os.environ), "CLAUDE_CONFIG_DIR": effective_dir}
     try:
         if account is None:
             known = [a["name"] for a in _accounts.list_accounts()]

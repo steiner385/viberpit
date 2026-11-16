@@ -51,8 +51,15 @@ Holds the secrets/config the server needs — `VIBERPIT_DB_URL`, `VIBERPIT_MASTE
 — plus `PATH`/`HOME` so the service can find `git`/`node`/`claude`. `chmod 600`, `root:root`.
 
 A host may point the **daemon** at a different env file via a local
-`viberpit-daemon.service.d/` drop-in (`EnvironmentFile=` then `EnvironmentFile=/etc/viberpit/daemon.env`,
-as on dobby). Whatever file the daemon actually loads is the one that matters for its `PATH`; check it
+`viberpit-daemon.service.d/` drop-in (`EnvironmentFile=` then
+`EnvironmentFile=/etc/viberpit/daemon-endpoint.env` and `EnvironmentFile=/etc/viberpit/daemon.env`, as on
+dobby). `daemon.env` holds secrets and is `root:root 0600` like `viberpit.env`: every agent session
+runs as the daemon's user, so a group-readable file is readable from any session's shell (#3391).
+The non-secret bind (`VIBERPIT_SESSIOND_ENDPOINT`) goes in the `0644` `daemon-endpoint.env`, because
+the health watchdog (`User=tony`) reads the daemon unit's env files to learn what to probe. It skips
+a file it cannot read, and if the bind is in none it can read, it alerts `local-daemon-unprobeable`
+and does not restart the daemon. Agent CLIs also get the daemon's `VIBERPIT_*` env emptied
+(`env_compat.withheld_env`, #3386). Whatever file the daemon actually loads is the one that matters for its `PATH`; check it
 with `systemctl cat viberpit-daemon.service`. The daemon does not strictly need `~/.local/bin` on that
 `PATH` any more: `server/sessions/claude_bin.py` falls back to the native installer's well-known
 locations (`~/.local/bin/claude`, newest `~/.local/share/claude/versions/*`) when `claude` is not on

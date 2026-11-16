@@ -520,7 +520,10 @@ try:
             default=20, alias="VIBERPIT_ASSISTANT_WATCH_MAX_PER_IDENTITY")
 
         # No env_file here: __init__ passes _dotenv_file(), which is None under systemd.
-        model_config = {"populate_by_name": True, "extra": "ignore"}
+        # An empty value is unset: every agent CLI gets this namespace emptied
+        # (env_compat.withheld_env, #3386), and its shell must still import the app
+        # (`""` is no valid bool or int) — this repo's own tests run there.
+        model_config = {"populate_by_name": True, "extra": "ignore", "env_ignore_empty": True}
 
         @property
         def rules_trust_local_host(self) -> bool:

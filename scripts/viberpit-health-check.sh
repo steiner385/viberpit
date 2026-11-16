@@ -173,7 +173,23 @@ if [ -z "$LOCAL_BIND" ]; then
   [ -z "$LOCAL_BIND" ] && LOCAL_BIND=$(daemon_unit_env CCSWITCH_SESSIOND_SOCKET)
   if [ -n "$LOCAL_BIND" ] && [[ "$LOCAL_BIND" != *://* ]]; then LOCAL_BIND="unix://$LOCAL_BIND"; fi
 fi
-[ -z "$LOCAL_BIND" ] && LOCAL_BIND="unix://$SOCK"   # pre-fleet default: the well-known UDS
+# An env file this user cannot read (a secrets file kept root-only, #3391) may hold the
+# bind. With none found elsewhere the bind is UNKNOWN, not the default UDS: guessing the
+# socket for an https daemon is #839 again, so the wedge check stands down (below) and
+# alerts. Publish the endpoint in a world-readable file the unit also loads
+# (/etc/viberpit/daemon-endpoint.env, deploy/README.md).
+daemon_unit_unreadable_env_files() {  # the unit's EnvironmentFile= paths we cannot read
+  local f
+  while IFS= read -r f; do
+    f="${f%% *}"
+    [ -n "$f" ] && [ -e "$f" ] && [ ! -r "$f" ] && printf '%s ' "$f"
+  done < <(systemctl show ${DAEMON_UNIT} -p EnvironmentFiles --value 2>/dev/null)
+}
+LOCAL_BIND_UNKNOWN=""
+if [ -z "$LOCAL_BIND" ]; then
+  LOCAL_BIND_UNKNOWN=$(daemon_unit_unreadable_env_files)
+  LOCAL_BIND="unix://$SOCK"   # pre-fleet default: the well-known UDS
+fi
 LOCAL_BIND_SCHEME=unix LOCAL_BIND_SOCK="${LOCAL_BIND#unix://}"
 [[ "$LOCAL_BIND" == https://* ]] && LOCAL_BIND_SCHEME=https
 
@@ -350,9 +366,13 @@ restart_daemon_bounded() {
 # An https-bound daemon can only be probed with the edge's client cert material. With
 # it missing, a probe "failure" says nothing about the daemon — restarting on a probe
 # we cannot run is #839's failure mode with a different root cause, so don't.
-PROBE_POSSIBLE=1
-if [ "$LOCAL_BIND_SCHEME" = https ] && { [ -z "$CLIENT_CERT" ] || [ -z "$CLIENT_KEY" ] || [ -z "$CLIENT_CA" ]; }; then
+PROBE_POSSIBLE=1 UNPROBEABLE_WHY=""
+if [ -n "$LOCAL_BIND_UNKNOWN" ]; then
   PROBE_POSSIBLE=0
+  UNPROBEABLE_WHY="local daemon's bind is unknown: no endpoint or socket in its readable env, and ${LOCAL_BIND_UNKNOWN% } is unreadable to $(id -un) — publish VIBERPIT_SESSIOND_ENDPOINT in a readable env file the unit loads (/etc/viberpit/daemon-endpoint.env)"
+elif [ "$LOCAL_BIND_SCHEME" = https ] && { [ -z "$CLIENT_CERT" ] || [ -z "$CLIENT_KEY" ] || [ -z "$CLIENT_CA" ]; }; then
+  PROBE_POSSIBLE=0
+  UNPROBEABLE_WHY="local daemon binds $LOCAL_BIND but VIBERPIT_SESSIOND_CLIENT_CERT/KEY/CA are incomplete in the health-check env"
 fi
 
 healthy=0
@@ -368,7 +388,7 @@ systemctl is-active --quiet ${DAEMON_UNIT} && LOCAL_DAEMON_ACTIVE=1
 
 if [ "$PROBE_POSSIBLE" -eq 0 ]; then
   if [ "$LOCAL_DAEMON_ACTIVE" -eq 1 ]; then
-    alert local-daemon-unprobeable "local daemon binds $LOCAL_BIND but VIBERPIT_SESSIOND_CLIENT_CERT/KEY/CA are incomplete in the health-check env — wedge watchdog is blind (and deliberately NOT restarting on a probe it cannot run)"
+    alert local-daemon-unprobeable "$UNPROBEABLE_WHY — wedge watchdog is blind (and deliberately NOT restarting on a probe it cannot run)"
   else
     clear_alert local-daemon-unprobeable
   fi

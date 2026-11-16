@@ -22,9 +22,12 @@ that targets the wrong transport still passes a grep.
 """
 from __future__ import annotations
 
+import os
 import socket
 import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "ccswitch-health-check.sh"
@@ -45,7 +48,7 @@ def _make_shims(
     *,
     unit_active: bool,
     unit_environment: str = "",
-    unit_env_file: Path | None = None,
+    unit_env_file: Path | list[Path] | None = None,
     uds_healthz_ok: bool = False,
     https_healthz_ok: bool = False,
     registry_endpoints: str = "",
@@ -66,7 +69,8 @@ def _make_shims(
     state = tmp_path / "shim-state"
     state.mkdir()
 
-    env_files_line = f"{unit_env_file} (ignore_errors=yes)" if unit_env_file else ""
+    env_files = unit_env_file if isinstance(unit_env_file, list) else [unit_env_file]
+    env_files_line = "\n".join(f"{f} (ignore_errors=yes)" for f in env_files if f)
     _write_shim(bindir, "systemctl", f"""
 if [ "$1" = "is-active" ]; then
   exit {0 if unit_active else 3}
@@ -197,6 +201,60 @@ def test_wedge_probe_targets_the_daemon_https_bind_not_the_uds(tmp_path: Path) -
     assert f"{LOCAL_HTTPS}/healthz" in curl_calls, "watchdog must probe the https bind"
     assert "--unix-socket" not in curl_calls, "no UDS exists for an https-bound daemon"
     assert _calls(state, "sudo-calls") == "", proc.stdout
+
+
+needs_unreadable_files = pytest.mark.skipif(
+    os.geteuid() == 0, reason="root reads a mode-000 file; the case cannot arise")
+
+
+@needs_unreadable_files
+def test_endpoint_published_beside_a_root_only_secrets_file_is_probed(tmp_path: Path) -> None:
+    """#3391's layout: the secrets file is root-only (unreadable to the watchdog's user)
+    and the bind lives in a readable endpoint file the unit also loads."""
+    endpoint = tmp_path / "daemon-endpoint.env"
+    endpoint.write_text(f"VIBERPIT_SESSIOND_ENDPOINT={LOCAL_HTTPS}\n")
+    secrets = tmp_path / "daemon.env"
+    secrets.write_text("VIBERPIT_MASTER_KEY=k\n")
+    secrets.chmod(0)
+    bindir, state = _make_shims(
+        tmp_path, unit_active=True, unit_env_file=[endpoint, secrets], https_healthz_ok=True
+    )
+    proc = _run(tmp_path, bindir, script_env={"VIBERPIT_SESSIOND_ENDPOINT": LOCAL_HTTPS})
+    curl_calls = _calls(state, "curl-calls")
+    assert f"{LOCAL_HTTPS}/healthz" in curl_calls
+    assert "--unix-socket" not in curl_calls
+    assert _calls(state, "sudo-calls") == "", proc.stdout
+    assert "ALERT[local-daemon-unprobeable]" not in proc.stdout
+
+
+@needs_unreadable_files
+def test_bind_hidden_in_an_unreadable_env_file_is_never_guessed_as_the_uds(
+    tmp_path: Path,
+) -> None:
+    """The endpoint only in a root-only file: the watchdog cannot know the bind. Probing
+    the default UDS would fail forever and wedge-restart a healthy https daemon every
+    cooldown (#839) — so it stands down and alerts instead."""
+    secrets = tmp_path / "daemon.env"
+    secrets.write_text(f"VIBERPIT_SESSIOND_ENDPOINT={LOCAL_HTTPS}\n")
+    secrets.chmod(0)
+    bindir, state = _make_shims(
+        tmp_path, unit_active=True, unit_env_file=secrets, uds_healthz_ok=False
+    )
+    proc = _run(tmp_path, bindir, script_env={})
+    assert _calls(state, "sudo-calls") == "", proc.stdout
+    assert "--unix-socket" not in _calls(state, "curl-calls")
+    assert "ALERT[local-daemon-unprobeable]" in proc.stdout
+    assert "bind is unknown" in proc.stdout and str(secrets) in proc.stdout
+
+
+def test_a_missing_optional_env_file_does_not_make_the_bind_unknown(tmp_path: Path) -> None:
+    """``EnvironmentFile=-/path`` that does not exist is not a hidden bind: the
+    pre-fleet UDS default still applies and a wedge is still restarted."""
+    bindir, state = _make_shims(
+        tmp_path, unit_active=True, unit_env_file=tmp_path / "absent.env", uds_healthz_ok=False
+    )
+    proc = _run(tmp_path, bindir, script_env={})
+    assert "systemctl restart viberpit-daemon.service" in _calls(state, "sudo-calls"), proc.stdout
 
 
 def test_wedge_restart_still_fires_when_the_https_daemon_is_unresponsive(
