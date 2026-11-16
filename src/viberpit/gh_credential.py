@@ -218,7 +218,12 @@ _RE_UNREACHABLE = re.compile(
     r"error connecting to |check your internet connection"
     r"|net/http: TLS handshake timeout"
     r"|could not resolve host:|failed to connect to \S+ port"
-    r"|connection timed out|network is unreachable",
+    r"|connection timed out|network is unreachable"
+    # Go's net dialer, passed through by gh (#3379): the address is required so a
+    # bare ``dial tcp: i/o timeout`` with no target stays a per-target failure.
+    r"|dial tcp \S+:\d+: i/o timeout"
+    r"|dial tcp: lookup \S+.*no such host"
+    r"|dial tcp \S+:\d+: connect: (?:connection refused|no route to host)",
     re.IGNORECASE,
 )
 
