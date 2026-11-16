@@ -199,12 +199,14 @@ async def test_infer_goal_failure_log_carries_kind_and_cli_detail(caplog):
         raise RuntimeError("Claude Code returned an error result: success")
 
     try:
-        with caplog.at_level("WARNING", logger="server.sessions.goal_inference"):
+        with caplog.at_level("INFO", logger="server.sessions.goal_inference"):
             g = await infer_goal("n", [], config_dir="/cfg/x", query_fn=denied)
     finally:
         helper_call.reset_breakers()
     assert g is None
     [rec] = [r for r in caplog.records if r.name == "server.sessions.goal_inference"]
+    # helper_call files the one WARNING per block; this line stays INFO (#3397).
+    assert rec.levelname == "INFO"
     msg = rec.getMessage()
     assert "kind=auth_forbidden" in msg
     assert "'Your organization has disabled Claude subscription access'" in msg
