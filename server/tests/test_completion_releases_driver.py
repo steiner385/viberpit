@@ -212,17 +212,17 @@ def test_persist_status_does_not_block_on_a_slow_aclose(tmp_path):
     spawned task, _persist_status returns promptly even though this driver's
     aclose() never completes on its own. Verified this actually catches a revert:
     temporarily inlining `await live_driver.aclose()` in _persist_status (undoing
-    the self._spawn(...) deferral) makes this test hit the 1s wait_for timeout and
+    the self._spawn(...) deferral) makes this test hit the wait_for timeout and
     fail with asyncio.TimeoutError."""
     async def run():
         orch = await _build_orch(tmp_path)
         orch.record("s1").auto_archive_opt_out_reason = "manual-unarchive"
         driver = _GatedCloseDriver()
         orch._drivers["s1"] = driver
-        # 1s is generous: the fix returns in well under a millisecond, since it
-        # never awaits this driver's aclose() at all — only a broken (inline-await)
-        # version would ever approach this timeout.
-        await asyncio.wait_for(orch._persist_status("s1", "complete"), timeout=1)
+        # A broken (inline-await) version blocks forever on the never-set gate, so
+        # the bound only needs to outlast DB/scheduling jitter on a loaded CI
+        # host (1s flaked at ~17% of shas), not to measure speed.
+        await asyncio.wait_for(orch._persist_status("s1", "complete"), timeout=30)
         assert "s1" not in orch._drivers   # popped synchronously regardless
         assert driver.closed is False      # release is still blocked on the gate
         assert "s1" in orch._releasing     # Fix 1 bookkeeping: tracked in flight
