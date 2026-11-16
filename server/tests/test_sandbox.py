@@ -796,10 +796,9 @@ class _World:
         self.controls: list[FakeControl] = []
 
     def factory(self, cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None,
-                options_overlay=None, flag_settings=None, extra_env=None, stderr=None,
-                sandboxed=None):
+                options_overlay=None, flag_settings=None, extra_env=None, stderr=None):
         self.spawns.append({"flag_settings": flag_settings, "extra_env": extra_env,
-                            "stderr": stderr, "resume": resume, "sandboxed": sandboxed})
+                            "stderr": stderr, "resume": resume})
         sent = ((flag_settings or {}).get("sandbox") or {}).get("filesystem")
         reply = _echo(self.dialogs.pop(0) if len(self.dialogs) > 1 else self.dialogs[0],
                       cwd, cfg, sent=sent)
@@ -914,7 +913,6 @@ def test_a_sandboxed_spawn_sends_the_block_and_the_env_and_is_verified(orch_env,
     assert spawn["extra_env"]["GH_NO_UPDATE_NOTIFIER"] == "1"
     assert spawn["extra_env"]["GH_CONFIG_DIR"] == str(tmp_path / "vp")
     assert callable(spawn["stderr"])
-    assert spawn["sandboxed"] is True
     assert world.controls[0].sent[0] == {"subtype": "get_sandbox_dialog"}
     assert rec.sandbox_state == "active" and row.sandbox_state == "active"
 
@@ -929,7 +927,6 @@ def test_an_unsandboxed_session_spawns_exactly_as_before(orch_env, tmp_path):
     asyncio.run(go())
     assert not world.sandboxed(0)
     assert world.spawns[0]["stderr"] is None
-    assert world.spawns[0]["sandboxed"] is None
     assert "GH_NO_UPDATE_NOTIFIER" not in (world.spawns[0]["extra_env"] or {})
     assert world.controls[0].sent == []
 
@@ -1975,18 +1972,6 @@ async def test_an_unsandboxed_spawn_has_no_confinement_and_keeps_project_mcp_tru
     assert settings["enableAllProjectMcpServers"] is True and "disableAllHooks" not in settings
 
 
-def test_the_withheld_env_empties_the_daemon_namespace_in_both_spellings():
-    """Live re-run 2026-11-13: a sandboxed shell listed the legacy-prefix master key — the
-    daemon's env (and env_compat's legacy mirror of it) rode the CLI's env into bwrap."""
-    from viberpit import brand
-    env = {"PATH": "/usr/bin", "HOME": "/home/u",
-           f"{brand.ENV_PREFIX}MASTER_KEY": "k", f"{brand.LEGACY_ENV_PREFIX}MASTER_KEY": "k",
-           f"{brand.ENV_PREFIX}DB_URL": "postgresql://u:pw@h/db"}
-    assert sb.withheld_env(env) == {f"{brand.ENV_PREFIX}MASTER_KEY": "",
-                                    f"{brand.LEGACY_ENV_PREFIX}MASTER_KEY": "",
-                                    f"{brand.ENV_PREFIX}DB_URL": ""}
-
-
 async def _cli_process_env(client) -> dict[str, str]:
     """The env the SDK would start the CLI with, from its own transport (it merges
     ``os.environ`` under ``options.env``), captured at the process spawn."""
@@ -2005,7 +1990,11 @@ async def _cli_process_env(client) -> dict[str, str]:
 
 
 @pytest.mark.asyncio
-async def test_a_sandboxed_cli_does_not_get_the_daemon_namespace(tmp_path, monkeypatch):
+async def test_no_cli_gets_the_daemon_namespace(tmp_path, monkeypatch):
+    """Every spawn, sandboxed or not (#3386): the agent's shell inherits the CLI's env, so the
+    daemon's secrets must not be in it. Asserted on the env the SDK's own transport
+    would spawn the CLI with — a fix that only left the keys out of ``options.env``
+    fails here, since the SDK merges ``os.environ`` underneath."""
     from viberpit import brand
     monkeypatch.setenv(f"{brand.ENV_PREFIX}MASTER_KEY", "secret")
     monkeypatch.setenv(f"{brand.LEGACY_ENV_PREFIX}MASTER_KEY", "secret")
@@ -2017,16 +2006,13 @@ async def test_a_sandboxed_cli_does_not_get_the_daemon_namespace(tmp_path, monke
                         lambda: {"cli_path": str(fake_cli)})
     client = await claude_sdk_factory.real_sdk_factory(
         str(tmp_path), str(tmp_path / "cfg"), None, "full-auto", None,
-        extra_env={"GH_NO_UPDATE_NOTIFIER": "1"}, sandboxed=True)
+        extra_env={"GH_NO_UPDATE_NOTIFIER": "1"})
     env = await _cli_process_env(client)
     leaked = {k: v for k, v in env.items()
               if k.startswith((brand.ENV_PREFIX, brand.LEGACY_ENV_PREFIX)) and v}
     assert leaked == {}
     assert env["D23_KEEP_ME"] == "1" and env["GH_NO_UPDATE_NOTIFIER"] == "1"
     assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "cfg")
-    plain = await claude_sdk_factory.real_sdk_factory(
-        str(tmp_path), str(tmp_path / "cfg"), None, "full-auto", None)
-    assert (await _cli_process_env(plain))[f"{brand.ENV_PREFIX}MASTER_KEY"] == "secret"
 
 
 @pytest.mark.asyncio

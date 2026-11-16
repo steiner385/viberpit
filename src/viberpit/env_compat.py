@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 
 from viberpit import brand
 
@@ -92,3 +92,21 @@ def mirror_legacy_env(
             ", ".join(f"{new}<-{old}" for new, old in sorted(filled.items())),
         )
     return filled
+
+
+def withheld_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """``{name: ""}`` for every key of this namespace in *environ*, in both prefixes:
+    what every agent CLI's env overrides (``claude_sdk_factory.real_sdk_factory``,
+    ``account_auth.helper_env``). An agent's shell inherits its CLI's env, and the
+    namespace carries the daemon's secrets — the master key, the DB URL with its
+    password, the GitHub project token (#3386; first seen in a sandboxed shell, #3367).
+
+    Emptied, not dropped: the SDK builds the CLI's env as ``{**os.environ, ...,
+    **options.env}`` (claude-agent-sdk 0.2.105 ``SubprocessCLITransport.connect``), so a
+    key left out of ``options.env`` is inherited anyway; only an override removes the
+    value. Settings read an empty value as unset (``server.config.Settings``,
+    ``env_ignore_empty``), so this repo's own tests still run in a session's shell.
+    Nothing the CLI runs needs the namespace: session tools and SDK hooks run in the
+    daemon, and the Codex app-server child never gets it (``CHILD_ENV_ALLOWLIST``)."""
+    prefixes = (NEW_PREFIX, LEGACY_PREFIX)
+    return {k: "" for k in environ if k.startswith(prefixes)}

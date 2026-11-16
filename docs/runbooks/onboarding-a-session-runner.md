@@ -197,8 +197,8 @@ VIBERPIT_DB_URL=postgresql+asyncpg://ccswitch:<password>@100.102.11.121:5432/ccs
 # edge's session secret is cookie-only and must NOT be needed here.
 VIBERPIT_MASTER_KEY=<master-key>
 
-# This daemon's own bind endpoint (tailnet DNS + port 9443)
-VIBERPIT_SESSIOND_ENDPOINT=https://<host>.tail0dd570.ts.net:9443
+# This daemon's own bind endpoint lives in daemon-endpoint.env (below), NOT here:
+# the health watchdog runs as tony and must read it without reading these secrets.
 
 # mTLS — server identity
 VIBERPIT_SESSIOND_TLS_CERT=/etc/viberpit/tls/server.pem
@@ -224,8 +224,21 @@ VIBERPIT_DAEMON_ROLE=worker
 VIBERPIT_ENABLE_XVFB=true
 EOF
 
-sudo chmod 640 /etc/viberpit/daemon.env
+sudo chown root:root /etc/viberpit/daemon.env
+sudo chmod 600 /etc/viberpit/daemon.env
+
+# The non-secret bind, readable by the health watchdog (User=tony). It reads every
+# EnvironmentFile= of the daemon unit it can, and with the endpoint hidden in a
+# root-only file it would not know the bind (#3391) — it alerts instead of probing.
+echo 'VIBERPIT_SESSIOND_ENDPOINT=https://<host>.tail0dd570.ts.net:9443' \
+  | sudo tee /etc/viberpit/daemon-endpoint.env > /dev/null
+sudo chmod 644 /etc/viberpit/daemon-endpoint.env
 ```
+
+`daemon.env` is `root:root 0600` because it holds the master key, the DB password and the TLS key,
+and every agent session runs as the same user as the daemon: a group- or world-readable file is
+readable from any session's shell. systemd reads `EnvironmentFile=` as root, so the daemon itself
+is unaffected. Load **both** files in the daemon unit (the drop-in in the dobby section below).
 
 - [ ] All placeholder values (`<password>`, `<master-key>`, `<host>`) replaced with real values.
 - [ ] `VIBERPIT_MASTER_KEY` matches the value on the edge and all other daemons exactly.
@@ -624,18 +637,24 @@ sudo tee /etc/systemd/system/viberpit-daemon.service.d/env-file.conf > /dev/null
 # Replace the default EnvironmentFile with the daemon-specific one
 # so it does not inherit the edge's VIBERPIT_SESSIOND_ENDPOINT.
 EnvironmentFile=
+EnvironmentFile=/etc/viberpit/daemon-endpoint.env
 EnvironmentFile=/etc/viberpit/daemon.env
 EOF
 
 sudo systemctl daemon-reload
 ```
 
-Then create `/etc/viberpit/daemon.env` for dobby:
+Then create `/etc/viberpit/daemon-endpoint.env` (`0644`) for dobby:
+
+```
+VIBERPIT_SESSIOND_ENDPOINT=https://dobby.tail0dd570.ts.net:9443
+```
+
+and `/etc/viberpit/daemon.env` (`root:root 0600`):
 
 ```
 VIBERPIT_DB_URL=postgresql+asyncpg://ccswitch:<password>@100.102.11.121:5432/ccswitch
 VIBERPIT_MASTER_KEY=<master-key>
-VIBERPIT_SESSIOND_ENDPOINT=https://dobby.tail0dd570.ts.net:9443
 VIBERPIT_SESSIOND_TLS_CERT=/etc/viberpit/tls/server.pem
 VIBERPIT_SESSIOND_TLS_KEY=/etc/viberpit/tls/server.key
 VIBERPIT_SESSIOND_TLS_CA=/etc/viberpit/tls/ca.pem
