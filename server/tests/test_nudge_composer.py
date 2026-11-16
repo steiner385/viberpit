@@ -124,15 +124,17 @@ async def test_org_denial_is_decoded_and_the_account_barred(caplog):
     from server.tests.fakes.helper_streams import org_denied_query
 
     calls: list = []
-    with caplog.at_level(logging.WARNING, logger="server.automations.nudge_composer"):
+    with caplog.at_level(logging.INFO, logger="server.automations.nudge_composer"):
         for _ in range(2):
             assert await compose_nudge(
                 _ctx(), intent_hint="fix CI", verdict_reason=None, verdict_remedy=None,
                 recent_nudges=[], rich_tail=[], facts_verified=False,
                 _query_fn=org_denied_query(calls), _config_dir="/cfg/org-denied") is None
-    failed = [r.getMessage() for r in caplog.records
-              if r.name == "server.automations.nudge_composer"]
+    records = [r for r in caplog.records if r.name == "server.automations.nudge_composer"]
+    failed = [r.getMessage() for r in records]
     assert len(failed) == 1
+    # helper_call files the one WARNING per block; this line stays INFO (#3397).
+    assert records[0].levelno == logging.INFO
     assert "kind=auth_forbidden" in failed[0]
     assert "organization has disabled" in failed[0]
     assert len(calls) == 1

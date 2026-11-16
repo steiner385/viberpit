@@ -217,13 +217,17 @@ async def test_failure_log_and_reason_name_the_classified_kind(caplog):
 
     decider_mod._consecutive_decide_failures = 0
     try:
-        with caplog.at_level(logging.WARNING, logger="server.automations.autopilot_decider"):
+        with caplog.at_level(logging.INFO, logger="server.automations.autopilot_decider"):
             d = await decide(_ctx(), _query_fn=denied, _config_dir="", _cwd="/tmp")
         assert d.action == "escalate"
         assert d.reason == "decider-failed:auth_forbidden"
         logged = "\n".join(r.getMessage() for r in caplog.records)
         assert "auth_forbidden" in logged
         assert "organization has disabled" in logged
+        # helper_call files the one WARNING per block; the decider stays INFO (#3397).
+        assert not [r for r in caplog.records
+                    if r.name == "server.automations.autopilot_decider"
+                    and r.levelno >= logging.WARNING]
     finally:
         decider_mod._consecutive_decide_failures = 0
 

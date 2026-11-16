@@ -237,11 +237,13 @@ def test_org_denied_failure_logs_the_cause_and_bars_the_account(caplog):
             strip_markers(PROD_TAIL_FOLLOWUP), config_dir="/cfg/org-denied",
             query_fn=org_denied_query(calls)) for _ in range(2)]
 
-    with caplog.at_level(logging.WARNING, logger="server.sessions.open_question"):
+    with caplog.at_level(logging.INFO, logger="server.sessions.open_question"):
         assert asyncio.run(run()) == [True, True]  # the heuristic's verdict stands
-    failed = [r.getMessage() for r in caplog.records
-              if r.name == "server.sessions.open_question"]
+    records = [r for r in caplog.records if r.name == "server.sessions.open_question"]
+    failed = [r.getMessage() for r in records]
     assert len(failed) == 1
+    # helper_call files the one WARNING per block; this line stays INFO (#3397).
+    assert records[0].levelno == logging.INFO
     assert "kind=auth_forbidden" in failed[0]
     assert "organization has disabled" in failed[0]
     assert failed[0] != f"open_question.classify failed: {OPAQUE_SDK_ERROR}"
