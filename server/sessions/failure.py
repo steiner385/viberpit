@@ -104,11 +104,16 @@ _STARTUP_TIMEOUT_MARKERS = ("control request timeout: initialize",)
 # Kinds that are an external condition, never a defect of ours: logged below
 # WARNING, because WARNING is the auto-error filing decision and filing an issue
 # per throttle (#1688, #1837), DNS outage (#2623) or slow CLI start (#2664) files
-# noise. ``auth_stale`` is deliberately NOT here: a helper spawns a fresh CLI, so
+# noise. ``auth_forbidden`` (an org-denied account, #3397) is here because
+# ``helper_call._note_auth_blocked`` already announces it with one WARNING per
+# block; each caller's own line would double-file the same condition.
+# ``auth_stale`` is deliberately NOT here: a helper spawns a fresh CLI, so
 # for a helper "Not logged in" means the host's slot really is unusable (#2758 —
 # the same 2026-10-07 incident, seen by goal inference first) and stays a filed
 # WARNING. Live sessions do not read this; they journal their own recovery.
-EXTERNAL_CONDITION_KINDS = frozenset({"rate_limit", "network", "cli_startup_timeout"})
+EXTERNAL_CONDITION_KINDS = frozenset(
+    {"rate_limit", "network", "cli_startup_timeout", "auth_forbidden"}
+)
 
 
 @dataclass(frozen=True)

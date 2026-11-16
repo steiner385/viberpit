@@ -261,3 +261,14 @@ def test_auth_stale_stays_a_warning_for_helpers():
     # Only helpers read log_level. A helper spawns a fresh CLI, so "Not logged in"
     # there means the host's slot is unusable — a filed issue, not noise (#2758).
     assert log_level("auth_stale") == logging.WARNING
+
+
+def test_auth_forbidden_is_info_for_callers():
+    import logging
+
+    from server.sessions.failure import log_level
+
+    # The helper layer's _note_auth_blocked files the one WARNING per block; a
+    # caller's own line would double-file the same org-denied account (#3397).
+    assert log_level("auth_forbidden") == logging.INFO
+    assert log_level("auth_stale") == logging.WARNING
