@@ -17,7 +17,7 @@ from typing import Any, Awaitable, Callable
 
 from viberpit import gitrepos
 
-from server.github.host_failures import is_transient_github_edge_failure
+from server.github.host_failures import is_transient_github_edge_failure, log_gh_failure
 
 from ..base import ActionableItem, ActionSpec
 from ..context import observation_failed
@@ -154,6 +154,11 @@ class SystemicRedLoop:
                 # GitHub's own edge failing, self-healing next tick: WARNING would
                 # file a non-actionable auto-error (same stance as cicd_doctor).
                 log.info("cicd_systemic.fetch_unavailable repo=%s: %s", repo, exc)
+            elif isinstance(exc, gitrepos.GhError):
+                # Host-wide outages (unreachable, auth, rate limit) collapse into
+                # the debounced host event instead of one issue per repo (#3379).
+                log_gh_failure(log, str(exc), "cicd_systemic.fetch_failed repo=%s",
+                               repo, exc_info=True)
             else:
                 log.warning("cicd_systemic.fetch_failed repo=%s", repo, exc_info=True)
             return

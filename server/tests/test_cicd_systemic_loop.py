@@ -924,3 +924,14 @@ def test_reclassification_refreshes_the_issue_body():
     assert _only_incident(ctx)["class"] == "poisoner"
     body = s.issues[n]["body"]
     assert "**Class:** poisoner" in body and "gh pr view 9 -R" in body
+
+
+def test_go_dial_timeout_fetch_failure_is_not_a_warning_inside_the_blip_window(caplog, monkeypatch):
+    """#3379: an unreachable-host outage routes through log_gh_failure's debounce."""
+    from server.github import host_failures
+    monkeypatch.setenv("VIBERPIT_GH_UNREACHABLE_WARN_AFTER_S", "300")
+    monkeypatch.setattr(host_failures, "_unreachable_since", None)
+    from viberpit import gitrepos
+    stderr = ('Get "https://api.github.com/repos/o/r/actions/runs?page=1": '
+              "dial tcp 140.82.112.6:443: i/o timeout")
+    assert _fetch_warnings(caplog, gitrepos.GhError(stderr)) == []

@@ -383,3 +383,23 @@ def test_suppressed_result_keeps_the_completedprocess_shape(monkeypatch):
 def test_classifies_gits_unreachable_phrasings(stderr):
     """git over libcurl words a dead network differently from gh (#2610)."""
     assert ghc.classify_gh_failure(stderr) == ghc.UNREACHABLE
+
+
+GO_DIAL_TIMEOUT = (
+    'Get "https://api.github.com/repos/o/r/actions/runs?page=1": '
+    "dial tcp 140.82.112.6:443: i/o timeout"
+)
+
+
+def test_go_dial_failures_classify_unreachable():
+    """#3379: gh passes Go's net dialer wording through; it is the same outage."""
+    for stderr in (
+        GO_DIAL_TIMEOUT,
+        'Post "https://api.github.com/graphql": dial tcp: lookup api.github.com on 1.1.1.1:53: no such host',
+        "dial tcp 140.82.112.6:443: connect: connection refused",
+    ):
+        assert ghc.classify_gh_failure(stderr) == ghc.UNREACHABLE, stderr
+
+
+def test_bare_dial_timeout_without_address_is_not_classified():
+    assert ghc.classify_gh_failure("dial tcp: i/o timeout") is None
