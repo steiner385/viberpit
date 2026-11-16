@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Mapping, MutableMapping
 
 from viberpit import brand
@@ -94,9 +95,47 @@ def mirror_legacy_env(
     return filled
 
 
+#: Names (the part after either prefix) :func:`withheld_env` keeps: what a session's own
+#: tooling reads, none of it secret. Each fails on ``""`` rather than falling back, and
+#: an allowlisted name is still withheld when its value is secret-shaped
+#: (:func:`is_secret_shaped`).
+WITHHELD_ENV_KEEP: frozenset[str] = frozenset({
+    # ``fleet_role.daemon_role()`` raises on "" — so every ``viberpit``/``ccrun`` command
+    # and the core tests in a session on a worker (rocky). "worker" also makes that
+    # tooling stricter, never looser.
+    "DAEMON_ROLE",
+    # The ``claude`` command ``ccrun``/``ccmax``/reauth launch; ``shlex.split("")`` is an
+    # empty argv.
+    "CLAUDE_BIN",
+    # ``paths.root()``, the account store every ``viberpit`` command reads: ``Path("")``
+    # is the cwd, and the default is the wrong store on a host that sets it.
+    "HOME",
+    # ``viberpit``'s clone root (``cli._repo_root``); ``""`` is not a directory.
+    "REPO_ROOT",
+})
+
+#: Name fragments that mark a variable as carrying a secret (or a path to one).
+_SECRET_NAME_MARKERS: tuple[str, ...] = (
+    "KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "DB_URL", "DSN", "CRED",
+    "_OAT_",  # <prefix>OAT_<ACCOUNT>: an account's setup-token (crypto.py)
+)
+
+#: A URL with userinfo (``scheme://user[:password]@host``).
+_URL_USERINFO = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://[^/@\s]+@")
+
+
+def is_secret_shaped(name: str, value: str) -> bool:
+    """Does *name* name a secret (``KEY``, ``TOKEN``, ``DB_URL``, ``CRED``, an account's
+    ``OAT_``, …), or *value* carry URL userinfo? Never kept by :func:`withheld_env`;
+    refused when set but empty by ``server.startup_guard``."""
+    upper = name.upper()
+    return any(m in upper for m in _SECRET_NAME_MARKERS) or bool(_URL_USERINFO.match(value))
+
+
 def withheld_env(environ: Mapping[str, str]) -> dict[str, str]:
-    """``{name: ""}`` for every key of this namespace in *environ*, in both prefixes:
-    what every agent CLI's env overrides (``claude_sdk_factory.real_sdk_factory``,
+    """``{name: ""}`` for every key of this namespace in *environ*, in both prefixes,
+    except a :data:`WITHHELD_ENV_KEEP` name whose value is not secret-shaped: what every
+    agent CLI's env overrides (``claude_sdk_factory.real_sdk_factory``,
     ``account_auth.helper_env``). An agent's shell inherits its CLI's env, and the
     namespace carries the daemon's secrets — the master key, the DB URL with its
     password, the GitHub project token (#3386; first seen in a sandboxed shell, #3367).
@@ -106,7 +145,19 @@ def withheld_env(environ: Mapping[str, str]) -> dict[str, str]:
     key left out of ``options.env`` is inherited anyway; only an override removes the
     value. Settings read an empty value as unset (``server.config.Settings``,
     ``env_ignore_empty``), so this repo's own tests still run in a session's shell.
-    Nothing the CLI runs needs the namespace: session tools and SDK hooks run in the
-    daemon, and the Codex app-server child never gets it (``CHILD_ENV_ALLOWLIST``)."""
-    prefixes = (NEW_PREFIX, LEGACY_PREFIX)
-    return {k: "" for k in environ if k.startswith(prefixes)}
+    Nothing the CLI itself runs needs the namespace: session tools and SDK hooks run in
+    the daemon, and the Codex app-server child never gets it (``CHILD_ENV_ALLOWLIST``);
+    the kept names are for the ``viberpit`` tooling an agent runs in its shell.
+
+    Defence in depth, not containment: a process running as the daemon's user can still
+    read that user's own files (the account store, ``~/.config/gh``). Real containment
+    is the sandbox (D-23)."""
+    out: dict[str, str] = {}
+    for name, value in environ.items():
+        for prefix in (NEW_PREFIX, LEGACY_PREFIX):
+            if name.startswith(prefix):
+                if not (name[len(prefix):] in WITHHELD_ENV_KEEP
+                        and not is_secret_shaped(name, value)):
+                    out[name] = ""
+                break
+    return out

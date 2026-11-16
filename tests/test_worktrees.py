@@ -854,3 +854,14 @@ def test_push_evidence_without_upstream_still_reports_head(tmp_path):
     _make_repo(repo)
     assert worktrees.push_evidence(str(repo)) == (None, _rev(repo, "HEAD"))
     assert worktrees.push_evidence(str(tmp_path)) == (None, None)
+
+
+def test_an_empty_disk_headroom_knob_reads_as_its_default(monkeypatch, tmp_path):
+    """A session's env carries the daemon's namespace emptied (env_compat.withheld_env,
+    #3386); ``int("")`` must not break every worktree operation run there."""
+    from viberpit import worktrees
+    monkeypatch.setattr(worktrees, "_MIN_FREE_BYTES_DEFAULT", 0)
+    monkeypatch.setattr(worktrees, "_MIN_FREE_INODES_DEFAULT", 0)
+    monkeypatch.setenv("VIBERPIT_MIN_FREE_BYTES", "")
+    monkeypatch.setenv("VIBERPIT_MIN_FREE_INODES", "")
+    worktrees.check_disk_headroom(tmp_path)
