@@ -65,6 +65,19 @@ async def _drain(orch):
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def _shut_down(orch):
+    """Drain, then ``stop()`` — which closes every live driver — before
+    ``asyncio.run()`` closes the loop. A test whose nudge RESUMED the session holds
+    a live driver whose own tasks (``driver-idle-listen:s1``) are not in
+    ``_bg_tasks``, so ``_drain`` alone leaves them pending: destroyed with the loop,
+    they were garbage-collected inside a LATER test on the same xdist worker, and
+    SQLAlchemy's greenlet bridge re-threw the resulting ``GeneratorExit`` into that
+    test's own DB call (#3396). Capture what you assert on BEFORE calling this —
+    ``stop()`` pops the drivers."""
+    await _drain(orch)
+    await orch.stop()
+
+
 def _delivered(orch, sid="s1"):
     """Prompts the session's live driver actually handed to the SDK — the direct
     proof of delivery (``_last_prompt`` is the replay record, not a delivery log)."""
@@ -588,20 +601,23 @@ def test_completion_nudge_is_delivered_after_the_driver_was_released(tmp_path):
              patch("server.sessions.orchestrator.compose", return_value=tmp_path / "cfg"), \
              patch("server.sessions.orchestrator.configdir.trust_project"):
             await orch._auto_archive_completed("s1")
-        # Drain before asyncio.run() closes the loop. Persisting a status spawns
-        # follow-up work (the autopilot nudge among it); left pending, those tasks
-        # are destroyed with the loop and the orchestrator survives holding them,
-        # which is how this file poisoned later files sharing an xdist worker.
+        # Shut down before asyncio.run() closes the loop. Persisting a status spawns
+        # follow-up work (the autopilot nudge among it) and the nudge resumes a live
+        # driver; left pending, those tasks are destroyed with the loop, which is how
+        # this file poisoned later files sharing an xdist worker (#1183, #3396).
         await _drain(orch)
-        return orch
-    orch = asyncio.run(run())
+        seen = (_delivered(orch), orch._last_prompt.get("s1"), "s1" in orch._drivers,
+                orch.record("s1").status)
+        await _shut_down(orch)
+        return seen
+    delivered, last_prompt, live, status = asyncio.run(run())
     # A "no_driver" return never reaches the SDK, which is exactly the silent drop
     # this covers.
-    assert [p for p in _delivered(orch) if p.endswith(verdict.remedy)]
+    assert [p for p in delivered if p.endswith(verdict.remedy)]
     # The nudge stays the replayable turn: a 429 retry / rotation re-drives it (#2922).
-    assert orch._last_prompt.get("s1") == verdict.remedy
-    assert "s1" in orch._drivers, "the nudge must run on a live driver"
-    assert orch.record("s1").status != "complete", "a nudged session is no longer complete"
+    assert last_prompt == verdict.remedy
+    assert live, "the nudge must run on a live driver"
+    assert status != "complete", "a nudged session is no longer complete"
 
 
 def _unmet_verdict():
@@ -629,7 +645,7 @@ def test_completion_nudge_refused_by_a_drain_is_not_a_warning(tmp_path, caplog):
         with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
             await _nudge_during_drain(tmp_path, orch, verdict)
         orch.cancel_drain()
-        await _drain(orch)
+        await _shut_down(orch)
     asyncio.run(run())
     warnings = [r for r in caplog.records
                 if r.levelno >= logging.WARNING and "nudge_failed" in r.getMessage()]
@@ -647,12 +663,15 @@ def test_completion_nudge_refused_by_a_drain_is_delivered_when_the_drain_cancels
         assert _delivered(orch) == []   # refused while draining
         orch.cancel_drain()
         await _drain(orch)
-        return orch
-    orch = asyncio.run(run())
-    assert [p for p in _delivered(orch) if p.endswith(verdict.remedy)]
+        seen = (_delivered(orch), orch._last_prompt.get("s1"),
+                dict(orch._drain_deferred_nudges))
+        await _shut_down(orch)
+        return seen
+    delivered, last_prompt, deferred = asyncio.run(run())
+    assert [p for p in delivered if p.endswith(verdict.remedy)]
     # The nudge stays the replayable turn: a 429 retry / rotation re-drives it (#2922).
-    assert orch._last_prompt.get("s1") == verdict.remedy
-    assert orch._drain_deferred_nudges == {}
+    assert last_prompt == verdict.remedy
+    assert deferred == {}
 
 
 def test_completion_nudge_refused_by_a_drain_survives_the_restart(tmp_path):
