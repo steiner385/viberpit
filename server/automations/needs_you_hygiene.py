@@ -76,6 +76,19 @@ class DigestSeams(Protocol):
     async def record_sent(self, slug: str, detail: dict) -> None: ...
 
 
+class RegressedAlertSeams(Protocol):
+    """The dedupe record for the regressed-unowned push (#3402)."""
+    async def last_alerted(self) -> dict[str, datetime]: ...
+    async def record_alerted(self, ref: str, detail: dict) -> None: ...
+
+
+#: A regressed-unowned issue is pushed to the owner at most this often (#3402):
+#: once a day while it stays unowned, never once per tick.
+REGRESSED_ALERT_INTERVAL = timedelta(hours=24) - timedelta(minutes=15)
+#: The dedupe record: one audit row per regressed-unowned push, per issue.
+REGRESSED_ALERT_AUDIT_TYPE = "pm.regressed.alerted"
+
+
 def _describe(action: HygieneAction) -> str:
     if action.action == h.ACTION_SET_STATUS:
         return f"move {action.ref} to {action.detail.get('status')}"
@@ -482,6 +495,7 @@ class NeedsYouHygieneLoop:
                  review_parked: Callable[[QueueRow], Awaitable[Mapping | None]] | None = None,
                  record_parked_run: Callable[[str, dict], Awaitable[None]] | None = None,
                  digest: "DigestSeams | None" = None,
+                 regressed_alerts: "RegressedAlertSeams | None" = None,
                  now: Callable[[], datetime] | None = None) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -502,6 +516,8 @@ class NeedsYouHygieneLoop:
         self._record_parked_run = record_parked_run
         #: The daily owner digest push (§5). ``None``: no push.
         self._digest = digest
+        #: The regressed-unowned push's dedupe record (#3402). ``None``: no push.
+        self._regressed_alerts = regressed_alerts
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._lock = asyncio.Lock()
         #: Dry-run findings already announced (one line per finding, not per tick).
@@ -544,6 +560,10 @@ class NeedsYouHygieneLoop:
             await self._remind_evidence(products, mode, now)
         except Exception:
             log.warning("needs_you_hygiene.evidence_reminders_failed", exc_info=True)
+        try:
+            await self._alert_regressed(products, mode, now)
+        except Exception:
+            log.warning("needs_you_hygiene.regressed_alerts_failed", exc_info=True)
         publish_observation(self._ctx, "needs_you_hygiene_counts", counts)
 
     async def _assess_closeouts(self, products: list[h.ProductInputs], mode: str,
@@ -709,6 +729,51 @@ class NeedsYouHygieneLoop:
                         s, ref, hold_set_at=asked, now=now))
                 await self._ctx.emit("info", f"{p.slug}: reminded the owner — {row.ref}",
                                      kind="hygiene_evidence_reminded", target=row.ref)
+
+    async def _alert_regressed(self, products: list[h.ProductInputs], mode: str,
+                               now: datetime) -> None:
+        """Push the owner each ``ci:regressed`` issue nobody has picked up in a day
+        (``queue.regressed_unowned``, #3402) — a red Nightly blocks production
+        promotion, and KinDash#21010 sat unowned for nine days with no one told.
+
+        Not gated on the product's ``needs_you_automation``: that governs what the
+        loop may DO to an issue, and this does nothing but tell the owner. Once per
+        ``REGRESSED_ALERT_INTERVAL`` per issue (deduped on its audit row), never in
+        quiet hours (deferred, not dropped); dry run announces instead."""
+        if self._digest is None or self._regressed_alerts is None:
+            return
+        from server.pm.queue import regressed_unowned
+        due = [(p.slug, r) for p in products for r in p.rows if r.product == p.slug
+               and regressed_unowned(labels=r.labels, created_at=r.gh_created_at,
+                                     owned=r.live_session or r.claimed, now=now)]
+        if not due or await self._digest.in_quiet_hours(now):
+            return
+        last = await self._regressed_alerts.last_alerted()
+        for slug, row in due:
+            created = row.gh_created_at
+            if created is None:   # regressed_unowned already requires it; for the type
+                continue
+            sent = last.get(row.ref)
+            if sent is not None and now - _utc(sent) < REGRESSED_ALERT_INTERVAL:
+                continue
+            hours = int((now - created).total_seconds() // 3600)
+            title = f"{slug}: P0 — regressed test unowned {hours}h"
+            body = f"{row.ref}: {row.title}"
+            if mode == "dry_run":
+                await self._ctx.emit("info", f"{slug}: would push — {title}: {body}",
+                                     kind="hygiene_dry_run", target=row.ref)
+                continue
+            try:
+                await self._digest.notify(title, body, slug=slug, url=row.url or "")
+                await self._regressed_alerts.record_alerted(
+                    row.ref, {"ref": row.ref, "slug": slug, "hours": hours})
+            except Exception:
+                log.warning("needs_you_hygiene.regressed_alert_failed ref=%s", row.ref,
+                            exc_info=True)
+                continue
+            await self._ctx.emit("info", f"{slug}: pushed the owner — {title}",
+                                 kind="hygiene_regressed_alerted", target=row.ref,
+                                 detail={"hours": hours})
 
     async def _product(self, p: h.ProductInputs, mode: str, now: datetime,
                        counts: dict) -> None:

@@ -129,6 +129,47 @@ async def _issue_facts(db, items: list[WorkItem]) -> tuple[
     return by_id_blocked, by_id_session, by_id_blockers, by_id_board_status, by_id_bounces
 
 
+async def _regressed_unowned(db, items: list[WorkItem],
+                             session: dict[str, str | None]) -> set[str]:
+    """Ids of the *items* that are ``ci:regressed`` and unowned past a day
+    (``queue.regressed_unowned``, #3402). *session* is ``_issue_facts``' live
+    session map; the runner's claims are read only when a regressed item exists,
+    so a map with none pays nothing."""
+    from server.pm.queue import is_ci_regressed, regressed_unowned
+    from server.pm.queue_store import runner_claims
+    regressed = [w for w in items if w.state == "open" and is_ci_regressed(w.labels or ())]
+    if not regressed:
+        return set()
+    claims = await db.run_sync(runner_claims)
+    now = datetime.now(timezone.utc)
+    return {w.id for w in regressed if regressed_unowned(
+        labels=w.labels or (), created_at=_aware(w.gh_created_at),
+        owned=session.get(w.id) is not None or _ref(w) in claims, now=now)}
+
+
+def regressed_homeless_stmt(repos: list[str]):
+    """Open ``ci:regressed`` candidates with no capability (#3402): the map's
+    leaves never list them, so ``roadmap_needs_you`` reads them here. The label
+    match is a coarse text prefilter; ``queue.regressed_unowned`` decides."""
+    from sqlalchemy import String, cast
+    return select(WorkItem).where(
+        WorkItem.repo.in_(repos), WorkItem.state == "open", WorkItem.kind == "issue",
+        WorkItem.feature_id.is_(None),
+        cast(WorkItem.labels, String).like("%ci:regressed%"))
+
+
+async def regressed_homeless(db, repos: list[str]) -> list[WorkItem]:
+    """The ``regressed_homeless_stmt`` rows that are unowned past a day."""
+    if not repos:
+        return []
+    items = list((await db.execute(regressed_homeless_stmt(repos))).scalars().all())
+    if not items:
+        return []
+    _, session, _, _, _ = await _issue_facts(db, items)
+    unowned = await _regressed_unowned(db, items, session)
+    return [w for w in items if w.id in unowned]
+
+
 def needs_home_stmt(repos: list[str]):
     """The roadmap's unassigned owner-held items, shared with session triage."""
     return select(WorkItem).where(
@@ -218,6 +259,7 @@ async def product_nodes(db, *, issues_out: list[IssueAttention] | None = None) -
         WorkItem.kind == "issue"))).scalars().all() \
         if feat_by_id else []
     blocked, session, _, board_status, bounces = await _issue_facts(db, open_items)
+    unowned = await _regressed_unowned(db, open_items, session)
     # Threshold per product (D8): a feature belongs to exactly one project, so its
     # issues bounce against THAT product's `give_up_after_bounces`, never a global one.
     threshold_by_project = {p.id: _threshold_for(p) for p in projects}
@@ -231,7 +273,8 @@ async def product_nodes(db, *, issues_out: list[IssueAttention] | None = None) -
                     if feat else default_threshold)
         owners = owners_by_project.get(feat.project_id, frozenset()) if feat else frozenset()
         reason = issue_reason(state=w.state, bounces=bounces[w.id],
-                              give_up_after_bounces=threshold)
+                              give_up_after_bounces=threshold,
+                              regressed_unowned=w.id in unowned)
         assigned = assigned_to_owner(w.assignees, owners)
         tier = issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
                           board_status[w.id], reason=reason, hold_kind=w.hold_kind,
@@ -433,6 +476,7 @@ async def get_leaves(
                 items = (await db.execute(select(WorkItem).where(
                     WorkItem.parent_work_item_id == epic.id))).scalars().all()
     blocked, session, blockers, board_status, bounces = await _issue_facts(db, items)
+    unowned = await _regressed_unowned(db, list(items), session)
     project = (await db.execute(select(Project).where(
         Project.id == project_id))).scalar_one_or_none() if project_id else None
     threshold = _threshold_for(project)
@@ -444,7 +488,8 @@ async def get_leaves(
     leaves = []
     for w in items:
         reason = issue_reason(state=w.state, bounces=bounces[w.id],
-                              give_up_after_bounces=threshold)
+                              give_up_after_bounces=threshold,
+                              regressed_unowned=w.id in unowned)
         leaves.append(_leaf(
             w, issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
                          board_status[w.id], reason=reason, hold_kind=w.hold_kind,

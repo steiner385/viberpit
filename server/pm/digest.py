@@ -293,6 +293,8 @@ def from_initiative(product: str, node: Mapping, *, stage_complete: bool = False
 WHY_NEEDS_SPEC = "Bounced out of the runner — it needs a better spec."
 WHY_SESSION_WAIT = "Its session is waiting for you."
 WHY_ASSIGNED = "Assigned to you on GitHub."
+WHY_REGRESSED_UNOWNED = ("A ci:regressed test has had no session for over a day — "
+                         "the Backlog Runner should have picked it up; find what is stopping it.")
 
 
 def from_issue(*, product: str, work_item_id: str, ref: str, title: str | None,

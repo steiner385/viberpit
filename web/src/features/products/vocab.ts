@@ -134,6 +134,8 @@ export const REASON_LABEL: Record<string, string> = {
   // A leaf's reason, not an initiative's — `bouncedLabel` below says the SAME
   // thing with the bounce count, which is what the leaf chip actually renders.
   needs_spec: 'Needs spec',
+  // A `ci:regressed` test nobody has picked up in a day (#3402).
+  regressed_unowned: 'Regressed test, unowned',
 }
 
 export const reasonLabel = (reason: string | null | undefined): string =>

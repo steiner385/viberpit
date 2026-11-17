@@ -102,7 +102,8 @@ def capability_own_tier(state: str | None) -> str:
 
 
 def issue_reason(*, state: str | None = None, bounces: int = 0,
-                 give_up_after_bounces: int = 0) -> str | None:
+                 give_up_after_bounces: int = 0,
+                 regressed_unowned: bool = False) -> str | None:
     """Why an issue needs a human beyond its tier — the ``InitiativeIn.reason``
     shape. ``needs_spec`` when D8's rule fires (ONE rule: ``bounced_out``).
 
@@ -110,10 +111,15 @@ def issue_reason(*, state: str | None = None, bounces: int = 0,
     ``issue_tier``'s own closed/merged short-circuit to ``live``, and a reason
     surviving that renders "bounced N× — needs spec" on a done leaf — the tier and
     the chip disagreeing about one row. The bounce COUNT is untouched (the history
-    happened); only the call to action goes."""
+    happened); only the call to action goes.
+
+    ``regressed_unowned`` when *regressed_unowned* (``queue.regressed_unowned``,
+    #3402): a ``ci:regressed`` issue nobody has picked up in a day."""
     if state in ("closed", "merged"):
         return None
-    return "needs_spec" if bounced_out(bounces, give_up_after_bounces) else None
+    if bounced_out(bounces, give_up_after_bounces):
+        return "needs_spec"
+    return "regressed_unowned" if regressed_unowned else None
 
 
 def issue_tier(state: str | None, triage_state: str | None,

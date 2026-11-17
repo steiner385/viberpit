@@ -273,6 +273,38 @@ def order_by_pool_rank(groups: list[dict], candidates: list[dict]) -> list[dict]
     return sorted(groups, key=key)
 
 
+def regressed_groups(candidates: list[dict]) -> "tuple[list[dict], list[dict]]":
+    """Pure: split *candidates* into ``(one group per ci:regressed tracker,
+    everything else)`` (#3402).
+
+    Each group is the tracker (primary) plus every CI Failure Reporter issue that
+    shares its ``ci_twin`` key (``queue.ci_twin_key``: same repo, same spec and
+    test title) — the two workflows file one defect twice, and two sessions would
+    race each other to the same fix. Bundled whatever ``max_issues_per_pr`` says:
+    the cap is about unrelated work sharing a PR, and these are one issue.
+
+    Only an ungated, non-evidence tracker is planned here; a gated or
+    evidence-held one keeps its own rule (``family_groups``). A twin is taken by
+    the first tracker in pool order that claims its key."""
+    groups: list[dict] = []
+    taken: set[str] = set()
+    for c in candidates:
+        if (not c.get("regressed") or c["ref"] in taken or c.get("platform") is not None
+                or c.get("hold_kind") == "evidence"):
+            continue
+        key = c.get("ci_twin")
+        twins = [t["ref"] for t in candidates
+                 if key and t["ref"] not in taken and t["ref"] != c["ref"]
+                 and not t.get("regressed") and t.get("ci_twin") == key
+                 and t.get("platform") is None and t.get("hold_kind") != "evidence"]
+        refs = [c["ref"], *twins]
+        taken.update(refs)
+        groups.append({"refs": refs, "rationale": (
+            "ci:regressed: a deterministic CI break, dispatched first"
+            + (" with its CI Failure Reporter twin" if twins else ""))})
+    return groups, [c for c in candidates if c["ref"] not in taken]
+
+
 def family_groups(candidates: list[dict], *,
                   max_k: int) -> "tuple[list[dict], list[dict]]":
     """Pure: split *candidates* into ``(groups planned without the model, everything
@@ -303,7 +335,10 @@ def family_groups(candidates: list[dict], *,
     # alone, on a platform host (host-platforms spec §3), so it is planned as a
     # group of one here and never offered to the model to bundle.
     gated = [c for c in candidates if c.get("platform") is not None]
-    ungated = [c for c in candidates if c.get("platform") is None]
+    # A regressed tracker and its twin are one defect (#3402): planned together
+    # here so the model can never split them or bundle unrelated work in.
+    regressed, ungated = regressed_groups(
+        [c for c in candidates if c.get("platform") is None])
     evidence = [c for c in ungated if c.get("hold_kind") == "evidence"]
     rest = [c for c in ungated if c.get("hold_kind") != "evidence"]
 
@@ -318,7 +353,7 @@ def family_groups(candidates: list[dict], *,
     groups: list[dict] = [
         {"refs": [c["ref"]],
          "rationale": f"env-gated ({c['platform']}): dispatched alone on a platform host"}
-        for c in gated]
+        for c in gated] + regressed
     for family, refs in buckets.values():
         for start in range(0, len(refs), max_k):
             groups.append({
@@ -543,6 +578,20 @@ def plan_to_batch(
         refs = [r for r in g.get("refs") or [] if r in by_ref]
         if refs and by_ref[refs[0]]["repo"] not in paused:
             live.append((g, refs))
+    # A ``ci:regressed`` tracker the stored plan has not caught up with (#3402)
+    # does not wait for the next grouping refresh: it is planned here, with its
+    # twin, and leads. A regressed tracker that is planned but not as a primary
+    # (the plan predates its label) is re-planned too. The twin is taken off any
+    # other group so the same defect cannot be dispatched twice.
+    planned_primaries = {refs[0] for _g, refs in live}
+    fresh, _rest = regressed_groups(
+        [c for c in candidates if c["repo"] not in paused
+         and not (c.get("regressed") and c["ref"] in planned_primaries)])
+    if fresh:
+        moved = {r for g in fresh for r in g["refs"]}
+        live = [(g, kept) for g, refs in live
+                if (kept := [r for r in refs if r not in moved])]
+        live = [(g, g["refs"]) for g in fresh] + live
     if not live:
         return None, None
     live = order_live_groups(
@@ -550,6 +599,11 @@ def plan_to_batch(
         repo_load=repo_load, repo_order=repo_order, caps=caps)
     if not live:
         return None, None
+    # P0 (#3402): a regressed-led group is served before any other, whatever the
+    # per-repo strategy prefers — a strategy reorders fair shares of ordinary
+    # backlog, it does not get to park a red Nightly behind them. Stable, and after
+    # the strategy, so a ``concurrency-cap`` repo at its ceiling stays filtered.
+    live.sort(key=lambda t: not by_ref[t[1][0]].get("regressed"))
     group, refs = live[0]
     primary = refs[0]
     primary_hold_kind = by_ref[primary].get("hold_kind")

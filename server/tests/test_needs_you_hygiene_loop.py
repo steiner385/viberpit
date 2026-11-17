@@ -519,3 +519,62 @@ async def test_evidence_reminders_wait_out_quiet_hours_and_respect_the_product_s
     await dry.loop.tick()
     assert stamped == [] and digest.sent == []
     assert any("would remind — o/r#1" in e[1] for e in dry.ctx.events)
+
+
+# --- regressed-unowned push (#3402) ------------------------------------------------------------
+
+class _Alerts:
+    def __init__(self) -> None:
+        self.last: dict[str, datetime] = {}
+        self.recorded: list[tuple[str, dict]] = []
+
+    async def last_alerted(self):
+        return self.last
+
+    async def record_alerted(self, ref, detail):
+        self.recorded.append((ref, detail))
+        self.last[ref] = NOW.replace(tzinfo=None)   # audit rows are naive UTC
+
+
+def _regressed(number: int, **over: Any) -> QueueRow:
+    over.setdefault("gh_created_at", NOW - timedelta(hours=25))
+    return _row(number, status="Backlog", labels=("flaky", "ci:regressed"),
+                title=f"[flaky] spec.ts › test {number} (fp:abcd)", url=f"https://x/{number}",
+                **over)
+
+
+def _alert_harness(rows, *, mode="on", quiet=False):
+    t = _Harness([_product(rows, toggle="off")], mode=mode)
+    digest = _Digest(_view(), quiet=quiet)
+    alerts = _Alerts()
+    t.loop._digest = digest
+    t.loop._regressed_alerts = alerts
+    return t, digest, alerts
+
+
+@pytest.mark.asyncio
+async def test_an_unowned_regressed_issue_pushes_the_owner_once_a_day():
+    # Not gated on the product's needs_you_automation (off here): it only tells.
+    fresh = _regressed(2, gh_created_at=NOW - timedelta(hours=3))
+    t, digest, alerts = _alert_harness(
+        [_regressed(1), fresh, _regressed(3, claimed=True), _regressed(4, live_session=True)])
+    await t.loop.tick()
+    await t.loop.tick()
+    assert [(title, slug, url) for title, _b, slug, url in digest.sent] == [
+        ("p: P0 — regressed test unowned 25h", "p", "https://x/1")]
+    assert [ref for ref, _d in alerts.recorded] == ["o/r#1"]
+    assert "hygiene_regressed_alerted" in _kinds(t.ctx)
+    t.now = NOW + timedelta(hours=24)
+    await t.loop.tick()
+    assert len(digest.sent) == 3   # o/r#1 again, and o/r#2 is now a day old too
+
+
+@pytest.mark.asyncio
+async def test_the_regressed_push_waits_out_quiet_hours_and_dry_run_only_announces():
+    t, digest, alerts = _alert_harness([_regressed(1)], quiet=True)
+    await t.loop.tick()
+    assert digest.sent == [] and alerts.recorded == []
+    t, digest, alerts = _alert_harness([_regressed(1)], mode="dry_run")
+    await t.loop.tick()
+    assert digest.sent == [] and alerts.recorded == []
+    assert any("would push" in s for _l, s, _kw in t.ctx.events)

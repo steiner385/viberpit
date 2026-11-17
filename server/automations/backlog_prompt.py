@@ -126,9 +126,15 @@ def build_implement_prompt(batch: Batch, default_branch: str = "master", *,
     Pure: no I/O, no model calls.  The returned string may be passed directly
     as the first user prompt of a spawned session on any engine.
     """
+    trackers = set(batch.trackers)
     issues_block = _issue_ref_lines(
         batch.issues,
-        lambda ref, number: f"- {ref}  (close with `Fixes #{number}` in the PR body)",
+        lambda ref, number: (
+            f"- {ref}  (a `ci:regressed` tracker that closes itself once the test is "
+            f"green again: reference it with `Refs #{number} (left-open: "
+            f"awaiting_deploy_or_condition)`, never `Fixes`)"
+            if ref in trackers else
+            f"- {ref}  (close with `Fixes #{number}` in the PR body)"),
     )
 
     return (
