@@ -14184,6 +14184,27 @@ class SessionOrchestrator:
         status, last_turn_at = row
         return status, last_turn_at is not None
 
+    async def _pre_admission_blocker(self, session_id: str, status: str) -> str:
+        """Why a chained session is still not admitted, for the give-up warning (#3369).
+
+        The 24 h give-up used to say only "still queued", and the session row is
+        gone by the time anyone investigates, so the cause (global/product/runner
+        capacity vs account quota vs a human hold) was unrecoverable. The queue
+        entry's ``queue_reason`` is the dispatcher's own record of it. Best-effort:
+        a failed read must not mask the give-up."""
+        if status == "pending_approval":
+            return "blocker=awaiting_human_approval"
+        try:
+            from server.sessions import session_queue as sq
+            entry = await sq.entry_for(session_id)
+            if entry is None:
+                return "blocker=no_queue_entry"
+            reason = (entry.params or {}).get("queue_reason", "global_cap")
+            position = (await sq.positions()).get(session_id)
+            return f"blocker={reason} queue_position={position}"
+        except Exception:
+            return "blocker=unknown"
+
     async def _await_session_settled(self, session_id: str, *, attempts: int = 60,
                                      interval_s: float = 30.0,
                                      max_pre_admission_polls: int = 2880) -> bool:
@@ -14225,8 +14246,10 @@ class SessionOrchestrator:
             if status in self._CHAINED_SESSION_PRE_ADMISSION:
                 pre_admission_polls += 1
                 if pre_admission_polls >= max_pre_admission_polls:
-                    log.warning("chain_ingest: session %s still %s after %d polls — "
-                                "giving up", session_id, status, pre_admission_polls)
+                    log.warning("chain_ingest: session %s still %s after %d polls "
+                                "(%s) — giving up", session_id, status,
+                                pre_admission_polls,
+                                await self._pre_admission_blocker(session_id, status))
                     return False
                 await asyncio.sleep(interval_s)
                 continue
