@@ -365,7 +365,7 @@ def test_put_condition_tick_returns_full_view(isolated_db):
                   json={"value": 4, "evidence": "billing export"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) == {"ladder", "milestones", "numbers", "notes"}
+    assert set(body) == {"ladder", "milestones", "numbers", "delivery", "notes"}
     friendly = next(m for m in body["milestones"] if m["key"] == "friendly")
     setup = next(g for g in friendly["gate"] if g["key"] == "setup")
     assert setup["status"] == "met" and setup["value"] == {"met": True}

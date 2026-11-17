@@ -137,3 +137,32 @@ artifact read); `server/pm/milestone_status.py` (evaluation and read-time freshn
 `server/automations/milestones_refresh.py` (the 10-minute refresh loop). Tests:
 `server/tests/test_pm_milestone_refresh.py`, `server/tests/test_actions_api_metrics_artifact.py`,
 `server/tests/test_pm_milestone_def.py`.
+
+## Production delivery health
+
+The Milestones page's **Prod delivery** panel says what production runs and whether anyone is on
+the thing stopping it (#3404). It exists because KinDash prod sat on a stale SHA, with automatic
+promotion blocked, for nine days while every signal was a self-closing GitHub issue.
+
+A product takes part when it has a ladder **and** its primary repo has an enabled prod deploy
+environment (`PUT /api/pipeline/deploy-config` — the same health URL the deploy watcher polls).
+Its policy's **Delivery gate workflows** (`delivery_verified_workflows`, e.g. `nightly.yml`,
+`deploy-reattempt.yml`) name the runs whose green result verifies a SHA. Each milestone refresh
+then reads:
+
+- prod's `commitSha` (or the env's `shaKey`) and how far it is behind the default branch, in
+  commits and in hours since the oldest commit prod lacks;
+- whether a green gate-workflow run ran on that SHA, and the first one's scheduled green streak;
+- the open `ci:regressed` issues and whether each has a live session or an open closing PR.
+
+It **asks the owner** (a ladder-wide ask, listed by `roadmap_needs_you`, the map badge, the
+Milestones page and the owner digest, plus one `decision_needed` push per prod SHA, deferred out
+of quiet hours) when promotion has been blocked for more than 48 hours with no regressed issue
+owned, or when prod runs a SHA no gate workflow verified. The ask names the blocker first. It
+clears itself once neither holds: the next verified promotion landed, or someone took the
+blocker. An ask a person drops stays dropped until prod moves to a new SHA. A fact it could not
+read (prod unreachable, a failed compare or search) never raises the ask on its own.
+
+**Evidence** — `server/pm/delivery_health.py` (the rule), `server/pm/delivery_health_refresh.py`
+(reads, the readout row and the ask), `web/src/features/milestones/DeliveryPanel.tsx`. Tests:
+`server/tests/test_pm_delivery_health.py` (including the 2026-11-10 replay).

@@ -16681,10 +16681,32 @@ class SessionOrchestrator:
         async def graphql(owner: str, query: str) -> dict:
             return await self._pm_gh_graphql(owner, query, partial_ok=True)
 
-        return await milestone_refresh.refresh_ladder(
+        result = await milestone_refresh.refresh_ladder(
             project_id, graphql=graphql, list_runs=actions_api.list_workflow_runs,
             now=_utcnow(), dry_run=dry_run,
             read_metrics=lambda repo, run_id: actions_api.metrics_artifact(repo, run_id))
+        await self._delivery_health_run(project_id, graphql=graphql, dry_run=dry_run)
+        return result
+
+    async def _delivery_health_run(self, project_id: str, *, graphql, dry_run: bool) -> None:
+        """The product's production delivery health (#3404) on the ladder refresh's
+        cadence. Its own failure never fails the ladder refresh."""
+        from server.db.models import _utcnow
+        from server.github import actions_api
+        from server.pm.delivery_health_refresh import refresh_delivery
+
+        async def notify(title: str, body: str, *, slug: str, url: str) -> None:
+            await self._pm_decision_needed_notify(title, body, slug=slug, url=url,
+                                                  automation="milestones-refresh")
+        try:
+            await refresh_delivery(project_id, graphql=graphql,
+                                   list_runs=actions_api.list_workflow_runs, now=_utcnow(),
+                                   dry_run=dry_run, notify=notify,
+                                   in_quiet_hours=self._owner_digest_in_quiet_hours)
+        except Exception as exc:
+            from server.github.host_failures import log_gh_failure
+            log_gh_failure(log, str(exc), "delivery_health.refresh_failed project=%s",
+                           project_id, demote_edge_failures=True)
 
     # ------------------------------------------------------------------
     # Archive Audit control-loop dependencies (injected into ArchiveAuditLoop)

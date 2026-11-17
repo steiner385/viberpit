@@ -17,6 +17,7 @@ import { Button } from '@/ui/Button'
 import { Card } from '@/ui/Card'
 import { ConfirmDialog } from '@/ui/ConfirmDialog'
 import { SectionHeading } from '@/ui/SectionHeading'
+import { milestonesPath } from '../roadmapNavState'
 import { DIGEST_KIND_LABEL } from './holdOutcome'
 
 function ItemTitle({ item }: { item: DigestItem }) {
@@ -59,6 +60,8 @@ function DigestRow({ item, busy, applying, onApply }: {
         </div>
       ) : item.kind === 'gate' && item.url ? (
         <Link to={item.url} className="text-xs text-accent hover:underline">Review the gate</Link>
+      ) : item.kind === 'delivery' ? (
+        <Link to={milestonesPath(item.product)} className="text-xs text-accent hover:underline">See delivery health</Link>
       ) : null}
     </li>
   )

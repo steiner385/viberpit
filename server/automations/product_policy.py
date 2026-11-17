@@ -288,6 +288,17 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 help="Where this product's SDLC stage artifacts are committed. docs_sdlc: "
                      "docs/sdlc/<slug>/<kind>.md (default). speckit: specs/<slug>/<kind>.md, "
                      "for a product already on spec-kit's own artifact layout."),
+    # #3404: the production delivery-health signal (``server/pm/delivery_health.py``).
+    # Prod's SHA comes from the primary repo's prod deploy environment
+    # (``RepoDeployConfig``); this names the runs that VERIFY a SHA for promotion.
+    ConfigField(key="delivery_verified_workflows", label="Delivery gate workflows",
+                type="string-list", default=[],
+                help="Workflow files (e.g. nightly.yml, deploy-reattempt.yml) whose green "
+                     "run on the default branch verifies a SHA for production. With a prod "
+                     "deploy environment configured, the Milestones page shows prod's "
+                     "delivery health and you are asked when prod runs an unverified SHA. "
+                     "The first one's scheduled green streak is shown. Empty: no "
+                     "verification check."),
 ]
 
 # Keys this schema USED to have and deliberately dropped (spec 2026-09-18 §4, plan

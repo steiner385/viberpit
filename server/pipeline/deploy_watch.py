@@ -96,6 +96,55 @@ def _default_gh_run(args: list[str], token: str | None = None) -> object:
     return gitrepos._run_gh(args, token=token)
 
 
+async def fetch_live_sha(http_get: HttpGet, url: str, sha_key: str) -> tuple[str | None, bool]:
+    """GET ``url`` → extract flat ``sha_key`` from JSON. NEVER raises.
+
+    Returns ``(liveSha, reachable)``. Plotroom invariant (deploy-status.ts:74):
+    ``reachable == (liveSha is not None)`` — HTTP errors, transport
+    exceptions, parse failures, AND a 2xx body lacking the key / holding a
+    non-string all collapse to ``(None, False)``. The deploy watcher and the
+    production delivery-health signal (``server/pm/delivery_health_refresh.py``)
+    both read prod's SHA through it.
+    """
+    try:
+        resp = await http_get(url)
+    except Exception:
+        return (None, False)
+    status = getattr(resp, "status_code", None)
+    if status is None or not (200 <= int(status) < 300):
+        return (None, False)
+    try:
+        body = json.loads(getattr(resp, "text", ""))
+    except (ValueError, TypeError):
+        return (None, False)
+    value = body.get(sha_key) if isinstance(body, dict) else None
+    if not isinstance(value, str):
+        return (None, False)
+    return (value, True)
+
+
+async def compare(gh_run: GhRun, repo: str, base: str, head: str,
+                  *, query: str = "") -> dict | None:
+    """The GitHub compare API body for ``base...head`` (``status``, ``ahead_by``,
+    ``commits`` oldest first, …), or ``None`` on any failure. *query* is appended
+    to the path (e.g. ``?per_page=1``)."""
+    from viberpit import gitrepos
+
+    args = ["api", f"repos/{repo}/compare/{base}...{head}{query}"]
+    token = gitrepos.app_token_for_repo(repo)
+    try:
+        proc = await asyncio.to_thread(gh_run, args, token=token)
+    except Exception:
+        return None
+    if getattr(proc, "returncode", 1) != 0:
+        return None
+    try:
+        body = json.loads(getattr(proc, "stdout", "") or "")
+    except (ValueError, TypeError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
 class DeployWatcher:
     """Health-polls deploy envs and stamps qa/prod-live timeline waypoints."""
 
@@ -122,28 +171,7 @@ class DeployWatcher:
     # ------------------------------------------------------------------ #
 
     async def _fetch_live_sha(self, url: str, sha_key: str) -> tuple[str | None, bool]:
-        """GET ``url`` → extract flat ``sha_key`` from JSON. NEVER raises.
-
-        Returns ``(liveSha, reachable)``. Plotroom invariant (deploy-status.ts:74):
-        ``reachable == (liveSha is not None)`` — HTTP errors, transport
-        exceptions, parse failures, AND a 2xx body lacking the key / holding a
-        non-string all collapse to ``(None, False)``.
-        """
-        try:
-            resp = await self._http_get(url)
-        except Exception:
-            return (None, False)
-        status = getattr(resp, "status_code", None)
-        if status is None or not (200 <= int(status) < 300):
-            return (None, False)
-        try:
-            body = json.loads(getattr(resp, "text", ""))
-        except (ValueError, TypeError):
-            return (None, False)
-        value = body.get(sha_key) if isinstance(body, dict) else None
-        if not isinstance(value, str):
-            return (None, False)
-        return (value, True)
+        return await fetch_live_sha(self._http_get, url, sha_key)
 
     async def poll_once(self, now: datetime | None = None) -> None:
         """One health + ancestry sweep across all enabled deploy configs.
@@ -220,21 +248,8 @@ class DeployWatcher:
 
     async def _compare_status(self, repo: str, base: str, head: str) -> str | None:
         """Return the compare API ``status`` (base...head), or None on failure."""
-        from viberpit import gitrepos
-
-        args = ["api", f"repos/{repo}/compare/{base}...{head}"]
-        token = gitrepos.app_token_for_repo(repo)
-        try:
-            proc = await asyncio.to_thread(self._gh_run, args, token=token)
-        except Exception:
-            return None
-        if getattr(proc, "returncode", 1) != 0:
-            return None
-        try:
-            body = json.loads(getattr(proc, "stdout", "") or "")
-        except (ValueError, TypeError):
-            return None
-        status = body.get("status") if isinstance(body, dict) else None
+        body = await compare(self._gh_run, repo, base, head)
+        status = body.get("status") if body is not None else None
         return status if isinstance(status, str) else None
 
     # ------------------------------------------------------------------ #

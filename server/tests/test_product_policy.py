@@ -18,7 +18,7 @@ def test_schema_keys_and_defaults():
                     "triage_bot_artifact_patterns", "risk_tolerance", "needs_you_automation",
                     "parked_review_threshold",
                     "max_initiatives_in_flight", "unattended_model_floor", "session_assistance",
-                    "artifact_layout"]
+                    "artifact_layout", "delivery_verified_workflows"]
     assert DISPATCH_MODES == ("off", "propose", "auto")
     assert effective_policy(None) == {
         "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "max_pipeline_prs": None,
@@ -33,7 +33,7 @@ def test_schema_keys_and_defaults():
         "triage_bot_artifact_patterns": [], "risk_tolerance": "cautious",
         "needs_you_automation": "on", "parked_review_threshold": 20,
         "max_initiatives_in_flight": 2, "unattended_model_floor": "none", "session_assistance": "on",
-        "artifact_layout": "docs_sdlc"}
+        "artifact_layout": "docs_sdlc", "delivery_verified_workflows": []}
 
 
 def test_triage_auto_accept_repeat_is_a_non_negative_int():
