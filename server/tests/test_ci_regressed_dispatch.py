@@ -99,6 +99,14 @@ def test_a_twin_whose_tracker_is_already_being_worked_waits_for_that_session():
     # A Done twin is not rescued by its tracker.
     entries, _ = _rank([_tracker(), _twin(status="Done")])
     assert [e.number for e in entries] == [21010]
+    # Nor is a twin that fails any OTHER gate: the grooming waiver is the only one.
+    for bad, reason in ((dict(author="mallory", author_id=99), "untrusted"),
+                        (dict(assignees=("someone",)), "assigned"),
+                        (dict(hold_kind="owner_action"), "held")):
+        skipped = []
+        entries, _ = _rank([_tracker(), _twin(**bad)], skipped_out=skipped)
+        assert [e.number for e in entries] == [21010]
+        assert (f"{REPO}#21009", reason) in [(r.ref, why) for r, why in skipped]
 
 
 # --- grouping and selection -------------------------------------------------------------------

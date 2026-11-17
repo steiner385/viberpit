@@ -482,8 +482,13 @@ def skip_reason(
     skip_trackers: bool = True,
     platforms: frozenset[str] = FLEET_PLATFORMS,
     busy_platforms: frozenset[str] = frozenset(),
+    grooming_exempt: bool = False,
 ) -> str | None:
-    """*platforms* is what the fleet advertises right now and *busy_platforms* the
+    """*grooming_exempt* waives ONLY the ``min_status`` gate — every other verdict
+    (trust, claims, holds…) still applies; ``rank`` sets it for the CI Failure
+    Reporter twin of a dispatchable ``ci:regressed`` tracker (#3402).
+
+    *platforms* is what the fleet advertises right now and *busy_platforms* the
     non-Linux ones whose every advertiser already has a working session
     (``fleet_platforms.fleet_platform_state``); both default to a Linux-only idle fleet.
 
@@ -519,7 +524,8 @@ def skip_reason(
     # ``ci:regressed`` issue skips the grooming gate (#3402): the flaky detector
     # files it unscored and un-triaged, and a Ready-mode product would otherwise
     # leave a P0 break in Backlog until a person happened to move it.
-    if _MIN_STATUS_RANK[status] < min_rank and not is_ci_regressed(row.labels):
+    if (_MIN_STATUS_RANK[status] < min_rank and not grooming_exempt
+            and not is_ci_regressed(row.labels)):
         return "status"
     if row.live_session:
         return "live_session"
@@ -626,8 +632,9 @@ def rank(
     kept: list[QueueRow] = []
     verdicts: list[tuple[QueueRow, str]] = []
     skipped: dict[str, int] = {}
-    for row in rows:
-        why = skip_reason(
+
+    def verdict(row: QueueRow, *, grooming_exempt: bool = False) -> str | None:
+        return skip_reason(
             row,
             min_status=min_status,
             respect_dependencies=respect_dependencies,
@@ -638,24 +645,32 @@ def rank(
             skip_trackers=skip_trackers,
             platforms=platforms,
             busy_platforms=busy_platforms,
+            grooming_exempt=grooming_exempt,
         )
+
+    for row in rows:
+        why = verdict(row)
         if why:
             verdicts.append((row, why))
         else:
             kept.append(row)
     # The twin of a dispatchable tracker rides its session, so it takes the
-    # tracker's exemption from the grooming gate (#3402) — only that leg of
-    # ``status``: a Done / In-progress twin stays skipped.
+    # tracker's exemption from the grooming gate (#3402) — and ONLY that: the row
+    # is re-judged by the full ``skip_reason`` with just ``min_status`` waived, so
+    # an untrusted, claimed, held or Done twin stays skipped for its own reason.
     dispatchable = {key for r in kept if is_ci_regressed(r.labels)
                     and (key := ci_twin_key(r.repo, r.labels, r.title))}
     if dispatchable:
-        rescued = [(r, why) for r, why in verdicts if why == "status"
-                   and (r.status not in STATUS_OPTIONS or r.status == STATUS_BACKLOG)
-                   and ci_twin_key(r.repo, r.labels, r.title) in dispatchable]
-        if rescued:
-            rescued_ids = {id(r) for r, _ in rescued}
-            verdicts = [(r, why) for r, why in verdicts if id(r) not in rescued_ids]
-            kept.extend(r for r, _ in rescued)
+        regated: list[tuple[QueueRow, str]] = []
+        for r, why in verdicts:
+            if why == "status" and ci_twin_key(r.repo, r.labels, r.title) in dispatchable:
+                again = verdict(r, grooming_exempt=True)
+                if again is None:
+                    kept.append(r)
+                    continue
+                why = again
+            regated.append((r, why))
+        verdicts = regated
     # A CI Failure Reporter issue whose ``ci:regressed`` twin is already being
     # worked rides THAT session (#3402): dispatching it alone would race the
     # twin's session to the same one-line fix.
