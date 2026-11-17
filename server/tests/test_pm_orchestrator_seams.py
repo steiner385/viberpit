@@ -766,6 +766,35 @@ async def test_await_settled_bounds_a_session_stuck_in_the_queue(db_env, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_await_settled_giveup_names_the_queue_blocker(db_env, monkeypatch, caplog):
+    """#3369: the give-up warning must say WHY the session was never admitted
+    (the queue entry's queue_reason + position), since the row is purged by the
+    time anyone investigates."""
+    from server.sessions import session_queue as sq
+    await sq.enqueue("stuck", {"queue_reason": "account_limited"})
+    orch = _bare_orch()
+    orch._session_settle_signal = _mk_async(_rec("queued", ran=False))
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    with caplog.at_level(logging.WARNING):
+        assert await orch._await_session_settled(
+            "stuck", interval_s=0.0, max_pre_admission_polls=2) is False
+    assert "blocker=account_limited queue_position=1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_await_settled_giveup_names_a_human_hold(db_env, monkeypatch, caplog):
+    orch = _bare_orch()
+    orch._session_settle_signal = _mk_async(_rec("pending_approval", ran=False))
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    with caplog.at_level(logging.WARNING):
+        assert await orch._await_session_settled(
+            "held", interval_s=0.0, max_pre_admission_polls=2) is False
+    assert "blocker=awaiting_human_approval" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_await_settled_budget_counts_only_admitted_polls(db_env, monkeypatch, caplog):
     """An admitted session that never finishes still times out after *attempts*."""
     orch = _bare_orch()
