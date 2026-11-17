@@ -197,7 +197,7 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     hooks: dict = {"PreToolUse": [HookMatcher(matcher="Bash", hooks=[
         human_hold_pre_tool_use, draft_ready_guard(owns_pr, grants=ready_grants),
         merge_hold_guard()]),
-        HookMatcher(matcher=RAILWAY_MATCHER, hooks=[railway_deploy_guard()])]}
+        HookMatcher(matcher=RAILWAY_MATCHER, hooks=[railway_deploy_guard(grants=ready_grants)])]}
     if sandbox_confine is not None:
         hooks["PreToolUse"].append(HookMatcher(hooks=[sandbox_confine]))
     if sandbox_post_write is not None:

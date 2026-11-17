@@ -61,7 +61,7 @@ def test_session_tool_specs_declares_all_nine_unconditionally():
                                        "roadmap_hold", "roadmap_advance",
                                        "roadmap_milestones", "roadmap_milestone_tick",
                                        "roadmap_milestone_advance", "roadmap_milestone_note",
-                                       "request_draft_ready"}
+                                       "request_draft_ready", "request_unverified_deploy"}
 
 
 def test_signalling_tools_are_absent_when_the_engine_cannot_keep_them():

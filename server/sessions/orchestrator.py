@@ -2393,6 +2393,7 @@ class SessionOrchestrator:
             # Read-only view: `request_draft_ready` reports the grant the registry
             # recorded when the user allowed its card (draft_hold_guard).
             draft_ready_granted=self._ready_grants(session_id).has,
+            unverified_deploy_granted=self._ready_grants(session_id).has_deploy,
             rename=functools.partial(self.rename_session, session_id),
             note_recheck=functools.partial(self._note_hand_back_recheck, session_id),
             snooze=functools.partial(self.snooze_session, session_id, identity=identity))

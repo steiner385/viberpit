@@ -74,3 +74,45 @@ def test_other_railway_tools_pass(tool):
 def test_non_railway_tool_passes():
     hook = g.railway_deploy_guard(lambda: RED)
     assert asyncio.run(hook({"tool_name": "mcp__other__set-variables", "tool_input": {}})) == {}
+
+
+def _grants():
+    from server.sessions.draft_hold_guard import DraftReadyGrants
+    store = DraftReadyGrants()
+    return store, store.for_session("s1")
+
+
+def _run_granted(grants, audit, facts=RED):
+    hook = g.railway_deploy_guard(lambda: facts, grants=grants, audit=audit)
+    return asyncio.run(hook({"tool_name": TOOL + "set-variables",
+                             "tool_input": {"projectId": PROJ, "variables": {}}}))
+
+
+def test_owner_grant_overrides_files_audit_and_is_spent():
+    store, grants = _grants()
+    store.grant_deploy("s1")
+    filed = []
+    assert _run_granted(grants, lambda f, t: filed.append((f, t)) or True) == {}
+    assert len(filed) == 1 and filed[0][0] is RED
+    assert not store.has_deploy("s1")
+    assert denied(_run_granted(grants, lambda f, t: True))  # one-shot
+
+
+def test_other_sessions_grant_does_not_override():
+    store, grants = _grants()
+    store.grant_deploy("s2")
+    assert denied(_run_granted(grants, lambda f, t: True))
+
+
+def test_failed_audit_denies_and_keeps_the_grant():
+    store, grants = _grants()
+    store.grant_deploy("s1")
+    assert denied(_run_granted(grants, lambda f, t: False))
+    assert store.has_deploy("s1")
+
+
+def test_grant_cannot_override_unreadable_facts():
+    store, grants = _grants()
+    store.grant_deploy("s1")
+    assert denied(_run_granted(grants, lambda f, t: True, g.DeployFacts(None, None, None, None, ())))
+    assert store.has_deploy("s1")

@@ -95,6 +95,8 @@ _BLURBS: dict[str, str] = {
                        "resume or re-direct it yourself."),
     "request_draft_ready": ("you need to mark ready a draft PR you did not open: asks "
                             "the user to approve that one PR."),
+    "request_unverified_deploy": ("a Railway call was blocked because it would ship unverified "
+                                  "KinDash main to production: asks the user to approve it once."),
 }
 
 #: The ONE cross-tool sentence the index may carry beyond naming tools: the

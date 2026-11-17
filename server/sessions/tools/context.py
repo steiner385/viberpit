@@ -50,6 +50,9 @@ class SessionToolContext:
     #: only — the grant is written by the registry when the card is allowed. None
     #: when unwired (tests, Codex).
     draft_ready_granted: Callable[[str, int], bool] | None = None
+    #: ``unverified_deploy_granted()``: whether the user approved one unverified KinDash
+    #: production deploy for this session (``SessionGrants.has_deploy``, #3403). Read only.
+    unverified_deploy_granted: Callable[[], bool] | None = None
     #: ``rename(name)``: bound to ``rename_self(session_id, …)``; the `rename_self`
     #: handler's ONE call (#3214). None when unwired (tests).
     rename: Callable[[str], Awaitable[None]] | None = None
