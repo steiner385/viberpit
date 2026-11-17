@@ -11,6 +11,7 @@ from .claude_bin import cli_path_kwargs as _cli_path_kwargs
 from .draft_hold_guard import draft_ready_guard
 from .human_hold_guard import human_hold_pre_tool_use
 from .merge_hold_guard import merge_hold_guard
+from .railway_deploy_guard import HOOK_MATCHER as RAILWAY_MATCHER, railway_deploy_guard
 from .permissions import to_sdk_permission_mode
 
 
@@ -195,7 +196,8 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
     # unless the user approved that PR. Without *owns_pr* no draft is its own.
     hooks: dict = {"PreToolUse": [HookMatcher(matcher="Bash", hooks=[
         human_hold_pre_tool_use, draft_ready_guard(owns_pr, grants=ready_grants),
-        merge_hold_guard()])]}
+        merge_hold_guard()]),
+        HookMatcher(matcher=RAILWAY_MATCHER, hooks=[railway_deploy_guard()])]}
     if sandbox_confine is not None:
         hooks["PreToolUse"].append(HookMatcher(hooks=[sandbox_confine]))
     if sandbox_post_write is not None:
