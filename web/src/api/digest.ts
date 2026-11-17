@@ -7,8 +7,9 @@ import { PM_MUTATION_META, QK } from './hooks'
 
 /** What a digest item asks of a person (`server/pm/digest.py:KINDS`): the held-issue
  *  kinds (`HeldAttentionKind`), an owner recommendation the needs-you hygiene loop
- *  left, a triage proposal, an initiative gate, or another needs-you issue. */
-export type DigestItemKind = HeldAttentionKind | 'recommendation' | 'triage' | 'gate' | 'issue'
+ *  left, a triage proposal, an initiative gate, another needs-you issue, or the
+ *  production delivery-health escalation (`delivery`, #3404). */
+export type DigestItemKind = HeldAttentionKind | 'recommendation' | 'triage' | 'gate' | 'issue' | 'delivery'
 
 /** The ONE action the digest recommends for an item; `label` is the button text. */
 export interface DigestRecommendation {

@@ -26,7 +26,8 @@ from server.auth.middleware import current_identity
 from server.automations.product_policy import effective_policy
 from server.db import get_db
 from server.db.models import (DecisionProposal, Feature, Initiative, InitiativeArtifact,
-                              OwnerRecommendation, Project, TriageProposal, WorkItem)
+                              MilestoneNote, OwnerRecommendation, Project, TriageProposal,
+                              WorkItem)
 from server.pm import digest as dg
 from server.pm.closeout_assess import cut_text
 from server.pm.desired_state import HUMAN_WAIT_SESSION_STATUSES
@@ -145,7 +146,8 @@ async def load_digest(db, product: str | None = None, *, now: datetime | None = 
     * the map's other needs-you issues and initiative gates — ``pm_tree.product_nodes``
       (the badge's own tiers, ``issues_out``);
     * pending decisions not already held on a board, pending triage proposals;
-    * pending owner recommendations (they stand in for the item they target)."""
+    * pending owner recommendations (they stand in for the item they target);
+    * open production delivery-health asks (#3404)."""
     from server.api.pm_tree import IssueAttention, product_nodes
     from server.pm.repo_project import owning_projects_by_repo
     from server.pm.triage_accept import awaiting_decision_clause
@@ -208,11 +210,29 @@ async def load_digest(db, product: str | None = None, *, now: datetime | None = 
         wire = recommendation_to_wire(rec, slugs.get(rec.project_id))
         items.append(dg.from_recommendation(wire, url=url_by_ref.get(rec.target_ref)))
 
+    for slug, note in await _delivery_asks(db):
+        items.append(dg.from_delivery_ask(product=slug, note_id=note.id, text=note.text,
+                                          url=note.url))
+
     known = {node["slug"] for node in nodes}
     if product is not None:
         items = [i for i in items if i.product == product]
         known = {product}
     return dg.assemble(items, products=known, now=now)
+
+
+async def _delivery_asks(db) -> list[tuple[str, MilestoneNote]]:
+    """``(product slug, ask)`` for every open production delivery-health ask (#3404)."""
+    from server.pm.delivery_health import ASK_AUTHOR
+    from server.pm.milestone_asks import open_milestone_asks
+    asks = await open_milestone_asks(db)
+    mine = {pid: [n for n in notes if n.created_by == ASK_AUTHOR] for pid, notes in asks.items()}
+    pids = [pid for pid, notes in mine.items() if notes]
+    if not pids:
+        return []
+    slug = dict((await db.execute(select(Project.id, Project.slug).where(
+        Project.id.in_(pids)))).all())
+    return [(slug[pid], n) for pid in pids if slug.get(pid) for n in mine[pid]]
 
 
 @router.get("/digest")

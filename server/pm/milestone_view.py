@@ -4,7 +4,8 @@
 Pure code over already-loaded rows. Freshness is applied here, at read time
 (``milestone_status.status_at``): a stored ``met`` older than its measure's max age
 reads ``unknown``. Conditions come from the ladder's stored definition; a measurement
-row no condition names is ignored. Product-agnostic.
+row no condition names is ignored, except the production delivery-health readout
+(``delivery_health.SCOPE``, #3404), served as ``delivery``. Product-agnostic.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
+from server.pm import delivery_health
 from server.pm.milestone_asks import ASK_KIND, DECISION_STATUSES, is_open_ask
 from server.pm.milestone_def import (
     MILESTONES_PATH,
@@ -239,8 +241,19 @@ def build_milestones_view(
         },
         "milestones": out,
         "numbers": numbers,
+        "delivery": _delivery(by_key.get((delivery_health.SCOPE, delivery_health.KEY)), at),
         "notes": _notes(note_rows),
     }
+
+
+def _delivery(row: Any | None, now: datetime) -> dict[str, Any] | None:
+    """The production delivery-health readout (#3404), or ``None`` when the product
+    does not take part (``delivery_health_refresh.load_target``)."""
+    if row is None or not isinstance(row.value, Mapping):
+        return None
+    measured = aware_utc(row.measured_at)
+    return {**row.value, "measuredAt": iso_utc(measured), "ageSeconds": _age_s(measured, now),
+            "error": row.error}
 
 
 # ---------------------------------------------------------------- text summary
@@ -350,6 +363,9 @@ def summarize_milestones(view: Mapping[str, Any], *, product: str = "",
                          f"in flight · {leaves.get('notStarted', 0)} not started")
     if ladder.get("parseError"):
         lines.append(f"Definition error: {_clip(ladder['parseError'], 120)}")
+    delivery = delivery_health.summary_line(view.get("delivery"))
+    if delivery:
+        lines.append(delivery)
     notes = view.get("notes") or {}
     asks = [a for a in notes.get("asks") or [] if a.get("status") == "open"]
     if asks:

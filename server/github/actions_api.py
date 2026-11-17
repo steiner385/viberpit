@@ -127,7 +127,8 @@ def list_completed_runs(repo: str, since_ts: float | None, *,
     return out
 
 
-_WORKFLOW_RUN_FIELDS = ("id", "status", "conclusion", "event", "updated_at", "html_url")
+_WORKFLOW_RUN_FIELDS = ("id", "status", "conclusion", "event", "updated_at", "html_url",
+                        "head_sha")
 
 
 def list_workflow_runs(repo: str, workflow: str, *, branch: str, event: str | None = None,

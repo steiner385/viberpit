@@ -132,9 +132,55 @@ export interface MilestoneNote {
 /** Server order: decisions locked, proposed, superseded; asks open first; each oldest first. */
 export interface MilestoneNotes { decisions: MilestoneNote[]; asks: MilestoneNote[] }
 
+/** One open `ci:regressed` issue the delivery readout read, and who is on it. */
+export interface DeliveryRegressed {
+  ref: string
+  title: string
+  url: string
+  session: boolean
+  prs: string[]
+  owned: boolean
+}
+
+/** Production delivery health (#3404, `server/pm/delivery_health.py:to_wire`): what prod
+ *  runs, how far behind the default branch it is, whether a gate workflow verified it,
+ *  and the regressed issues blocking promotion. */
+export interface MilestoneDelivery {
+  state: 'healthy' | 'behind' | 'blocked' | 'unverified' | 'unknown'
+  repo: string
+  branch: string
+  prodSha: string | null
+  behindCommits: number | null
+  hoursBehind: number | null
+  oldestUnshippedAt: string | null
+  /** Null: no gate workflows configured, or prod unreachable. */
+  verified: boolean | null
+  verifiedBy: string | null
+  gateWorkflows: string[]
+  streak: number | null
+  streakUrl: string | null
+  /** Null when the read failed. */
+  regressed: DeliveryRegressed[] | null
+  escalated: boolean
+  reasons: string[]
+  blockers: string[]
+  compareUrl: string | null
+  errors: string[]
+  measuredAt: string | null
+  ageSeconds: number | null
+  error: string | null
+}
+
 export type MilestonesView =
   | { ladder: null }
-  | { ladder: MilestoneLadder; milestones: Milestone[]; numbers: MilestoneCondition[]; notes: MilestoneNotes }
+  | {
+    ladder: MilestoneLadder
+    milestones: Milestone[]
+    numbers: MilestoneCondition[]
+    notes: MilestoneNotes
+    /** Absent or null when the product has no prod deploy environment. */
+    delivery?: MilestoneDelivery | null
+  }
 
 /** `POST …/refresh`: 202 stamped, 429 inside the window, 409 automatic refresh off. */
 export type RefreshMilestonesResult =

@@ -28,6 +28,7 @@ import { QueryFailureBanner } from '@/ui/QueryFailureBanner'
 import { Skeleton } from '@/ui/Skeleton'
 import { MilestoneCard } from './MilestoneCard'
 import { NotesPanel } from './NotesPanel'
+import { DeliveryPanel } from './DeliveryPanel'
 import { NumbersPanel } from './NumbersPanel'
 import { PrintStamp } from './PrintStamp'
 import {
@@ -235,6 +236,7 @@ export function MilestonesPage() {
                 {/* Spec §9 order, kept when it stacks under the ladder below 2xl. */}
                 <div data-print="side" className="flex min-w-0 flex-col gap-6">
                   <NotesPanel kind="ask" slug={productSlug} view={view} />
+                  <DeliveryPanel delivery={view.delivery} />
                   <NumbersPanel numbers={view.numbers} slug={productSlug} />
                   <NotesPanel kind="decision" slug={productSlug} view={view} />
                 </div>

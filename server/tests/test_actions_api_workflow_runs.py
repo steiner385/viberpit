@@ -37,9 +37,11 @@ def test_list_workflow_runs_builds_args():
     ]]
     assert runs == [
         {"id": 3, "status": "completed", "conclusion": "success", "event": "schedule",
-         "updated_at": "2026-11-03T06:00:00Z", "html_url": "https://github.com/o/r/actions/runs/3"},
+         "updated_at": "2026-11-03T06:00:00Z", "html_url": "https://github.com/o/r/actions/runs/3",
+         "head_sha": "abc"},
         {"id": 2, "status": "completed", "conclusion": "failure", "event": "schedule",
-         "updated_at": "2026-11-02T06:00:00Z", "html_url": "https://github.com/o/r/actions/runs/2"},
+         "updated_at": "2026-11-02T06:00:00Z", "html_url": "https://github.com/o/r/actions/runs/2",
+         "head_sha": "abc"},
     ]
 
 

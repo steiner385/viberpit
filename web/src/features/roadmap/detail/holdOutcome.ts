@@ -49,6 +49,7 @@ export const DIGEST_KIND_LABEL: Record<string, string> = {
   triage: 'Triage',
   gate: 'Stage gate',
   issue: 'Needs you',
+  delivery: 'Prod delivery',
 }
 
 /** The items of a checklist hold reason (`server/pm/closeout_assess.py:

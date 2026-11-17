@@ -57,7 +57,11 @@ KIND_GATE = "gate"
 KIND_TRIAGE = "triage"
 KIND_ISSUE = "issue"
 KIND_RECOMMENDATION = "recommendation"
-KINDS: tuple[str, ...] = (KIND_MODEL_APPROVAL, KIND_RECOMMENDATION, KIND_TRIAGE,
+#: The production delivery-health escalation (#3404): an open ask on the product's
+#: ladder (``delivery_health_refresh``). Only a person can unblock it; it clears
+#: itself when the next verified promotion lands.
+KIND_DELIVERY = "delivery"
+KINDS: tuple[str, ...] = (KIND_DELIVERY, KIND_MODEL_APPROVAL, KIND_RECOMMENDATION, KIND_TRIAGE,
                           KIND_DECISION, KIND_CHECKLIST, KIND_OWNER_ACTION, KIND_GATE,
                           KIND_ISSUE, KIND_EVIDENCE)
 
@@ -79,6 +83,7 @@ ID_TRIAGE = "triage"
 ID_DECISION = "decision"
 ID_GATE = "gate"
 ID_ISSUE = "issue"
+ID_DELIVERY = "delivery"
 
 #: Ids one ``POST /api/pm/digest/apply`` may carry ("approve all" passes every id
 #: with a recommendation).
@@ -145,7 +150,7 @@ def parse_id(value: str) -> tuple[str, str] | None:
     """``(prefix, key)`` of a digest item id, or ``None`` for a malformed one."""
     prefix, sep, key = str(value).partition(":")
     if not sep or not key or prefix not in (ID_HOLD, ID_REC, ID_TRIAGE, ID_DECISION,
-                                             ID_GATE, ID_ISSUE):
+                                             ID_GATE, ID_ISSUE, ID_DELIVERY):
         return None
     return prefix, key
 
@@ -303,6 +308,16 @@ def from_issue(*, product: str, work_item_id: str, ref: str, title: str | None,
     session waiting on a person, assigned to the owner)."""
     return DigestItem(id=item_id(ID_ISSUE, work_item_id), kind=KIND_ISSUE, product=product,
                       title=title or ref, why=why, url=url, ref=ref)
+
+
+def from_delivery_ask(*, product: str, note_id: str, text: str | None,
+                      url: str | None) -> DigestItem:
+    """The production delivery-health escalation (#3404): its ask's text names the
+    blocker. No recommendation — dispatching or fixing the blocker is a person's call."""
+    return DigestItem(id=item_id(ID_DELIVERY, note_id), kind=KIND_DELIVERY, product=product,
+                      title="Production delivery needs you",
+                      why=_why(text or "Production is not getting verified promotions."),
+                      url=url, recommendation=None)
 
 
 def from_recommendation(rec: Mapping, *, url: str | None = None) -> DigestItem:
