@@ -442,6 +442,7 @@ class PermissionRegistry:
             decision = "allow"
         if decision in ("allow", "always"):
             self._record_draft_ready_grant(rec)
+            self._record_unverified_deploy_grant(rec)
         if not rec["future"].done():
             if decision == "deny" and message and not raw:
                 from server.sessions.claude_driver import USER_DENY_COMMENT_PREFIX
@@ -463,6 +464,17 @@ class PermissionRegistry:
             self.draft_ready_grants.grant(rec["session_id"], *target)
             log.info("permission.draft_ready_grant session=%s pr=%s#%s",
                      rec["session_id"], *target)
+
+    def _record_unverified_deploy_grant(self, rec: dict) -> None:
+        """A human allowed a ``request_unverified_deploy`` card: grant that session ONE
+        unverified KinDash production deploy (``railway_deploy_guard``, #3403). Keyed on
+        the card's own record, like the draft grant."""
+        from viberpit.brand import mcp_tool_stem
+        from server.sessions.railway_deploy_guard import REQUEST_TOOL
+        if mcp_tool_stem(rec["tool"]) != REQUEST_TOOL:
+            return
+        self.draft_ready_grants.grant_deploy(rec["session_id"])
+        log.info("permission.unverified_deploy_grant session=%s", rec["session_id"])
 
     def pending(self, session_id) -> list[dict]:
         return [{"permId": pid, "tool": r["tool"], "input": r["input"],

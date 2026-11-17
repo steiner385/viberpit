@@ -21,8 +21,11 @@ open ``ci:regressed`` issues, and the safe path: ``staged: true`` (the owner com
 through KinDash's gate) or a ``redeploy`` of the current image. Fail closed: when the
 facts cannot be read the call is denied too.
 
-Not implemented here: the owner-approval override that files KinDash's "Unverified prod
-deploy" audit issue — it needs a card + grant like ``draft_hold_guard`` (follow-up).
+Owner override: the session calls ``request_unverified_deploy(reason)`` (a DESTRUCTIVE
+card only the user can allow, recorded as a one-shot grant on the shared
+``DraftReadyGrants`` store). With the grant, the next blocked call passes, spends it and
+files KinDash's "Unverified prod deploy" audit issue first — if the filing fails the call
+is denied and the grant kept, so no override goes unaudited.
 
 It is an SDK ``PreToolUse`` hook so it fires in every permission mode, like the other
 hold guards.
@@ -39,6 +42,9 @@ from typing import Callable
 from viberpit import gitrepos
 
 from server.sessions import draft_hold_guard as _draft
+
+#: The session tool that asks the user to approve one unverified deploy.
+REQUEST_TOOL = "request_unverified_deploy"
 
 # KinDash production on Railway (project ``kindash``, environment ``production``,
 # service ``kindash-prod``). Railway MCP defaults an omitted environmentId to
@@ -102,7 +108,8 @@ def blocked_reason(facts: DeployFacts) -> str:
         "Railway rebuilds from the latest main on a live variable/config change, it does not "
         "restart the running image. Safe paths: pass `staged: true` (the owner commits it "
         "through KinDash's deploy gate), or `redeploy` the current image. If the owner wants "
-        "the unverified deploy anyway, hand back and ask them to approve it.")
+        f"the unverified deploy anyway, call `{REQUEST_TOOL}` with your reason (a card only they "
+        "can approve), then retry once it reports the grant; if it does not, hand back.")
 
 
 def unreadable_reason(why: str) -> str:
@@ -172,7 +179,41 @@ def fetch_facts() -> DeployFacts:
                        tuple(issues.split(",")) if issues else ())
 
 
-def railway_deploy_guard(facts: Facts | None = None):
+def audit_issue_body(facts: DeployFacts, tool: str) -> str:
+    regressed = ", ".join(facts.regressions) or "none open"
+    return (
+        f"The owner approved a live Railway `{tool.rsplit('__', 1)[-1]}` on KinDash production "
+        f"that rebuilds from main, past the last gate-verified SHA (ViberPit #3403).\n\n"
+        f"- prod: `{facts.prod_sha or 'unknown'}`\n- main: `{facts.main_sha}`\n"
+        f"- last gate-verified: `{facts.verified_sha}`\n"
+        f"- commits shipped beyond verified: {facts.ahead_by}\n"
+        f"- open `ci:regressed` issues: {regressed}\n")
+
+
+def file_audit_issue(facts: DeployFacts, tool: str) -> bool:
+    """Open KinDash's "Unverified prod deploy" audit issue (blocking). True on success."""
+    env = gitrepos._gh_env()
+    token = gitrepos.app_token_for_owner(KINDASH_REPO.partition("/")[0])
+    if token:
+        env["GH_TOKEN"] = token
+    try:
+        proc = subprocess.run(
+            ["gh", "api", f"repos/{KINDASH_REPO}/issues", "-f", "title=Unverified prod deploy",
+             "-f", f"body={audit_issue_body(facts, tool)}"],
+            capture_output=True, text=True, env=env, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+_AUDIT_FAILED = (
+    "Blocked: the owner approved this unverified KinDash production deploy, but filing the "
+    "required \"Unverified prod deploy\" audit issue failed, so nothing shipped and the "
+    "approval is kept. Retry the call once GitHub is reachable.")
+
+
+def railway_deploy_guard(facts: Facts | None = None, grants=None,
+                         audit: Callable[[DeployFacts, str], bool] | None = None):
     """The SDK ``PreToolUse`` hook (:data:`HOOK_MATCHER`): deny a Railway call that
     would ship unverified KinDash main to production; everything else passes."""
     async def railway_deploy_pre_tool_use(input_data, tool_use_id=None, context=None) -> dict:
@@ -184,9 +225,26 @@ def railway_deploy_guard(facts: Facts | None = None):
         if not ships_main(tool, tool_input):
             return {}
         try:
-            reason = judge(await asyncio.wait_for(
-                asyncio.to_thread(facts or fetch_facts), _draft.GUARD_BUDGET_S))
+            found = await asyncio.wait_for(
+                asyncio.to_thread(facts or fetch_facts), _draft.GUARD_BUDGET_S)
+            reason = judge(found)
         except Exception:  # noqa: BLE001 - fail closed (a timeout included)
-            reason = unreadable_reason("lookup timed out or failed")
-        return _draft._deny(reason) if reason else {}
+            found, reason = None, unreadable_reason("lookup timed out or failed")
+        if reason is None:
+            return {}
+        # The owner's approval overrides a *verified* unverified-main finding only; an
+        # unreadable lookup (found.ahead_by is None) cannot be audited, so it stays denied.
+        if (grants is not None and grants.has_deploy() and found is not None
+                and found.ahead_by is not None):
+            try:
+                filed = await asyncio.wait_for(
+                    asyncio.to_thread(audit or file_audit_issue, found, tool),
+                    _draft.GUARD_BUDGET_S)
+            except Exception:  # noqa: BLE001 - an unaudited override is a denial
+                filed = False
+            if not filed:
+                return _draft._deny(_AUDIT_FAILED)
+            grants.spend_deploy()
+            return {}
+        return _draft._deny(reason)
     return railway_deploy_pre_tool_use

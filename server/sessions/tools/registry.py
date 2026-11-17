@@ -96,6 +96,11 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     # (cairnea/KinDash#15268).
     ToolSpec("request_draft_ready", ToolClass.DESTRUCTIVE,
              "Ask the user to approve marking one draft PR ready", idempotent=False),
+    # DESTRUCTIVE for the same reason: the card is the owner's approval of one unverified
+    # KinDash production deploy; `railway_deploy_guard` honors the grant once (#3403).
+    ToolSpec("request_unverified_deploy", ToolClass.DESTRUCTIVE,
+             "Ask the user to approve one unverified KinDash production deploy",
+             idempotent=False),
 ]}
 
 #: THE set of signalling tool names — the permission class: a SIGNAL tool moves
@@ -179,7 +184,8 @@ def mounted_names(*, signalling_tools: bool, self_model_switch: bool,
     # dispatch — and only while the kill switch (``child_sessions``) is on.
     if signalling_tools:
         names += ("roadmap_resolve", "roadmap_hold", "roadmap_advance", "roadmap_milestone_tick",
-                  "roadmap_milestone_advance", "request_draft_ready")
+                  "roadmap_milestone_advance", "request_draft_ready",
+                  "request_unverified_deploy")
     if signalling_tools and child_sessions:
         names = names + ("dispatch_session", "reply_to_child")
     return names

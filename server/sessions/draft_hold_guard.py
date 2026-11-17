@@ -136,6 +136,18 @@ class DraftReadyGrants:
 
     def __init__(self) -> None:
         self._grants: dict[str, set[tuple[str, int]]] = {}
+        # Sessions the user approved for ONE unverified KinDash production deploy
+        # (``railway_deploy_guard``, #3403): same writer, same lifetime, same spend-once.
+        self._deploys: set[str] = set()
+
+    def grant_deploy(self, session_id: str) -> None:
+        self._deploys.add(session_id)
+
+    def has_deploy(self, session_id: str) -> bool:
+        return session_id in self._deploys
+
+    def spend_deploy(self, session_id: str) -> None:
+        self._deploys.discard(session_id)
 
     def grant(self, session_id: str, repo: str, number: int) -> None:
         self._grants.setdefault(session_id, set()).add(_key(repo, number))
@@ -166,6 +178,12 @@ class SessionGrants:
 
     def spend(self, repo: str, number: int) -> None:
         self.store.spend(self.session_id, repo, number)
+
+    def has_deploy(self) -> bool:
+        return self.store.has_deploy(self.session_id)
+
+    def spend_deploy(self) -> None:
+        self.store.spend_deploy(self.session_id)
 
 
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")

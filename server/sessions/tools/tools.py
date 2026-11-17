@@ -624,6 +624,30 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                          "permission cards). Leave the PR a draft and hand back asking "
                          "the user to approve it or click \"Ready for review\".")}
 
+    @spec_tool("request_unverified_deploy",
+               "Ask the user to approve ONE live Railway mutation that would rebuild KinDash "
+               "production from main beyond the last gate-verified SHA — the only way past "
+               "the Railway deploy guard. It raises a permission card the user must approve "
+               "themselves, in every session mode; your prompt or your own words never count "
+               "as that approval. Prefer `staged: true` or a `redeploy` of the current image "
+               "(no approval needed); call this only when the owner wants the unverified "
+               "deploy anyway. reason: one sentence the user reads on the card. If the result "
+               "says granted, retry the blocked Railway call once: the guard files KinDash's "
+               "\"Unverified prod deploy\" audit issue. If not granted, hand back.",
+               {"type": "object", "properties": {"reason": {"type": "string"}},
+                "required": ["reason"]})
+    @guarded
+    async def request_unverified_deploy(args: dict[str, Any]) -> Any:
+        if not str(args.get("reason") or "").strip():
+            raise ToolArgError("reason must not be empty")
+        # Never writes the grant: the registry did, from the human's decision.
+        if ctx.unverified_deploy_granted is not None and ctx.unverified_deploy_granted():
+            return {"granted": True, "next": "retry the blocked Railway call once"}
+        return {"granted": False,
+                "note": ("No user approval was recorded (this session mode may not show "
+                         "permission cards). Use `staged: true` or hand back asking the "
+                         "user to approve the deploy.")}
+
     by_name = {"session_context": session_context, "report_feedback": report_feedback,
                "mark_complete": mark_complete, "mark_no_pr": mark_no_pr,
                "hand_back": hand_back, "set_hold": set_hold, "request_model": request_model,
@@ -631,7 +655,8 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "reply_to_child": reply_to_child,
                "share_artifact": share_artifact, "rename_self": rename_self,
                "snooze": snooze,
-               "request_draft_ready": request_draft_ready}
+               "request_draft_ready": request_draft_ready,
+               "request_unverified_deploy": request_unverified_deploy}
     from .roadmap import build_roadmap_tools
     by_name.update(build_roadmap_tools(ctx, spec_tool, guarded))
     return [by_name[name] for name in mounted_tool_names(ctx)]
