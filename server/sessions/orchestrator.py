@@ -2074,7 +2074,8 @@ class SessionOrchestrator:
             assess=self._needs_you_hygiene_assess,
             review_parked=self._needs_you_hygiene_review_parked,
             record_parked_run=self._needs_you_hygiene_record_parked_run,
-            digest=self._needs_you_hygiene_digest_seams())
+            digest=self._needs_you_hygiene_digest_seams(),
+            regressed_alerts=self._needs_you_hygiene_regressed_seams())
         self._needs_you_hygiene_task: asyncio.Task | None = None
         # Milestones Refresh: release-milestone measurements every 10 min or on a
         # stamped request (spec 2026-11-05 §8). Primary-only, like pm-sync.
@@ -11064,6 +11065,30 @@ class SessionOrchestrator:
         async with db_session() as db:
             return await accepted_text_for_refs(db, refs)
 
+    async def _backlog_regressed_trackers(self, refs: "Sequence[str]") -> tuple[str, ...]:
+        """The refs among *refs* whose mirrored issue carries ``ci:regressed``
+        (#3402), in *refs* order — the trackers the implement prompt tells the
+        session to reference with ``Refs`` rather than close."""
+        from sqlalchemy import select as sa_select, tuple_
+
+        from server.db.models import WorkItem
+        from server.pm.queue import is_ci_regressed
+        keys: dict[tuple[str, int], str] = {}
+        for ref in refs:
+            repo, _, num = ref.partition("#")
+            if repo and num.isdigit():
+                keys[(repo, int(num))] = ref
+        if not keys:
+            return ()
+        async with db_session() as db:
+            rows = (await db.execute(sa_select(WorkItem.repo, WorkItem.number, WorkItem.labels)
+                                     .where(WorkItem.kind == "issue",
+                                            tuple_(WorkItem.repo, WorkItem.number)
+                                            .in_(list(keys))))).all()
+        hit = {keys[(repo, num)] for repo, num, labels in rows
+               if (repo, num) in keys and is_ci_regressed(labels or ())}
+        return tuple(r for r in refs if r in hit)
+
     async def _backlog_ladder_rung(self, product_slug: "str | None", primary_ref: str, *,
                                    default_model: str, floor: str | None) -> str | None:
         """The tier this dispatch is PINNED to because its primary issue is parked
@@ -11217,6 +11242,18 @@ class SessionOrchestrator:
                 accepted = {}
             if accepted:
                 batch = dataclass_replace(batch, decisions=accepted)
+            # Which batched refs are ``ci:regressed`` trackers (#3402), read off the
+            # mirror here for the same reason as the decisions: a batch rebuilt
+            # from a claim row carries no labels. Best-effort — a failed read
+            # costs the Refs hint, never the spawn.
+            try:
+                trackers = await self._backlog_regressed_trackers(batch.issues)
+            except Exception:
+                log.warning("backlog_runner.regressed_trackers_failed target=%s",
+                            batch.primary, exc_info=True)
+                trackers = ()
+            if trackers:
+                batch = dataclass_replace(batch, trackers=trackers)
         # The seed prompt, built here because only the implement one takes a branch
         # and resolving one is a remote branch listing — the same reason the refusal
         # check runs first: an investigation must not pay for work it has no use for.
@@ -16503,6 +16540,36 @@ class SessionOrchestrator:
                                last_sent=self._owner_digest_last_sent,
                                notify=self._owner_digest_notify,
                                record_sent=self._owner_digest_record_sent)
+
+    def _needs_you_hygiene_regressed_seams(self):
+        """The regressed-unowned push's dedupe record (``needs_you_hygiene.
+        RegressedAlertSeams``, #3402): one ``pm.regressed.alerted`` audit row per push."""
+        from types import SimpleNamespace
+        return SimpleNamespace(last_alerted=self._regressed_last_alerted,
+                               record_alerted=self._regressed_record_alerted)
+
+    async def _regressed_last_alerted(self) -> dict:
+        """ref -> when its newest regressed-unowned push went out (latest 500 rows)."""
+        from sqlalchemy import select
+        from server.db.models import AuditEvent
+        from server.automations.needs_you_hygiene import REGRESSED_ALERT_AUDIT_TYPE
+        async with db_session() as db:
+            rows = (await db.execute(
+                select(AuditEvent.detail, AuditEvent.at)
+                .where(AuditEvent.type == REGRESSED_ALERT_AUDIT_TYPE)
+                .order_by(AuditEvent.at.desc()).limit(500))).all()
+        out: dict = {}
+        for detail, at in rows:  # newest first: the first row per ref wins
+            if isinstance(detail, dict) and detail.get("ref"):
+                out.setdefault(detail["ref"], at)
+        return out
+
+    async def _regressed_record_alerted(self, ref: str, detail: dict) -> None:
+        from server.automations.needs_you_hygiene import REGRESSED_ALERT_AUDIT_TYPE
+        async with db_session() as db:
+            await record_audit(db, REGRESSED_ALERT_AUDIT_TYPE, SYSTEM_IDENTITY, detail,
+                               via="automation")
+            await db.commit()
 
     async def _owner_digest_in_quiet_hours(self, now) -> bool:
         from server.sessions.notify_rules import in_quiet_hours, localize_now

@@ -42,6 +42,8 @@ def _issue_why(row) -> str:
     (``tree.issue_tier``'s needs-you branches)."""
     if row.reason == "needs_spec":
         return dg.WHY_NEEDS_SPEC
+    if row.reason == "regressed_unowned":
+        return dg.WHY_REGRESSED_UNOWNED
     if row.session_status in HUMAN_WAIT_SESSION_STATUSES:
         return dg.WHY_SESSION_WAIT
     if row.assigned_to_owner:

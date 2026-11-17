@@ -177,8 +177,9 @@ export interface Leaf {
   sessionStatus: string | null
   ghCreatedAt: string | null
   /** Why this leaf needs a human beyond its tier (product automation policy
-   *  §7), or null. `'needs_spec'` is the only value today — the body has
-   *  bounced `bounces` times at its current fingerprint without merging. */
+   *  §7), or null. `'needs_spec'`: the body has bounced `bounces` times at its
+   *  current fingerprint without merging. `'regressed_unowned'`: a `ci:regressed`
+   *  issue nobody has picked up in a day (#3402). */
   reason: string | null
   /** Finalised, non-merged dispatches at the CURRENT body fingerprint (D8);
    *  0 when `reason` is null. */

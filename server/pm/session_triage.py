@@ -125,6 +125,14 @@ async def _needs_you(db: Any, args: NeedsYou, identity: str) -> dict:
             seen.add(wi.id)
             rows.append({**pm._work_item_to_dict(wi), "kind": "work_item",
                          "itemKind": wi.kind, "tier": "needs-you", "reason": "needs_home"})
+    # A ci:regressed issue nobody picked up in a day (#3402) needs you even with no
+    # capability to list it under.
+    for wi in await pm_tree.regressed_homeless(db, repos):
+        if wi.id not in seen:
+            seen.add(wi.id)
+            rows.append({**pm._work_item_to_dict(wi), "kind": "work_item",
+                         "itemKind": wi.kind, "tier": "needs-you",
+                         "reason": "regressed_unowned"})
     decisions = await pm.list_decisions(projectSlug=args.product, impact=False,
                                         _identity=identity, db=db)
     triage = await pm.list_triage(projectSlug=args.product, confidenceLevel=None,

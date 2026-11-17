@@ -52,6 +52,12 @@ class Batch:
     # (``plan_to_batch``), and the spawn routes it ONLY to a host advertising the
     # platform (host-platforms spec §3). ``None`` = runs anywhere.
     platform: str | None = None
+    # The batched refs that are ``ci:regressed`` trackers (#3402): the flaky
+    # detector closes them itself once the test is green again, so the PR
+    # references them with ``Refs`` and closes only the CI Failure Reporter twin
+    # with ``Fixes``. Filled at the SPAWN from the mirrored labels, like
+    # ``decisions``, so a batch rebuilt from a claim row gets it too.
+    trackers: tuple[str, ...] = ()
 
 
 def should_free_slot(pr_info: PullRequestInfo, pr_doctor_active: bool) -> bool:

@@ -11,7 +11,7 @@ import re
 import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from server.sessions.host_platforms import KNOWN_PLATFORMS, LINUX_ONLY
 
@@ -123,7 +123,29 @@ def is_automation_author(author: str) -> bool:
 # this pure ranking core would invert the layering — so the coupling is pinned by
 # ``test_urgent_labels_pin_the_deploy_monitor_label`` instead, exactly as
 # MIN_STATUS_OPTIONS pins its coupling to STATUS_OPTIONS below.
-URGENT_LABELS = frozenset({"deploy-monitor"})
+#
+# ``ci:regressed`` (#3402) is the other urgent label: KinDash's flaky detector
+# stamps it when a test that passed fails EVERY attempt on three consecutive
+# scheduled runs — a deterministic break, and a red Nightly blocks production
+# promotion. KinDash#21010 carried it, sat unowned for nine days, and the
+# Nightly stayed red the whole time.
+REGRESSED_LABELS = frozenset({"ci:regressed"})
+URGENT_LABELS = frozenset({"deploy-monitor"}) | REGRESSED_LABELS
+
+# The CI Failure Reporter's per-test issue (``ci-failure``, titled
+# ``[<tool>] <spec> › <test>``) is the regressed tracker's TWIN: same spec, same
+# test, filed by a different workflow. The two are one defect, so they dispatch
+# as ONE session (``backlog_grouping.regressed_groups``), the tracker referenced
+# with ``Refs`` (it closes itself) and the twin closed with ``Fixes``.
+CI_FAILURE_LABELS = frozenset({"ci-failure"})
+# How long a regressed issue may sit with no session and no runner claim before it
+# needs a person (#3402): the runner should have picked it up within one tick, so
+# a day unowned means something is stopping it.
+REGRESSED_UNOWNED_AFTER = timedelta(hours=24)
+# The leading ``[tool]`` / ``[flaky]`` tag and the flaky tracker's trailing
+# ``(fp:1a958cf3)`` — what is left is ``<spec> › <test>``, the twin key.
+_CI_TITLE_TAG = re.compile(r"^\s*\[[^\]]*\]\s*")
+_CI_TITLE_FP = re.compile(r"\s*\(fp:[0-9a-f]+\)\s*$", re.IGNORECASE)
 
 # Environment gates (#2983): an issue that can only be worked on a host the fleet
 # does not have. steiner385/ghostdriver-mcp#28 (``env: windows`` + ``real-target``)
@@ -264,6 +286,43 @@ class QueueEntry:
     # ``urgent``: an entry has no labels, and the runner must route a gated issue
     # to a platform host and dispatch it alone (host-platforms spec §3).
     platform: str | None = None
+    # #3402: the row is a ``ci:regressed`` tracker, and the ``(repo, test)`` key it
+    # shares with its CI Failure Reporter twin (``ci_twin_key``; ``None`` for a row
+    # that is neither). Carried for the same reason as ``urgent``: grouping bundles
+    # the twins and the spawn tells the session which one is the tracker, and an
+    # entry has no labels.
+    regressed: bool = False
+    ci_twin: str | None = None
+
+
+def is_ci_regressed(labels: Iterable[str]) -> bool:
+    """THE ``ci:regressed`` verdict (#3402): a deterministic CI break that is P0."""
+    return bool({str(lbl).strip().lower() for lbl in labels} & REGRESSED_LABELS)
+
+
+def ci_twin_key(repo: str, labels: Iterable[str], title: str) -> str | None:
+    """The key a ``ci:regressed`` tracker shares with its CI Failure Reporter twin
+    (``ci-failure``): the repo plus the ``<spec> › <test>`` part of the title, the
+    ``[tool]`` tag and ``(fp:…)`` suffix stripped and case/whitespace folded.
+    ``None`` for a row that is neither, or whose title leaves nothing to match on."""
+    names = {str(lbl).strip().lower() for lbl in labels}
+    if not names & (REGRESSED_LABELS | CI_FAILURE_LABELS):
+        return None
+    core = _CI_TITLE_FP.sub("", _CI_TITLE_TAG.sub("", title or ""))
+    core = " ".join(core.split()).casefold()
+    return f"{(repo or '').lower()}|{core}" if core else None
+
+
+def regressed_unowned(*, labels: Iterable[str], created_at: datetime | None,
+                      owned: bool, now: datetime) -> bool:
+    """THE needs-you rule for a regressed issue (#3402): ``ci:regressed``, opened
+    at least ``REGRESSED_UNOWNED_AFTER`` ago, and nobody is on it (*owned*: a live
+    session or a runner claim — a claim persists while its PR is open, so it
+    covers "has a linked PR" too). The runner dispatches these within one tick; a
+    day unowned means something is stopping it, which only a person can see.
+    *created_at* and *now* must agree on awareness (both aware UTC)."""
+    return (not owned and created_at is not None and is_ci_regressed(labels)
+            and now - created_at >= REGRESSED_UNOWNED_AFTER)
 
 
 def is_bot_login(author: str | None) -> bool:
@@ -423,8 +482,13 @@ def skip_reason(
     skip_trackers: bool = True,
     platforms: frozenset[str] = FLEET_PLATFORMS,
     busy_platforms: frozenset[str] = frozenset(),
+    grooming_exempt: bool = False,
 ) -> str | None:
-    """*platforms* is what the fleet advertises right now and *busy_platforms* the
+    """*grooming_exempt* waives ONLY the ``min_status`` gate — every other verdict
+    (trust, claims, holds…) still applies; ``rank`` sets it for the CI Failure
+    Reporter twin of a dispatchable ``ci:regressed`` tracker (#3402).
+
+    *platforms* is what the fleet advertises right now and *busy_platforms* the
     non-Linux ones whose every advertiser already has a working session
     (``fleet_platforms.fleet_platform_state``); both default to a Linux-only idle fleet.
 
@@ -456,8 +520,12 @@ def skip_reason(
         return "status"  # Done / In progress / Held
     if status == STATUS_BLOCKED or (respect_dependencies and row.open_blockers):
         return "blocked"
-    # status is now guaranteed Backlog or Ready (Blocked returned above).
-    if _MIN_STATUS_RANK[status] < min_rank:
+    # status is now guaranteed Backlog or Ready (Blocked returned above). A
+    # ``ci:regressed`` issue skips the grooming gate (#3402): the flaky detector
+    # files it unscored and un-triaged, and a Ready-mode product would otherwise
+    # leave a P0 break in Backlog until a person happened to move it.
+    if (_MIN_STATUS_RANK[status] < min_rank and not grooming_exempt
+            and not is_ci_regressed(row.labels)):
         return "status"
     if row.live_session:
         return "live_session"
@@ -469,7 +537,11 @@ def skip_reason(
         return "epic_open"
     if _is_bot(row, extra_skip_labels):
         return "bot"
-    if skip_trackers and is_self_closing_tracker(row.labels, row.title, author=row.author):
+    # A ``ci:regressed`` tracker closes itself too, but only once the test is green
+    # again — nothing turns it green but a fix, so it is P0 work, not noise (#3402;
+    # KinDash#21010 also carried ``flaky`` and was skipped as a tracker for 9 days).
+    if (skip_trackers and not is_ci_regressed(row.labels)
+            and is_self_closing_tracker(row.labels, row.title, author=row.author)):
         return "tracker"
     if not is_trusted_author(row.author, trusted_authors, author_id=row.author_id):
         return "untrusted"
@@ -558,9 +630,11 @@ def rank(
     the items behind each count (#2979), from the same ``skip_reason`` call that
     produced the count, so the list and the number cannot disagree."""
     kept: list[QueueRow] = []
+    verdicts: list[tuple[QueueRow, str]] = []
     skipped: dict[str, int] = {}
-    for row in rows:
-        why = skip_reason(
+
+    def verdict(row: QueueRow, *, grooming_exempt: bool = False) -> str | None:
+        return skip_reason(
             row,
             min_status=min_status,
             respect_dependencies=respect_dependencies,
@@ -571,18 +645,55 @@ def rank(
             skip_trackers=skip_trackers,
             platforms=platforms,
             busy_platforms=busy_platforms,
+            grooming_exempt=grooming_exempt,
         )
+
+    for row in rows:
+        why = verdict(row)
         if why:
-            skipped[why] = skipped.get(why, 0) + 1
-            if skipped_out is not None:
-                skipped_out.append((row, why))
+            verdicts.append((row, why))
         else:
             kept.append(row)
+    # The twin of a dispatchable tracker rides its session, so it takes the
+    # tracker's exemption from the grooming gate (#3402) — and ONLY that: the row
+    # is re-judged by the full ``skip_reason`` with just ``min_status`` waived, so
+    # an untrusted, claimed, held or Done twin stays skipped for its own reason.
+    dispatchable = {key for r in kept if is_ci_regressed(r.labels)
+                    and (key := ci_twin_key(r.repo, r.labels, r.title))}
+    if dispatchable:
+        regated: list[tuple[QueueRow, str]] = []
+        for r, why in verdicts:
+            if why == "status" and ci_twin_key(r.repo, r.labels, r.title) in dispatchable:
+                again = verdict(r, grooming_exempt=True)
+                if again is None:
+                    kept.append(r)
+                    continue
+                why = again
+            regated.append((r, why))
+        verdicts = regated
+    # A CI Failure Reporter issue whose ``ci:regressed`` twin is already being
+    # worked rides THAT session (#3402): dispatching it alone would race the
+    # twin's session to the same one-line fix.
+    working = {key for row, why in verdicts if why in ("live_session", "claimed")
+               and is_ci_regressed(row.labels)
+               and (key := ci_twin_key(row.repo, row.labels, row.title))}
+    if working:
+        twins = [r for r in kept if not is_ci_regressed(r.labels)
+                 and ci_twin_key(r.repo, r.labels, r.title) in working]
+        twin_ids = {id(r) for r in twins}
+        kept = [r for r in kept if id(r) not in twin_ids]
+        verdicts.extend((r, "claimed") for r in twins)
+    for row, why in verdicts:
+        skipped[why] = skipped.get(why, 0) + 1
+        if skipped_out is not None:
+            skipped_out.append((row, why))
     kept.sort(key=rank_key)
     return [
         QueueEntry(r.ref, r.repo, r.number, r.product, r.title, r.body, r.url, r.score,
                    r.gh_created_at, is_urgent(r), hold_kind=r.hold_kind,
-                   platform=gated_platform(r.labels, platforms))
+                   platform=gated_platform(r.labels, platforms),
+                   regressed=is_ci_regressed(r.labels),
+                   ci_twin=ci_twin_key(r.repo, r.labels, r.title))
         for r in kept
     ], skipped
 
@@ -608,4 +719,8 @@ def to_candidate(e: QueueEntry) -> dict:
         # Carried so selection can plan a gated issue alone and the spawn can route
         # it to a platform host (``Batch.platform``).
         "platform": e.platform,
+        # #3402: grouping bundles a regressed tracker with its CI Failure Reporter
+        # twin by ``ci_twin`` and dispatches it ahead of planned work.
+        "regressed": e.regressed,
+        "ci_twin": e.ci_twin,
     }
