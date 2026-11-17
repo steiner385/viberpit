@@ -1967,7 +1967,8 @@ async def test_the_spawn_registers_the_confinement_hook_in_every_mode(mode, tmp_
 async def test_an_unsandboxed_spawn_has_no_confinement_and_keeps_project_mcp_trust(tmp_path):
     client = await claude_sdk_factory.real_sdk_factory(
         str(tmp_path), str(tmp_path / "cfg"), None, "full-auto", None)
-    assert len(client.options.hooks["PreToolUse"]) == 1     # the Bash guards only
+    # Only the tool-scoped guards (Bash, Railway): no matcher-less confinement hook.
+    assert all(m.matcher is not None for m in client.options.hooks["PreToolUse"])
     settings = json.loads(client.options.settings)
     assert settings["enableAllProjectMcpServers"] is True and "disableAllHooks" not in settings
 

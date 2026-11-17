@@ -72,8 +72,12 @@ async def test_factory_without_precompact_callback_still_guards_human_hold():
     client = await real_sdk_factory("/tmp", "/tmp/cfg", None, "bypassPermissions", None)
     hooks = client.options.hooks
     assert "PreCompact" not in hooks
-    (matcher,) = hooks["PreToolUse"]
+    from server.sessions.railway_deploy_guard import HOOK_MATCHER as RAILWAY_MATCHER
+    matcher, railway = hooks["PreToolUse"]
     assert matcher.matcher == "Bash" and human_hold_pre_tool_use in matcher.hooks
+    # …and the Railway guard (#3403) on its own MCP-tool matcher, every spawn.
+    assert railway.matcher == RAILWAY_MATCHER
+    assert [h.__name__ for h in railway.hooks] == ["railway_deploy_pre_tool_use"]
     # …and so is the draft-PR guard; with no ownership check, no draft is the session's.
     draft_guard = matcher.hooks[1]
     assert draft_guard.__name__ == "draft_ready_pre_tool_use"
@@ -98,7 +102,7 @@ async def test_factory_hands_the_ownership_check_to_the_draft_guard(monkeypatch)
                         draft_hold_guard.TargetPr("o/r", 5, "feat/x", True))
     client = await real_sdk_factory("/tmp", "/tmp/cfg", None, "default", None,
                                     owns_pr=owns_pr)
-    (matcher,) = client.options.hooks["PreToolUse"]
+    (matcher,) = [m for m in client.options.hooks["PreToolUse"] if m.matcher == "Bash"]
     assert await matcher.hooks[1]({"tool_input": {"command": "gh pr ready 5"}}) == {}
     assert asked == [("o/r", 5, "feat/x")]
 
