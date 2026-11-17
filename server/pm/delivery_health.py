@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
+from server.pm.queue import REGRESSED_LABELS
 from server.time_iso import aware_utc, iso_utc
 
 #: The ``MilestoneMeasurement`` row the readout is stored on. ``@`` keeps it clear of
@@ -42,10 +43,9 @@ SCOPE = "@delivery"
 KEY = "health"
 #: How long prod may miss a main commit before promotion counts as blocked.
 BLOCKED_AFTER = timedelta(hours=48)
-#: KinDash's flaky detector stamps this on a deterministic CI break (three
-#: consecutive scheduled failures) — the thing that keeps the Nightly red and so
-#: blocks promotion.
-REGRESSED_LABEL = "ci:regressed"
+#: The ``ci:regressed`` label (``queue.REGRESSED_LABELS``, #3402): a deterministic
+#: CI break that keeps the Nightly red and so blocks promotion.
+(REGRESSED_LABEL,) = tuple(REGRESSED_LABELS)
 #: ``MilestoneNote.created_by`` / ``resolved_by`` of the asks this signal writes.
 ASK_AUTHOR = "system:delivery-health"
 #: ``MilestoneNote.ref`` prefix: one ask per prod SHA (an episode), so a person who
