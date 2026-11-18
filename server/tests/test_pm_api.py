@@ -115,7 +115,8 @@ def test_project_lifecycle():
 
 def test_update_project_renames_name_slug_and_repoints_repo():
     """PATCH /projects/{slug}: name-only, slug rename (old slug 404s, new works),
-    then a primary-repo repoint that resets backfill state."""
+    then a primary-repo repoint: the new repo is a fresh primary row and the old one
+    is retained as retired (test_api_project_repos.py covers the lifecycle)."""
     with _client() as c:
         resp = c.post("/api/pm/projects", json={
             "name": "LakotaGrades",
@@ -141,7 +142,7 @@ def test_update_project_renames_name_slug_and_repoints_repo():
         resp = c.get("/api/pm/projects/fridgesheet", headers=IDENTITY_HEADERS)
         assert resp.status_code == 200
 
-        # repo repoint — resets backfill/sync bookkeeping on the primary row
+        # repo repoint — the new primary starts with fresh backfill/sync bookkeeping
         resp = c.patch("/api/pm/projects/fridgesheet", json={"repo": "steiner385/fridgesheet"},
                        headers=IDENTITY_HEADERS)
         assert resp.status_code == 200, resp.text
@@ -150,6 +151,8 @@ def test_update_project_renames_name_slug_and_repoints_repo():
         assert body["repos"][0]["isPrimary"] is True
         assert body["repos"][0]["backfillDone"] is False
         assert body["repos"][0]["lastSyncedAt"] is None
+        old = next(r for r in body["repos"] if r["repo"] == "steiner385/lakota-grades-mcp")
+        assert old["retiredReason"] == "repointed" and old["isPrimary"] is False
 
         # repointing to the SAME repo again is a no-op, not an ownership conflict
         resp = c.patch("/api/pm/projects/fridgesheet", json={"repo": "steiner385/fridgesheet"},

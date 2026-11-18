@@ -22,6 +22,10 @@ log = logging.getLogger(__name__)
 # SQL clause: a repo that has not been retired.
 ACTIVE = ProjectRepo.retired_at.is_(None)
 
+# ORDER BY for a product's repos: primary first, then active, then retired, then oldest.
+REPO_ORDER = (ProjectRepo.is_primary.desc().nulls_last(), ProjectRepo.retired_at.is_not(None),
+              ProjectRepo.created_at, ProjectRepo.repo)
+
 RETIRED_CACHE_TTL_S = 30.0
 
 _lock = threading.Lock()
@@ -76,7 +80,7 @@ def _retired_stmt():
 def _active_stmt(project_id: str):
     return (select(ProjectRepo.repo)
             .where(ProjectRepo.project_id == project_id, ACTIVE)
-            .order_by(ProjectRepo.is_primary.desc().nulls_last(), ProjectRepo.created_at, ProjectRepo.repo))
+            .order_by(*REPO_ORDER))
 
 
 async def retired_repo_set(db: AsyncSession) -> frozenset[str]:
