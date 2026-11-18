@@ -2,6 +2,7 @@
 import hashlib
 import logging
 import subprocess
+from unittest import mock
 from pathlib import Path
 
 import pytest
@@ -44,9 +45,9 @@ def test_no_git_dir_matches(tmp_path: Path) -> None:
     assert gitrepos.clone_origin_matches(tmp_path / "x", "a/b")
 
 
-def test_missing_origin_with_git_is_mismatch(tmp_path: Path) -> None:
+def test_missing_origin_with_git_is_reused(tmp_path: Path) -> None:
     d = _init(tmp_path / "d", None)
-    assert not gitrepos.clone_origin_matches(d, "a/b")
+    assert gitrepos.clone_origin_matches(d, "a/b")
 
 
 def test_matching_origin_reused(root: str) -> None:
@@ -138,13 +139,18 @@ def test_two_bases_rejected_in_one_sibling_in_other(root: str) -> None:
     assert gitrepos.clone_path(root, "acme/widget") == sib
 
 
-def test_unreadable_vs_other_repo_log_reason(
+def test_unreadable_origin_is_reused_and_logged(
     root: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    _old_dir(root, None)
+    old = _old_dir(root, None)
     caplog.set_level(logging.INFO)
-    dest, rejected = gitrepos._resolve_clone(root, "acme/widget")
-    assert rejected is not None and gitrepos._origin_url(rejected) is None
+    assert gitrepos.clone_path(root, "acme/widget") == old
+    with mock.patch.object(gitrepos, "fetch_clone") as fetch:
+        fetch.return_value.returncode = 0
+        assert gitrepos.ensure_clone(root, "acme/widget", "unused") == str(old)
+    rec = [r for r in caplog.records if "clone.origin_unreadable" in r.getMessage()]
+    assert rec and rec[0].levelno == logging.INFO
+    assert "clone.origin_mismatch" not in caplog.text
 
 
 @pytest.mark.parametrize("bad", ["../evil", "a/..", "a", "a/b c"])
@@ -162,7 +168,6 @@ def test_remote_subsection_name_is_case_sensitive(tmp_path: Path) -> None:
     with (d / ".git" / "config").open("a") as f:
         f.write('[remote "Origin"]\n\turl = https://github.com/a/b.git\n')
     assert gitrepos._origin_url(d) is None
-    assert not gitrepos.clone_origin_matches(d, "a/b")
 
 
 def test_include_section_uses_git_fallback(tmp_path: Path) -> None:

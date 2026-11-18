@@ -424,16 +424,19 @@ def clone_origin_matches(path: Path, name_with_owner: str) -> bool:
     """Whether the clone at ``path`` has ``name_with_owner`` as its origin.
 
     A directory with no ``.git`` is not a clone yet, so it trivially matches. A
-    ``.git`` whose origin can't be read is an unknown clone and does NOT match.
-    GitHub names are case-insensitive. An origin that is not on github.com (a
-    local-path fixture, a self-hosted remote) has no ``owner/name`` to compare
-    and is accepted, as :func:`owner_from_remote_url` treats it.
+    ``.git`` whose origin can't be read (no origin remote, a git failure or
+    timeout) is reused: a transient read failure on a real clone must not flip
+    every reader to a new sibling path. Only a readable github.com origin naming
+    a DIFFERENT repo is a mismatch. GitHub names are case-insensitive. An origin
+    that is not on github.com (a local-path fixture, a self-hosted remote) has no
+    ``owner/name`` to compare and is accepted, as :func:`owner_from_remote_url`
+    treats it.
     """
     if not (path / ".git").exists():
         return True
     url = _origin_url(path)
     if url is None:
-        return False
+        return True
     parts = [p for p in _normalize_remote_url(url).split("/") if p]
     if len(parts) < 3 or parts[0] != "github.com":
         return True
@@ -898,6 +901,9 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
     via_app = _app_token(owner) is not None
 
     if (dest / ".git").exists():
+        if _origin_url(dest) is None:
+            log.info("clone.origin_unreadable repo=%s path=%s — reusing the clone",
+                     name_with_owner, dest)
         # Best-effort refresh; ignore failures (offline, etc.). Fetch ONLY
         # `origin` — NOT `--all`: a session that ran in a worktree off this
         # shared clone can leave stray remotes behind, and `--all` fetches
