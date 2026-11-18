@@ -376,6 +376,18 @@ def _existing_case_variant(parent: Path, name: str) -> Path | None:
     return matches[0] if matches else None
 
 
+def _validate_name_with_owner(name_with_owner: str) -> tuple[str, str]:
+    """Split ``<owner>/<name>``; ValueError unless both are legal GitHub names."""
+    owner, _, name = name_with_owner.partition("/")
+    if not owner or not name:
+        raise ValueError(f"expected '<owner>/<name>', got {name_with_owner!r}")
+    for part in (owner, name):
+        if not _PATH_COMPONENT_RE.match(part) or part in (".", ".."):
+            raise ValueError(
+                f"illegal clone path component {part!r} in {name_with_owner!r}")
+    return owner, name
+
+
 def clone_path(repo_root: str, name_with_owner: str) -> Path:
     """Absolute clone path for ``<owner>/<name>`` under the clones base.
 
@@ -393,13 +405,6 @@ def clone_path(repo_root: str, name_with_owner: str) -> Path:
         ValueError: if ``name_with_owner`` is not ``<owner>/<name>`` or either
             component is not a legal GitHub name.
     """
-    owner, _, name = name_with_owner.partition("/")
-    if not owner or not name:
-        raise ValueError(f"expected '<owner>/<name>', got {name_with_owner!r}")
-    for part in (owner, name):
-        if not _PATH_COMPONENT_RE.match(part) or part in (".", ".."):
-            raise ValueError(
-                f"illegal clone path component {part!r} in {name_with_owner!r}")
     return _resolve_clone(repo_root, name_with_owner)[0]
 
 
@@ -409,7 +414,7 @@ def collision_clone_path(base_dir: Path, name_with_owner: str) -> Path:
     ``<owner_dir>/<name>@<sha1(owner/name casefold)[:8]>``: deterministic, so
     every caller (and every later call) agrees on it without any stored state.
     """
-    owner, _, name = name_with_owner.partition("/")
+    owner, name = _validate_name_with_owner(name_with_owner)
     digest = hashlib.sha1(name_with_owner.casefold().encode()).hexdigest()[:8]
     owner_dir = _existing_case_variant(base_dir, owner) or base_dir / owner
     return owner_dir / f"{name}@{digest}"
@@ -469,7 +474,7 @@ def _resolve_clone(repo_root: str, name_with_owner: str) -> tuple[Path, Path | N
     returned path is then the :func:`collision_clone_path` sibling. The origin
     is read (a ``git`` subprocess) only for a dir that already holds a ``.git``.
     """
-    owner, _, name = name_with_owner.partition("/")
+    owner, name = _validate_name_with_owner(name_with_owner)
     rejected: Path | None = None
     for base in clones_bases(repo_root):
         owner_dir = _existing_case_variant(base, owner)

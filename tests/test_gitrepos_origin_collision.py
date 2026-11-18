@@ -145,3 +145,13 @@ def test_unreadable_vs_other_repo_log_reason(
     caplog.set_level(logging.INFO)
     dest, rejected = gitrepos._resolve_clone(root, "acme/widget")
     assert rejected is not None and gitrepos._origin_url(rejected) is None
+
+
+@pytest.mark.parametrize("bad", ["../evil", "a/..", "a", "a/b c"])
+def test_ensure_clone_rejects_illegal_names(root: str, tmp_path: Path, bad: str) -> None:
+    with pytest.raises(ValueError):
+        gitrepos.ensure_clone(root, bad, str(tmp_path / "nope.git"))
+    assert not (tmp_path / "evil").exists()
+    assert not Path(root).exists() or not any(Path(root).rglob("*"))
+    with pytest.raises(ValueError):
+        gitrepos.collision_clone_path(tmp_path, bad)
