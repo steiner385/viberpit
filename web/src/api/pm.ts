@@ -24,6 +24,32 @@ export interface ProjectRepoInfo {
   isPrimary: boolean
   backfillDone: boolean
   lastSyncedAt: string | null
+  /** Set once the repo is retired (spec 2026-11-18 product repo lifecycle): it
+   *  stays listed for history but leaves every queue, sync and dispatch path.
+   *  Optional because older fixtures/payloads predate it — absent = active. */
+  retiredAt?: string | null
+  retiredReason?: string | null
+  /** `owner/name` that replaced it, when the retirement named one. */
+  supersededBy?: string | null
+}
+
+/** `owner/repo` — the only shape the backfill loop can mirror from. */
+export const REPO_RE = /^[^/\s]+\/[^/\s]+$/
+export const REPO_FORMAT_HINT = 'Use owner/repo, e.g. steiner385/viberpit'
+/** `owner/repo#N` — one issue ref, the moved-issue map's key shape. */
+export const ISSUE_REF_RE = /^[^/\s#]+\/[^/\s#]+#\d+$/
+
+/** Active = not retired. THE predicate every reader of `project.repos` uses. */
+export function isActiveRepo(r: ProjectRepoInfo): boolean {
+  return !r.retiredAt
+}
+
+/** The repo work defaults to: the active primary, else the first active repo,
+ *  else null. A retired repo is never the answer, even if it still carries the
+ *  primary flag. */
+export function primaryRepoOf(project: Pick<Project, 'repos'> | null | undefined): string | null {
+  const active = (project?.repos ?? []).filter((r) => isActiveRepo(r) && !!r.repo)
+  return (active.find((r) => r.isPrimary) ?? active[0])?.repo ?? null
 }
 
 export interface ProjectEdgeInfo {
@@ -69,17 +95,85 @@ export function createProject(input: CreateProjectInput): Promise<Project> {
   return api.post<Project>('/pm/projects', input)
 }
 
-/** Sparse patch: only the fields present are changed. `repo` repoints the
- *  PRIMARY repo in place — not an add/remove-multiple-repos edit. */
+/** Sparse patch: only the fields present are changed. Repositories are not
+ *  edited here — see the repo lifecycle endpoints below. */
 export interface UpdateProjectInput {
   name?: string
   slug?: string
-  repo?: string
   priorityRank?: number | null
 }
 
 export function updateProject(slug: string, input: UpdateProjectInput): Promise<Project> {
   return api.patch<Project>(`/pm/projects/${encodeURIComponent(slug)}`, input)
+}
+
+// --- repo lifecycle (server/api/pm.py; each returns the project detail) ---
+
+const repoPath = (slug: string, repo: string) => {
+  const [owner = '', name = ''] = repo.split('/')
+  return `/pm/projects/${encodeURIComponent(slug)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`
+}
+
+export interface AddProjectRepoInput { repo: string; makePrimary?: boolean }
+
+export function addProjectRepo(slug: string, input: AddProjectRepoInput): Promise<Project> {
+  return api.post<Project>(`/pm/projects/${encodeURIComponent(slug)}/repos`, input)
+}
+
+/** `expectedPrimary` is the primary the caller DISPLAYED; the server refuses with
+ *  409 `primary_changed` when it has moved since. */
+export interface SetPrimaryRepoInput { repo: string; expectedPrimary?: string | null }
+
+export function setPrimaryRepo(slug: string, { repo, expectedPrimary }: SetPrimaryRepoInput): Promise<Project> {
+  return api.post<Project>(`${repoPath(slug, repo)}/primary`, { expectedPrimary: expectedPrimary ?? null })
+}
+
+/** `newPrimary` is required (an active repo) when retiring the primary. */
+export interface RetireRepoInput {
+  repo: string
+  reason?: string | null
+  supersededBy?: string | null
+  newPrimary?: string | null
+  expectedPrimary?: string | null
+}
+
+export function retireRepo(slug: string, { repo, ...body }: RetireRepoInput): Promise<Project> {
+  return api.post<Project>(`${repoPath(slug, repo)}/retire`, body)
+}
+
+export function unretireRepo(slug: string, repo: string): Promise<Project> {
+  return api.post<Project>(`${repoPath(slug, repo)}/unretire`)
+}
+
+// --- moved-issue map (server/pm/moved_refs.py) ---
+
+export interface MovedRefPair {
+  old: string
+  new: string
+  /** `pending` until both work items are mirrored and the pair has migrated. */
+  status: 'pending' | 'migrated'
+  migratedAt: string | null
+  migration: Record<string, unknown> | null
+}
+
+export interface MovedRefSuggestion { old: string; new: string; title: string }
+
+export function fetchMovedRefs(slug: string): Promise<{ pairs: MovedRefPair[] }> {
+  return api.get<{ pairs: MovedRefPair[] }>(`/pm/projects/${encodeURIComponent(slug)}/moved-refs`)
+}
+
+export function recordMovedRefs(
+  slug: string, pairs: { old: string; new: string }[],
+): Promise<{ pairs: MovedRefPair[] }> {
+  return api.post<{ pairs: MovedRefPair[] }>(`/pm/projects/${encodeURIComponent(slug)}/moved-refs`, { pairs })
+}
+
+export function fetchMovedRefSuggestions(
+  slug: string, from: string, to: string,
+): Promise<{ pairs: MovedRefSuggestion[] }> {
+  const q = new URLSearchParams({ from, to })
+  return api.get<{ pairs: MovedRefSuggestion[] }>(
+    `/pm/projects/${encodeURIComponent(slug)}/moved-refs/suggest?${q.toString()}`)
 }
 
 export function requestProjectSync(slug: string): Promise<{ requested: boolean }> {

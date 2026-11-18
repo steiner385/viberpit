@@ -1,4 +1,4 @@
-// The rename/repoint dialog: what it pre-fills, what it sends (sparse —
+// The rename dialog: what it pre-fills, what it sends (sparse —
 // unchanged fields are omitted), where a slug change navigates, and what it
 // says when the server refuses (409 conflict or the open-map-changes guard).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -53,17 +53,20 @@ describe('EditProductDialog', () => {
     mount()
     expect(screen.getByLabelText(/Name/)).toHaveValue('LakotaGrades')
     expect(screen.getByLabelText(/Slug/)).toHaveValue('lakotagrades')
-    expect(screen.getByLabelText(/Primary repository/)).toHaveValue('steiner385/lakota-grades-mcp')
+  })
+
+  it('has no repository field — the Overview repositories panel owns repos', () => {
+    mount()
+    expect(screen.queryByLabelText(/repository/i)).toBeNull()
   })
 
   it('sends a sparse patch — only the fields that actually changed', () => {
     mount()
     fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'FridgeSheet' } })
     fireEvent.change(screen.getByLabelText(/Slug/), { target: { value: 'fridgesheet' } })
-    fireEvent.change(screen.getByLabelText(/Primary repository/), { target: { value: 'steiner385/fridgesheet' } })
     submit()
     const [input] = update.mutate.mock.calls[0] as [UpdateProjectInput]
-    expect(input).toEqual({ name: 'FridgeSheet', slug: 'fridgesheet', repo: 'steiner385/fridgesheet' })
+    expect(input).toEqual({ name: 'FridgeSheet', slug: 'fridgesheet' })
   })
 
   it('omits unchanged fields, and closes without mutating on a no-op submit', () => {
@@ -107,17 +110,10 @@ describe('EditProductDialog', () => {
     expect(update.mutate).not.toHaveBeenCalled()
   })
 
-  it('refuses a repository that is not owner/repo, and says why', () => {
-    mount()
-    fireEvent.change(screen.getByLabelText(/Primary repository/), { target: { value: 'not-a-repo' } })
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
-    expect(screen.getByText(/Use owner\/repo/)).toBeInTheDocument()
-  })
-
   it('shows the server message when the update fails, e.g. the open-map-changes guard', () => {
     update.isError = true
     update.error = new ApiRequestError(409, {
-      detail: { message: 'Merge or abandon the open map-changes PR before renaming the slug or repointing the primary repo.' },
+      detail: { message: 'Merge or abandon the open map-changes PR before renaming the slug.' },
     })
     mount()
     expect(screen.getByRole('alert')).toHaveTextContent('Merge or abandon the open map-changes PR')

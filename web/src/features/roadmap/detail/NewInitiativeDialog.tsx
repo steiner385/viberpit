@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router-dom'
 import type { ProductNode } from '@/api/roadmap'
 import type { CreateInitiativeInput } from '@/api/sdlc'
 import { useCreateInitiative, useProject } from '@/api/hooks'
+import { isActiveRepo, primaryRepoOf } from '@/api/pm'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { Dialog } from '@/ui/Dialog'
 import { Field } from '@/ui/Field'
@@ -32,7 +33,8 @@ export function NewInitiativeDialog({ product, open, onClose, defaultCapabilityI
   // Same query key the product page already holds, so opening the dialog costs
   // no fetch; the repos are the ones the product is actually mirrored from.
   const { data: project, isLoading: projectLoading, isError: projectError } = useProject(product.slug)
-  const repos = project?.repos.map((r) => r.repo).filter((r): r is string => !!r) ?? []
+  // Active repos only: a retired repo takes no new work (the server refuses it).
+  const repos = project?.repos.filter(isActiveRepo).map((r) => r.repo).filter((r): r is string => !!r) ?? []
   // Three different reasons for an empty repo list, and only one of them is the
   // product's fault. Saying "no repository is attached" while the fetch is still
   // in flight (or has failed) sends the user off to fix a registration that is
@@ -53,10 +55,10 @@ export function NewInitiativeDialog({ product, open, onClose, defaultCapabilityI
   // The slug follows the title until the user takes it over, and the mirrored
   // value is fully normalised (the title carries its own spaces); only the field
   // the user has taken over keeps a half-typed separator. The repo defaults to
-  // the primary one, which the project lists first.
+  // the active primary (`primaryRepoOf`).
   const shownSlug = slugTouched ? slug : slugify(title)
   const effectiveSlug = slugify(shownSlug)
-  const effectiveRepo = repo || repos[0] || ''
+  const effectiveRepo = repo || primaryRepoOf(project) || ''
   const canSubmit = title.trim() !== '' && effectiveSlug !== '' && effectiveRepo !== '' && !create.isPending
   // A title of "!!!" (or a slug edited down to punctuation) normalises to
   // nothing; say why Create is disabled rather than leaving it greyed out.

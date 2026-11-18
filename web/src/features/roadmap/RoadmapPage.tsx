@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useDecisions, useProject, useRoadmapMap, useSyncProject, useTriage } from '@/api/hooks'
 import { isDecisionProposal, type InboxProposal } from '@/api/triage'
+import { primaryRepoOf } from '@/api/pm'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { PageHeader } from '@/ui/PageHeader'
 import { PageContent } from '@/ui/PageContent'
@@ -63,7 +64,7 @@ function RoadmapPageContent() {
   // dialog, so the three of them are one fetch. Only the repo a feature doc is
   // committed in is needed here.
   const { data: project, isError: projectError } = useProject(product?.slug ?? null)
-  const primaryRepo = project?.repos.find((r) => r.isPrimary)?.repo ?? undefined
+  const primaryRepo = primaryRepoOf(project) ?? undefined
 
   // ---- Inbox scope (§12) -------------------------------------------------
   // `poll: false` for the same reason the map fetch above has it: the list
