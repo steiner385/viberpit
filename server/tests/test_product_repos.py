@@ -43,19 +43,39 @@ def test_primary_repo_ignores_retired_row(isolated_db):
     assert asyncio.run(go()) == ("o/new", None)
 
 
-def test_is_retired_cache_invalidated(isolated_db):
-    product_repos.invalidate_retired_cache()
-    assert product_repos.is_retired("o/old") is False  # unprimed: fail-open
-
+def test_is_retired_unprimed_cache_refills_itself(isolated_db):
     async def go():
         await _seed()
-        async with db_session() as db:
-            return await product_repos.retired_repo_set(db)
-    assert asyncio.run(go()) == frozenset({"o/old"})
-    assert product_repos.is_retired("O/Old") is True
-    assert product_repos.is_retired("o/new") is False
+        product_repos.invalidate_retired_cache()
+        first = await product_repos.is_retired("O/Old")  # no manual priming
+        return first, await product_repos.is_retired("o/new")
+    assert asyncio.run(go()) == (True, False)
+
+
+def test_is_retired_cache_invalidated(isolated_db):
+    async def go():
+        pid = await _seed()
+        product_repos.invalidate_retired_cache()
+        assert await product_repos.is_retired("o/old") is True
+        async with db_session() as db:  # unretire, then the stale snapshot is dropped
+            row = (await db.execute(
+                product_repos.select(ProjectRepo).where(ProjectRepo.repo == "o/old"))).scalar_one()
+            row.retired_at = None
+            row.is_primary = False
+            await db.commit()
+        assert await product_repos.is_retired("o/old") is True  # still inside TTL
+        product_repos.invalidate_retired_cache()
+        return pid, await product_repos.is_retired("o/old")
+    assert asyncio.run(go())[1] is False
+
+
+def test_is_retired_fails_open_on_db_error(monkeypatch):
     product_repos.invalidate_retired_cache()
-    assert product_repos.is_retired("o/old") is False
+
+    def boom():
+        raise RuntimeError("db down")
+    monkeypatch.setattr("server.db.db_session", boom)
+    assert asyncio.run(product_repos.is_retired("o/old")) is False
 
 
 def test_primary_repo_for_slug_skips_retired(isolated_db):

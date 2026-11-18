@@ -1,12 +1,9 @@
 """Single source of truth for which repos of a product are live (not retired).
 
 Every queue / sync / clone / filing path asks here instead of reading
-``ProjectRepo`` directly. ``is_retired`` serves sync and async hot paths with no DB
-session, so it reads a process-local snapshot of the retired set. That snapshot is
-refreshed whenever an async/sync ``retired_repo_set*`` read runs (and by Task 2's
-mutations); the process has no sync Postgres driver, so ``is_retired`` itself never
-touches the DB. It is fail-open: an unprimed or stale-by-error snapshot means "not
-retired".
+``ProjectRepo`` directly. ``is_retired`` (async, no session argument) answers from a
+30 s process snapshot of the retired set and refills it itself when missing or expired;
+a DB error is fail-open ("not retired").
 """
 from __future__ import annotations
 
@@ -52,14 +49,24 @@ def invalidate_retired_cache() -> None:
         _retired_cache = None
 
 
-def is_retired(repo: str) -> bool:
-    """Whether ``repo`` ("owner/name", case-insensitive) is retired, per the last
-    snapshot taken within ``RETIRED_CACHE_TTL_S``. Unprimed/expired ⇒ False (fail-open)."""
+async def is_retired(repo: str) -> bool:
+    """Whether ``repo`` ("owner/name", case-insensitive) is retired. Serves from a
+    process snapshot younger than ``RETIRED_CACHE_TTL_S``; a missing/expired one is
+    refilled from the DB here, so a process that never primed it (the daemon) still
+    answers correctly. A DB failure is fail-open (False), logged at INFO."""
     with _lock:
         cached = _retired_cache
     if cached is None or time.monotonic() - cached[0] > RETIRED_CACHE_TTL_S:
-        return False
-    return (repo or "").casefold() in cached[1]
+        from server.db import db_session
+        try:
+            async with db_session() as db:
+                repos = await retired_repo_set(db)
+        except Exception as exc:  # noqa: BLE001 - fail-open by design
+            log.info("retired-repo snapshot refresh failed; treating as not retired: %s", exc)
+            return False
+    else:
+        repos = cached[1]
+    return (repo or "").casefold() in repos
 
 
 def _retired_stmt():
