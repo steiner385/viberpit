@@ -140,6 +140,10 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("GET", "/api/pm/projects/acme-billing/milestones", True),
     # update_product_policy is operator tier ONLY (test_operator_routes_need_the_flag).
     ("PATCH", "/api/pm/projects/acme-billing/policy", False),
+    # product repo lifecycle tools are operator tier ONLY.
+    ("POST", "/api/pm/projects/acme-billing/repos", False),
+    ("POST", "/api/pm/projects/acme-billing/repos/acme/old/retire", False),
+    ("POST", "/api/pm/projects/acme-billing/moved-refs", False),
     # get_pr_files: the files sub-route, and nothing deeper.
     ("GET", "/api/prs/acme/billing/42/files", True),
     ("GET", "/api/prs/acme/billing/42/files/extra", False),

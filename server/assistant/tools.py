@@ -185,6 +185,10 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     # DESTRUCTIVE like close_issue and dispatch_backlog: an owner digest recommendation
     # may close an issue, unpark one, or approve a model climb that dispatches a session.
     ToolSpec("apply_owner_digest", ToolClass.DESTRUCTIVE, "Apply owner digest recommendations"),
+    # MUTATION: add / set-primary / retire / un-retire are each reversible by the
+    # opposite call (retire never deletes the repo's rows), and the card names the move.
+    ToolSpec("update_product_repos", ToolClass.MUTATION, "Change a product's repos"),
+    ToolSpec("map_moved_issues", ToolClass.MUTATION, "Map moved issues old → new"),
 ]}
 
 register_surface("assistant", TOOL_SPECS)
@@ -195,7 +199,7 @@ register_surface("assistant", TOOL_SPECS)
 # tools that are NOT operator-gated (e.g. delete_session, ready_merge_pr).
 OPERATOR_TOOLS: frozenset[str] = frozenset({
     "start_deploy", "upgrade_host", "refresh_account", "set_account_enabled", "start_reauth",
-    "update_product_policy", "apply_owner_digest",
+    "update_product_policy", "apply_owner_digest", "update_product_repos", "map_moved_issues",
 })
 
 
@@ -205,6 +209,8 @@ OPERATOR_TOOLS: frozenset[str] = frozenset({
 # registered automation id (`autopilot`, `backlog-runner`, `cicd-doctor`, `pr-doctor`…) is
 # already in it — one class for both rather than a near-duplicate per pack. Initiative
 # slugs share the class but not the length cap: see `_INITIATIVE_SLUG`.
+_REPO_ACTIONS = ("add", "set_primary", "retire", "unretire")
+_REPO_REF = re.compile(r"\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _SLUG = re.compile(r"\A[a-z0-9][a-z0-9-]{0,63}\Z")
 
 # Opaque server-minted ids the assistant only ever echoes back: triage proposal ids
@@ -414,6 +420,9 @@ NO_SESSION_TARGET: dict[str, str] = {
     "set_account_enabled": "operator tier: an account by name",
     "start_reauth": "operator tier: an account by name",
     "update_product_policy": "operator tier: a product's automation policy",
+    "update_product_repos": "operator tier: a product's repos",
+    "map_moved_issues": "operator tier: moved-issue pairs of a product; releases the old "
+                        "issues' holds",
     "apply_owner_digest": "operator tier: closes/labels issues, accepts proposals and "
                           "dispatches NEW sessions; no path resumes or prompts a live one",
 }
@@ -541,6 +550,45 @@ def _policy_diff_items(tool_input: dict[str, Any]) -> list[str]:
 
 
 CARD_ITEMS["update_product_policy"] = _policy_diff_items
+
+
+def _repo_change_items(tool_input: dict[str, Any]) -> list[str]:
+    """`"<action> <repo>"`, the `"primary: <expectedPrimary> → <after>"` move the call
+    makes (after = newPrimary for a retire, repo for set_primary / add+makePrimary,
+    else unchanged), then reason / supersededBy when given."""
+    action, repo = tool_input.get("action"), tool_input.get("repo")
+    if not isinstance(action, str) or not isinstance(repo, str):
+        return []
+    exp = tool_input.get("expectedPrimary")
+    before = exp if isinstance(exp, str) and exp else "(not given)"
+    new_primary = tool_input.get("newPrimary")
+    after = before
+    if action == "set_primary" or (action == "add" and tool_input.get("makePrimary") is True):
+        after = repo
+    elif action == "retire" and isinstance(new_primary, str) and new_primary:
+        after = new_primary
+    rows = [f"{action} {repo}", f"primary: {before} → {after}"]
+    for key in ("reason", "supersededBy"):
+        v = tool_input.get(key)
+        if isinstance(v, str) and v:
+            rows.append(f"{key}: {v}")
+    return [r[:_CARD_ITEM_MAX] for r in rows]
+
+
+CARD_ITEMS["update_product_repos"] = _repo_change_items
+
+
+def _moved_pair_items(tool_input: dict[str, Any]) -> list[str]:
+    """`"old → new"` per pair map_moved_issues records."""
+    pairs = tool_input.get("pairs")
+    if not isinstance(pairs, list):
+        return []
+    return [f"{p['old']} → {p['new']}"[:_CARD_ITEM_MAX] for p in pairs[:_BATCH_MAX]
+            if isinstance(p, dict) and isinstance(p.get("old"), str)
+            and isinstance(p.get("new"), str)]
+
+
+CARD_ITEMS["map_moved_issues"] = _moved_pair_items
 
 
 def batch_items(mcp_name: str, tool_input: dict[str, Any]) -> list[str] | None:
@@ -2554,6 +2602,66 @@ def build_tools(api: AssistantApi, *, operator: bool = False,
                 "changed": {k: {"before": before[k], "after": after.get(k)} for k in changes},
                 "automationPolicyUpdatedAt": (res or {}).get("automationPolicyUpdatedAt")}
 
+    @spec_tool("update_product_repos",
+               "Change a product's repos. action: add (makePrimary optional), set_primary, "
+               "retire (reason, supersededBy, newPrimary optional; newPrimary is REQUIRED "
+               "when retiring the primary) or unretire. repo is owner/name. For set_primary "
+               "and retire, expectedPrimary is REQUIRED: the product's current primary repo, "
+               "read off get_product just before calling (the card shows primary: expected "
+               "→ after, and the change is refused if the live primary differs — re-read "
+               "and ask again, never guess). Only do what the operator asked for.",
+               _schema(("product", "action", "repo"), product=str,
+                       action={"type": "string", "enum": list(_REPO_ACTIONS)}, repo=str,
+                       expectedPrimary=str, reason=str, supersededBy=str, newPrimary=str,
+                       makePrimary=bool))
+    @guarded
+    async def update_product_repos(args: dict[str, Any]) -> Any:
+        slug = _slug(str(args.get("product") or ""), field="product")
+        action = args.get("action")
+        if action not in _REPO_ACTIONS:
+            raise ToolArgError(f"action must be one of {', '.join(_REPO_ACTIONS)}")
+        repo = args.get("repo")
+        if not isinstance(repo, str) or not _REPO_REF.match(repo):
+            raise ToolArgError("repo must be owner/name")
+        base = f"/api/pm/projects/{slug}/repos"
+        if action == "add":
+            return await api.post(base, {"repo": repo,
+                                         "makePrimary": args.get("makePrimary") is True})
+        expected = args.get("expectedPrimary")
+        if action in ("set_primary", "retire") and not (isinstance(expected, str) and expected):
+            raise ToolArgError("expectedPrimary is required: read the current primary off "
+                               "get_product")
+        path = f"{base}/{repo}/{'primary' if action == 'set_primary' else action}"
+        if action == "set_primary":
+            return await api.post(path, {"expectedPrimary": expected})
+        if action == "retire":
+            return await api.post(path, {k: args.get(k) for k in
+                                         ("reason", "supersededBy", "newPrimary")}
+                                  | {"expectedPrimary": expected})
+        return await api.post(path)
+
+    @spec_tool("map_moved_issues",
+               "Record that issues moved between a product's repos: pairs maps each old "
+               "issue ref (owner/name#N) to its new ref. Migrates the old issue's holds, "
+               "dependencies and notes onto the new one (a pair whose new issue is not "
+               "mirrored yet waits and migrates on a later sync). The card lists each "
+               f"old → new. At most {_BATCH_MAX} pairs per call.",
+               _schema(("product", "pairs"), product=str,
+                       pairs={"type": "array", "items": {
+                           "type": "object", "properties": {"old": {"type": "string"},
+                                                            "new": {"type": "string"}},
+                           "required": ["old", "new"]}}))
+    @guarded
+    async def map_moved_issues(args: dict[str, Any]) -> Any:
+        slug = _slug(str(args.get("product") or ""), field="product")
+        pairs = args.get("pairs")
+        if (not isinstance(pairs, list) or not pairs or len(pairs) > _BATCH_MAX
+                or not all(isinstance(p, dict) and isinstance(p.get("old"), str)
+                           and isinstance(p.get("new"), str) for p in pairs)):
+            raise ToolArgError(f"pairs must be 1-{_BATCH_MAX} objects with string old and new")
+        return await api.post(f"/api/pm/projects/{slug}/moved-refs",
+                              {"pairs": [{"old": p["old"], "new": p["new"]} for p in pairs]})
+
     @spec_tool("apply_owner_digest",
                "Carry out the recommended action of owner digest items. ids are item ids "
                "from get_owner_digest that HAVE a recommendation (\"approve all\" = every "
@@ -2617,5 +2725,6 @@ def build_tools(api: AssistantApi, *, operator: bool = False,
             get_feedback_clusters, draft_feedback_cluster_issue, file_feedback_cluster,
             dismiss_feedback_cluster, attach_feedback_to_issue, attach_feedback_to_session]
     operator_tools = [start_deploy, upgrade_host, refresh_account, set_account_enabled,
-                      start_reauth, update_product_policy, apply_owner_digest]
+                      start_reauth, update_product_policy, apply_owner_digest,
+                      update_product_repos, map_moved_issues]
     return base_tools + (operator_tools if operator else [])

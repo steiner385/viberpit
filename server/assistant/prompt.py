@@ -90,7 +90,7 @@ ASSISTANT_SYSTEM_PROMPT = ASSISTANT_SYSTEM_PROMPT + EXCLUSIONS_TEXT
 OPERATOR_TOOLS_ENABLED_LINE = """
 
 # Operator tools
-Operator tools are enabled for this deployment: start_deploy, upgrade_host, refresh_account, set_account_enabled, start_reauth, update_product_policy and apply_owner_digest. start_deploy and upgrade_host are irreversible once started — say so before calling either. Before update_product_policy, read the product with get_product and pass the current values of the fields you change as before. Before apply_owner_digest, read get_owner_digest and pass only ids that carry a recommendation."""
+Operator tools are enabled for this deployment: start_deploy, upgrade_host, refresh_account, set_account_enabled, start_reauth, update_product_policy, update_product_repos, map_moved_issues and apply_owner_digest. start_deploy and upgrade_host are irreversible once started — say so before calling either. Before update_product_policy, read the product with get_product and pass the current values of the fields you change as before. Before update_product_repos to set the primary or retire a repo, read the product with get_product and pass its current primary repo as expectedPrimary. Before apply_owner_digest, read get_owner_digest and pass only ids that carry a recommendation."""
 
 OPERATOR_TOOLS_DISABLED_LINE = """
 

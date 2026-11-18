@@ -126,6 +126,8 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   set_account_enabled: 'Changed account enabled state',
   start_reauth: 'Started account re-auth',
   update_product_policy: 'Changed product automation policy',
+  update_product_repos: 'Changed product repos',
+  map_moved_issues: 'Mapped moved issues',
   apply_owner_digest: 'Applied owner digest recommendations',
 }
 

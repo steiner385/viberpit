@@ -239,7 +239,7 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 
 
 # Operator-tier routes (spec v2 §7, Task 9.2): deploy, host upgrade, account
-# refresh/enable/reauth, and a product's automation policy. Disjoint from ASSISTANT_ROUTE_ALLOW on purpose — these are
+# refresh/enable/reauth, a product's automation policy and repos. Disjoint from ASSISTANT_ROUTE_ALLOW on purpose — these are
 # reachable ONLY when `operator=True` is passed to `route_allowed`, which in turn is
 # gated on `operator_tools_enabled(db)`. A path here must never also appear above.
 OPERATOR_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
@@ -255,6 +255,13 @@ OPERATOR_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         # apply_owner_digest (design 2026-10-14 §5): each item's own path — a close,
         # an unpark, a model approval that dispatches — so operator tier only.
         ("POST", r"/api/pm/digest/apply"),
+        # update_product_repos / map_moved_issues (product repo lifecycle design
+        # 2026-11-18): operator tier only — retiring a repo drops it from queues and
+        # sync, and a moved-issue map releases the old issue's holds.
+        ("POST", r"/api/pm/projects/[a-z0-9-]+/repos"),
+        ("POST", r"/api/pm/projects/[a-z0-9-]+/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+                 r"/(?:primary|retire|unretire)"),
+        ("POST", r"/api/pm/projects/[a-z0-9-]+/moved-refs"),
     ]
 )
 
