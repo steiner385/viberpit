@@ -531,8 +531,11 @@ def _rowcount(result: object) -> int:
 _HOLD_COLUMNS = ("hold_kind", "hold_reason", "hold_by", "hold_set_at", "hold_fingerprint")
 
 
-def _move_decision_hold(db: Session, alias_id: str, twin_id: str) -> None:
-    """Carry the ``decision`` hold across with the pending proposal it belongs to.
+def move_decision_hold(db: Session, alias_id: str, twin_id: str) -> bool:
+    """Carry the ``decision`` hold across with the pending proposal it belongs to;
+    answer whether it moved. Callers: ``rename_repo`` (alias row merged into its
+    canonical twin) and the moved-issue map (``server/pm/moved_refs.py``), each of
+    which re-points the pending ``DecisionProposal`` itself.
 
     A pending proposal and the ``decision`` hold on its item are one fact (spec
     2026-09-18 §6: ``decisions.propose`` writes both in one flush). Re-pointing the
@@ -542,19 +545,19 @@ def _move_decision_hold(db: Session, alias_id: str, twin_id: str) -> None:
     finds nothing to release, so the accept writes no ``pm.hold.release`` either.
 
     The hold MOVES, it is not re-set: the five fields are copied verbatim and no
-    audit is written, because ``pm.hold.set`` was already recorded when the proposal
-    was made and the alias row is deleted moments later. Only an UNHELD twin is
-    written — a twin a person has already parked outranks a hold from a row that is
-    about to disappear."""
+    ``pm.hold.set`` audit is written, because it was already recorded when the
+    proposal was made. Only an UNHELD twin is written — a twin a person has already
+    parked outranks the moving hold; the caller must then leave the proposal where
+    it is."""
     alias, twin = db.get(WorkItem, alias_id), db.get(WorkItem, twin_id)
     if alias is None or twin is None or alias.hold_kind != "decision":
-        return
+        return False
     if twin.hold_kind is not None:
-        log.info("rename_repo.decision_hold_not_moved twin=%s held=%s",
-                 twin_id, twin.hold_kind)
-        return
+        log.info("decision_hold_not_moved twin=%s held=%s", twin_id, twin.hold_kind)
+        return False
     for column in _HOLD_COLUMNS:
         setattr(twin, column, getattr(alias, column))
+    return True
 
 
 def rename_repo(db: Session, old: str, new: str) -> dict[str, int]:
@@ -633,7 +636,7 @@ def rename_repo(db: Session, old: str, new: str) -> dict[str, int]:
             dp.work_item_id = twin
             if dp.status == STATUS_PENDING:
                 pending_twins.add(twin)
-                _move_decision_hold(db, alias_id, twin)
+                move_decision_hold(db, alias_id, twin)
         for d in db.query(WorkItemDep).filter(or_(
                 WorkItemDep.src_work_item_id.in_(alias_ids),
                 WorkItemDep.dst_work_item_id.in_(alias_ids))).all():

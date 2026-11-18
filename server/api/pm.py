@@ -707,30 +707,40 @@ async def list_moved_refs(
 
 @router.post("/projects/{slug}/moved-refs")
 async def record_moved_refs(
-    slug: str, body: MovedRefsBody,
+    slug: str, body: MovedRefsBody, request: Request,
     identity: str = Depends(current_identity), db=Depends(get_db),
 ) -> dict:
     """Record old → new issue pairs and migrate each whose two work items are
-    mirrored; the rest stay ``pending`` until a later pm_sync pass (server/pm/moved_refs.py)."""
+    mirrored; the rest stay ``pending`` until a later pm_sync pass (server/pm/moved_refs.py).
+
+    Migration releases the old issue's hold, so this is a hold-release path: an
+    agent-class caller (a session, an unattributed loopback caller) is refused like
+    the hold routes refuse it. A person, and the assistant acting on its operator's
+    confirmed card (``assistant:<identity>``), may record pairs."""
+    from server.pm.holds import actor_for_request
+    if not moved_refs.may_record(actor_for_request(request)):
+        raise HTTPException(status_code=422, detail={
+            "error": "hold_not_permitted",
+            "message": "agent actors may not record moved issues (it releases holds)"})
     p = await _load_project(db, slug)
     if not body.pairs:
         raise HTTPException(status_code=422, detail={
             "error": "bad_pairs", "message": "at least one pair is required", "pairs": []})
     pid = p.id
     raw = [(x.old, x.new) for x in body.pairs]
-    try:
-        pairs = await db.run_sync(lambda s: moved_refs.validate_pairs(s, pid, raw))
-    except moved_refs.BadPairs as exc:
-        raise HTTPException(status_code=422, detail={
-            "error": "bad_pairs", "message": str(exc), "pairs": exc.errors}) from exc
     now = datetime.now(timezone.utc)
 
-    def _record(s):
-        rows = moved_refs.record_pairs(s, pid, pairs, actor=identity)
-        for row in rows:
+    def _record(s) -> list[tuple[str, str]]:
+        pairs = moved_refs.validate_pairs(s, pid, raw)
+        for row in moved_refs.record_pairs(s, pid, pairs, actor=identity):
             moved_refs.migrate_pair(s, row, now=now, actor=identity)
+        return pairs
 
-    await db.run_sync(_record)
+    try:
+        pairs = await db.run_sync(_record)
+    except moved_refs.BadPairs as exc:
+        raise HTTPException(status_code=422, detail={
+            "error": exc.code, "message": str(exc), "pairs": exc.errors}) from exc
     await record_audit(db=db, type=moved_refs.RECORD_AUDIT_TYPE, identity=identity,
                        detail={"slug": p.slug, "pairs": [{"old": o, "new": n} for o, n in pairs]})
     return await _moved_pairs(db, pid)

@@ -104,7 +104,9 @@ async def _issue_facts(db, items: list[WorkItem]) -> tuple[
     refs = [_ref(w) for w in items]
     deps = (await db.execute(select(WorkItemDep).where(
         WorkItemDep.src_ref.in_(refs), WorkItemDep.active.is_(True)))).scalars().all()
-    moved = await db.run_sync(moved_map)  # a moved blocker reads its new issue's state
+    # A moved blocker reads its new issue's state. Items here may span products, so
+    # the map is every product's.
+    moved = await db.run_sync(moved_map)
     stmt = blocker_states_stmt({d.dst_ref for d in deps if d.dst_ref}, moved)
     dst_state = blocker_states((await db.execute(stmt)).all(), moved) if stmt is not None else {}
     blockers: dict[str, list[str]] = {}

@@ -113,9 +113,6 @@ def load_queue_rows(db: Session, *, now: datetime,
     # #3076: a live session also owns the descendants of its origin ref, and any item
     # (or ancestor) whose body carries its ownership marker.
     live_ids = {sid for sid, _ in live}
-    # Loaded once per pass: a blocker ref to an issue that moved repos is judged by
-    # its new issue's state (server/pm/moved_refs.py).
-    moved = moved_map(db)
 
     for product in list_product_views(db):
         if not product.gh_project_db_id:
@@ -157,6 +154,9 @@ def load_queue_rows(db: Session, *, now: datetime,
             select(WorkItemDep).where(deps_in_repos(product.all_repos or product.repos),
                                       WorkItemDep.active.is_(True))
         ).all()
+        # A blocker ref to an issue that moved repos is judged by its new issue's
+        # state — this product's pairs only (server/pm/moved_refs.py).
+        moved = moved_map(db, product.project_id)
         stmt = blocker_states_stmt({d.dst_ref for d in deps if d.dst_ref}, moved)
         dst_state = blocker_states(db.execute(stmt).all(), moved) if stmt is not None else {}
         blockers: dict[str, list[str]] = {}

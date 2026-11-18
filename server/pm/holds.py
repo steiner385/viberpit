@@ -616,9 +616,10 @@ def release_on_dispatch(db: "Session", refs: "Sequence[str]", *, now: datetime) 
 def release_on_move(db: "Session", wi: WorkItem) -> str | None:
     """The issue moved repos (``server/pm/moved_refs.py``): end its hold, whatever
     the kind, audited ``moved``, and answer the kind released. The caller has
-    already copied the hold onto the new issue, so nothing is dropped — which is
-    why a ``decision`` hold is released here too, outside ``refuse_decision_release``:
-    the person's pending choice now lives on the new issue."""
+    already copied the hold onto the new issue, so nothing is dropped. A
+    ``decision`` hold reaches here only after ``moved_refs`` re-pointed its pending
+    proposal at the new issue together with the hold, which is why it bypasses
+    ``refuse_decision_release``: the question is still open, on the new issue."""
     kind = wi.hold_kind
     if kind is None:
         return None

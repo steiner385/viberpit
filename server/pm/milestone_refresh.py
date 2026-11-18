@@ -412,7 +412,7 @@ async def _load(project_id: str) -> tuple[str, LadderDef, str | None, dict[_Key,
             r.value, aware_utc(r.measured_at), r.source_url)
             for r in rows}
         # Refs naming an issue that moved repos are read at their new home.
-        moved = await db.run_sync(moved_refs.moved_map)
+        moved = await db.run_sync(lambda s: moved_refs.moved_map(s, project_id))
         return ladder.id, from_json(ladder.definition, moved=moved), primary, prev
 
 

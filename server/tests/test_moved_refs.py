@@ -12,15 +12,16 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from server.db.models import (
-    AuditEvent, BacklogGroup, Base, MilestoneLadder, MilestoneNote, MovedIssueRef,
+    AuditEvent, BacklogGroup, Base, DecisionProposal, MilestoneLadder, MilestoneNote, MovedIssueRef,
     OwnerRecommendation, Project, ProjectRepo, WorkItem, WorkItemDep)
 from server.pm import moved_refs
 from server.pm.holds import set_decision_hold, set_hold
-from server.pm.moved_refs import BadPairs
+from server.pm.moved_refs import AlreadyMigrated, BadPairs
 
 NOW = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
 OLD_REPO, NEW_REPO = "o/ghost-mcp", "o/ghost"
 OLD, NEW = f"{OLD_REPO}#257", f"{NEW_REPO}#3"
+OPTIONS = [{"key": "a", "label": "A"}, {"key": "b", "label": "B"}]
 
 
 def _db() -> Session:
@@ -88,17 +89,90 @@ def test_migrate_copies_overlay_into_empty_fields_and_moves_the_hold():
     assert mig.detail["old"] == OLD and mig.detail["new"] == NEW
 
 
-def test_decision_hold_is_copied_as_is_and_cleared_on_the_old_item():
+def _decision(db: Session, wi: WorkItem) -> DecisionProposal:
+    """A pending proposal and its ``decision`` hold, as ``decisions.propose`` writes them."""
+    dp = DecisionProposal(work_item_id=wi.id, options=OPTIONS, recommended_key="a",
+                          rationale="r", status="pending", proposed_by="session:s1",
+                          created_at=NOW)
+    db.add(dp)
+    set_decision_hold(wi, reason="pick an option", actor="session:s1", now=NOW)
+    db.flush()
+    return dp
+
+
+def test_decision_hold_moves_with_its_pending_proposal():
     db = _db()
     pid = _product(db)
     old = _wi(db, OLD)
-    set_decision_hold(old, reason="pick an option", actor="tony@example.com", now=NOW)
+    dp = _decision(db, old)
     new = _wi(db, NEW)
     detail = moved_refs.migrate_pair(db, _pair(db, pid), now=NOW)
+    db.flush()  # ux_decision_proposals_pending holds
     assert detail is not None
+    assert dp.work_item_id == new.id
     assert new.hold_kind == "decision" and new.hold_reason == "pick an option"
     assert old.hold_kind is None
-    assert detail["hold"] == {"kind": "decision", "copied": True, "decision": True}
+    assert detail["hold"] == {"kind": "decision", "copied": True, "decision": True,
+                              "proposals": [dp.id]}
+
+
+@pytest.mark.parametrize("blocker", ["new_held", "new_pending", "no_proposal"])
+def test_decision_hold_and_proposal_stay_on_old_when_they_cannot_move(blocker):
+    db = _db()
+    pid = _product(db)
+    old = _wi(db, OLD)
+    if blocker == "no_proposal":
+        set_decision_hold(old, reason="pick an option", actor="session:s1", now=NOW)
+        dp = None
+    else:
+        dp = _decision(db, old)
+    new = _wi(db, NEW)
+    if blocker == "new_held":
+        set_hold(new, kind="owner_action", reason="mine", actor="tony@example.com", now=NOW)
+    elif blocker == "new_pending":
+        db.add(DecisionProposal(work_item_id=new.id, options=OPTIONS, recommended_key="a",
+                                rationale="r", status="pending", created_at=NOW))
+        db.flush()
+    detail = moved_refs.migrate_pair(db, _pair(db, pid), now=NOW)
+    assert detail is not None
+    assert detail["hold"] == {"kind": "decision", "copied": False, "decision": True,
+                              "decision_kept_on_old": True}
+    assert old.hold_kind == "decision"
+    assert dp is None or dp.work_item_id == old.id
+    assert new.hold_kind != "decision"
+    assert _audits(db, "pm.hold.release") == []
+
+
+@pytest.mark.asyncio
+async def test_accepting_a_moved_decision_releases_the_hold_on_the_new_item(isolated_db):
+    from server.db import db_session
+    from server.pm import decisions
+    async with db_session() as db:
+        p = Project(slug="ghost", name="Ghost")
+        db.add(p)
+        await db.flush()
+        db.add(ProjectRepo(project_id=p.id, repo=NEW_REPO, is_primary=True))
+        db.add(ProjectRepo(project_id=p.id, repo=OLD_REPO, retired_at=NOW))
+        old = WorkItem(repo=OLD_REPO, number=257, kind="issue", state="open", title="t", body="b")
+        new = WorkItem(repo=NEW_REPO, number=3, kind="issue", state="open", title="t", body="b")
+        db.add_all([old, new])
+        await db.flush()
+        proposal = await decisions.propose(db, old, options=OPTIONS, recommended_key="a",
+                                           rationale="which?", actor="session:s1", now=NOW)
+        pid, new_id, proposal_id = p.id, new.id, proposal.id
+
+    async with db_session() as db:
+        await db.run_sync(lambda s: moved_refs.migrate_pair(s, _pair(s, pid), now=NOW))
+
+    async with db_session() as db:
+        proposal = await db.get(DecisionProposal, proposal_id)
+        assert proposal.work_item_id == new_id
+        await decisions.accept(db, proposal, chosen_key="a", actor="tony@example.com", now=NOW)
+
+    async with db_session() as db:
+        new = await db.get(WorkItem, new_id)
+        assert new.hold_kind is None
+        assert (await db.get(DecisionProposal, proposal_id)).status == "accepted"
 
 
 def test_old_hold_released_even_when_the_new_item_already_holds():
@@ -213,17 +287,12 @@ def test_validation_rejects_chains_bad_refs_and_foreign_or_retired_repos():
     db = _db()
     pid = _product(db)
     _pair(db, pid)  # OLD -> NEW stored
-
     with pytest.raises(BadPairs) as e:
-        moved_refs.validate_pairs(db, pid, [(NEW, "o/ghost#4")])  # NEW is already a new ref
-    assert "chained" in e.value.errors[0]["message"]
-    with pytest.raises(BadPairs) as e:
-        moved_refs.validate_pairs(db, pid, [("o/ghost#5", OLD)])  # OLD is retired
+        moved_refs.validate_pairs(db, pid, [("o/ghost-mcp#5", OLD)])  # OLD is retired
     assert "not an active repo" in e.value.errors[0]["message"]
-    with pytest.raises(BadPairs) as e:  # a chain inside one batch
-        moved_refs.validate_pairs(db, pid, [("o/ghost-mcp#1", "o/ghost#1"),
-                                            ("o/ghost#1", "o/ghost#2")])
-    assert any("chained" in x["message"] for x in e.value.errors)
+    with pytest.raises(BadPairs) as e:  # an ACTIVE repo's issue can't be "moved"
+        moved_refs.validate_pairs(db, pid, [("o/ghost#5", "o/ghost#6")])
+    assert e.value.errors[0]["message"] == "old repo o/ghost must be retired first"
     with pytest.raises(BadPairs) as e:
         moved_refs.validate_pairs(db, pid, [("nope", NEW), ("x/y#1", "o/ghost#9"),
                                             ("o/ghost-mcp#2", "o/ghost-mcp#3")])
@@ -240,16 +309,89 @@ def test_validation_rejects_chains_bad_refs_and_foreign_or_retired_repos():
     assert moved_refs.validate_pairs(db, pid, [("O/Ghost-MCP#257", "O/GHOST#3")]) == [(OLD, NEW)]
 
 
-def test_repointing_a_pair_resets_its_migration():
+def test_chains_through_a_later_retired_repo_are_rejected():
+    """Old refs must sit in a retired repo and new ones in an active repo, so a chain
+    needs the NEW repo to be retired later: o/ghost-mcp → o/ghost, then o/ghost → o/ghost2."""
+    db = _db()
+    pid = _product(db)
+    _pair(db, pid)  # OLD -> NEW stored
+    db.add(ProjectRepo(project_id=pid, repo="o/ghost2"))
+    ghost = db.scalars(select(ProjectRepo).where(ProjectRepo.repo == NEW_REPO)).one()
+    ghost.retired_at, ghost.is_primary = NOW, False
+    db.flush()
+    with pytest.raises(BadPairs) as e:
+        moved_refs.validate_pairs(db, pid, [(NEW, "o/ghost2#4")])
+    assert "chained" in e.value.errors[0]["message"]
+
+
+def test_repointing_a_pending_pair_takes_the_new_ref_but_a_migrated_one_is_refused():
+    db = _db()
+    pid = _product(db)
+    _wi(db, OLD)
+    row = _pair(db, pid, OLD, "o/ghost#4")          # o/ghost#4 is not mirrored: pending
+    assert moved_refs.migrate_pair(db, row, now=NOW) is None
+    again = _pair(db, pid, OLD, NEW)
+    assert again is row and row.new_ref == NEW and row.migration is None
+    _wi(db, NEW)
+    assert moved_refs.migrate_pair(db, row, now=NOW) is not None
+    with pytest.raises(AlreadyMigrated) as e:
+        moved_refs.validate_pairs(db, pid, [(OLD, "o/ghost#4")])
+    assert e.value.code == "already_migrated" and "already migrated" in e.value.errors[0]["message"]
+    assert moved_refs.validate_pairs(db, pid, [(OLD, NEW)]) == [(OLD, NEW)]  # same pair is fine
+
+
+def test_old_ref_recorded_under_another_product_is_refused_and_maps_are_scoped():
+    db = _db()
+    pid = _product(db)
+    other = Project(slug="other", name="Other")
+    db.add(other)
+    db.flush()
+    db.add(MovedIssueRef(project_id=other.id, old_ref=OLD, new_ref="x/y#1"))
+    db.add(MovedIssueRef(project_id=other.id, old_ref="x/old#1", new_ref="x/y#2"))
+    db.flush()
+    with pytest.raises(BadPairs) as e:
+        moved_refs.validate_pairs(db, pid, [(OLD, NEW)])
+    assert e.value.errors[0]["message"] == "old ref is already recorded under another product"
+    assert moved_refs.moved_map(db, pid) == {}
+    assert moved_refs.moved_map(db, other.id) == {OLD: "x/y#1", "x/old#1": "x/y#2"}
+    assert len(moved_refs.moved_map(db)) == 2
+
+
+def test_concurrent_first_insert_rereads_the_winning_row(monkeypatch):
+    db = _db()
+    pid = _product(db)
+    winner = _pair(db, pid)
+    real, calls = moved_refs._stored, []
+
+    def racing(s, project_id, old):  # the first lookup misses: the other writer is mid-commit
+        calls.append(old)
+        return None if len(calls) == 1 else real(s, project_id, old)
+    monkeypatch.setattr(moved_refs, "_stored", racing)
+    (row,) = moved_refs.record_pairs(db, pid, [(OLD, NEW)], actor="tony@example.com")
+    assert row is winner and len(calls) == 2
+    assert len(list(db.scalars(select(MovedIssueRef)))) == 1
+
+
+def test_one_poison_pair_does_not_stall_the_others(monkeypatch):
     db = _db()
     pid = _product(db)
     _wi(db, OLD)
     _wi(db, NEW)
-    row = _pair(db, pid)
-    moved_refs.migrate_pair(db, row, now=NOW)
-    assert row.migrated_at is not None
-    (again,) = moved_refs.record_pairs(db, pid, [(OLD, "o/ghost#4")], actor="tony@example.com")
-    assert again is row and row.new_ref == "o/ghost#4" and row.migrated_at is None
+    _wi(db, "o/ghost-mcp#1")
+    _wi(db, "o/ghost#1")
+    good = _pair(db, pid)
+    poison = _pair(db, pid, "o/ghost-mcp#1", "o/ghost#1")
+    db.commit()
+    real = moved_refs._rewrite_notes
+
+    def boom(s, project_id, old_ref, new_ref):
+        if old_ref == "o/ghost-mcp#1":
+            raise RuntimeError("poison")
+        return real(s, project_id, old_ref, new_ref)
+    monkeypatch.setattr(moved_refs, "_rewrite_notes", boom)
+    assert moved_refs.migrate_pending(db, now=NOW) == 1
+    db.commit()
+    assert good.migrated_at is not None and poison.migrated_at is None
 
 
 # --------------------------------------------------------------------------- suggest
@@ -467,10 +609,45 @@ def test_moved_refs_api_records_migrates_lists_and_suggests(monkeypatch):
             {"old": NEW, "new": "o/ghost#9"}]}, headers=H)
         assert bad.status_code == 422, bad.text
         detail = bad.json()["detail"]
-        assert detail["error"] == "bad_pairs" and "chained" in detail["pairs"][0]["message"]
+        assert detail["error"] == "bad_pairs"
+        assert detail["pairs"][0]["message"] == "old repo o/ghost must be retired first"
+
+        moved_again = c.post("/api/pm/projects/ghost/moved-refs", json={"pairs": [
+            {"old": OLD, "new": "o/ghost#9"}]}, headers=H)
+        assert moved_again.status_code == 422, moved_again.text
+        assert moved_again.json()["detail"]["error"] == "already_migrated"
 
         async def audit_types():
             async with db_session() as db:
                 return sorted((await db.execute(select(AuditEvent.type).where(
                     AuditEvent.type.like("pm.moved_ref.%")))).scalars().all())
         assert c.portal.call(audit_types) == ["pm.moved_ref.migrate", "pm.moved_ref.record"]
+
+
+def test_moved_refs_post_refuses_agent_callers_but_not_the_assistant(monkeypatch):
+    """Recording a pair releases holds, so it follows the hold routes' actor rule: an
+    unattributed loopback caller (``lan@local``, agent class) is refused; the
+    assistant acting for its operator (``assistant:<identity>``) is admitted."""
+    import os
+    from unittest.mock import patch
+
+    from server.tests.pm_ownership_fixtures import identity_repositories
+    from server.tests.test_pm_api import IDENTITY_HEADERS as H, LAN_OPEN, _client
+    monkeypatch.setattr("server.automations.target_identity.resolve_repositories",
+                        identity_repositories)
+    with patch.dict(os.environ, LAN_OPEN), _client() as c:
+        c.post("/api/pm/projects", json={"name": "Ghost", "repos": [
+            {"repo": NEW_REPO, "isPrimary": True}, {"repo": OLD_REPO, "isPrimary": False}]},
+            headers=H)
+        c.post(f"/api/pm/projects/ghost/repos/{OLD_REPO}/retire", json={}, headers=H)
+        body = {"pairs": [{"old": OLD, "new": NEW}]}
+
+        refused = c.post("/api/pm/projects/ghost/moved-refs", json=body)  # lan@local
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["detail"]["error"] == "hold_not_permitted"
+
+        # The assistant passes the handler's actor rule (``may_record``); reaching the
+        # route through its token is the assistant route allowlist's call (Task 6).
+        assert moved_refs.may_record(f"assistant:{H['Tailscale-User-Login']}")
+        assert moved_refs.may_record("tony@example.com")
+        assert not moved_refs.may_record("session:s1") and not moved_refs.may_record("lan@local")

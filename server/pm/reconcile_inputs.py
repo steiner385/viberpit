@@ -82,7 +82,8 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
     # THE queue's predicate (``drift.is_open_blocker`` over ``blocker_states``), so the
     # board's Blocked and the queue's ``blocked`` skip cannot disagree (#3110): an open
     # PR blocks, a blocker outside the product counts, an unmirrored one fails closed.
-    moved = moved_map(db)  # a blocker that moved repos reads its new issue's state
+    # A blocker that moved repos reads its new issue's state (this product's pairs).
+    moved = moved_map(db, product.project_id)
     stmt = blocker_states_stmt({d.dst_ref for d in deps if d.active and d.dst_ref}, moved)
     dst_state = blocker_states(db.execute(stmt).all(), moved) if stmt is not None else {}
     for d in deps:
