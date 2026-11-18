@@ -10,7 +10,7 @@ onto each ``QueueRow``; the queue's own claim source is ``runner_claims``, which
 readers call, so what the operator sees is what agents will do next."""
 from __future__ import annotations
 
-from collections.abc import Set as AbstractSet
+from collections.abc import Iterable, Set as AbstractSet
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -21,7 +21,8 @@ from server.db.models import (AutomationTargetState, GhProjectItem, Session as D
 from .desired_state import LIVE_SESSION_STATUSES
 from .drift import is_open_blocker
 from .holds import OWNER_EVIDENCE, EvidenceRequest, evidence_surfaced
-from .mirror_store import blocker_states, blocker_states_stmt, deps_in_repos, list_product_views
+from .mirror_store import (ProductSyncView, blocker_states, blocker_states_stmt, deps_in_repos,
+                           list_product_views)
 from .moved_refs import moved_map
 from .outcomes import (body_fingerprint, bounces_stmt, not_needed_stmt,
                        not_needed_suppression, rows_to_bounces, verdicts_by_ref)
@@ -56,14 +57,44 @@ def runner_claims(db: Session) -> frozenset[str]:
     return frozenset(claimed)
 
 
-def queue_inputs(s: Session, *, now: datetime) -> tuple[list[QueueRow], dict[str, dict]]:
+def queue_inputs(s: Session, *, now: datetime, active_only: bool = False
+                 ) -> tuple[list[QueueRow], dict[str, dict]]:
     """Rows + per-product policies for the queue-shaped views, composed in ONE sync
     session (run it via ``db.run_sync``): which threshold a product's issues are
     judged against decides what a view shows, so a policy edit must not land between
     the two reads. THE composition ``GET /api/pm/queue|holds`` and the
-    decision-escalation loop share, so no two views of the pool can disagree."""
+    decision-escalation loop share, so no two views of the pool can disagree.
+
+    ``active_only`` is for automation that WRITES (needs-you hygiene, decision
+    escalation, the Backlog Runner's tick passes): it drops every row in a retired
+    product repo (``split_retired``). History readers (roadmap tree, digest,
+    ``/api/pm/queue|holds``) keep the default and still show them."""
     from server.automations.product_policy import policies_by_slug
-    return load_queue_rows(s, now=now, claimed_refs=runner_claims(s)), policies_by_slug(s)
+    rows = load_queue_rows(s, now=now, claimed_refs=runner_claims(s))
+    if active_only:
+        rows, _ = split_retired(rows, list_product_views(s))
+    return rows, policies_by_slug(s)
+
+
+def split_retired(rows: Iterable[QueueRow], views: Iterable[ProductSyncView]
+                  ) -> tuple[list[QueueRow], dict[str, int]]:
+    """THE rule for which queue rows automation may act on: a row whose repo is a
+    RETIRED repo of its product (registered, ``retired_at`` set) is dropped — its
+    mirror is frozen, so its issue stays open forever, and no dispatch, claim,
+    comment, close, reminder or push may target it (spec 2026-11-18 product repo
+    lifecycle). Returns ``(kept, retired_count_by_product)``. Scoped here, not in
+    ``load_queue_rows``, which also feeds history views."""
+    retired = {(v.slug or v.project_id):
+               {r.casefold() for r in v.all_repos} - {r.casefold() for r in v.repos}
+               for v in views}
+    kept: list[QueueRow] = []
+    dropped: dict[str, int] = {}
+    for r in rows:
+        if (r.repo or "").casefold() in retired.get(r.product, ()):
+            dropped[r.product] = dropped.get(r.product, 0) + 1
+        else:
+            kept.append(r)
+    return kept, dropped
 
 
 def _ownership_nodes(db: Session, items: list[WorkItem]
@@ -150,7 +181,8 @@ def load_queue_rows(db: Session, *, now: datetime,
 
         deps = db.scalars(
             # ALL repos, retired included: a retired repo's items keep their blockers
-            # in history views (roadmap tree, digest); the runner drops them itself.
+            # in history views (roadmap tree, digest); automation drops them via
+            # ``split_retired``.
             select(WorkItemDep).where(deps_in_repos(product.all_repos or product.repos),
                                       WorkItemDep.active.is_(True))
         ).all()

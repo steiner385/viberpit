@@ -328,6 +328,83 @@ def test_queue_inputs_keep_retired_items_blockers(tmp_path):
     assert by_ref["o/old#1"] == ("o/old#9",)
 
 
+async def _seed_held_shared_board(tmp_path) -> None:
+    """Product "ghost": o/old (retired) and o/new (primary) share ONE board (the
+    motivating case), each with an owner-held open issue. A retired repo's mirror is
+    frozen, so o/old#1 stays open — and held — forever."""
+    from sqlalchemy import select
+
+    from server.tests.test_backlog_query_queue import _init, _seed_item, _seed_product
+
+    await _init(tmp_path, "held.db")
+    await _seed_product("ghost", "o/old")
+    async with db_session() as db:
+        old = (await db.execute(select(ProjectRepo).where(ProjectRepo.repo == "o/old"))).scalar_one()
+        old.is_primary, old.retired_at, old.superseded_by = False, db_utc_now(), "o/new"
+        db.add(ProjectRepo(project_id=old.project_id, repo="o/new", is_primary=True))
+        await db.commit()
+    await _seed_item("o/old", 1, hold_kind="owner_action")
+    await _seed_item("o/new", 2, hold_kind="owner_action")
+
+
+def test_queue_inputs_active_only_drops_retired_rows(tmp_path):
+    """THE automation read: the default (history) composition keeps a retired repo's
+    rows; ``active_only`` drops them, in one place, for every writer."""
+    from datetime import datetime, timezone
+
+    from server.pm.queue_store import queue_inputs
+
+    async def run():
+        await _seed_held_shared_board(tmp_path)
+        now = datetime.now(timezone.utc)
+        async with db_session() as db:
+            every, _ = await db.run_sync(lambda s: queue_inputs(s, now=now))
+            active, _ = await db.run_sync(lambda s: queue_inputs(s, now=now, active_only=True))
+        return sorted(r.ref for r in every), [r.ref for r in active]
+    every, active = asyncio.run(run())
+    assert every == ["o/new#2", "o/old#1"]
+    assert active == ["o/new#2"]
+
+
+def test_backlog_tick_writers_never_see_retired_rows(tmp_path):
+    """Alert supersede, policy-skip release and auto-escalation all read
+    ``_backlog_queue_inputs``: a retired repo's held issue is none of theirs, so
+    auto-escalation never spends budget releasing a hold dispatch will refuse."""
+    from server.tests.test_backlog_query_queue import _orch_with_ctx
+
+    async def run():
+        await _seed_held_shared_board(tmp_path)
+        orch = _orch_with_ctx()
+        rows, _ = await orch._backlog_queue_inputs()
+        return [r.ref for r in rows]
+    assert asyncio.run(run()) == ["o/new#2"]
+
+
+def test_decision_escalation_never_pushes_a_retired_repos_hold(tmp_path):
+    from server.tests.test_backlog_query_queue import _orch_with_ctx
+
+    async def run():
+        await _seed_held_shared_board(tmp_path)
+        out = await _orch_with_ctx()._decision_escalation_load({})
+        return {e.slug: [h.ref for h in e.held] for e in out}
+    assert asyncio.run(run()) == {"ghost": ["o/new#2"]}
+
+
+def test_needs_you_hygiene_never_acts_on_a_retired_repos_issues(tmp_path):
+    """Hygiene's close/unpark/evidence-reminder writers act only on the rows its
+    load hands them: a retired repo's issue is not one, so no comment, close or
+    reminder is ever attempted against it."""
+    from server.automations.context import AutomationContext
+    from server.tests.test_backlog_query_queue import _orch_with_ctx
+
+    async def run():
+        await _seed_held_shared_board(tmp_path)
+        orch = _orch_with_ctx()
+        orch._needs_you_hygiene_ctx = AutomationContext("needs-you-hygiene")
+        return {p.slug: [r.ref for r in p.rows] for p in await orch._needs_you_hygiene_load()}
+    assert asyncio.run(run()) == {"ghost": ["o/new#2"]}
+
+
 def test_repo_retired_spawn_refusal_never_trips_the_spawn_circuit(tmp_path, monkeypatch):
     from server.db import init_db
     from server.tests.test_backlog_runner_loop import (

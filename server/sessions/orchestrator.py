@@ -9815,7 +9815,7 @@ class SessionOrchestrator:
         from server.pm.mirror_store import list_product_views
         from server.pm.queue import rank, rank_key, to_candidate
         from server.pm.fleet_platforms import fleet_platform_state
-        from server.pm.queue_store import load_queue_rows, runner_claims
+        from server.pm.queue_store import load_queue_rows, runner_claims, split_retired
 
         now = datetime.now(timezone.utc)
         _EPOCH = datetime.min
@@ -9842,10 +9842,13 @@ class SessionOrchestrator:
                                           meta.get(v.project_id, (None, None))[1] or _EPOCH,
                                           v.slug or v.project_id))
             repos_by_slug = {(v.slug or v.project_id): list(v.repos) for v in views}
-            return rows, policies_by_slug(s), repos_by_slug
+            # A board item in a RETIRED repo is never a candidate (create_session
+            # would refuse it) — THE rule every writing queue reader shares.
+            rows, retired_rows = split_retired(rows, views)
+            return rows, policies_by_slug(s), repos_by_slug, retired_rows
 
         async with db_session() as db:
-            rows, policies, repos_by_slug = await db.run_sync(_rows)
+            rows, policies, repos_by_slug, retired_rows = await db.run_sync(_rows)
             # The spawn's ladder rung reads its ``ladder_top`` off this snapshot, so
             # it gets the SAME approval-gate clamp the sweep's snapshot gets —
             # otherwise the two halves of one rule could answer differently about
@@ -9859,18 +9862,9 @@ class SessionOrchestrator:
         self._backlog_last_policies = policies
         self._backlog_last_repos = repos_by_slug
         by_product: dict[str, list] = {}
-        # ``repos_by_slug`` is active repos only: a board item in a RETIRED repo is
-        # never a candidate (create_session would refuse it). Scoped here, not in
-        # load_queue_rows, which also feeds history views.
-        active = {slug: {r.casefold() for r in repos} for slug, repos in repos_by_slug.items()}
-        retired_rows: dict[str, int] = {}
         for r in rows:
-            if not is_on(policies.get(r.product)):
-                continue
-            if (r.repo or "").casefold() not in active.get(r.product, set()):
-                retired_rows[r.product] = retired_rows.get(r.product, 0) + 1
-                continue
-            by_product.setdefault(r.product, []).append(r)
+            if is_on(policies.get(r.product)):
+                by_product.setdefault(r.product, []).append(r)
         entries: list = []
         skipped: dict[str, int] = {}
         for slug in sorted(policies):
@@ -11687,13 +11681,14 @@ class SessionOrchestrator:
 
     async def _backlog_queue_inputs(self):
         """``queue_store.queue_inputs`` in one sync session: the open board-linked
-        rows (hold, labels, author, claim) plus the per-product policies."""
+        rows (hold, labels, author, claim) plus the per-product policies. Active
+        repos only: every reader here writes (closes, releases, approves)."""
         from datetime import datetime, timezone
 
         from server.pm.queue_store import queue_inputs
         now = datetime.now(timezone.utc)
         async with db_session() as db:
-            return await db.run_sync(lambda s: queue_inputs(s, now=now))
+            return await db.run_sync(lambda s: queue_inputs(s, now=now, active_only=True))
 
     async def _backlog_supersede_alerts(self) -> list[str]:
         """Close every open recurring-alert issue a newer one of the same type
@@ -16384,7 +16379,9 @@ class SessionOrchestrator:
         now = datetime.now(timezone.utc)
         only = {str(s) for s in (config.get("products") or [])}
         async with db_session() as db:
-            rows, policies = await db.run_sync(lambda s: queue_inputs(s, now=now))
+            # Active repos only: a retired repo's holds get no decision-needed push.
+            rows, policies = await db.run_sync(
+                lambda s: queue_inputs(s, now=now, active_only=True))
             platforms, busy = await fleet_platform_state(db)
             proposals_by_ref = {f"{w.repo}#{w.number}": p for p, w in await decisions.pending_list(db)
                                 if w is not None and w.repo and w.number}
@@ -16513,7 +16510,9 @@ class SessionOrchestrator:
         assessed = {t: st for t, st in stored.items()
                     if pr.slug_of_run_target(t) is None and pr.ref_of_item_target(t) is None}
         async with db_session() as db:
-            rows, policies = await db.run_sync(lambda s: queue_inputs(s, now=now))
+            # Active repos only: no close, unpark or reminder on a retired repo.
+            rows, policies = await db.run_sync(
+                lambda s: queue_inputs(s, now=now, active_only=True))
             done_ids = [r.work_item_id for r in rows
                         if r.status == STATUS_DONE and r.work_item_id]
             board: dict[str, datetime] = {}
