@@ -76,16 +76,14 @@ def _retired_stmt():
 def _active_stmt(project_id: str):
     return (select(ProjectRepo.repo)
             .where(ProjectRepo.project_id == project_id, ACTIVE)
-            .order_by(ProjectRepo.is_primary.desc(), ProjectRepo.created_at, ProjectRepo.repo))
+            .order_by(ProjectRepo.is_primary.desc().nulls_last(), ProjectRepo.created_at, ProjectRepo.repo))
 
 
 async def retired_repo_set(db: AsyncSession) -> frozenset[str]:
+    """Retired repos (casefolded); also refreshes the process snapshot. Callers that
+    just changed retirement must ``invalidate_retired_cache()`` AFTER commit rather than
+    prime from their own uncommitted session, which would cache state that may roll back."""
     rows = (await db.execute(_retired_stmt())).scalars().all()
-    return _store(frozenset(r.casefold() for r in rows if r))
-
-
-def retired_repo_set_sync(db: Session) -> frozenset[str]:
-    rows = db.execute(_retired_stmt()).scalars().all()
     return _store(frozenset(r.casefold() for r in rows if r))
 
 

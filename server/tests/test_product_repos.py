@@ -1,11 +1,20 @@
 """product_repos: the single source of truth for a product's live (non-retired) repos."""
 import asyncio
 
+import pytest
+
 from server.db import db_session
 from server.db.clock import db_utc_now
 from server.db.models import Project, ProjectRepo
 from server.pm import product_repos
 from server.pm.repo_project import primary_repo_for_slug
+
+
+@pytest.fixture(autouse=True)
+def _fresh_retired_cache():
+    product_repos.invalidate_retired_cache()
+    yield
+    product_repos.invalidate_retired_cache()
 
 
 async def _seed():
