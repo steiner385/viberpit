@@ -24,11 +24,12 @@ export function MovedIssuesDialog({
   project, open, onClose,
 }: { project: Project; open: boolean; onClose: () => void }) {
   const slug = project.slug ?? ''
-  const allRepos = project.repos.map((r) => r.repo).filter((r): r is string => !!r)
+  // Old refs must live in a RETIRED repo (the server refuses an active one's with
+  // 422 bad_pairs: migration releases the old issue's hold).
+  const retiredRepos = project.repos.filter((r) => !isActiveRepo(r) && !!r.repo).map((r) => r.repo as string)
   const activeRepos = project.repos.filter((r) => isActiveRepo(r) && !!r.repo).map((r) => r.repo as string)
   // Issues move OUT of a retired repo INTO the primary — the usual case.
-  const [from, setFrom] = useState(
-    () => project.repos.find((r) => !isActiveRepo(r) && !!r.repo)?.repo ?? '')
+  const [from, setFrom] = useState(() => retiredRepos[0] ?? '')
   const [to, setTo] = useState(() => primaryRepoOf(project) ?? '')
 
   const stored = useMovedRefs(slug, { enabled: open })
@@ -45,7 +46,12 @@ export function MovedIssuesDialog({
     ...suggestions.filter((s) => ticked.has(pairKey(s))).map((s) => ({ old: s.old, new: s.new })),
     ...manual,
   ]
-  const canAddManual = ISSUE_REF_RE.test(oldRef.trim()) && ISSUE_REF_RE.test(newRef.trim())
+  // One pair per old ref: a duplicate would collide on its key here and fail the
+  // whole batch server-side.
+  const selectedOlds = new Set(selected.map((p) => p.old))
+  const manualOlds = new Set(manual.map((p) => p.old))
+  const oldTaken = selectedOlds.has(oldRef.trim())
+  const canAddManual = ISSUE_REF_RE.test(oldRef.trim()) && ISSUE_REF_RE.test(newRef.trim()) && !oldTaken
   const canApply = selected.length > 0 && !record.isPending
 
   return (
@@ -53,7 +59,9 @@ export function MovedIssuesDialog({
       <div className="flex flex-col gap-4 text-sm">
         <section aria-labelledby="mi-stored" className="flex flex-col gap-2">
           <SectionHeading id="mi-stored">Mapped</SectionHeading>
-          {(stored.data?.pairs.length ?? 0) === 0
+          {stored.isError
+            ? <p role="alert" className="text-danger">{extractMutationErrorMessage(stored.error, 'Could not load the moved issues.')}</p>
+            : (stored.data?.pairs.length ?? 0) === 0
             ? <p className="text-ink-muted">{stored.isLoading ? 'Loading…' : 'No issues mapped yet.'}</p>
             : (
               <ul aria-label="Moved issues" className="flex flex-col gap-1">
@@ -70,10 +78,13 @@ export function MovedIssuesDialog({
         <section aria-labelledby="mi-suggest" className="flex flex-col gap-2">
           <SectionHeading id="mi-suggest">Suggested by title</SectionHeading>
           <div className="flex flex-wrap gap-2">
-            <Field label="From" htmlFor="mi-from" className="min-w-0 flex-1">
-              <Select id="mi-from" size="sm" value={from} onChange={(e) => setFrom(e.target.value)}>
+            <Field
+              label="From" htmlFor="mi-from" className="min-w-0 flex-1"
+              help={retiredRepos.length === 0 ? 'Retire the old repository first' : undefined}
+            >
+              <Select id="mi-from" size="sm" value={from} disabled={retiredRepos.length === 0} onChange={(e) => setFrom(e.target.value)}>
                 <option value="">Choose…</option>
-                {allRepos.map((r) => <option key={r} value={r}>{r}</option>)}
+                {retiredRepos.map((r) => <option key={r} value={r}>{r}</option>)}
               </Select>
             </Field>
             <Field label="To" htmlFor="mi-to" className="min-w-0 flex-1">
@@ -93,6 +104,8 @@ export function MovedIssuesDialog({
                   id={`mi-s-${i}`}
                   label={`${s.old} → ${s.new} · ${s.title}`}
                   checked={ticked.has(pairKey(s))}
+                  // Already added by hand: ticking it too would duplicate the old ref.
+                  disabled={manualOlds.has(s.old)}
                   onChange={(on) => setTicked((prev) => {
                     const next = new Set(prev)
                     if (on) next.add(pairKey(s))
@@ -115,7 +128,10 @@ export function MovedIssuesDialog({
               setNewRef('')
             }}
           >
-            <Field label="Old issue" htmlFor="mi-old" className="min-w-0 flex-1">
+            <Field
+              label="Old issue" htmlFor="mi-old" className="min-w-0 flex-1"
+              error={oldTaken ? 'Already selected' : undefined}
+            >
               <Input id="mi-old" size="sm" placeholder="owner/repo#N" value={oldRef} onChange={(e) => setOldRef(e.target.value)} />
             </Field>
             <Field label="New issue" htmlFor="mi-new" className="min-w-0 flex-1">

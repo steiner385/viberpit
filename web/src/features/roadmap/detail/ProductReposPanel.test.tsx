@@ -149,6 +149,21 @@ describe('ProductReposPanel', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('The primary repo is now s/x')
   })
 
+  it('starting an action clears the other actions\' errors, so the alert is the latest one', async () => {
+    const { ApiRequestError } = await import('@/api/client')
+    hooks.primary.isError = true
+    hooks.primary.error = new ApiRequestError(409, { detail: { message: 'older refusal' } })
+    render(<ProductReposPanel project={THREE} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Un-retire s/ghostdriver-old' }))
+    expect(hooks.primary.reset).toHaveBeenCalled()
+    expect(hooks.add.reset).toHaveBeenCalled()
+    expect(hooks.unretire.reset).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText(/Add repository/), { target: { value: 's/x' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(hooks.unretire.reset).toHaveBeenCalled()
+    expect(hooks.add.reset).toHaveBeenCalledTimes(1)
+  })
+
   it('opens the Moved issues dialog', async () => {
     render(<ProductReposPanel project={THREE} />)
     fireEvent.click(screen.getByRole('button', { name: 'Moved issues…' }))

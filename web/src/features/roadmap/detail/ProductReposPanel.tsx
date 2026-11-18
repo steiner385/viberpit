@@ -45,9 +45,14 @@ export function ProductReposPanel({ project }: { project: Project }) {
   const trimmed = newRepo.trim()
   const repoError = trimmed !== '' && !REPO_RE.test(trimmed) ? REPO_FORMAT_HINT : undefined
   const canAdd = REPO_RE.test(trimmed) && !add.isPending
-  // One inline line for whichever row action failed last; the retire dialog
-  // renders its own.
-  const failed = [add, setPrimary, unretire].find((m) => m.isError)
+  // One inline line for the row action that failed; the retire dialog renders
+  // its own. Starting an action clears the others' errors, so the line is
+  // always the LATEST action's refusal, never an older one masking it.
+  const rowMutations = [add, setPrimary, unretire]
+  const failed = rowMutations.find((m) => m.isError)
+  const startOnly = (m: (typeof rowMutations)[number]) => {
+    for (const other of rowMutations) if (other !== m) other.reset()
+  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -73,7 +78,10 @@ export function ProductReposPanel({ project }: { project: Project }) {
                     <Button
                       size="sm" variant="ghost" aria-label={`Make ${r.repo} primary`}
                       disabled={setPrimary.isPending}
-                      onClick={() => setPrimary.mutate({ repo: r.repo, expectedPrimary: displayedPrimary })}
+                      onClick={() => {
+                        startOnly(setPrimary)
+                        setPrimary.mutate({ repo: r.repo, expectedPrimary: displayedPrimary })
+                      }}
                     >
                       Make primary
                     </Button>
@@ -93,7 +101,10 @@ export function ProductReposPanel({ project }: { project: Project }) {
                     <Button
                       size="sm" variant="ghost" aria-label={`Un-retire ${r.repo}`}
                       disabled={unretire.isPending}
-                      onClick={() => unretire.mutate(r.repo)}
+                      onClick={() => {
+                        startOnly(unretire)
+                        unretire.mutate(r.repo)
+                      }}
                     >
                       Un-retire
                     </Button>
@@ -114,6 +125,7 @@ export function ProductReposPanel({ project }: { project: Project }) {
         onSubmit={(e) => {
           e.preventDefault()
           if (!canAdd) return
+          startOnly(add)
           add.mutate({ repo: trimmed }, { onSuccess: () => setNewRepo('') })
         }}
       >
