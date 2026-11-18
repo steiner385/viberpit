@@ -30,6 +30,7 @@ from .context import AutomationContext
 from .engine_policy import EnginePolicy
 from .product_policy import (
     NO_PRODUCT_POLICY_KEY, ImplementationDecision, is_on, policy_for_product)
+from server.pm.product_repos import RepoRetired
 from server.pm.outcomes import (
     NEVER_RAN_CAUSE,
     bounced_out,
@@ -1741,6 +1742,13 @@ class BacklogRunnerLoop:
             fails = self._spawn_backoff.get(batch.primary, (0, 0.0))[0] + 1
             delay = _spawn_backoff_delay(fails)
             self._spawn_backoff[batch.primary] = (fails, self._clock() + delay)
+            if isinstance(exc, RepoRetired):
+                # A policy refusal, not a spawn fault: it must never count toward
+                # (or trip) the runner-wide spawn circuit.
+                # "failed" (not "refused"): the refill moves on to the next pick.
+                await self._ctx.emit("info", f"released {batch.primary} ({exc})",
+                                     kind="unclaimed", target=batch.primary)
+                return {**result("failed"), "reason_codes": ["repo_retired"]}
             self._consec_spawn_failures += 1
             disk = any(m in str(exc) for m in DISK_EXHAUSTION_MARKERS)
             if disk or self._consec_spawn_failures >= SPAWN_CIRCUIT_THRESHOLD:

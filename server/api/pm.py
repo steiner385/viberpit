@@ -522,14 +522,11 @@ async def update_project(
         await lock_repo_registration(db)
 
     p = await _load_project(db, slug)
-    primary = (await db.execute(
-        select(ProjectRepo).where(
-            ProjectRepo.project_id == p.id, ProjectRepo.is_primary.is_(True))
-    )).scalar_one_or_none()
+    primary = await product_repos.primary_repo(db, p.id)
 
     slug_changing = new_slug is not None and new_slug != p.slug
     repo_changing = repo is not None and (
-        primary is None or (primary.repo or "").casefold() != repo.casefold())
+        primary is None or primary.casefold() != repo.casefold())
     if slug_changing or repo_changing:
         open_pointer = await open_pointer_row(db, p.id)
         if open_pointer is not None:
@@ -549,7 +546,7 @@ async def update_project(
         assert snapshot is not None  # gathered above whenever `repo is not None`
         # Add (or un-retire) the new repo as primary, then retire the old one: its
         # mirrored history, sessions and PRs stay attributed to this product.
-        old_repo = primary.repo if primary else None
+        old_repo = primary
         with _repo_lifecycle_errors():
             added = await repo_lifecycle.add_repo(
                 db, p, repo, make_primary=True, snapshot=snapshot, identity=identity)

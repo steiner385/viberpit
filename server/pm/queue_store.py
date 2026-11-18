@@ -148,7 +148,10 @@ def load_queue_rows(db: Session, *, now: datetime,
         }
 
         deps = db.scalars(
-            select(WorkItemDep).where(deps_in_repos(product.repos), WorkItemDep.active.is_(True))
+            # ALL repos, retired included: a retired repo's items keep their blockers
+            # in history views (roadmap tree, digest); the runner drops them itself.
+            select(WorkItemDep).where(deps_in_repos(product.all_repos or product.repos),
+                                      WorkItemDep.active.is_(True))
         ).all()
         stmt = blocker_states_stmt({d.dst_ref for d in deps if d.dst_ref})
         dst_state = blocker_states(db.execute(stmt).all()) if stmt is not None else {}

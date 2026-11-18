@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection, Sequence, Set as AbstractSet
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from sqlalchemy import false, or_, select, tuple_, update
@@ -33,6 +33,9 @@ class ProductSyncView:
     gh_project_db_id: str | None
     gh_node_id: str | None
     repos: list[str]
+    # Every registered repo, retired included (history reads: dep edges, trees).
+    # ``repos`` is the active subset, primary first — what automation acts on.
+    all_repos: list[str] = field(default_factory=list)
 
 
 def deps_in_repos(repos: Collection[str]):
@@ -85,10 +88,12 @@ def list_product_views(db: Session) -> list[ProductSyncView]:
         # Active repos only, primary first: a retired repo drops out of every
         # automation queue fed from here (Backlog Runner, needs-you, reconcile).
         repos = active_repos_sync(db, project.id)
+        all_repos = [r for r in db.scalars(select(ProjectRepo.repo).where(
+            ProjectRepo.project_id == project.id)) if r]
         views.append(ProductSyncView(
             project_id=project.id, slug=project.slug, name=project.name,
             gh_project_db_id=gh.id if gh else None,
-            gh_node_id=gh.gh_node_id if gh else None, repos=repos))
+            gh_node_id=gh.gh_node_id if gh else None, repos=repos, all_repos=all_repos))
     return views
 
 

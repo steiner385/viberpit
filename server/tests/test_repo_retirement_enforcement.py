@@ -264,3 +264,96 @@ def test_primary_readers_follow_new_primary():
         assert c.post("/api/pm/projects/ghost/repos/o/ghost-mcp/retire",
                       json={"reason": "archived"}, headers=H).status_code == 200
         assert c.portal.call(readers) == ("o/ghost",) * 3
+
+
+# --------------------------------------------------------------------------- #
+# Backlog Runner pool + spawn circuit (review fix round 1)                     #
+# --------------------------------------------------------------------------- #
+
+async def _seed_retired_board(tmp_path) -> None:
+    """Product "ghost": o/old (retired) and o/new (primary), each with one open
+    Ready board issue; o/old#1 is blocked by the open o/old#9."""
+    from sqlalchemy import select
+
+    from server.db.models import WorkItemDep
+    from server.tests.test_backlog_query_queue import _init, _seed_item, _seed_product
+
+    await _init(tmp_path, "retired.db")
+    await _seed_product("ghost", "o/old")
+    async with db_session() as db:
+        old = (await db.execute(select(ProjectRepo).where(ProjectRepo.repo == "o/old"))).scalar_one()
+        old.is_primary, old.retired_at, old.superseded_by = False, db_utc_now(), "o/new"
+        db.add(ProjectRepo(project_id=old.project_id, repo="o/new", is_primary=True))
+        await db.commit()
+    blocked = await _seed_item("o/old", 1, score=9.0)
+    await _seed_item("o/old", 9, score=1.0)
+    await _seed_item("o/new", 2, score=5.0)
+    async with db_session() as db:
+        db.add(WorkItemDep(src_ref="o/old#1", dst_ref="o/old#9", source="native",
+                           active=True, src_work_item_id=blocked))
+        await db.commit()
+
+
+def test_runner_pool_excludes_retired_repo_items(tmp_path):
+    from server.tests.test_backlog_query_queue import _config, _orch_with_ctx
+
+    async def run():
+        await _seed_retired_board(tmp_path)
+        orch = _orch_with_ctx()
+        skipped: dict = {}
+        products: dict = {}
+        cands = await orch._backlog_query_queue(_config(), skipped_out=skipped,
+                                                products_out=products)
+        return [c["ref"] for c in cands], skipped, products
+    refs, skipped, products = asyncio.run(run())
+    assert refs == ["o/new#2"]
+    assert skipped.get("retired") == 2
+    assert products["ghost"]["skipped"]["retired"] == 2
+
+
+def test_queue_inputs_keep_retired_items_blockers(tmp_path):
+    """History views (roadmap tree, digest) still show a retired repo's item with
+    its blockers: dep edges are scoped by ALL of the product's repos."""
+    from datetime import datetime, timezone
+
+    from server.pm.queue_store import queue_inputs
+
+    async def run():
+        await _seed_retired_board(tmp_path)
+        async with db_session() as db:
+            rows, _ = await db.run_sync(
+                lambda s: queue_inputs(s, now=datetime.now(timezone.utc)))
+        return {r.ref: r.open_blockers for r in rows}
+    by_ref = asyncio.run(run())
+    assert by_ref["o/old#1"] == ("o/old#9",)
+
+
+def test_repo_retired_spawn_refusal_never_trips_the_spawn_circuit(tmp_path, monkeypatch):
+    from server.db import init_db
+    from server.tests.test_backlog_runner_loop import (
+        FakeClock, _seed_row, batch, build_loop, make_config)
+
+    from server.tests import test_backlog_runner_loop as loop_tests
+    # Same synthetic-ref identity seam the loop harness's own tests use.
+    loop_tests.isolated_ownership_identity.__wrapped__(monkeypatch)
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'circuit.db'}")
+        await _seed_row()
+        clock = FakeClock()
+        attempts: list[str] = []
+
+        async def retired_spawn(b, account, **_kw):
+            attempts.append(b.primary)
+            raise RepoRetired("r", "r2")
+
+        loop, _rec, ctx = build_loop(
+            config=make_config(max_concurrent=4),
+            candidates=[batch("r#1"), batch("r#2"), batch("r#3"), batch("r#4")],
+            spawn=retired_spawn, clock=clock)
+        await loop.tick()
+        return attempts, loop, await ctx.list_events(kind="spawn_circuit_open")
+    attempts, loop, opened = asyncio.run(run())
+    assert attempts == ["r#1", "r#2", "r#3", "r#4"]  # no circuit mid-tick
+    assert loop._consec_spawn_failures == 0
+    assert loop._spawn_circuit_until is None and opened == []

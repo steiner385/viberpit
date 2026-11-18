@@ -9859,9 +9859,18 @@ class SessionOrchestrator:
         self._backlog_last_policies = policies
         self._backlog_last_repos = repos_by_slug
         by_product: dict[str, list] = {}
+        # ``repos_by_slug`` is active repos only: a board item in a RETIRED repo is
+        # never a candidate (create_session would refuse it). Scoped here, not in
+        # load_queue_rows, which also feeds history views.
+        active = {slug: {r.casefold() for r in repos} for slug, repos in repos_by_slug.items()}
+        retired_rows: dict[str, int] = {}
         for r in rows:
-            if is_on(policies.get(r.product)):
-                by_product.setdefault(r.product, []).append(r)
+            if not is_on(policies.get(r.product)):
+                continue
+            if (r.repo or "").casefold() not in active.get(r.product, set()):
+                retired_rows[r.product] = retired_rows.get(r.product, 0) + 1
+                continue
+            by_product.setdefault(r.product, []).append(r)
         entries: list = []
         skipped: dict[str, int] = {}
         for slug in sorted(policies):
@@ -9871,6 +9880,8 @@ class SessionOrchestrator:
             rows_p = by_product.get(slug, [])
             entries_p, skipped_p = rank(rows_p, now=now, **rank_kwargs(policy),
                                          platforms=platforms, busy_platforms=busy)
+            if retired_rows.get(slug):
+                skipped_p = {**skipped_p, "retired": retired_rows[slug]}
             entries.extend(entries_p)
             for reason, n in skipped_p.items():
                 skipped[reason] = skipped.get(reason, 0) + n
