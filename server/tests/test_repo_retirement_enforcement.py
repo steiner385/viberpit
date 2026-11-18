@@ -414,23 +414,34 @@ def test_repo_retired_spawn_refusal_never_trips_the_spawn_circuit(tmp_path, monk
     # Same synthetic-ref identity seam the loop harness's own tests use.
     loop_tests.isolated_ownership_identity.__wrapped__(monkeypatch)
 
+    from server.automations.context import AutomationContext
+
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'circuit.db'}")
         await _seed_row()
         clock = FakeClock()
         attempts: list[str] = []
 
+        async def refuse(**_kw):
+            raise RepoRetired("r", "r2")
+
+        # The runner's real spawn goes through AutomationContext.spawn_session,
+        # which turns the refusal into ``None`` (handled once, there).
+        spawner = AutomationContext("backlog-runner", create_session=refuse)
+
         async def retired_spawn(b, account, **_kw):
             attempts.append(b.primary)
-            raise RepoRetired("r", "r2")
+            return await spawner.spawn_session(origin_ref=b.primary, name="x")
 
         loop, _rec, ctx = build_loop(
             config=make_config(max_concurrent=4),
             candidates=[batch("r#1"), batch("r#2"), batch("r#3"), batch("r#4")],
             spawn=retired_spawn, clock=clock)
         await loop.tick()
-        return attempts, loop, await ctx.list_events(kind="spawn_circuit_open")
-    attempts, loop, opened = asyncio.run(run())
-    assert attempts == ["r#1", "r#2", "r#3", "r#4"]  # no circuit mid-tick
+        return (attempts, loop, await ctx.list_events(kind="spawn_circuit_open"),
+                await ctx.list_events(kind="repo_retired"))
+    attempts, loop, opened, refused = asyncio.run(run())
+    assert attempts == ["r#1"]  # a refusal ends this tick's refill, like any other
     assert loop._consec_spawn_failures == 0
     assert loop._spawn_circuit_until is None and opened == []
+    assert [e["level"] for e in refused] == ["info"]
