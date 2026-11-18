@@ -176,11 +176,21 @@ def test_include_section_uses_git_fallback(tmp_path: Path) -> None:
     assert not gitrepos.clone_origin_matches(d, "a/c")
 
 
-def test_url_with_inline_comment_uses_git_fallback(tmp_path: Path) -> None:
+def test_include_if_section_resolved_by_git(tmp_path: Path) -> None:
     d = _init(tmp_path / "d", None)
+    inc = tmp_path / "inc.cfg"
+    inc.write_text('[remote "origin"]\n\turl = https://github.com/a/b.git\n')
     with (d / ".git" / "config").open("a") as f:
-        f.write('[remote "origin"]\n\turl = https://github.com/a/b.git # moved\n')
+        f.write(f'[includeIf "gitdir:{d}/.git"]\n\tpath = {inc}\n')
     assert gitrepos._origin_url(d) == "https://github.com/a/b.git"
+
+
+def test_origin_cache_follows_config_rewrite(tmp_path: Path) -> None:
+    d = _init(tmp_path / "d", "https://github.com/a/b.git")
+    assert gitrepos._origin_url(d) == "https://github.com/a/b.git"
+    subprocess.run(["git", "-C", str(d), "remote", "set-url", "origin",
+                    "https://github.com/a/other-longer.git"], check=True)
+    assert gitrepos._origin_url(d) == "https://github.com/a/other-longer.git"
 
 
 def test_origin_secret_never_logged(root: str, tmp_path: Path,

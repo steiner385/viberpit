@@ -440,43 +440,35 @@ def clone_origin_matches(path: Path, name_with_owner: str) -> bool:
     return "/".join(parts[-2:]).casefold() == name_with_owner.casefold()
 
 
-# Only the ``remote`` section keyword is case-insensitive in git; the quoted
-# subsection name is case-SENSITIVE, so ``[remote "Origin"]`` is another remote.
-_REMOTE_ORIGIN_HEADER_RE = re.compile(r'^\[\s*(?i:remote)\s+"origin"\s*\]\s*$')
-_CONFIG_NEEDS_GIT_RE = re.compile(r"^\[\s*(?i:include|url)\b")
+# (path, config mtime_ns, config size) -> origin URL (None = unreadable). A clone's
+# origin changes only by rewriting its config, which moves mtime/size, so a hot
+# read path costs one stat after the first ``git`` read.
+_ORIGIN_CACHE: dict[tuple[str, int, int], str | None] = {}
+_ORIGIN_CACHE_LOCK = threading.Lock()
+_ORIGIN_CACHE_MAX = 4096
 
 
 def _origin_url(path: Path) -> str | None:
-    """The clone's ``remote.origin.url``, else None.
+    """The clone's ``remote.origin.url`` as git resolves it, else None.
 
-    ``clone_path`` runs on hot read paths (once per repo-picker name), so the
-    common case is a line scan of ``<path>/.git/config`` with no subprocess.
-    Anything the scan could read differently from git — an ``[include]`` /
-    ``[includeIf]`` section, a ``url.*`` (insteadOf) section, or a value with
-    escapes, quotes or inline comments — is delegated to ``git config``. An
-    unreadable config, ``.git`` as a file (a linked worktree), or a failed or
-    timed-out git call yields None.
+    Asked of ``git config`` itself (includes, insteadOf, escapes — no parser to
+    disagree with) and memoized on the stat of ``<path>/.git/config``. A stat
+    failure, ``.git`` as a file, a failed or timed-out git call all yield None.
     """
     try:
-        text = (path / ".git" / "config").read_text(errors="replace")
+        st = (path / ".git" / "config").stat()
     except OSError:
         return None
-    in_origin = False
-    found: str | None = None
-    for raw in text.splitlines():
-        line = raw.strip()
-        if line.startswith("["):
-            if _CONFIG_NEEDS_GIT_RE.match(line):
-                return _origin_url_via_git(path)
-            in_origin = bool(_REMOTE_ORIGIN_HEADER_RE.match(line))
-        elif in_origin:
-            key, sep, value = line.partition("=")
-            if sep and key.strip().lower() == "url":
-                value = value.strip()
-                if any(c in value for c in '\\"#;'):
-                    return _origin_url_via_git(path)
-                found = value or None
-    return found
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    with _ORIGIN_CACHE_LOCK:
+        if key in _ORIGIN_CACHE:
+            return _ORIGIN_CACHE[key]
+    url = _origin_url_via_git(path)
+    with _ORIGIN_CACHE_LOCK:
+        if len(_ORIGIN_CACHE) >= _ORIGIN_CACHE_MAX:
+            _ORIGIN_CACHE.clear()
+        _ORIGIN_CACHE[key] = url
+    return url
 
 
 def _origin_url_via_git(path: Path) -> str | None:
