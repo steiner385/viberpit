@@ -426,14 +426,39 @@ def clone_origin_matches(path: Path, name_with_owner: str) -> bool:
     """
     if not (path / ".git").exists():
         return True
-    r = _run_git(["-C", str(path), "remote", "get-url", "origin"])
-    if r.returncode != 0:
+    url = _origin_url(path)
+    if url is None:
         return False
-    normalized = _normalize_remote_url(r.stdout)
-    parts = [p for p in normalized.split("/") if p]
+    parts = [p for p in _normalize_remote_url(url).split("/") if p]
     if len(parts) < 3 or parts[0] != "github.com":
         return True
     return "/".join(parts[-2:]).casefold() == name_with_owner.casefold()
+
+
+_REMOTE_ORIGIN_HEADER_RE = re.compile(r'^\[\s*remote\s+"origin"\s*\]\s*$', re.IGNORECASE)
+
+
+def _origin_url(path: Path) -> str | None:
+    """``[remote "origin"] url`` from ``<path>/.git/config``, else None.
+
+    Read straight off the file: ``clone_path`` runs on hot read paths (once per
+    repo-picker name), where a ``git`` subprocess per clone adds up. ``.git``
+    as a file (a linked worktree) or an unreadable config yields None.
+    """
+    try:
+        text = (path / ".git" / "config").read_text(errors="replace")
+    except OSError:
+        return None
+    in_origin = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            in_origin = bool(_REMOTE_ORIGIN_HEADER_RE.match(line))
+        elif in_origin:
+            key, sep, value = line.partition("=")
+            if sep and key.strip().lower() == "url":
+                return value.strip().strip('"') or None
+    return None
 
 
 def _resolve_clone(repo_root: str, name_with_owner: str) -> tuple[Path, Path | None]:
@@ -834,8 +859,11 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
     if rejected is not None:
         # INFO, not WARNING: the sink files an issue per WARNING, and this is
         # the designed outcome for a moved repo. The old dir is left untouched.
+        found = _origin_url(rejected)
         log.info("clone.origin_mismatch repo=%s existing=%s origin=%s using=%s",
-                 name_with_owner, rejected, repo_at_path(str(rejected)), dest)
+                 name_with_owner, rejected,
+                 "unreadable" if found is None else repo_at_path(str(rejected)) or found,
+                 dest)
     owner = name_with_owner.partition("/")[0]
     # Recorded on the alert so the notification links to the page that fixes the
     # credential actually in use (App installation vs. personal access token).

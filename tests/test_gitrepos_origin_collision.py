@@ -120,3 +120,28 @@ def test_relink_ignores_worktrees_of_the_old_clone(root: str, tmp_path: Path) ->
             mock.patch.object(clone_doctor, "repair_worktree_links") as repair:
         gitrepos._relink_orphaned_worktrees(root, str(new))
     repair.assert_not_called()
+
+
+def test_non_github_origin_is_accepted(root: str) -> None:
+    old = _old_dir(root, "/srv/git/anything.git")
+    assert gitrepos.clone_path(root, "acme/widget") == old
+
+
+def test_two_bases_rejected_in_one_sibling_in_other(root: str) -> None:
+    from viberpit import brand
+    if len(gitrepos.clones_bases(root)) < 2:
+        pytest.skip(f"single namespace: {brand.REPO_NAMESPACES}")
+    first, second = gitrepos.clones_bases(root)[:2]
+    _init(first / "acme" / "widget", "https://github.com/acme/elsewhere.git")
+    sib = _init(gitrepos.collision_clone_path(second, "acme/widget"),
+                "https://github.com/acme/widget.git")
+    assert gitrepos.clone_path(root, "acme/widget") == sib
+
+
+def test_unreadable_vs_other_repo_log_reason(
+    root: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    _old_dir(root, None)
+    caplog.set_level(logging.INFO)
+    dest, rejected = gitrepos._resolve_clone(root, "acme/widget")
+    assert rejected is not None and gitrepos._origin_url(rejected) is None
