@@ -32,6 +32,7 @@ import { InitiativeList } from './InitiativeList'
 import { ProductEdgesEditor } from './ProductEdgesEditor'
 import { NewCapabilityDialog } from './NewCapabilityDialog'
 import { EditProductDialog } from './EditProductDialog'
+import { ProductReposPanel } from './ProductReposPanel'
 import { MapChangesCard } from './MapChangesCard'
 import { AutomationPolicyCard } from './AutomationPolicyCard'
 import { RoadmapHealthCard } from './RoadmapHealthCard'
@@ -132,15 +133,7 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                         Edit
                       </Button>
                     </div>
-                    {project.repos.length > 0 && (
-                      <ul className="flex flex-wrap gap-2" aria-label="Repositories">
-                        {project.repos.map((r) => (
-                          <li key={r.id} className="rounded-pill border border-edge px-2 py-0.5 text-xs text-ink-muted">
-                            {r.repo}{r.isPrimary ? ' · primary' : ''}{r.backfillDone ? '' : ' · backfilling'}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
+                    <ProductReposPanel project={project} />
                     <p className="text-xs text-ink-muted">
                       {project.workItemCount} {ISSUE.plural.toLowerCase()} mirrored
                     </p>

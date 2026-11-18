@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 
 from viberpit import gitrepos
 from server.github import ci_issues
+from server.pm.product_repos import is_retired
 
 
 @dataclass(frozen=True)
@@ -62,8 +63,11 @@ async def apply(decision: Decision, *, repo: str, title: str, body: str,
                 labels: Sequence[str], linked: Linked | None,
                 run=gitrepos._run_gh) -> Applied:
     """Run the gh side effect for *decision*. Never raises; a failed create is
-    ``Applied(None, False)`` so the caller can leave its row retryable."""
+    ``Applied(None, False)`` so the caller can leave its row retryable. A retired
+    product repo gets no issue or comment at all (the same no-op shape)."""
     existing = linked.number if linked is not None else None
+    if decision.kind != "skip" and await is_retired(repo):
+        return Applied(issue_number=existing, commented=False)
     if decision.kind in ("file", "regress"):
         number = await asyncio.to_thread(
             ci_issues.create_issue, repo, title, body, labels=list(labels), run=run)

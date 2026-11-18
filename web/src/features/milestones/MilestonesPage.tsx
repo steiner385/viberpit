@@ -10,6 +10,7 @@
 import { type CSSProperties, useEffect, useId, useRef } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useProject } from '@/api/hooks'
+import { primaryRepoOf } from '@/api/pm'
 import { apiErrorCode } from '@/api/client'
 import { milestoneErrorText, useAdvanceMilestone, useMilestones, useRefreshMilestones } from '@/api/milestones'
 import type { RefreshMilestonesResult } from '@/api/milestones'
@@ -63,7 +64,7 @@ export function MilestonesPage() {
   const offId = useId()
 
   const productName = project?.name ?? productSlug
-  const repo = project?.repos.find((r) => r.isPrimary)?.repo ?? project?.repos[0]?.repo ?? null
+  const repo = primaryRepoOf(project)
   const view = loadedView(milestones.data)
   const ladder = view?.ladder ?? null
   const current = view ? currentMilestone(view) : null

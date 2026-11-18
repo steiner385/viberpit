@@ -25,6 +25,7 @@ from server.pm.fleet_platforms import fleet_platform_state
 from server.pm.map_changes import Pointer, open_pointer_rows
 from server.pm.milestone_asks import open_milestone_asks
 from server.pm.mirror_store import blocker_states, blocker_states_stmt
+from server.pm.moved_refs import moved_map
 from server.pm.outcomes import (body_fingerprint, bounces_stmt, not_needed_stmt,
                                 not_needed_suppression, rows_to_bounces, verdicts_by_ref)
 from server.pm.queue import QueueRow, rank
@@ -103,8 +104,11 @@ async def _issue_facts(db, items: list[WorkItem]) -> tuple[
     refs = [_ref(w) for w in items]
     deps = (await db.execute(select(WorkItemDep).where(
         WorkItemDep.src_ref.in_(refs), WorkItemDep.active.is_(True)))).scalars().all()
-    stmt = blocker_states_stmt({d.dst_ref for d in deps if d.dst_ref})
-    dst_state = blocker_states((await db.execute(stmt)).all()) if stmt is not None else {}
+    # A moved blocker reads its new issue's state. Items here may span products, so
+    # the map is every product's.
+    moved = await db.run_sync(moved_map)
+    stmt = blocker_states_stmt({d.dst_ref for d in deps if d.dst_ref}, moved)
+    dst_state = blocker_states((await db.execute(stmt)).all(), moved) if stmt is not None else {}
     blockers: dict[str, list[str]] = {}
     for d in deps:
         if d.src_ref and d.dst_ref and is_open_blocker(dst_state.get(d.dst_ref)):

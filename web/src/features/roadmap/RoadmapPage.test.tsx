@@ -72,6 +72,11 @@ vi.mock('@/api/hooks', () => ({
   useProductImplementationPolicy: () => ({ data: undefined, isPending: false, isError: false }),
   useProductPolicyCoverage: () => ({ data: undefined, isPending: false, isError: false }),
   useUpdateProductPolicy: () => ({ mutate: vi.fn(), isPending: false }),
+  // The product Overview's repositories panel (`ProductReposPanel`).
+  useAddProjectRepo: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useSetPrimaryRepo: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useRetireRepo: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useUnretireRepo: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useSdlcGates: () => ({ data: undefined, isPending: false, isError: false }),
   useProposeMap: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useClassify: () => ({ mutate: vi.fn(), isPending: false, isError: false }),

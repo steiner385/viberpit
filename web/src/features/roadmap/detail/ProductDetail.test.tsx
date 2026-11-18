@@ -77,6 +77,11 @@ vi.mock('@/api/hooks', () => ({
   useUpdateProductPolicy: () => ({ mutate: vi.fn(), isPending: false }),
   // The Overview's "Edit" button opens `EditProductDialog`.
   useUpdateProject: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  // The Overview's repositories panel (`ProductReposPanel`).
+  useAddProjectRepo: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useSetPrimaryRepo: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useRetireRepo: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useUnretireRepo: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useSdlcGates: () => ({ data: undefined, isPending: false, isError: false }),
   // `+ Capability` opens NewCapabilityDialog, which edits the map-changes PR.
   useEditMapChanges: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
@@ -149,6 +154,9 @@ describe('ProductDetail', () => {
     mount()
     expect(screen.getByText('Family dashboard')).toBeInTheDocument()
     expect(screen.getByText(/cairnea\/KinDash/)).toBeInTheDocument()
+    // Managed in place: the repositories panel, not a read-only pill list.
+    expect(screen.getByRole('list', { name: 'Repositories' })).toBeInTheDocument()
+    expect(screen.getByLabelText(/Add repository/)).toBeInTheDocument()
     expect(screen.getByText(/40 issues mirrored/)).toBeInTheDocument()
     const link = screen.getByRole('link', { name: 'Use-case-first task views' })
     expect(link).toHaveAttribute('href', '/initiatives/views')
@@ -195,13 +203,12 @@ describe('ProductDetail', () => {
     expect(screen.getByRole('dialog', { name: 'New capability' })).toBeInTheDocument()
   })
 
-  it('Overview: "Edit" opens the rename/repoint dialog pre-filled with the current values', () => {
+  it('Overview: "Edit" opens the rename dialog pre-filled with the current values', () => {
     mount()
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
     expect(screen.getByRole('dialog', { name: 'Edit product' })).toBeInTheDocument()
     expect(screen.getByLabelText(/Name/)).toHaveValue('KinDash')
     expect(screen.getByLabelText(/Slug/)).toHaveValue('kindash')
-    expect(screen.getByLabelText(/Primary repository/)).toHaveValue('cairnea/KinDash')
   })
 
   it('counts In flight as the initiatives the In-flight tab lists', () => {

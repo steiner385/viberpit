@@ -8,7 +8,7 @@
 // the submit handler.
 import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { CreateProjectInput } from '@/api/pm'
+import { REPO_FORMAT_HINT, REPO_RE, type CreateProjectInput } from '@/api/pm'
 import { useCreateProject } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { Dialog } from '@/ui/Dialog'
@@ -17,9 +17,6 @@ import { Input } from '@/ui/Input'
 import { Button } from '@/ui/Button'
 import { PRODUCT } from '@/features/products/vocab'
 import { productPath } from '../roadmapNavState'
-
-/** `owner/repo` — the only shape the backfill loop can mirror from. */
-const REPO_RE = /^[^/\s]+\/[^/\s]+$/
 
 export function NewProductDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const navigate = useNavigate()
@@ -35,7 +32,7 @@ export function NewProductDialog({ open, onClose }: { open: boolean; onClose: ()
   const repoValid = REPO_RE.test(trimmedRepo)
   // Only complain about what has been typed: an untouched field is not an error.
   const repoError = trimmedRepo !== '' && !repoValid
-    ? 'Use owner/repo, e.g. steiner385/viberpit'
+    ? REPO_FORMAT_HINT
     : undefined
   const canSubmit = name.trim() !== '' && repoValid && !create.isPending
 

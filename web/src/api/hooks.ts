@@ -41,6 +41,10 @@ import {
 } from './sdlc'
 import {
   createProject, updateProject, requestProjectSync,
+  addProjectRepo, setPrimaryRepo, retireRepo, unretireRepo,
+  fetchMovedRefs, recordMovedRefs, fetchMovedRefSuggestions,
+  type AddProjectRepoInput, type SetPrimaryRepoInput, type RetireRepoInput,
+  type MovedRefPair, type MovedRefSuggestion,
   fetchOnboarding, proposeMap, proposeConstitution, runClassify, advanceMap, advanceLive,
   removeDependency, createEdge, deleteEdge,
   editMapChanges, abandonMapChanges, rebaseMapChanges, retireCapability, mergeCapabilities,
@@ -162,6 +166,10 @@ export const QK = {
   digest: ['pm', 'digest'] as const,
   workItemIssue: (id: string) => ['pm', 'issue', id] as const,
   project: (slug: string) => ['pm', 'project', slug] as const,
+  // Under `project(slug)`, so a repo change's prefix invalidation refreshes it too.
+  movedRefs: (slug: string) => ['pm', 'project', slug, 'moved-refs'] as const,
+  movedRefSuggestions: (slug: string, from: string, to: string) =>
+    ['pm', 'project', slug, 'moved-refs', 'suggest', from, to] as const,
   policySchema: ['pm', 'policy-schema'] as const,
   implementationPolicy: (slug: string) => ['pm', 'project', slug, 'implementation-policy'] as const,
   policyCoverage: (slug: string) => ['pm', 'project', slug, 'policy-coverage'] as const,
@@ -2748,7 +2756,7 @@ export function useUpdateProductPolicy(slug: string) {
 }
 
 /**
- * Renames a product's name/slug and/or repoints its primary repo. A slug
+ * Renames a product's name/slug (repos: `useAddProjectRepo` & co. below). A slug
  * change moves the cache entry to the new key — the caller navigates to the
  * new `productPath` on success, so the old key's observer is gone by the
  * time this settles; dropping it here avoids a stale 404 refetch either way.
@@ -2774,6 +2782,88 @@ export function useUpdateProject(slug: string) {
     onError: async (e) => {
       if (e.status === 409) await qc.invalidateQueries({ queryKey: QK.project(slug) })
       toast.error(extractMutationErrorMessage(e, 'Could not update the product'))
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+/**
+ * The four repo-lifecycle mutations (add / make primary / retire / un-retire)
+ * share one cache story: each returns the project detail, which replaces the
+ * cached project; the map and the queue are refetched because a retired repo's
+ * items leave both. A 409 (`primary_changed`, `ownership_conflict`, …) means the
+ * displayed project is stale, so it is refetched; the caller renders the error.
+ */
+function useRepoLifecycleMutation<V>(slug: string, fn: (slug: string, input: V) => Promise<Project>) {
+  const qc = useQueryClient()
+  return useMutation<Project, ApiRequestError, V>({
+    mutationFn: (input) => fn(slug, input),
+    retry: false,
+    onSuccess: async (project) => {
+      qc.setQueryData(QK.project(slug), project)
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: QK.project(slug) }),
+        qc.invalidateQueries({ queryKey: QK.roadmapMap }),
+        qc.invalidateQueries({ queryKey: QK.queue }),
+      ])
+    },
+    onError: async (e) => {
+      if (e.status === 409) await qc.invalidateQueries({ queryKey: QK.project(slug) })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+export function useAddProjectRepo(slug: string) {
+  return useRepoLifecycleMutation<AddProjectRepoInput>(slug, addProjectRepo)
+}
+
+export function useSetPrimaryRepo(slug: string) {
+  return useRepoLifecycleMutation<SetPrimaryRepoInput>(slug, setPrimaryRepo)
+}
+
+export function useRetireRepo(slug: string) {
+  return useRepoLifecycleMutation<RetireRepoInput>(slug, retireRepo)
+}
+
+export function useUnretireRepo(slug: string) {
+  return useRepoLifecycleMutation<string>(slug, unretireRepo)
+}
+
+/** The product's moved-issue map: each old → new pair and whether it migrated. */
+export function useMovedRefs(slug: string, { enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery<{ pairs: MovedRefPair[] }>({
+    queryKey: QK.movedRefs(slug),
+    queryFn: () => fetchMovedRefs(slug),
+    enabled: enabled && slug !== '',
+  })
+}
+
+/** Title-match suggestions from `from`'s open issues to `to`'s — never applied
+ *  by themselves; the dialog posts only the ones the user ticks. */
+export function useSuggestMovedRefs(slug: string, from: string, to: string) {
+  return useQuery<{ pairs: MovedRefSuggestion[] }>({
+    queryKey: QK.movedRefSuggestions(slug, from, to),
+    queryFn: () => fetchMovedRefSuggestions(slug, from, to),
+    enabled: slug !== '' && from !== '' && to !== '' && from !== to,
+    retry: false,
+  })
+}
+
+export function useRecordMovedRefs(slug: string) {
+  const qc = useQueryClient()
+  return useMutation<{ pairs: MovedRefPair[] }, ApiRequestError, { old: string; new: string }[]>({
+    mutationFn: (pairs) => recordMovedRefs(slug, pairs),
+    retry: false,
+    onSuccess: async (data) => {
+      qc.setQueryData(QK.movedRefs(slug), data)
+      // Applied pairs drop out of the suggestions; migrated holds/deps change the map.
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: QK.movedRefs(slug) }),
+        qc.invalidateQueries({ queryKey: QK.roadmapMap }),
+        qc.invalidateQueries({ queryKey: QK.queue }),
+        qc.invalidateQueries({ queryKey: QK.holds }),
+      ])
     },
     meta: PM_MUTATION_META,
   })

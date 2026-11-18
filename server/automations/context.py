@@ -974,11 +974,21 @@ class AutomationContext:
             return None, False
         if ownership_token is not None:
             create_kwargs["ownership_token"] = ownership_token
+        from server.pm.product_repos import RepoRetired
         from server.sessions.fleet_router import NoHostAvailable
         from server.sessions.host_platforms import PlatformDispatchRefused
         try:
             rec = await self._create_session(origin=self.automation_id, origin_ref=origin_ref,
                                              **create_kwargs)
+        except RepoRetired as exc:
+            # A retired product repo takes no new sessions: a policy refusal raised
+            # before any spawn, not a fault. Every automation (PR Doctor, Backlog
+            # Runner, …) gets the same quiet ``None`` instead of an exception its
+            # outer ``except`` would log as an error on every tick.
+            await self.emit("info", f"spawn refused for {origin_ref}: {exc}",
+                            kind="repo_retired", target=origin_ref,
+                            detail={"repo": exc.repo, "supersededBy": exc.superseded_by})
+            return None, False
         except PlatformDispatchRefused as exc:
             # Raised before any spawn (``_automation_create_session``: no routed path).
             await self._record_platform_refusal(origin_ref, platform or "", exc)

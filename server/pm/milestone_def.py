@@ -14,6 +14,8 @@ from typing import Any
 
 import yaml
 
+from server.pm.refs import resolve_moved, split_ref
+
 # Where pm-sync reads a product's ladder definition, on its primary repo's default branch.
 MILESTONES_PATH = "docs/product/milestones.yaml"
 KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -108,11 +110,18 @@ class LadderDef:
     numbers: tuple[Condition, ...]
 
 
-def parse_ref(s: str, *, primary_repo: str) -> Ref:
+def parse_ref(s: str, *, primary_repo: str, moved: Mapping[str, str] | None = None) -> Ref:
+    """``'#N'`` / ``'owner/name#N'`` → :class:`Ref`. With *moved* (the moved-issue map,
+    ``server/pm/moved_refs.py``) a ref to an issue that moved repos resolves to its
+    new home, so a definition still naming the old issue measures the new one."""
     m = _REF_RE.match(s.strip()) if isinstance(s, str) else None
     if not m:
         raise MilestoneDefError(f"bad ref {s!r}: expected '#N' or 'owner/name#N'")
-    return Ref(m["repo"] or primary_repo, int(m["n"]))
+    ref = Ref(m["repo"] or primary_repo, int(m["n"]))
+    if not moved:
+        return ref
+    parts = split_ref(resolve_moved(ref.key, moved))
+    return Ref(*parts) if parts is not None else ref
 
 
 # ---------------------------------------------------------------- parsing helpers
@@ -317,13 +326,14 @@ def _params_to_json(params: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _params_from_json(params: Mapping[str, Any]) -> dict[str, Any]:
+def _params_from_json(params: Mapping[str, Any],
+                      moved: Mapping[str, str] | None = None) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k, v in params.items():
         if k == "epic":
-            out[k] = parse_ref(v, primary_repo="")
+            out[k] = parse_ref(v, primary_repo="", moved=moved)
         elif k == "refs":
-            out[k] = tuple(parse_ref(x, primary_repo="") for x in v)
+            out[k] = tuple(parse_ref(x, primary_repo="", moved=moved) for x in v)
         elif k == "events":
             out[k] = tuple(v)
         else:
@@ -346,12 +356,13 @@ def _cond_to_json(c: Condition) -> dict[str, Any]:
     }
 
 
-def condition_from_json(d: Mapping[str, Any]) -> Condition:
+def condition_from_json(d: Mapping[str, Any], moved: Mapping[str, str] | None = None) -> Condition:
     m = d["measure"]
     return Condition(
         d["key"],
         d["label"],
-        Measure(m["kind"], _params_from_json(m["params"]), m["op"], m["target"], m["max_age_s"]),
+        Measure(m["kind"], _params_from_json(m["params"], moved), m["op"], m["target"],
+                m["max_age_s"]),
     )
 
 
@@ -378,7 +389,9 @@ def to_json(ladder: LadderDef) -> dict[str, Any]:
     }
 
 
-def from_json(d: Mapping[str, Any]) -> LadderDef:
+def from_json(d: Mapping[str, Any], *, moved: Mapping[str, str] | None = None) -> LadderDef:
+    """The stored ladder. *moved* resolves every issue ref through the moved-issue
+    map (``parse_ref``); the readers that look refs up on GitHub pass it."""
     return LadderDef(
         version=d["version"],
         title=d["title"],
@@ -391,11 +404,11 @@ def from_json(d: Mapping[str, Any]) -> LadderDef:
                 label=m["label"],
                 audience=m["audience"],
                 platforms=tuple(Platform(p["name"], p["off"], p["note"]) for p in m["platforms"]),
-                epics=tuple(parse_ref(r, primary_repo="") for r in m["epics"]),
-                refs=tuple(parse_ref(r, primary_repo="") for r in m["refs"]),
-                gate=tuple(condition_from_json(c) for c in m["gate"]),
+                epics=tuple(parse_ref(r, primary_repo="", moved=moved) for r in m["epics"]),
+                refs=tuple(parse_ref(r, primary_repo="", moved=moved) for r in m["refs"]),
+                gate=tuple(condition_from_json(c, moved) for c in m["gate"]),
             )
             for m in d["milestones"]
         ),
-        numbers=tuple(condition_from_json(c) for c in d["numbers"]),
+        numbers=tuple(condition_from_json(c, moved) for c in d["numbers"]),
     )

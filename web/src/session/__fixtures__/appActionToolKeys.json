@@ -74,6 +74,7 @@
   "list_templates",
   "list_triage",
   "list_watches",
+  "map_moved_issues",
   "move_in_queue",
   "pin_account",
   "preview_schedule",
@@ -112,6 +113,7 @@
   "unarchive_session",
   "unarchive_sessions",
   "update_product_policy",
+  "update_product_repos",
   "upgrade_host",
   "watch"
 ]

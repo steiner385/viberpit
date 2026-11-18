@@ -4267,6 +4267,14 @@ class SessionOrchestrator:
         # Engine and hard refusals precede the durable start transition.
         if cwd is not None and not os.path.isdir(cwd):
             raise ValueError(f"cwd does not exist: {cwd}")
+        # A retired product repo takes no new sessions (manual, Backlog Runner, PR
+        # Doctor, onboarding, intake all land here); resume/restore never pass through.
+        # A bare cwd is judged by the repo its origin names.
+        from server.pm.product_repos import require_active
+        target_repo = repo
+        if target_repo is None and cwd is not None:
+            target_repo = await asyncio.to_thread(gitrepos.repo_at_path, cwd)
+        await require_active(target_repo)
         # Model-approval gate. The single chokepoint for BOTH the API and
         # automations (which call this method directly). A gated model is parked
         # here (status 'pending_approval', no driver, no capacity slot) rather than
@@ -9807,7 +9815,7 @@ class SessionOrchestrator:
         from server.pm.mirror_store import list_product_views
         from server.pm.queue import rank, rank_key, to_candidate
         from server.pm.fleet_platforms import fleet_platform_state
-        from server.pm.queue_store import load_queue_rows, runner_claims
+        from server.pm.queue_store import load_queue_rows, runner_claims, split_retired
 
         now = datetime.now(timezone.utc)
         _EPOCH = datetime.min
@@ -9834,10 +9842,13 @@ class SessionOrchestrator:
                                           meta.get(v.project_id, (None, None))[1] or _EPOCH,
                                           v.slug or v.project_id))
             repos_by_slug = {(v.slug or v.project_id): list(v.repos) for v in views}
-            return rows, policies_by_slug(s), repos_by_slug
+            # A board item in a RETIRED repo is never a candidate (create_session
+            # would refuse it) — THE rule every writing queue reader shares.
+            rows, retired_rows = split_retired(rows, views)
+            return rows, policies_by_slug(s), repos_by_slug, retired_rows
 
         async with db_session() as db:
-            rows, policies, repos_by_slug = await db.run_sync(_rows)
+            rows, policies, repos_by_slug, retired_rows = await db.run_sync(_rows)
             # The spawn's ladder rung reads its ``ladder_top`` off this snapshot, so
             # it gets the SAME approval-gate clamp the sweep's snapshot gets —
             # otherwise the two halves of one rule could answer differently about
@@ -9863,6 +9874,8 @@ class SessionOrchestrator:
             rows_p = by_product.get(slug, [])
             entries_p, skipped_p = rank(rows_p, now=now, **rank_kwargs(policy),
                                          platforms=platforms, busy_platforms=busy)
+            if retired_rows.get(slug):
+                skipped_p = {**skipped_p, "retired": retired_rows[slug]}
             entries.extend(entries_p)
             for reason, n in skipped_p.items():
                 skipped[reason] = skipped.get(reason, 0) + n
@@ -10870,9 +10883,10 @@ class SessionOrchestrator:
                 return 0
             rows = (await db.execute(sa_select(Project).where(
                 Project.id.in_(project_ids)).order_by(Project.slug))).scalars().all()
+            from server.pm.product_repos import ACTIVE
             owned = (await db.execute(sa_select(
                 ProjectRepo.project_id, ProjectRepo.repo, ProjectRepo.is_primary,
-            ).where(ProjectRepo.project_id.in_(project_ids)))).all()
+            ).where(ProjectRepo.project_id.in_(project_ids), ACTIVE))).all()
             # The per-repo caps were keyed by repo (repo_weights is not carried
             # over: weight is deprecated, spec 2026-09-20 D6). A product's PRIMARY
             # repo is the one that carried its settings. Falls back to the
@@ -11667,13 +11681,14 @@ class SessionOrchestrator:
 
     async def _backlog_queue_inputs(self):
         """``queue_store.queue_inputs`` in one sync session: the open board-linked
-        rows (hold, labels, author, claim) plus the per-product policies."""
+        rows (hold, labels, author, claim) plus the per-product policies. Active
+        repos only: every reader here writes (closes, releases, approves)."""
         from datetime import datetime, timezone
 
         from server.pm.queue_store import queue_inputs
         now = datetime.now(timezone.utc)
         async with db_session() as db:
-            return await db.run_sync(lambda s: queue_inputs(s, now=now))
+            return await db.run_sync(lambda s: queue_inputs(s, now=now, active_only=True))
 
     async def _backlog_supersede_alerts(self) -> list[str]:
         """Close every open recurring-alert issue a newer one of the same type
@@ -12287,14 +12302,17 @@ class SessionOrchestrator:
             PmSync, modes=("on",), log_key="pm_sync")
 
     async def _pm_sync_list_repos(self) -> list:
-        """Query every ProjectRepo (+ owning Project slug) and return views."""
+        """Query every active ProjectRepo (+ owning Project slug) and return views.
+        A retired repo is skipped: its mirror stays frozen as last synced."""
         from sqlalchemy import select
         from server.automations.pm_sync import RepoSyncView
         from server.db.models import Project, ProjectRepo
+        from server.pm.product_repos import ACTIVE
         async with db_session() as db:
             rows = (await db.execute(
                 select(ProjectRepo, Project.slug)
                 .join(Project, Project.id == ProjectRepo.project_id)
+                .where(ACTIVE)
             )).all()
         return [RepoSyncView(
             project_id=pr.project_id, project_slug=slug or "",
@@ -12512,6 +12530,27 @@ class SessionOrchestrator:
                 return
             for key, value in updates.items():
                 setattr(row, key, value)
+        if "watermark" in updates:
+            await self._pm_sync_migrate_moved(view.project_id)
+
+    async def _pm_sync_migrate_moved(self, project_id: str) -> None:
+        """The mirror advanced: retry the product's pending moved-issue pairs, whose
+        new issue may have just been mirrored (server/pm/moved_refs.py). Its own
+        transaction, after the sync state is saved, and best-effort: a failure is
+        logged at INFO (the next pass retries) and never fails the sync."""
+        from datetime import datetime, timezone
+
+        from server.pm.moved_refs import migrate_pending
+        now = datetime.now(timezone.utc)
+        try:
+            async with db_session() as db:
+                n = await db.run_sync(
+                    lambda s: migrate_pending(s, project_id=project_id, now=now))
+        except Exception as exc:  # noqa: BLE001 - best-effort; WARNING would auto-file
+            log.info("pm_sync.moved_refs_migrate_failed project=%s: %s", project_id, exc)
+            return
+        if n:
+            log.info("pm_sync.moved_refs_migrated project=%s n=%d", project_id, n)
 
     @staticmethod
     def _pm_sync_default_head(clone: str) -> str:
@@ -13813,8 +13852,9 @@ class SessionOrchestrator:
         ``scope="initial"`` opens ONE draft PR a human readies and merges;
         ``scope="diff"`` arms auto-merge (see ``build_map_synthesis_prompt``)."""
         from sqlalchemy import func, select
-        from server.db.models import Project, ProjectRepo, WorkItem
+        from server.db.models import Project, WorkItem
         from server.pm.classification import build_map_synthesis_prompt
+        from server.pm.product_repos import primary_repo
         async with db_session() as db:
             proj = (await db.execute(select(Project).where(
                 Project.slug == slug))).scalar_one_or_none()
@@ -13822,12 +13862,9 @@ class SessionOrchestrator:
                 return None
             resolved_repo = repo
             if resolved_repo is None:
-                repo_row = (await db.execute(select(ProjectRepo).where(
-                    ProjectRepo.project_id == proj.id,
-                    ProjectRepo.is_primary.is_(True)))).scalar_one_or_none()
-                if repo_row is None or not repo_row.repo:
+                resolved_repo = await primary_repo(db, proj.id)
+                if not resolved_repo:
                     return None
-                resolved_repo = repo_row.repo
             open_count = (await db.execute(select(func.count(WorkItem.id)).where(
                 WorkItem.repo == resolved_repo,
                 WorkItem.state == "open"))).scalar_one()
@@ -13923,19 +13960,17 @@ class SessionOrchestrator:
         Propose-only: the spawned session opens ONE draft PR and NEVER arms
         auto-merge — a human readies and merges it (governance review)."""
         from sqlalchemy import select
-        from server.db.models import Project, ProjectRepo
+        from server.db.models import Project
         from server.pm.classification import build_constitution_proposal_prompt
+        from server.pm.product_repos import primary_repo
         async with db_session() as db:
             proj = (await db.execute(select(Project).where(
                 Project.slug == slug))).scalar_one_or_none()
             if proj is None:
                 return None
-            repo_row = (await db.execute(select(ProjectRepo).where(
-                ProjectRepo.project_id == proj.id,
-                ProjectRepo.is_primary.is_(True)))).scalar_one_or_none()
-            if repo_row is None or not repo_row.repo:
+            repo = await primary_repo(db, proj.id)
+            if not repo:
                 return None
-            repo = repo_row.repo
             constitution_status = proj.constitution_status
         origin_ref = f"{slug}:constitution"
         name = f"pm constitution {slug}"
@@ -14049,22 +14084,21 @@ class SessionOrchestrator:
         from server.automations.product_policy import effective_policy
         from server.pm.triage_accept import sets_aside_bot_output
         from server.db.models import (
-            Feature, Project, ProjectRepo, TriageProposal, WorkItem)
+            Feature, Project, TriageProposal, WorkItem)
         from server.pm.classification import (
             CLASSIFY_CHUNK_SIZE, FeatureBrief, WorkItemBrief,
             build_classification_prompt)
         from server.pm.dispatch_trust import author_trusted, trusted_authors_by_repo
+        from server.pm.product_repos import active_repos, primary_repo
         async with db_session() as db:
             proj = (await db.execute(select(Project).where(
                 Project.slug == slug))).scalar_one_or_none()
             if proj is None:
                 return 0
-            repos = (await db.execute(select(ProjectRepo.repo).where(
-                ProjectRepo.project_id == proj.id))).scalars().all()
-            repo_names = [r for r in repos if r]
-            primary = (await db.execute(select(ProjectRepo).where(
-                ProjectRepo.project_id == proj.id,
-                ProjectRepo.is_primary.is_(True)))).scalar_one_or_none()
+            # Active repos only, primary first: a retired repo's items are not
+            # classified (no new triage writes against it).
+            repo_names = await active_repos(db, proj.id)
+            primary = await primary_repo(db, proj.id)
             if items is not None:
                 # Phase-3 injected batch: classify exactly the caller's set.
                 if not items:
@@ -14113,7 +14147,7 @@ class SessionOrchestrator:
             feat_briefs = [FeatureBrief(
                 slug=f.slug or "", title=f.title or "",
                 summary=f.summary or "") for f in features]
-            repo = (primary.repo if primary else repo_names[0]) if repo_names else ""
+            repo = primary or (repo_names[0] if repo_names else "")
             project_id = proj.id
         import hashlib as _hashlib
         # The dedupe key is the chunk's identity, not the launch's: a re-tap that
@@ -15064,8 +15098,11 @@ class SessionOrchestrator:
                 WorkItem.kind == "issue"))).scalar_one_or_none()
             subs = [] if epic is None else (await db.execute(select(WorkItem.state).where(
                 WorkItem.parent_work_item_id == epic.id))).scalars().all()
+        from server.pm.product_repos import is_retired
         if epic is None or epic.state != "open":
             out = {"closed": False, "error": f"{epic_ref} is not an open mirrored issue"}
+        elif await is_retired(parts[0]):
+            out = {"closed": False, "error": f"{parts[0]} is retired"}
         elif not subs or any(st != "closed" for st in subs):
             out = {"closed": False, "error": f"{epic_ref} has open sub-issues"}
         else:
@@ -16178,6 +16215,12 @@ class SessionOrchestrator:
         GitHub is cached too, so a standing outage retries every 5 minutes
         instead of every tick (#2513).
         """
+        repos = await self._cicd_managed_repos(config)
+        # A retired product repo gets no doctor issues, comments or deploy watch.
+        from server.pm.product_repos import is_retired
+        return [r for r in repos if not await is_retired(r)]
+
+    async def _cicd_managed_repos(self, config: dict) -> list[str]:
         from sqlalchemy import select
         pinned = config.get("enabled_repos") or []
         if pinned:
@@ -16336,7 +16379,9 @@ class SessionOrchestrator:
         now = datetime.now(timezone.utc)
         only = {str(s) for s in (config.get("products") or [])}
         async with db_session() as db:
-            rows, policies = await db.run_sync(lambda s: queue_inputs(s, now=now))
+            # Active repos only: a retired repo's holds get no decision-needed push.
+            rows, policies = await db.run_sync(
+                lambda s: queue_inputs(s, now=now, active_only=True))
             platforms, busy = await fleet_platform_state(db)
             proposals_by_ref = {f"{w.repo}#{w.number}": p for p, w in await decisions.pending_list(db)
                                 if w is not None and w.repo and w.number}
@@ -16465,7 +16510,9 @@ class SessionOrchestrator:
         assessed = {t: st for t, st in stored.items()
                     if pr.slug_of_run_target(t) is None and pr.ref_of_item_target(t) is None}
         async with db_session() as db:
-            rows, policies = await db.run_sync(lambda s: queue_inputs(s, now=now))
+            # Active repos only: no close, unpark or reminder on a retired repo.
+            rows, policies = await db.run_sync(
+                lambda s: queue_inputs(s, now=now, active_only=True))
             done_ids = [r.work_item_id for r in rows
                         if r.status == STATUS_DONE and r.work_item_id]
             board: dict[str, datetime] = {}
@@ -16990,11 +17037,12 @@ class SessionOrchestrator:
     async def cicd_file_issue_now(self, finding_id: str) -> str:
         """File a ci-doctor issue for one finding immediately, reusing the loop's
         issue-filing machinery. Returns a status string the provider maps to a
-        level/message: filed | exists | unknown | file_failed."""
+        level/message: filed | exists | unknown | file_failed | repo_retired."""
         from sqlalchemy import select, update as sa_update
         from server.automations.cicd.findings import issue_body
         from server.db.models import CiFinding
         from server.github import ci_issues
+        from server.pm.product_repos import is_retired
         async with db_session() as db:
             row = (await db.execute(select(CiFinding).where(
                 CiFinding.id == finding_id))).scalar_one_or_none()
@@ -17005,6 +17053,8 @@ class SessionOrchestrator:
             if row.repo is None:
                 return "unknown"
             repo, title, detail = row.repo, row.title or "", dict(row.detail or {})
+        if await is_retired(repo):
+            return "repo_retired"
         number = await asyncio.to_thread(
             ci_issues.create_issue, repo, title, issue_body(title, detail))
         if number is None:

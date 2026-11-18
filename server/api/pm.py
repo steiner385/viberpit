@@ -10,9 +10,11 @@ import asyncio
 import logging
 import re
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import and_, func, or_, select, tuple_
 
@@ -54,6 +56,10 @@ from server.pm.issue_disposition import CloseReason, IssueDecision
 from server.pm.map_changes import NoOpenMapChanges, NoPrimaryRepo, NotBehind, open_pointer_row
 from server.pm.map_changes_gh import GhWriteError
 from server.pm.map_changes_ops import SLUG_RE, MapOp, MapOpError
+from server.pm import product_repos
+from server.pm.product_repos import REPO_ORDER, RepoRetired, require_active
+from server.pm import moved_refs, repo_lifecycle
+from server.pm.repo_lifecycle import RepoLifecycleError
 from server.pm.outcomes import escalation_to_wire, list_outcomes_stmt, outcome_to_dict
 from server.pm.project_slugs import (
     PROJECT_UPDATE_AUDIT_TYPE, former_slugs_after_rename)
@@ -129,6 +135,9 @@ def _repo_to_dict(r: ProjectRepo) -> dict:
         "isPrimary": bool(r.is_primary),
         "backfillDone": bool(r.backfill_done),
         "lastSyncedAt": r.last_synced_at.isoformat() if r.last_synced_at else None,
+        "retiredAt": iso_utc(r.retired_at),
+        "retiredReason": r.retired_reason,
+        "supersededBy": r.superseded_by,
     }
 
 
@@ -172,7 +181,8 @@ class ProjectCreateBody(BaseModel):
 
 class ProjectUpdateBody(BaseModel):
     """Sparse patch: only the fields present are changed. `repo` repoints the
-    PRIMARY repo in place (rename-to-new-location, not add/remove-repos)."""
+    PRIMARY repo: the new repo is added (or un-retired) as primary and the old one
+    is retired with reason "repointed" — never overwritten (server/pm/repo_lifecycle.py)."""
 
     name: str | None = None
     slug: str | None = None
@@ -288,7 +298,7 @@ async def list_projects(
     ids = [p.id for p in projects]
     slug_by_id: dict[str, str | None] = {p.id: p.slug for p in projects}
     repos = (await db.execute(
-        select(ProjectRepo).where(ProjectRepo.project_id.in_(ids))
+        select(ProjectRepo).where(ProjectRepo.project_id.in_(ids)).order_by(*REPO_ORDER)
     )).scalars().all()
     edges = (await db.execute(
         select(ProjectEdge).where(ProjectEdge.src_project_id.in_(ids))
@@ -326,7 +336,8 @@ async def _project_detail_dict(db, p: Project) -> dict:
     requires. Shared by `get_project` and `update_project_policy` so the two response
     shapes cannot drift."""
     repos = (await db.execute(
-        select(ProjectRepo).where(ProjectRepo.project_id == p.id))).scalars().all()
+        select(ProjectRepo).where(ProjectRepo.project_id == p.id).order_by(*REPO_ORDER)
+    )).scalars().all()
     edges = (await db.execute(
         select(ProjectEdge).where(ProjectEdge.src_project_id == p.id))).scalars().all()
     dst_ids: set[str] = {e.dst_project_id for e in edges} | {p.id}
@@ -473,9 +484,9 @@ async def update_project(
     open: both `map_changes_branch_name` and the service's primary-repo target
     are derived from the CURRENT slug/repo at use time, so either change would
     silently orphan the open branch. Merge or abandon it first, then retry.
-    Renaming touches no foreign key (every FK is on `Project.id`, never slug),
-    but a repo repoint resets that repo's sync state — it is now a different
-    upstream, so history is re-mirrored from scratch rather than kept stale.
+    Renaming touches no foreign key (every FK is on `Project.id`, never slug).
+    A repo repoint adds the new repo (fresh sync state) as primary and retires
+    the old one, which keeps its mirrored history.
 
     A slug change also records the old slug in `former_slugs`. Feature-doc
     `links:` blocks are the one reference that names a product by slug instead
@@ -511,14 +522,11 @@ async def update_project(
         await lock_repo_registration(db)
 
     p = await _load_project(db, slug)
-    primary = (await db.execute(
-        select(ProjectRepo).where(
-            ProjectRepo.project_id == p.id, ProjectRepo.is_primary.is_(True))
-    )).scalar_one_or_none()
+    primary = await product_repos.primary_repo(db, p.id)
 
     slug_changing = new_slug is not None and new_slug != p.slug
     repo_changing = repo is not None and (
-        primary is None or (primary.repo or "").casefold() != repo.casefold())
+        primary is None or primary.casefold() != repo.casefold())
     if slug_changing or repo_changing:
         open_pointer = await open_pointer_row(db, p.id)
         if open_pointer is not None:
@@ -536,24 +544,17 @@ async def update_project(
     # tripping OwnershipConflict("changed") on every combined rename+repoint.
     if repo is not None and repo_changing:
         assert snapshot is not None  # gathered above whenever `repo is not None`
-        try:
-            canonical = await require_unregistered_repos(db, [repo], snapshot=snapshot)
-        except OwnershipConflict as exc:
-            raise HTTPException(status_code=409, detail={
-                "error": "ownership_conflict", "ownershipState": exc.state, "message": str(exc),
-            }) from exc
-        new_repo = canonical[repo]
-        changes["repo"] = {"from": primary.repo if primary else None, "to": new_repo}
-        if primary is None:
-            db.add(ProjectRepo(project_id=p.id, repo=new_repo, is_primary=True))
-        else:
-            primary.repo = new_repo
-            # A different upstream: nothing already mirrored belongs to it.
-            primary.backfill_cursor = None
-            primary.backfill_phase = "issues"
-            primary.backfill_done = False
-            primary.watermark = None
-            primary.last_synced_at = None
+        # Add (or un-retire) the new repo as primary, then retire the old one: its
+        # mirrored history, sessions and PRs stay attributed to this product.
+        old_repo = primary
+        with _repo_lifecycle_errors():
+            added = await repo_lifecycle.add_repo(
+                db, p, repo, make_primary=True, snapshot=snapshot, identity=identity)
+            if old_repo is not None:
+                await repo_lifecycle.retire_repo(
+                    db, p, old_repo, identity=identity, reason="repointed",
+                    superseded_by=added.repo)
+        changes["repo"] = {"from": old_repo, "to": added.repo}
 
     if name is not None and name != p.name:
         changes["name"] = {"from": p.name, "to": name}
@@ -584,6 +585,186 @@ async def update_project(
     await record_audit(db=db, type=PROJECT_UPDATE_AUDIT_TYPE, identity=identity,
                        detail={"slug": p.slug, "changes": changes})
     return await _project_detail_dict(db, p)
+
+
+@contextmanager
+def _repo_lifecycle_errors() -> Iterator[None]:
+    """Map server/pm/repo_lifecycle.py refusals to HTTP (``RepoRetired`` -> the app's
+    409 handler)."""
+    try:
+        yield
+    except OwnershipConflict as exc:
+        raise HTTPException(status_code=409, detail={
+            "error": "ownership_conflict", "ownershipState": exc.state, "message": str(exc),
+        }) from exc
+    except RepoLifecycleError as exc:
+        raise HTTPException(status_code=exc.status, detail={
+            "error": exc.code, "message": str(exc)}) from exc
+
+
+class RepoAddBody(BaseModel):
+    repo: str
+    makePrimary: bool = False
+
+
+class RepoPrimaryBody(BaseModel):
+    # The primary the caller last saw; a different current primary is a 409.
+    expectedPrimary: str | None = None
+
+
+class RepoRetireBody(BaseModel):
+    reason: str | None = None
+    supersededBy: str | None = None
+    # Required when retiring the primary: an active repo of this product.
+    newPrimary: str | None = None
+    expectedPrimary: str | None = None
+
+
+@router.post("/projects/{slug}/repos", status_code=status.HTTP_201_CREATED)
+async def add_project_repo(
+    slug: str, body: RepoAddBody,
+    identity: str = Depends(current_identity), db=Depends(get_db),
+) -> dict:
+    repo = body.repo.strip()
+    _validate_repo(repo)
+    # Same order as update_project: network preflight, then the lock as first SQL.
+    snapshot = await gather_repo_ownership_snapshot([repo])
+    await lock_repo_registration(db)
+    p = await _load_project(db, slug)
+    with _repo_lifecycle_errors():
+        await repo_lifecycle.add_repo(
+            db, p, repo, make_primary=body.makePrimary, snapshot=snapshot, identity=identity)
+    return await _project_detail_dict(db, p)
+
+
+@router.post("/projects/{slug}/repos/{owner}/{name}/primary")
+async def set_project_primary_repo(
+    slug: str, owner: str, name: str, body: RepoPrimaryBody | None = None,
+    identity: str = Depends(current_identity), db=Depends(get_db),
+) -> dict:
+    body = body or RepoPrimaryBody()
+    await lock_repo_registration(db)
+    p = await _load_project(db, slug)
+    with _repo_lifecycle_errors():
+        await repo_lifecycle.set_primary(
+            db, p, f"{owner}/{name}", identity=identity, expected_primary=body.expectedPrimary)
+    return await _project_detail_dict(db, p)
+
+
+@router.post("/projects/{slug}/repos/{owner}/{name}/retire")
+async def retire_project_repo(
+    slug: str, owner: str, name: str, body: RepoRetireBody | None = None,
+    identity: str = Depends(current_identity), db=Depends(get_db),
+) -> dict:
+    body = body or RepoRetireBody()
+    superseded_by = (body.supersededBy or "").strip() or None
+    if superseded_by is not None:
+        _validate_repo(superseded_by)
+    reason = (body.reason or "").strip() or None
+    await lock_repo_registration(db)
+    p = await _load_project(db, slug)
+    with _repo_lifecycle_errors():
+        await repo_lifecycle.retire_repo(
+            db, p, f"{owner}/{name}", identity=identity, reason=reason,
+            superseded_by=superseded_by, new_primary=(body.newPrimary or "").strip() or None,
+            expected_primary=body.expectedPrimary)
+    return await _project_detail_dict(db, p)
+
+
+@router.post("/projects/{slug}/repos/{owner}/{name}/unretire")
+async def unretire_project_repo(
+    slug: str, owner: str, name: str,
+    identity: str = Depends(current_identity), db=Depends(get_db),
+) -> dict:
+    await lock_repo_registration(db)
+    p = await _load_project(db, slug)
+    with _repo_lifecycle_errors():
+        await repo_lifecycle.unretire_repo(db, p, f"{owner}/{name}", identity=identity)
+    return await _project_detail_dict(db, p)
+
+
+class MovedPairIn(BaseModel):
+    old: str
+    new: str
+
+
+class MovedRefsBody(BaseModel):
+    pairs: list[MovedPairIn]
+
+
+async def _moved_pairs(db, project_id: str) -> dict:
+    rows = await db.run_sync(lambda s: moved_refs.pairs_for_project(s, project_id))
+    return {"pairs": [moved_refs.pair_to_dict(r) for r in rows]}
+
+
+@router.get("/projects/{slug}/moved-refs")
+async def list_moved_refs(
+    slug: str, _identity: str = Depends(current_identity), db=Depends(get_db),
+) -> dict:
+    p = await _load_project(db, slug)
+    return await _moved_pairs(db, p.id)
+
+
+@router.post("/projects/{slug}/moved-refs")
+async def record_moved_refs(
+    slug: str, body: MovedRefsBody, request: Request,
+    identity: str = Depends(current_identity), db=Depends(get_db),
+) -> dict:
+    """Record old → new issue pairs and migrate each whose two work items are
+    mirrored; the rest stay ``pending`` until a later pm_sync pass (server/pm/moved_refs.py).
+
+    Migration releases the old issue's hold, so this is a hold-release path: an
+    agent-class caller (a session, an unattributed loopback caller) is refused like
+    the hold routes refuse it. A person, and the assistant acting on its operator's
+    confirmed card (``assistant:<identity>``), may record pairs."""
+    from server.pm.holds import actor_for_request
+    if not moved_refs.may_record(actor_for_request(request)):
+        raise HTTPException(status_code=422, detail={
+            "error": "hold_not_permitted",
+            "message": "agent actors may not record moved issues (it releases holds)"})
+    p = await _load_project(db, slug)
+    if not body.pairs:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_pairs", "message": "at least one pair is required", "pairs": []})
+    pid = p.id
+    raw = [(x.old, x.new) for x in body.pairs]
+    now = datetime.now(timezone.utc)
+
+    def _record(s) -> list[tuple[str, str]]:
+        pairs = moved_refs.validate_pairs(s, pid, raw)
+        for row in moved_refs.record_pairs(s, pid, pairs, actor=identity):
+            moved_refs.migrate_pair(s, row, now=now, actor=identity)
+        return pairs
+
+    try:
+        pairs = await db.run_sync(_record)
+    except moved_refs.BadPairs as exc:
+        raise HTTPException(status_code=422, detail={
+            "error": exc.code, "message": str(exc), "pairs": exc.errors}) from exc
+    await record_audit(db=db, type=moved_refs.RECORD_AUDIT_TYPE, identity=identity,
+                       detail={"slug": p.slug, "pairs": [{"old": o, "new": n} for o, n in pairs]})
+    return await _moved_pairs(db, pid)
+
+
+@router.get("/projects/{slug}/moved-refs/suggest")
+async def suggest_moved_refs(
+    slug: str, from_repo: str = Query(alias="from"), to_repo: str = Query(alias="to"),
+    _identity: str = Depends(current_identity), db=Depends(get_db),
+) -> dict:
+    """Title-match suggestions from *from*'s open issues to *to*'s issues. Both must
+    be repos of this product (*to* an active one); nothing is written."""
+    p = await _load_project(db, slug)
+    pid = p.id
+    known = {r.casefold() for r in (await db.execute(select(ProjectRepo.repo).where(
+        ProjectRepo.project_id == pid))).scalars().all() if r}
+    active = {r.casefold() for r in await product_repos.active_repos(db, pid)}
+    if from_repo.strip().casefold() not in known or to_repo.strip().casefold() not in active:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_repo",
+            "message": "from must be a repo of this product and to an active one"})
+    pairs = await db.run_sync(
+        lambda s: moved_refs.suggest_pairs(s, from_repo.strip(), to_repo.strip()))
+    return {"pairs": pairs}
 
 
 @router.get("/projects/{slug}/policy/coverage")
@@ -1438,11 +1619,9 @@ async def get_onboarding(
     p = await _load_project(db, slug)
     orch = request.app.state.sessions
     view = await orch.pm_onboarding_counts(p.id)
-    primary = (await db.execute(select(ProjectRepo).where(
-        ProjectRepo.project_id == p.id,
-        ProjectRepo.is_primary.is_(True)))).scalars().first()
+    primary = await product_repos.primary_repo(db, p.id)
     map_pr = None
-    if primary is not None and primary.repo:
+    if primary:
         branch = map_branch_name(slug)
         # No PR number to link: this is the ARCHAEOLOGY map PR
         # (`classification.map_branch_name`, a one-shot synthesis), which has no
@@ -1454,7 +1633,7 @@ async def get_onboarding(
         # deterministic, so a GitHub PR search on it is the link.
         map_pr = {
             "branch": branch,
-            "url": f"https://github.com/{primary.repo}/pulls?q="
+            "url": f"https://github.com/{primary}/pulls?q="
                    + quote_plus(f"is:pr head:{branch}"),
         }
     return {
@@ -3117,6 +3296,11 @@ async def close_issues(body: IssueCloseBody, request: Request,
             why = f"{ref} is already closed"
         if wi is not None and dup is not None and wi.id == dup.id:
             why = f"{ref} cannot be closed as a duplicate of itself"
+        if why is None and wi is not None:
+            try:
+                await require_active(wi.repo)  # no comment on a retired repo's issue
+            except RepoRetired as exc:
+                why = str(exc)
         result: dict
         comment_url: str | None = None
         if why is not None:

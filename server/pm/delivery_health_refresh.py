@@ -31,11 +31,11 @@ from server.audit import record_audit
 from server.automations.product_policy import effective_policy
 from server.db import db_session
 from server.db.models import (MilestoneLadder, MilestoneMeasurement, MilestoneNote, Project,
-                              ProjectRepo, RepoDeployConfig, Session as DbSession)
+                              RepoDeployConfig, Session as DbSession)
 from server.github.deploy_envs import classify_env
 from server.github.host_failures import log_gh_failure
 from server.pipeline import deploy_watch
-from server.pm import delivery_health as dh
+from server.pm import delivery_health as dh, product_repos
 from server.pm.desired_state import LIVE_SESSION_STATUSES
 from server.pm.map_changes import resolve_default_branch
 from server.pm.milestone_asks import ASK_KIND, OPEN_ASK_STATUS
@@ -103,9 +103,7 @@ async def load_target(project_id: str) -> Target | None:
         project = await db.get(Project, project_id)
         if ladder is None or project is None:
             return None
-        repo = (await db.execute(select(ProjectRepo.repo).where(
-            ProjectRepo.project_id == project_id, ProjectRepo.is_primary.is_(True)
-        ))).scalars().first()
+        repo = await product_repos.primary_repo(db, project_id)
         if not repo:
             return None
         cfg = await db.get(RepoDeployConfig, repo)

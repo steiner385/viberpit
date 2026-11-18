@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db.models import Project, ProjectRepo
 from server.pm.github_sync import canonical_repo_name
+from server.pm.product_repos import ACTIVE, RepoRetired
 
 
 @dataclass(frozen=True)
@@ -132,7 +133,7 @@ async def primary_repo_for_slug(db: AsyncSession, slug: str) -> str | None:
     product-scoped watch matches on."""
     return (await db.execute(
         select(ProjectRepo.repo).join(Project, Project.id == ProjectRepo.project_id)
-        .where(Project.slug == slug, ProjectRepo.is_primary.is_(True)))).scalars().first()
+        .where(Project.slug == slug, ProjectRepo.is_primary.is_(True), ACTIVE))).scalars().first()
 
 
 async def owning_projects_by_repo(
@@ -221,7 +222,27 @@ async def require_mutation_owner(
         raise OwnershipConflict(ownership.state, ownership.reason)
     if project_id is not None and ownership.owner.project_id != project_id:
         raise OwnershipConflict("mismatch", "Repository belongs to another product.")
+    await _refuse_retired(db, ownership, ownership.owner.project_id, snapshot)
     return ownership.owner
+
+
+async def _refuse_retired(db: AsyncSession, ownership: RepoOwnership, project_id: str,
+                          snapshot: RepoOwnershipSnapshot) -> None:
+    """A retired repo stays OWNED (history attribution) but takes no pm writes: refuse
+    when every registration of it in the owning product is retired. Read fresh, not
+    from the ``is_retired`` snapshot, since this runs inside the mutation's session."""
+    names = {ownership.requested_repo.casefold()}
+    if ownership.canonical_repo:
+        names.add(ownership.canonical_repo.casefold())
+    rows = [(repo, retired_at, superseded_by) for repo, retired_at, superseded_by in (
+        await db.execute(select(ProjectRepo.repo, ProjectRepo.retired_at,
+                                ProjectRepo.superseded_by)
+                         .where(ProjectRepo.project_id == project_id))).all()
+            if repo and (repo.casefold() in names
+                         or (snapshot.canonical_repos.get(repo) or "").casefold() in names)]
+    if rows and all(retired_at is not None for _, retired_at, _ in rows):
+        successor = next((s for _, _, s in rows if s), None)
+        raise OwnershipConflict("retired", str(RepoRetired(rows[0][0], successor)))
 
 
 async def lock_repo_registration(db: AsyncSession) -> None:

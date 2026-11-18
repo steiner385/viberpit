@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection, Sequence, Set as AbstractSet
-from dataclasses import dataclass
+from collections.abc import Collection, Mapping, Sequence, Set as AbstractSet
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from sqlalchemy import false, or_, select, tuple_, update
@@ -18,8 +18,9 @@ from .decisions import STATUS_PENDING
 from .dep_plan import DepRowView, observed_deps, plan_dep_rows
 from .gh_projects import GhProjectItemView, GhProjectView, IssueRelView
 from .journal import applied_keys, own_write_key
+from .product_repos import active_repos_sync
 from .reconcile_diff import remove_blocked_by_mutation
-from .refs import split_ref
+from .refs import resolve_moved, split_ref
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,9 @@ class ProductSyncView:
     gh_project_db_id: str | None
     gh_node_id: str | None
     repos: list[str]
+    # Every registered repo, retired included (history reads: dep edges, trees).
+    # ``repos`` is the active subset, primary first — what automation acts on.
+    all_repos: list[str] = field(default_factory=list)
 
 
 def deps_in_repos(repos: Collection[str]):
@@ -50,25 +54,36 @@ def deps_in_repos(repos: Collection[str]):
                  for r in sorted(repos)])
 
 
-def blocker_states_stmt(refs: Collection[str]):
+def blocker_states_stmt(refs: Collection[str], moved: Mapping[str, str] | None = None):
     """SELECT ``(repo, number, state)`` for the mirrored item behind each blocker
     ref, or ``None`` when no ref parses (an empty ``in_()`` is a SQLAlchemy warning,
     not a no-op). Issues AND pull requests (#2979): a ``Depends on #N`` naming a PR
     resolves when that PR merges, where an issue-only lookup left it unmirrored and
     blocking forever. GitHub numbers issues and PRs from one sequence, so a ref
     names at most one row. Fold the rows with ``blocker_states`` and judge each
-    with ``drift.is_open_blocker``."""
-    parsed = sorted({p for p in (split_ref(r) for r in refs) if p is not None})
+    with ``drift.is_open_blocker``.
+
+    *moved* (``moved_refs.moved_map``) looks a ref to an issue that moved repos up
+    at its NEW home; pass the same map to ``blocker_states``."""
+    parsed = sorted({p for p in (split_ref(resolve_moved(r, moved)) for r in refs)
+                     if p is not None})
     if not parsed:
         return None
     return select(WorkItem.repo, WorkItem.number, WorkItem.state).where(
         WorkItem.kind.in_(("issue", "pr")), tuple_(WorkItem.repo, WorkItem.number).in_(parsed))
 
 
-def blocker_states(rows) -> dict[str, str]:
+def blocker_states(rows, moved: Mapping[str, str] | None = None) -> dict[str, str]:
     """``blocker_states_stmt`` rows -> ``{ref: state}``. A row with no state reads
-    ``open`` (never resolved); an unmirrored ref is simply absent."""
-    return {f"{repo}#{number}": state or "open" for repo, number, state in rows}
+    ``open`` (never resolved); an unmirrored ref is simply absent. With *moved*, an
+    old ref reads its new issue's state (absent while the new one is unmirrored, so
+    it fails closed)."""
+    states = {f"{repo}#{number}": state or "open" for repo, number, state in rows}
+    for old in moved or ():
+        new = resolve_moved(old, moved)
+        if new in states:
+            states[old] = states[new]
+    return states
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -81,12 +96,15 @@ def list_product_views(db: Session) -> list[ProductSyncView]:
     views = []
     for project in db.query(Project).all():
         gh = db.query(GhProject).filter_by(project_id=project.id).first()
-        repos = [r.repo for r in db.query(ProjectRepo)
-                 .filter_by(project_id=project.id).all() if r.repo]
+        # Active repos only, primary first: a retired repo drops out of every
+        # automation queue fed from here (Backlog Runner, needs-you, reconcile).
+        repos = active_repos_sync(db, project.id)
+        all_repos = [r for r in db.scalars(select(ProjectRepo.repo).where(
+            ProjectRepo.project_id == project.id)) if r]
         views.append(ProductSyncView(
             project_id=project.id, slug=project.slug, name=project.name,
             gh_project_db_id=gh.id if gh else None,
-            gh_node_id=gh.gh_node_id if gh else None, repos=repos))
+            gh_node_id=gh.gh_node_id if gh else None, repos=repos, all_repos=all_repos))
     return views
 
 
@@ -513,8 +531,11 @@ def _rowcount(result: object) -> int:
 _HOLD_COLUMNS = ("hold_kind", "hold_reason", "hold_by", "hold_set_at", "hold_fingerprint")
 
 
-def _move_decision_hold(db: Session, alias_id: str, twin_id: str) -> None:
-    """Carry the ``decision`` hold across with the pending proposal it belongs to.
+def move_decision_hold(db: Session, alias_id: str, twin_id: str) -> bool:
+    """Carry the ``decision`` hold across with the pending proposal it belongs to;
+    answer whether it moved. Callers: ``rename_repo`` (alias row merged into its
+    canonical twin) and the moved-issue map (``server/pm/moved_refs.py``), each of
+    which re-points the pending ``DecisionProposal`` itself.
 
     A pending proposal and the ``decision`` hold on its item are one fact (spec
     2026-09-18 §6: ``decisions.propose`` writes both in one flush). Re-pointing the
@@ -524,19 +545,19 @@ def _move_decision_hold(db: Session, alias_id: str, twin_id: str) -> None:
     finds nothing to release, so the accept writes no ``pm.hold.release`` either.
 
     The hold MOVES, it is not re-set: the five fields are copied verbatim and no
-    audit is written, because ``pm.hold.set`` was already recorded when the proposal
-    was made and the alias row is deleted moments later. Only an UNHELD twin is
-    written — a twin a person has already parked outranks a hold from a row that is
-    about to disappear."""
+    ``pm.hold.set`` audit is written, because it was already recorded when the
+    proposal was made. Only an UNHELD twin is written — a twin a person has already
+    parked outranks the moving hold; the caller must then leave the proposal where
+    it is."""
     alias, twin = db.get(WorkItem, alias_id), db.get(WorkItem, twin_id)
     if alias is None or twin is None or alias.hold_kind != "decision":
-        return
+        return False
     if twin.hold_kind is not None:
-        log.info("rename_repo.decision_hold_not_moved twin=%s held=%s",
-                 twin_id, twin.hold_kind)
-        return
+        log.info("decision_hold_not_moved twin=%s held=%s", twin_id, twin.hold_kind)
+        return False
     for column in _HOLD_COLUMNS:
         setattr(twin, column, getattr(alias, column))
+    return True
 
 
 def rename_repo(db: Session, old: str, new: str) -> dict[str, int]:
@@ -615,7 +636,7 @@ def rename_repo(db: Session, old: str, new: str) -> dict[str, int]:
             dp.work_item_id = twin
             if dp.status == STATUS_PENDING:
                 pending_twins.add(twin)
-                _move_decision_hold(db, alias_id, twin)
+                move_decision_hold(db, alias_id, twin)
         for d in db.query(WorkItemDep).filter(or_(
                 WorkItemDep.src_work_item_id.in_(alias_ids),
                 WorkItemDep.dst_work_item_id.in_(alias_ids))).all():

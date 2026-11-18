@@ -12,6 +12,7 @@ This parent organizes the capabilities linked below. Its `live` state describes
 the standing product area; each child retains its own maturity and delivery evidence.
 
 - [Product-Management Layer](product-management-layer.md)
+- [Product Repo Lifecycle](product-repo-lifecycle.md)
 - [Autopilot & Backlog Runner](autopilot-backlog-runner.md)
 - [Background (maintenance) sessions](background-sessions.md)
 - [SDLC Engine, Governance & Evals](sdlc-governance-evals.md)

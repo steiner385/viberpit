@@ -32,6 +32,7 @@ detected and backed off once rather than per caller — see :mod:`gh_credential`
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -375,6 +376,18 @@ def _existing_case_variant(parent: Path, name: str) -> Path | None:
     return matches[0] if matches else None
 
 
+def _validate_name_with_owner(name_with_owner: str) -> tuple[str, str]:
+    """Split ``<owner>/<name>``; ValueError unless both are legal GitHub names."""
+    owner, _, name = name_with_owner.partition("/")
+    if not owner or not name:
+        raise ValueError(f"expected '<owner>/<name>', got {name_with_owner!r}")
+    for part in (owner, name):
+        if not _PATH_COMPONENT_RE.match(part) or part in (".", ".."):
+            raise ValueError(
+                f"illegal clone path component {part!r} in {name_with_owner!r}")
+    return owner, name
+
+
 def clone_path(repo_root: str, name_with_owner: str) -> Path:
     """Absolute clone path for ``<owner>/<name>`` under the clones base.
 
@@ -392,21 +405,123 @@ def clone_path(repo_root: str, name_with_owner: str) -> Path:
         ValueError: if ``name_with_owner`` is not ``<owner>/<name>`` or either
             component is not a legal GitHub name.
     """
-    owner, _, name = name_with_owner.partition("/")
-    if not owner or not name:
-        raise ValueError(f"expected '<owner>/<name>', got {name_with_owner!r}")
-    for part in (owner, name):
-        if not _PATH_COMPONENT_RE.match(part) or part in (".", ".."):
-            raise ValueError(
-                f"illegal clone path component {part!r} in {name_with_owner!r}")
+    return _resolve_clone(repo_root, name_with_owner)[0]
+
+
+def collision_clone_path(base_dir: Path, name_with_owner: str) -> Path:
+    """Sibling path for a repo whose natural ``<owner>/<name>`` dir is taken.
+
+    ``<owner_dir>/<name>@<sha1(owner/name casefold)[:8]>``: deterministic, so
+    every caller (and every later call) agrees on it without any stored state.
+    """
+    owner, name = _validate_name_with_owner(name_with_owner)
+    digest = hashlib.sha1(name_with_owner.casefold().encode()).hexdigest()[:8]
+    owner_dir = _existing_case_variant(base_dir, owner) or base_dir / owner
+    return owner_dir / f"{name}@{digest}"
+
+
+def clone_origin_matches(path: Path, name_with_owner: str) -> bool:
+    """Whether the clone at ``path`` has ``name_with_owner`` as its origin.
+
+    A directory with no ``.git`` is not a clone yet, so it trivially matches. A
+    ``.git`` whose origin can't be read (no origin remote, a git failure or
+    timeout) is reused: a transient read failure on a real clone must not flip
+    every reader to a new sibling path. Only a readable github.com origin naming
+    a DIFFERENT repo is a mismatch. GitHub names are case-insensitive. An origin
+    that is not on github.com (a local-path fixture, a self-hosted remote) has no
+    ``owner/name`` to compare and is accepted, as :func:`owner_from_remote_url`
+    treats it.
+    """
+    if not (path / ".git").exists():
+        return True
+    url = _origin_url(path)
+    if url is None:
+        return True
+    parts = [p for p in _normalize_remote_url(url).split("/") if p]
+    if len(parts) < 3 or parts[0] != "github.com":
+        return True
+    return "/".join(parts[-2:]).casefold() == name_with_owner.casefold()
+
+
+# (path, config mtime_ns, config size) -> origin URL (None = unreadable). A clone's
+# origin changes only by rewriting its config, which moves mtime/size, so a hot
+# read path costs one stat after the first ``git`` read.
+_ORIGIN_CACHE: dict[tuple[str, int, int], str | None] = {}
+_ORIGIN_CACHE_LOCK = threading.Lock()
+_ORIGIN_CACHE_MAX = 4096
+
+
+def _origin_url(path: Path) -> str | None:
+    """The clone's ``remote.origin.url`` as git resolves it, else None.
+
+    Asked of ``git config`` itself (includes, insteadOf, escapes — no parser to
+    disagree with) and memoized on the stat of ``<path>/.git/config``. A stat
+    failure, ``.git`` as a file, a failed or timed-out git call all yield None.
+    """
+    try:
+        st = (path / ".git" / "config").stat()
+    except OSError:
+        return None
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    with _ORIGIN_CACHE_LOCK:
+        if key in _ORIGIN_CACHE:
+            return _ORIGIN_CACHE[key]
+    url = _origin_url_via_git(path)
+    with _ORIGIN_CACHE_LOCK:
+        if len(_ORIGIN_CACHE) >= _ORIGIN_CACHE_MAX:
+            _ORIGIN_CACHE.clear()
+        _ORIGIN_CACHE[key] = url
+    return url
+
+
+def _origin_url_via_git(path: Path) -> str | None:
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(path), "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, env=_git_env(None), timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = r.stdout.strip()
+    return out if r.returncode == 0 and out else None
+
+
+def _loggable_origin(url: str | None) -> str:
+    """A log-safe description of an origin URL: never the raw URL (userinfo/tokens)."""
+    if url is None:
+        return "unreadable"
+    parts = [p for p in _normalize_remote_url(url).split("/") if p]
+    if len(parts) >= 3 and parts[0] == "github.com":
+        return "/".join(parts[-2:])
+    return "other"
+
+
+def _resolve_clone(repo_root: str, name_with_owner: str) -> tuple[Path, Path | None]:
+    """``(path, rejected)``: the clone path, and an existing dir refused for it.
+
+    ``rejected`` is the existing ``<owner>/<name>`` dir whose origin is another
+    repo (a moved repo with unrelated history can collide on the dir name); the
+    returned path is then the :func:`collision_clone_path` sibling. The origin
+    is read (a ``git`` subprocess) only for a dir that already holds a ``.git``.
+    """
+    owner, name = _validate_name_with_owner(name_with_owner)
+    rejected: Path | None = None
     for base in clones_bases(repo_root):
         owner_dir = _existing_case_variant(base, owner)
         existing = owner_dir and _existing_case_variant(owner_dir, name)
-        if existing:
-            return existing
+        if not existing:
+            continue
+        if clone_origin_matches(existing, name_with_owner):
+            return existing, None
+        rejected = rejected or existing
     base = clones_base(repo_root)
-    owner_dir = _existing_case_variant(base, owner) or base / owner
-    return owner_dir / name
+    if rejected is None:
+        owner_dir = _existing_case_variant(base, owner) or base / owner
+        return owner_dir / name, None
+    for b in clones_bases(repo_root):
+        sibling = collision_clone_path(b, name_with_owner)
+        if sibling.exists():
+            return sibling, rejected
+    return collision_clone_path(base, name_with_owner), rejected
 
 
 # ---------------------------------------------------------------------------
@@ -774,13 +889,21 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
     Raises:
         CloneError: if the clone fails.
     """
-    dest = clone_path(repo_root, name_with_owner)
+    dest, rejected = _resolve_clone(repo_root, name_with_owner)
+    if rejected is not None:
+        # INFO, not WARNING: the sink files an issue per WARNING, and this is
+        # the designed outcome for a moved repo. The old dir is left untouched.
+        log.info("clone.origin_mismatch repo=%s existing=%s origin=%s using=%s",
+                 name_with_owner, rejected, _loggable_origin(_origin_url(rejected)), dest)
     owner = name_with_owner.partition("/")[0]
     # Recorded on the alert so the notification links to the page that fixes the
     # credential actually in use (App installation vs. personal access token).
     via_app = _app_token(owner) is not None
 
     if (dest / ".git").exists():
+        if _origin_url(dest) is None:
+            log.info("clone.origin_unreadable repo=%s path=%s — reusing the clone",
+                     name_with_owner, dest)
         # Best-effort refresh; ignore failures (offline, etc.). Fetch ONLY
         # `origin` — NOT `--all`: a session that ran in a worktree off this
         # shared clone can leave stray remotes behind, and `--all` fetches

@@ -165,6 +165,35 @@ def test_spawn_defers_when_no_host_can_run_the_engine(tmp_path):
     asyncio.run(run())
 
 
+def test_spawn_refuses_a_retired_repo_at_info(tmp_path):
+    """A retired product repo is a policy refusal, not a spawn fault: every
+    automation (PR Doctor included) gets ``None`` and one info event, never an
+    exception its outer ``except`` would log as an error tick after tick."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'spawn_r.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        from server.db.models import Automation
+        from server.automations.context import AutomationContext
+        from server.pm.product_repos import RepoRetired
+        async with db_session() as db:
+            db.add(Automation(id="pr-doctor"))
+
+        async def retired_create(**kw):
+            raise RepoRetired("o/old", "o/new")
+
+        ctx = AutomationContext("pr-doctor", create_session=retired_create)
+        assert await ctx.spawn_session(origin_ref="o/old#7", name="auto") is None
+        events = await ctx.list_events()
+        refused = [e for e in events if e["kind"] == "repo_retired"]
+        assert len(refused) == 1 and refused[0]["level"] == "info"
+        assert "o/old is retired; use o/new" in refused[0]["summary"]
+        assert not any(e["level"] in ("warn", "error") for e in events)
+        assert not any(e["kind"] == "spawned" for e in events)
+
+    asyncio.run(run())
+
+
 def test_spawn_still_raises_unrelated_create_errors(tmp_path):
     """Only the capacity refusal is soft — any other create failure must still
     propagate so a real defect is not silently swallowed."""

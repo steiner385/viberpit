@@ -2079,6 +2079,12 @@ class ProjectRepo(Base):
         DateTime(timezone=True), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+    # Repo lifecycle: a retired repo is kept (history, moved-ref map) but leaves every
+    # queue, sync and clone path. ``superseded_by`` names the "owner/name" that replaced it.
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    retired_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    superseded_by: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
 
@@ -2489,6 +2495,26 @@ class WorkItemDep(Base):
         DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class MovedIssueRef(Base):
+    """An issue that moved between repos (``old_ref`` -> ``new_ref``, both
+    "owner/name#N"). ``migration`` records the outcome of re-pointing local state
+    (null until migrated; ``{"status": "pending"}`` while the new work item is unmirrored)."""
+
+    __tablename__ = "moved_issue_refs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    project_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("projects.id"), nullable=True, index=True)
+    old_ref: Mapped[str | None] = mapped_column(String, nullable=True, unique=True, index=True)
+    new_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=_utcnow)
+    migrated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    migration: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class GhWriteJournal(Base):

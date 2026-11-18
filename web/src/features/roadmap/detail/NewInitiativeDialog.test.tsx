@@ -87,6 +87,21 @@ describe('NewInitiativeDialog', () => {
     expect(screen.getByTestId('here')).toHaveTextContent('/initiatives/use-case-first-views')
   })
 
+  it('offers only active repos and defaults to the active primary, never a retired one', () => {
+    projectQuery.data = {
+      ...PROJECT,
+      repos: [
+        { id: 'r0', repo: 'cairnea/KinDash-old', isPrimary: true, backfillDone: true, lastSyncedAt: null, retiredAt: '2026-11-01T00:00:00Z' },
+        ...PROJECT.repos.map((r) => ({ ...r, isPrimary: false })),
+        { id: 'r3', repo: 'cairnea/KinDash-web', isPrimary: true, backfillDone: true, lastSyncedAt: null },
+      ],
+    }
+    mount()
+    const select = screen.getByLabelText(/Repository/)
+    expect(select).toHaveValue('cairnea/KinDash-web')
+    expect(screen.queryByRole('option', { name: 'cairnea/KinDash-old' })).toBeNull()
+  })
+
   it('keeps an edited slug and the chosen repo, and omits an unset capability', () => {
     mount()
     fireEvent.change(screen.getByLabelText(/Title/), { target: { value: 'Billing rework' } })
