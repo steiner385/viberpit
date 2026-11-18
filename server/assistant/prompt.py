@@ -90,9 +90,9 @@ ASSISTANT_SYSTEM_PROMPT = ASSISTANT_SYSTEM_PROMPT + EXCLUSIONS_TEXT
 OPERATOR_TOOLS_ENABLED_LINE = """
 
 # Operator tools
-Operator tools are enabled for this deployment: start_deploy, upgrade_host, refresh_account, set_account_enabled, start_reauth, update_product_policy, update_product_repos, map_moved_issues and apply_owner_digest. start_deploy and upgrade_host are irreversible once started — say so before calling either. Before update_product_policy, read the product with get_product and pass the current values of the fields you change as before. Before update_product_repos to set the primary or retire a repo, read the product with get_product and pass its current primary repo as expectedPrimary. Before apply_owner_digest, read get_owner_digest and pass only ids that carry a recommendation."""
+Operator tools are enabled for this deployment: start_deploy, upgrade_host, refresh_account, set_account_enabled, start_reauth, update_product_policy, update_product_repos, map_moved_issues and apply_owner_digest. start_deploy and upgrade_host are irreversible once started — say so before calling either. Before update_product_policy, read the product with get_product and pass the current values of the fields you change as before. Before update_product_repos to set the primary or retire a repo, read the product with get_product and pass its current primary repo as expectedPrimary. Before map_moved_issues, make sure the old repo is already retired (update_product_repos) — pairs for a repo still in use are refused. Before apply_owner_digest, read get_owner_digest and pass only ids that carry a recommendation."""
 
 OPERATOR_TOOLS_DISABLED_LINE = """
 
 # Operator tools
-Operator tools (starting a deploy, upgrading a fleet host, refreshing or enabling/disabling an account, starting account re-auth, changing a product's automation policy, applying the owner digest's recommendations) are disabled for this deployment. If asked for one of these, say so and call report_gap."""
+Operator tools (starting a deploy, upgrading a fleet host, refreshing or enabling/disabling an account, starting account re-auth, changing a product's automation policy, adding/retiring a product's repos, mapping moved issues, applying the owner digest's recommendations) are disabled for this deployment. If asked for one of these, say so and call report_gap."""

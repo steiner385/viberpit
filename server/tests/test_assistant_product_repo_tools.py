@@ -104,13 +104,16 @@ def test_repo_card_shows_the_primary_move():
     assert items(action="retire", repo="o/p", expectedPrimary="o/p", newPrimary="o/r",
                  reason="moved", supersededBy="o/r") == [
         "retire o/p", "primary: o/p → o/r", "reason: moved", "supersededBy: o/r"]
+    # a retire of a non-primary leaves the primary unchanged
     assert items(action="retire", repo="o/x", expectedPrimary="o/p") == [
         "retire o/x", "primary: o/p → o/p"]
     assert items(action="set_primary", repo="o/r", expectedPrimary="o/p") == [
         "set_primary o/r", "primary: o/p → o/r"]
     assert items(action="add", repo="o/r", makePrimary=True, expectedPrimary="o/p")[1] == (
         "primary: o/p → o/r")
-    assert items(action="add", repo="o/r", expectedPrimary="o/p")[1] == "primary: o/p → o/p"
+    # primary is not part of an un-flagged add or an unretire: no row.
+    assert items(action="add", repo="o/r", expectedPrimary="o/p") == ["add o/r"]
+    assert items(action="unretire", repo="o/r") == ["unretire o/r"]
     assert items(action=1) == []
 
 

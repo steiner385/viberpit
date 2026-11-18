@@ -288,3 +288,13 @@ def test_operator_routes_not_matched_by_ordinary_allowlist(method, path):
 ])
 def test_milestone_write_routes_not_allowlisted(method, path):
     assert route_allowed(method, path) is False
+
+
+@pytest.mark.parametrize("method,path", [
+    ("POST", "/api/pm/projects/acme-billing/repos/o/n/delete"),
+    ("POST", "/api/pm/projects/acme-billing/repos/o/n/retire/extra"),
+    ("GET", "/api/pm/projects/acme-billing/repos"),
+    ("POST", "/api/pm/projects/acme-billing/repos/o/primary"),
+])
+def test_repo_lifecycle_operator_negatives(method, path):
+    assert route_allowed(method, path, operator=True) is False

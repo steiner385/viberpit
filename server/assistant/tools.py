@@ -203,14 +203,16 @@ OPERATOR_TOOLS: frozenset[str] = frozenset({
 })
 
 
+_REPO_ACTIONS = ("add", "set_primary", "retire", "unretire")
+_REPO_REF = re.compile(r"\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
+
+
 # Matches the allowlist's product- and automation-id character class
 # (server/assistant/policy.py) so a bad slug fails locally, not as a 403 from the route
 # allowlist. `server/api/pm.py:_slugify` mints product slugs from the same class, and every
 # registered automation id (`autopilot`, `backlog-runner`, `cicd-doctor`, `pr-doctor`…) is
 # already in it — one class for both rather than a near-duplicate per pack. Initiative
 # slugs share the class but not the length cap: see `_INITIATIVE_SLUG`.
-_REPO_ACTIONS = ("add", "set_primary", "retire", "unretire")
-_REPO_REF = re.compile(r"\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _SLUG = re.compile(r"\A[a-z0-9][a-z0-9-]{0,63}\Z")
 
 # Opaque server-minted ids the assistant only ever echoes back: triage proposal ids
@@ -567,7 +569,11 @@ def _repo_change_items(tool_input: dict[str, Any]) -> list[str]:
         after = repo
     elif action == "retire" and isinstance(new_primary, str) and new_primary:
         after = new_primary
-    rows = [f"{action} {repo}", f"primary: {before} → {after}"]
+    rows = [f"{action} {repo}"]
+    # The primary is part of the call only when it can move or be checked.
+    if action in ("set_primary", "retire") or (action == "add"
+                                               and tool_input.get("makePrimary") is True):
+        rows.append(f"primary: {before} → {after}")
     for key in ("reason", "supersededBy"):
         v = tool_input.get(key)
         if isinstance(v, str) and v:
