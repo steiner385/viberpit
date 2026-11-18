@@ -22,6 +22,7 @@ from .desired_state import LIVE_SESSION_STATUSES
 from .drift import is_open_blocker
 from .holds import OWNER_EVIDENCE, EvidenceRequest, evidence_surfaced
 from .mirror_store import blocker_states, blocker_states_stmt, deps_in_repos, list_product_views
+from .moved_refs import moved_map
 from .outcomes import (body_fingerprint, bounces_stmt, not_needed_stmt,
                        not_needed_suppression, rows_to_bounces, verdicts_by_ref)
 from .queue import QueueRow
@@ -112,6 +113,9 @@ def load_queue_rows(db: Session, *, now: datetime,
     # #3076: a live session also owns the descendants of its origin ref, and any item
     # (or ancestor) whose body carries its ownership marker.
     live_ids = {sid for sid, _ in live}
+    # Loaded once per pass: a blocker ref to an issue that moved repos is judged by
+    # its new issue's state (server/pm/moved_refs.py).
+    moved = moved_map(db)
 
     for product in list_product_views(db):
         if not product.gh_project_db_id:
@@ -153,8 +157,8 @@ def load_queue_rows(db: Session, *, now: datetime,
             select(WorkItemDep).where(deps_in_repos(product.all_repos or product.repos),
                                       WorkItemDep.active.is_(True))
         ).all()
-        stmt = blocker_states_stmt({d.dst_ref for d in deps if d.dst_ref})
-        dst_state = blocker_states(db.execute(stmt).all()) if stmt is not None else {}
+        stmt = blocker_states_stmt({d.dst_ref for d in deps if d.dst_ref}, moved)
+        dst_state = blocker_states(db.execute(stmt).all(), moved) if stmt is not None else {}
         blockers: dict[str, list[str]] = {}
         for d in deps:
             if not d.src_ref or not d.dst_ref:

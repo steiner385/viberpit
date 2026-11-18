@@ -27,7 +27,7 @@ from server.db import db_session
 from server.db.models import MilestoneLadder, MilestoneMeasurement
 from server.github.actions_api import MetricsContractError
 from server.github.host_failures import log_gh_failure
-from server.pm import product_repos
+from server.pm import moved_refs, product_repos
 from server.pm.map_changes import resolve_default_branch
 from server.pm.milestone_def import LadderDef, Measure, from_json
 from server.pm.milestone_github import (
@@ -411,7 +411,9 @@ async def _load(project_id: str) -> tuple[str, LadderDef, str | None, dict[_Key,
         prev = {(r.scope, r.key): _Prev(
             r.value, aware_utc(r.measured_at), r.source_url)
             for r in rows}
-        return ladder.id, from_json(ladder.definition), primary, prev
+        # Refs naming an issue that moved repos are read at their new home.
+        moved = await db.run_sync(moved_refs.moved_map)
+        return ladder.id, from_json(ladder.definition, moved=moved), primary, prev
 
 
 async def _persist(ladder_id: str, writes: Mapping[_Key, _Write], now: datetime) -> None:

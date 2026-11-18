@@ -271,7 +271,11 @@ RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay
                                     # The owner posted the evidence an owner_evidence
                                     # hold asked for and the issue was closed on it
                                     # (``release_on_evidence_supplied``, #3113).
-                                    "evidence_supplied")
+                                    "evidence_supplied",
+                                    # The issue moved repos: its hold was carried to
+                                    # the new issue by the moved-issue map
+                                    # (``release_on_move``, server/pm/moved_refs.py).
+                                    "moved")
 #: Board Status values a human moves a card to in order to hand it back.
 RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
 
@@ -607,6 +611,20 @@ def release_on_dispatch(db: "Session", refs: "Sequence[str]", *, now: datetime) 
         released.append(f"{wi.repo}#{wi.number}")
     db.flush()
     return released
+
+
+def release_on_move(db: "Session", wi: WorkItem) -> str | None:
+    """The issue moved repos (``server/pm/moved_refs.py``): end its hold, whatever
+    the kind, audited ``moved``, and answer the kind released. The caller has
+    already copied the hold onto the new issue, so nothing is dropped — which is
+    why a ``decision`` hold is released here too, outside ``refuse_decision_release``:
+    the person's pending choice now lives on the new issue."""
+    kind = wi.hold_kind
+    if kind is None:
+        return None
+    clear_hold(wi, actor=RECONCILER_ACTOR)
+    _audit_release(db, wi, kind=kind, signal="moved", actor=RECONCILER_ACTOR, via="moved_ref")
+    return kind
 
 
 def release_on_investigation(db: "Session", ref: str) -> bool:

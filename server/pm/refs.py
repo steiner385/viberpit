@@ -10,6 +10,7 @@ raise).
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 
 #: A canonical ``owner/repo#N`` ref, whole-string — what a route accepts from a
 #: caller before looking anything up (the dep prune and the dep delete).
@@ -24,3 +25,18 @@ def split_ref(ref: str) -> tuple[str, int] | None:
     repo, _, num = ref.rpartition("#")
     # ASCII digits only: ``str.isdigit`` accepts "²" (and int() then raises).
     return (repo, int(num)) if repo and re.fullmatch(r"[0-9]+", num) else None
+
+
+def resolve_moved(ref: str, moved: Mapping[str, str] | None) -> str:
+    """*ref* followed through the moved-issue map (``server/pm/moved_refs.py``):
+    ``"o/old#257"`` → ``"o/new#3"`` when that pair is recorded, else *ref* unchanged.
+
+    Pure, so the DB-free milestone parser can call it. The map is chain-free by
+    validation; the visited set still keeps a hand-edited cycle from looping."""
+    if not moved:
+        return ref
+    seen = {ref}
+    while (nxt := moved.get(ref)) is not None and nxt not in seen:
+        seen.add(nxt)
+        ref = nxt
+    return ref

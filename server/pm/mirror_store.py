@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection, Sequence, Set as AbstractSet
+from collections.abc import Collection, Mapping, Sequence, Set as AbstractSet
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -20,7 +20,7 @@ from .gh_projects import GhProjectItemView, GhProjectView, IssueRelView
 from .journal import applied_keys, own_write_key
 from .product_repos import active_repos_sync
 from .reconcile_diff import remove_blocked_by_mutation
-from .refs import split_ref
+from .refs import resolve_moved, split_ref
 
 log = logging.getLogger(__name__)
 
@@ -54,25 +54,36 @@ def deps_in_repos(repos: Collection[str]):
                  for r in sorted(repos)])
 
 
-def blocker_states_stmt(refs: Collection[str]):
+def blocker_states_stmt(refs: Collection[str], moved: Mapping[str, str] | None = None):
     """SELECT ``(repo, number, state)`` for the mirrored item behind each blocker
     ref, or ``None`` when no ref parses (an empty ``in_()`` is a SQLAlchemy warning,
     not a no-op). Issues AND pull requests (#2979): a ``Depends on #N`` naming a PR
     resolves when that PR merges, where an issue-only lookup left it unmirrored and
     blocking forever. GitHub numbers issues and PRs from one sequence, so a ref
     names at most one row. Fold the rows with ``blocker_states`` and judge each
-    with ``drift.is_open_blocker``."""
-    parsed = sorted({p for p in (split_ref(r) for r in refs) if p is not None})
+    with ``drift.is_open_blocker``.
+
+    *moved* (``moved_refs.moved_map``) looks a ref to an issue that moved repos up
+    at its NEW home; pass the same map to ``blocker_states``."""
+    parsed = sorted({p for p in (split_ref(resolve_moved(r, moved)) for r in refs)
+                     if p is not None})
     if not parsed:
         return None
     return select(WorkItem.repo, WorkItem.number, WorkItem.state).where(
         WorkItem.kind.in_(("issue", "pr")), tuple_(WorkItem.repo, WorkItem.number).in_(parsed))
 
 
-def blocker_states(rows) -> dict[str, str]:
+def blocker_states(rows, moved: Mapping[str, str] | None = None) -> dict[str, str]:
     """``blocker_states_stmt`` rows -> ``{ref: state}``. A row with no state reads
-    ``open`` (never resolved); an unmirrored ref is simply absent."""
-    return {f"{repo}#{number}": state or "open" for repo, number, state in rows}
+    ``open`` (never resolved); an unmirrored ref is simply absent. With *moved*, an
+    old ref reads its new issue's state (absent while the new one is unmirrored, so
+    it fails closed)."""
+    states = {f"{repo}#{number}": state or "open" for repo, number, state in rows}
+    for old in moved or ():
+        new = resolve_moved(old, moved)
+        if new in states:
+            states[old] = states[new]
+    return states
 
 
 def _parse_iso(value: str | None) -> datetime | None:

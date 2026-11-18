@@ -12535,6 +12535,27 @@ class SessionOrchestrator:
                 return
             for key, value in updates.items():
                 setattr(row, key, value)
+        if "watermark" in updates:
+            await self._pm_sync_migrate_moved(view.project_id)
+
+    async def _pm_sync_migrate_moved(self, project_id: str) -> None:
+        """The mirror advanced: retry the product's pending moved-issue pairs, whose
+        new issue may have just been mirrored (server/pm/moved_refs.py). Its own
+        transaction, after the sync state is saved, and best-effort: a failure is
+        logged at INFO (the next pass retries) and never fails the sync."""
+        from datetime import datetime, timezone
+
+        from server.pm.moved_refs import migrate_pending
+        now = datetime.now(timezone.utc)
+        try:
+            async with db_session() as db:
+                n = await db.run_sync(
+                    lambda s: migrate_pending(s, project_id=project_id, now=now))
+        except Exception as exc:  # noqa: BLE001 - best-effort; WARNING would auto-file
+            log.info("pm_sync.moved_refs_migrate_failed project=%s: %s", project_id, exc)
+            return
+        if n:
+            log.info("pm_sync.moved_refs_migrated project=%s n=%d", project_id, n)
 
     @staticmethod
     def _pm_sync_default_head(clone: str) -> str:

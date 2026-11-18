@@ -311,7 +311,7 @@ def test_release_by_signals_board_edit_and_body_edit():
     assert set(RELEASE_SIGNALS) == {"board_edit", "body_edit", "retry", "overlay", "session",
                                     "implement", "dispatch", "investigation", "decision",
                                     "escalation", "expired", "policy_skip", "assessment",
-                                    "evidence_supplied"}
+                                    "evidence_supplied", "moved"}
     from server.db.models import AuditEvent
     rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
     assert sorted(r.detail["signal"] for r in rows) == ["board_edit", "body_edit"]

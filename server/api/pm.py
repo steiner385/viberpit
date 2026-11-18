@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import and_, func, or_, select, tuple_
 
@@ -58,7 +58,7 @@ from server.pm.map_changes_gh import GhWriteError
 from server.pm.map_changes_ops import SLUG_RE, MapOp, MapOpError
 from server.pm import product_repos
 from server.pm.product_repos import REPO_ORDER, RepoRetired, require_active
-from server.pm import repo_lifecycle
+from server.pm import moved_refs, repo_lifecycle
 from server.pm.repo_lifecycle import RepoLifecycleError
 from server.pm.outcomes import escalation_to_wire, list_outcomes_stmt, outcome_to_dict
 from server.pm.project_slugs import (
@@ -681,6 +681,80 @@ async def unretire_project_repo(
     with _repo_lifecycle_errors():
         await repo_lifecycle.unretire_repo(db, p, f"{owner}/{name}", identity=identity)
     return await _project_detail_dict(db, p)
+
+
+class MovedPairIn(BaseModel):
+    old: str
+    new: str
+
+
+class MovedRefsBody(BaseModel):
+    pairs: list[MovedPairIn]
+
+
+async def _moved_pairs(db, project_id: str) -> dict:
+    rows = await db.run_sync(lambda s: moved_refs.pairs_for_project(s, project_id))
+    return {"pairs": [moved_refs.pair_to_dict(r) for r in rows]}
+
+
+@router.get("/projects/{slug}/moved-refs")
+async def list_moved_refs(
+    slug: str, _identity: str = Depends(current_identity), db=Depends(get_db),
+) -> dict:
+    p = await _load_project(db, slug)
+    return await _moved_pairs(db, p.id)
+
+
+@router.post("/projects/{slug}/moved-refs")
+async def record_moved_refs(
+    slug: str, body: MovedRefsBody,
+    identity: str = Depends(current_identity), db=Depends(get_db),
+) -> dict:
+    """Record old → new issue pairs and migrate each whose two work items are
+    mirrored; the rest stay ``pending`` until a later pm_sync pass (server/pm/moved_refs.py)."""
+    p = await _load_project(db, slug)
+    if not body.pairs:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_pairs", "message": "at least one pair is required", "pairs": []})
+    pid = p.id
+    raw = [(x.old, x.new) for x in body.pairs]
+    try:
+        pairs = await db.run_sync(lambda s: moved_refs.validate_pairs(s, pid, raw))
+    except moved_refs.BadPairs as exc:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_pairs", "message": str(exc), "pairs": exc.errors}) from exc
+    now = datetime.now(timezone.utc)
+
+    def _record(s):
+        rows = moved_refs.record_pairs(s, pid, pairs, actor=identity)
+        for row in rows:
+            moved_refs.migrate_pair(s, row, now=now, actor=identity)
+
+    await db.run_sync(_record)
+    await record_audit(db=db, type=moved_refs.RECORD_AUDIT_TYPE, identity=identity,
+                       detail={"slug": p.slug, "pairs": [{"old": o, "new": n} for o, n in pairs]})
+    return await _moved_pairs(db, pid)
+
+
+@router.get("/projects/{slug}/moved-refs/suggest")
+async def suggest_moved_refs(
+    slug: str, from_repo: str = Query(alias="from"), to_repo: str = Query(alias="to"),
+    _identity: str = Depends(current_identity), db=Depends(get_db),
+) -> dict:
+    """Title-match suggestions from *from*'s open issues to *to*'s issues. Both must
+    be repos of this product (*to* an active one); nothing is written."""
+    p = await _load_project(db, slug)
+    pid = p.id
+    known = {r.casefold() for r in (await db.execute(select(ProjectRepo.repo).where(
+        ProjectRepo.project_id == pid))).scalars().all() if r}
+    active = {r.casefold() for r in await product_repos.active_repos(db, pid)}
+    if from_repo.strip().casefold() not in known or to_repo.strip().casefold() not in active:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_repo",
+            "message": "from must be a repo of this product and to an active one"})
+    pairs = await db.run_sync(
+        lambda s: moved_refs.suggest_pairs(s, from_repo.strip(), to_repo.strip()))
+    return {"pairs": pairs}
 
 
 @router.get("/projects/{slug}/policy/coverage")
