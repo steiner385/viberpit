@@ -128,10 +128,3 @@ async def primary_repo(db: AsyncSession, project_id: str) -> str | None:
 
 def active_repos_sync(db: Session, project_id: str) -> list[str]:
     return [r for r in db.execute(_active_stmt(project_id)).scalars().all() if r]
-
-
-def primary_repo_sync(db: Session, project_id: str) -> str | None:
-    return db.execute(
-        select(ProjectRepo.repo)
-        .where(ProjectRepo.project_id == project_id, ProjectRepo.is_primary.is_(True), ACTIVE)
-    ).scalars().first()

@@ -234,9 +234,9 @@ dialog's "Primary repository" field is removed in favor of this panel.
 
 1. Products → ghostdriver → Repositories → Add `steiner385/ghostdriver`, then
    make it primary.
-2. Wait for the first backfill of the new repo, then open Moved issues…, accept
+2. Retire `steiner385/ghostdriver-mcp` with reason "archived", superseded by
+   `steiner385/ghostdriver` (moved-issue pairs need the old repo retired first).
+3. Wait for the first backfill of the new repo, then open Moved issues…, accept
    the suggestions and add any missing pairs (e.g. `#257 → #3`), then Apply.
-3. Retire `steiner385/ghostdriver-mcp` with reason "archived", superseded by
-   `steiner385/ghostdriver`.
 4. Archive `ghostdriver-mcp` on GitHub.
 5. Set `max_in_flight` back above 0 in the product policy.
