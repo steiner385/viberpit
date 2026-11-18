@@ -372,7 +372,9 @@ def migrate_pair(db: Session, row: MovedIssueRef, *, now: datetime,
                  actor: str = RECONCILER_ACTOR) -> dict | None:
     """Move ViberPit-owned state from ``row.old_ref``'s work item to
     ``row.new_ref``'s. ``None`` (and ``migration = {"status": "pending"}``) when
-    either work item is not mirrored yet. Already migrated → its recorded detail.
+    either work item is not mirrored yet, and ``None`` with no writes at all while the
+    old ref's repo is not retired (un-retired after recording — the same gate as
+    ``validate_pairs``). Already migrated → its recorded detail.
 
     The row is re-read ``FOR UPDATE`` (a no-op on SQLite), so the API's migrate-now
     and a pm_sync retry racing on one pair serialise and the loser sees it done."""
@@ -381,6 +383,12 @@ def migrate_pair(db: Session, row: MovedIssueRef, *, now: datetime,
     if row.migrated_at is not None:
         return row.migration
     old_ref, new_ref = row.old_ref or "", row.new_ref or ""
+    parsed = split_ref(old_ref)
+    retired, _active = _repos(db, row.project_id or "")
+    if parsed is None or parsed[0].casefold() not in retired:
+        # The old repo was un-retired since the pair was recorded: migrating now would
+        # release a hold on an active repo's issue. Stay pending, write nothing.
+        return None
     old, new = _issue(db, old_ref), _issue(db, new_ref)
     if old is None or new is None:
         row.migration = {"status": "pending",

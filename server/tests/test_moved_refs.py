@@ -280,6 +280,25 @@ def test_pair_with_unmirrored_new_item_is_pending_then_migrates_once():
     assert len(_audits(db, "pm.hold.release")) == 1
 
 
+def test_pending_pair_stays_pending_after_its_old_repo_is_unretired():
+    db = _db()
+    pid = _product(db)
+    old = _wi(db, OLD)
+    set_hold(old, kind="owner_action", reason="r", actor="tony@example.com", now=NOW)
+    row = _pair(db, pid)
+    assert moved_refs.migrate_pair(db, row, now=NOW) is None  # new not mirrored: pending
+    before = dict(row.migration or {})
+    old_repo = db.scalars(select(ProjectRepo).where(ProjectRepo.repo == OLD_REPO)).one()
+    old_repo.retired_at = None  # un-retired
+    _wi(db, NEW)  # a later mirror pass brings the new issue in
+    db.commit()
+
+    assert moved_refs.migrate_pending(db, now=NOW) == 0
+    assert row.migrated_at is None and row.migration == before  # nothing written
+    assert old.hold_kind == "owner_action"
+    assert _audits(db, "pm.hold.release") == [] and _audits(db, "pm.moved_ref.migrate") == []
+
+
 # --------------------------------------------------------------------------- validation
 
 
@@ -533,6 +552,7 @@ async def test_pm_sync_state_save_retries_pending_pairs(isolated_db):
         db.add(p)
         await db.flush()
         db.add(ProjectRepo(project_id=p.id, repo=NEW_REPO, is_primary=True))
+        db.add(ProjectRepo(project_id=p.id, repo=OLD_REPO, retired_at=NOW))
         db.add(WorkItem(repo=OLD_REPO, number=257, kind="issue", state="open", reach=7))
         db.add(MovedIssueRef(project_id=p.id, old_ref=OLD, new_ref=NEW))
         pid = p.id
