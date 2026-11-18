@@ -113,7 +113,7 @@ async def add_repo(db: AsyncSession, project: Project, repo: str, *, make_primar
     if row is not None:
         if row.retired_at is not None:
             await unretire_repo(db, project, row.repo or repo, identity=identity)
-        if make_primary:
+        if make_primary or _active_primary(await _rows(db, project)) is None:
             await set_primary(db, project, row.repo or repo, identity=identity)
         return row
     # Registration evidence must be re-checked before any write in this request
@@ -142,7 +142,8 @@ async def set_primary(db: AsyncSession, project: Project, repo: str, *, identity
     current = _active_primary(rows)
     if current is row:
         return
-    await _refuse_if_map_changes_open(db, project)
+    if current is not None:
+        await _refuse_if_map_changes_open(db, project)
     _make_primary(rows, row)
     await _written(db, project, AUDIT_PRIMARY, identity, {
         "from": current.repo if current is not None else None, "to": row.repo})
@@ -198,7 +199,8 @@ async def retire_repo(db: AsyncSession, project: Project, repo: str, *, identity
 
 async def unretire_repo(db: AsyncSession, project: Project, repo: str, *,
                         identity: str) -> None:
-    """Make a retired repo active again (not primary). Already active: no-op."""
+    """Make a retired repo active again; it becomes the primary only when the product
+    has no active primary (same rule as a new add). Already active: no-op."""
     rows = await _rows(db, project)
     row = _require(rows, repo, project)
     if row.retired_at is None:
@@ -206,4 +208,7 @@ async def unretire_repo(db: AsyncSession, project: Project, repo: str, *,
     row.retired_at = None
     row.retired_reason = None
     row.superseded_by = None
-    await _written(db, project, AUDIT_UNRETIRE, identity, {"repo": row.repo})
+    primary = _active_primary(rows) is None
+    if primary:
+        _make_primary(rows, row)
+    await _written(db, project, AUDIT_UNRETIRE, identity, {"repo": row.repo, "primary": primary})

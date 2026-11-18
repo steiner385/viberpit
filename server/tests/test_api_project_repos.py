@@ -228,6 +228,7 @@ def test_unknown_repo_is_404():
         for action in ("primary", "retire", "unretire"):
             resp = c.post(f"/api/pm/projects/ghost/repos/o/nope/{action}", json={}, headers=H)
             assert resp.status_code == 404, (action, resp.text)
+            assert resp.json()["detail"]["error"] == "not_found", (action, resp.text)
 
 
 def test_primary_change_is_refused_while_map_changes_is_open():
@@ -286,3 +287,57 @@ def test_patch_repo_retains_old_repo_as_retired():
         assert _repos(body)["o/ghost-mcp"]["retiredAt"] is None
         assert _repos(body)["o/ghost"]["retiredReason"] == "repointed"
         assert "pm.project.repo.retire" in _audit_types(c)
+
+
+def _demote_all_primaries(c, slug: str) -> None:
+    """Legacy state: a product whose rows carry no active primary."""
+    from sqlalchemy import select, update
+
+    from server.db import db_session
+    from server.db.models import Project, ProjectRepo
+
+    async def go():
+        async with db_session() as db:
+            pid = (await db.execute(select(Project.id).where(Project.slug == slug))).scalar_one()
+            await db.execute(update(ProjectRepo).where(ProjectRepo.project_id == pid)
+                             .values(is_primary=False))
+            await db.commit()
+    c.portal.call(go)
+
+
+def test_unretire_promotes_when_the_product_has_no_active_primary():
+    with _client() as c:
+        _create(c, "Ghost", "o/a", "o/b")
+        assert c.post("/api/pm/projects/ghost/repos/o/b/retire", json={},
+                      headers=H).status_code == 200
+        _demote_all_primaries(c, "ghost")
+        resp = c.post("/api/pm/projects/ghost/repos/o/b/unretire", headers=H)
+        assert resp.status_code == 200, resp.text
+        assert _primary(resp.json()) == "o/b"
+
+        # with an active primary in place, un-retire leaves it alone
+        assert c.post("/api/pm/projects/ghost/repos/o/b/primary", json={},
+                      headers=H).status_code == 200
+        assert c.post("/api/pm/projects/ghost/repos/o/a/retire", json={},
+                      headers=H).status_code == 200
+        resp = c.post("/api/pm/projects/ghost/repos/o/a/unretire", headers=H)
+        assert _primary(resp.json()) == "o/b"
+
+
+def test_re_adding_an_attached_repo_promotes_when_no_active_primary():
+    with _client() as c:
+        _create(c, "Ghost", "o/a", "o/b")
+        assert c.post("/api/pm/projects/ghost/repos/o/b/retire", json={},
+                      headers=H).status_code == 200
+        _demote_all_primaries(c, "ghost")
+        # an attached ACTIVE repo re-added without makePrimary is promoted too
+        resp = c.post("/api/pm/projects/ghost/repos", json={"repo": "o/a"}, headers=H)
+        assert resp.status_code == 201, resp.text
+        assert _primary(resp.json()) == "o/a"
+
+        _demote_all_primaries(c, "ghost")
+        # an attached RETIRED repo re-added without makePrimary is un-retired and promoted
+        resp = c.post("/api/pm/projects/ghost/repos", json={"repo": "o/b"}, headers=H)
+        assert resp.status_code == 201, resp.text
+        assert _primary(resp.json()) == "o/b"
+        assert _repos(resp.json())["o/b"]["retiredAt"] is None
