@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db.models import Project, ProjectRepo
 from server.pm.github_sync import canonical_repo_name
+from server.pm.product_repos import ACTIVE
 
 
 @dataclass(frozen=True)
@@ -132,7 +133,7 @@ async def primary_repo_for_slug(db: AsyncSession, slug: str) -> str | None:
     product-scoped watch matches on."""
     return (await db.execute(
         select(ProjectRepo.repo).join(Project, Project.id == ProjectRepo.project_id)
-        .where(Project.slug == slug, ProjectRepo.is_primary.is_(True)))).scalars().first()
+        .where(Project.slug == slug, ProjectRepo.is_primary.is_(True), ACTIVE))).scalars().first()
 
 
 async def owning_projects_by_repo(
