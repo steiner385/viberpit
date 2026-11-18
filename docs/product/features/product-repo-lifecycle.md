@@ -107,7 +107,7 @@ migrates ViberPit-owned state.
 | `POST /projects/{slug}/repos/{owner}/{name}/unretire` | none |
 | `GET /projects/{slug}/moved-refs` | list pairs |
 | `POST /projects/{slug}/moved-refs` | `pairs: [{old, new}]`; 422 `bad_pairs` lists each bad pair |
-| `GET /projects/{slug}/moved-refs/suggest?from=&to=` | both must be repos of the product, `to` active |
+| `GET /projects/{slug}/moved-refs/suggest?from=&to=` | 422 `bad_repo` unless `from` is a repo of the product and `to` is active |
 
 Lifecycle routes return the product detail.
 
@@ -132,17 +132,18 @@ old/new pairs).
 
 ## Runbook: Moving a product to a new repository
 
-1. **Add the new repo** to the product (panel or `POST .../repos`).
-2. **Make it primary.** Passing `makePrimary` on add does both. Merge or abandon any open
+1. **Optional: pause the product's Backlog Runner** (`max_in_flight=0`) while moving.
+2. **Add the new repo** to the product (panel or `POST .../repos`).
+3. **Make it primary.** Passing `makePrimary` on add does both. Merge or abandon any open
    map-changes PR first.
-3. **Retire the old repo**, giving a reason and `superseded by` the new repo. If the old one was
-   primary this is where the new primary is named. From now on nothing new is created there.
-4. **Wait for the first backfill** of the new repo, so its issues are mirrored. (Pairs recorded
+4. **Retire the old repo**, giving a reason and `superseded by` the new repo. If you skipped
+   step 2 and the old repo is still primary, pass `newPrimary` here. From now on nothing new is created there.
+5. **Wait for the first backfill** of the new repo, so its issues are mirrored. (Pairs recorded
    early are kept `pending` and migrate after the mirror catches up.)
-5. **Moved issues...**: accept the title-match suggestions, then add the missing pairs by hand
+6. **Moved issues...**: accept the title-match suggestions, then add the missing pairs by hand
    (retitled or duplicated issues are not suggested).
-6. **Archive the old repo on GitHub.** ViberPit does not detect GitHub's archived flag; retiring
+7. **Archive the old repo on GitHub.** ViberPit does not detect GitHub's archived flag; retiring
    is the explicit signal.
-7. **Re-enable automation** for the product (Backlog Runner etc.) now that it targets the new repo.
+8. **Re-enable automation**: set `max_in_flight` back above 0 and confirm automation now targets the new repo.
 
 Rollback: un-retire the old repo and make it primary again. Migrated state is not moved back.
