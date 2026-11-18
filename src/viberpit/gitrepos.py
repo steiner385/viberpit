@@ -32,6 +32,7 @@ detected and backed off once rather than per caller — see :mod:`gh_credential`
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -399,14 +400,69 @@ def clone_path(repo_root: str, name_with_owner: str) -> Path:
         if not _PATH_COMPONENT_RE.match(part) or part in (".", ".."):
             raise ValueError(
                 f"illegal clone path component {part!r} in {name_with_owner!r}")
+    return _resolve_clone(repo_root, name_with_owner)[0]
+
+
+def collision_clone_path(base_dir: Path, name_with_owner: str) -> Path:
+    """Sibling path for a repo whose natural ``<owner>/<name>`` dir is taken.
+
+    ``<owner_dir>/<name>@<sha1(owner/name casefold)[:8]>``: deterministic, so
+    every caller (and every later call) agrees on it without any stored state.
+    """
+    owner, _, name = name_with_owner.partition("/")
+    digest = hashlib.sha1(name_with_owner.casefold().encode()).hexdigest()[:8]
+    owner_dir = _existing_case_variant(base_dir, owner) or base_dir / owner
+    return owner_dir / f"{name}@{digest}"
+
+
+def clone_origin_matches(path: Path, name_with_owner: str) -> bool:
+    """Whether the clone at ``path`` has ``name_with_owner`` as its origin.
+
+    A directory with no ``.git`` is not a clone yet, so it trivially matches. A
+    ``.git`` whose origin can't be read is an unknown clone and does NOT match.
+    GitHub names are case-insensitive. An origin that is not on github.com (a
+    local-path fixture, a self-hosted remote) has no ``owner/name`` to compare
+    and is accepted, as :func:`owner_from_remote_url` treats it.
+    """
+    if not (path / ".git").exists():
+        return True
+    r = _run_git(["-C", str(path), "remote", "get-url", "origin"])
+    if r.returncode != 0:
+        return False
+    normalized = _normalize_remote_url(r.stdout)
+    parts = [p for p in normalized.split("/") if p]
+    if len(parts) < 3 or parts[0] != "github.com":
+        return True
+    return "/".join(parts[-2:]).casefold() == name_with_owner.casefold()
+
+
+def _resolve_clone(repo_root: str, name_with_owner: str) -> tuple[Path, Path | None]:
+    """``(path, rejected)``: the clone path, and an existing dir refused for it.
+
+    ``rejected`` is the existing ``<owner>/<name>`` dir whose origin is another
+    repo (a moved repo with unrelated history can collide on the dir name); the
+    returned path is then the :func:`collision_clone_path` sibling. The origin
+    is read (a ``git`` subprocess) only for a dir that already holds a ``.git``.
+    """
+    owner, _, name = name_with_owner.partition("/")
+    rejected: Path | None = None
     for base in clones_bases(repo_root):
         owner_dir = _existing_case_variant(base, owner)
         existing = owner_dir and _existing_case_variant(owner_dir, name)
-        if existing:
-            return existing
+        if not existing:
+            continue
+        if clone_origin_matches(existing, name_with_owner):
+            return existing, None
+        rejected = rejected or existing
     base = clones_base(repo_root)
-    owner_dir = _existing_case_variant(base, owner) or base / owner
-    return owner_dir / name
+    if rejected is None:
+        owner_dir = _existing_case_variant(base, owner) or base / owner
+        return owner_dir / name, None
+    for b in clones_bases(repo_root):
+        sibling = collision_clone_path(b, name_with_owner)
+        if sibling.exists():
+            return sibling, rejected
+    return collision_clone_path(base, name_with_owner), rejected
 
 
 # ---------------------------------------------------------------------------
@@ -774,7 +830,12 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
     Raises:
         CloneError: if the clone fails.
     """
-    dest = clone_path(repo_root, name_with_owner)
+    dest, rejected = _resolve_clone(repo_root, name_with_owner)
+    if rejected is not None:
+        # INFO, not WARNING: the sink files an issue per WARNING, and this is
+        # the designed outcome for a moved repo. The old dir is left untouched.
+        log.info("clone.origin_mismatch repo=%s existing=%s origin=%s using=%s",
+                 name_with_owner, rejected, repo_at_path(str(rejected)), dest)
     owner = name_with_owner.partition("/")[0]
     # Recorded on the alert so the notification links to the page that fixes the
     # credential actually in use (App installation vs. personal access token).

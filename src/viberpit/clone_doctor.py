@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import traceback
@@ -207,7 +208,10 @@ def name_with_owner_for(repo_root: str, clone_dir: str | os.PathLike[str]) -> st
             continue
         if len(rel.parts) != 2:
             return None
-        return f"{rel.parts[0]}/{rel.parts[1]}"
+        # A collision clone (``<name>@<hash>``, gitrepos.collision_clone_path)
+        # belongs to ``<owner>/<name>``; the suffix is not part of the repo name.
+        name = re.sub(r"@[0-9a-f]{8}$", "", rel.parts[1])
+        return f"{rel.parts[0]}/{name}"
     return None
 
 
