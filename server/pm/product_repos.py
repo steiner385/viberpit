@@ -11,7 +11,7 @@ import logging
 import threading
 import time
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -33,11 +33,15 @@ _retired_cache: tuple[float, frozenset[str]] | None = None
 
 
 class RepoRetired(ValueError):
-    """A retired repo was used where only an active one is allowed."""
+    """A retired repo was used where only an active one is allowed. The app maps it
+    to HTTP 409 ``repo_retired``; ``error_data`` rides the daemon RPC envelope so a
+    remote edge rebuilds it (``server.ipc.client.reconstruct_create_session_error``)."""
 
-    def __init__(self, repo: str):
+    def __init__(self, repo: str, superseded_by: str | None = None):
         self.repo = repo
-        super().__init__(f"Repo {repo} is retired")
+        self.superseded_by = superseded_by
+        self.error_data = {"repo": repo, "supersededBy": superseded_by}
+        super().__init__(f"{repo} is retired" + (f"; use {superseded_by}" if superseded_by else ""))
 
 
 def _store(repos: frozenset[str]) -> frozenset[str]:
@@ -71,6 +75,25 @@ async def is_retired(repo: str) -> bool:
     else:
         repos = cached[1]
     return (repo or "").casefold() in repos
+
+
+async def require_active(repo: str | None) -> None:
+    """THE refusal for new work against a retired repo (sessions, issue/comment
+    writes): raises :class:`RepoRetired` naming its ``superseded_by``. Cheap for an
+    active repo (the ``is_retired`` snapshot); only a retired one costs a DB read."""
+    if not repo or not await is_retired(repo):
+        return
+    superseded_by = None
+    from server.db import db_session
+    try:
+        async with db_session() as db:
+            superseded_by = (await db.execute(
+                select(ProjectRepo.superseded_by).where(
+                    func.lower(ProjectRepo.repo) == repo.lower(),
+                    ProjectRepo.retired_at.is_not(None)))).scalars().first()
+    except Exception as exc:  # noqa: BLE001 - the refusal stands without the hint
+        log.info("retired-repo successor lookup failed for %s: %s", repo, exc)
+    raise RepoRetired(repo, superseded_by)
 
 
 def _retired_stmt():

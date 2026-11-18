@@ -28,6 +28,7 @@ from server.deploy.client import DeployControllerUnavailable
 from server.github import ci_issues
 from server.github import pr_files as pr_files_mod
 from server.github.pr_status import PR_HUMAN_HOLD, PR_HUMAN_HOLD_UNKNOWN
+from server.pm.product_repos import require_active
 from server.pipeline.dashboard_state import dashboard_state
 from server.pipeline.deploy_status import compute_repo_deploy
 from server.pipeline.lane_health import controller_deploy_snapshot, lane_health_ctx
@@ -131,6 +132,7 @@ async def comment_on_pr(
     repo = f"{owner}/{name}"
     if not ci_issues.valid_repo(repo):
         raise HTTPException(status_code=422, detail="repo must be 'owner/name'")
+    await require_active(repo)  # retired repo -> the app's 409 repo_retired
     text = ci_issues.with_authorship(
         payload.body, via=getattr(request.state, "via", None), identity=identity)
     url = await asyncio.to_thread(ci_issues.comment_on_pr, repo, number, text)

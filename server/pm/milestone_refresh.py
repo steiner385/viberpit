@@ -24,9 +24,10 @@ from typing import Any
 from sqlalchemy import func, select
 
 from server.db import db_session
-from server.db.models import MilestoneLadder, MilestoneMeasurement, ProjectRepo
+from server.db.models import MilestoneLadder, MilestoneMeasurement
 from server.github.actions_api import MetricsContractError
 from server.github.host_failures import log_gh_failure
+from server.pm import product_repos
 from server.pm.map_changes import resolve_default_branch
 from server.pm.milestone_def import LadderDef, Measure, from_json
 from server.pm.milestone_github import (
@@ -402,10 +403,7 @@ async def _load(project_id: str) -> tuple[str, LadderDef, str | None, dict[_Key,
         )).scalar_one_or_none()
         if ladder is None or not ladder.definition:
             return None
-        primary = (await db.execute(
-            select(ProjectRepo.repo).where(
-                ProjectRepo.project_id == project_id, ProjectRepo.is_primary.is_(True))
-        )).scalars().first()
+        primary = await product_repos.primary_repo(db, project_id)
         rows = (await db.execute(
             select(MilestoneMeasurement).where(MilestoneMeasurement.ladder_id == ladder.id)
         )).scalars().all()

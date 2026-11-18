@@ -228,8 +228,8 @@ class DaemonError(Exception):
 def reconstruct_create_session_error(exc: DaemonError) -> Exception:
     """The one place a ``create_session`` error envelope is turned back into the
     real exception type a caller might be catching (``AllAccountsBusy``,
-    ``NoHostAvailable``/``NoEngineHostAvailable``, ``gitrepos.CloneError``/``GhError``)
-    — shared by every transport that carries a create_session call over this envelope
+    ``NoHostAvailable``/``NoEngineHostAvailable``, ``gitrepos.CloneError``/``GhError``,
+    ``RepoRetired``) — shared by every transport that carries a create_session call over this envelope
     shape (the mTLS RPC client in :class:`server.sessions.remote.RemoteOrchestrator`,
     and the primary daemon's own loopback call into its co-located edge,
     :mod:`server.sessions.internal_dispatch`).
@@ -256,6 +256,11 @@ def reconstruct_create_session_error(exc: DaemonError) -> Exception:
         from viberpit import gitrepos
         exc_cls = gitrepos.CloneError if exc.err_type == "CloneError" else gitrepos.GhError
         return exc_cls(exc.message)
+    if exc.err_type == "RepoRetired":
+        from server.pm.product_repos import RepoRetired
+        data = exc.data or {}
+        if data.get("repo"):
+            return RepoRetired(data["repo"], data.get("supersededBy"))
     if exc.err_type == "SandboxError":
         # D-23: a new session's sandbox could not start or be verified. Known codes only.
         from server.sessions.sandbox import SANDBOX_CODES, SandboxError

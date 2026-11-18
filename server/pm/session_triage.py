@@ -20,6 +20,7 @@ from server.db.models import Initiative, Project, ProjectRepo, WorkItem
 from server.mcp_spec import ToolArgError
 from server.pm.holds import SESSION_PREFIX, actor_class
 from server.pm.milestone_asks import open_milestone_asks
+from server.pm.product_repos import ACTIVE
 from server.pm.milestone_tool_result import milestone_tool_error, summarized
 from server.sessions.tools.context import SessionToolContext
 
@@ -118,7 +119,7 @@ async def _needs_you(db: Any, args: NeedsYou, identity: str) -> dict:
                 rows.append({**leaf, "itemKind": leaf["kind"], "kind": "work_item"})
     repos = list((await db.execute(select(ProjectRepo.repo).join(
         Project, Project.id == ProjectRepo.project_id).where(
-        Project.slug == args.product, ProjectRepo.repo.is_not(None)))).scalars())
+        Project.slug == args.product, ProjectRepo.repo.is_not(None), ACTIVE))).scalars())
     homeless = (await db.execute(pm_tree.needs_home_stmt(repos))).scalars().all()
     for wi in homeless:
         if wi.id not in seen:

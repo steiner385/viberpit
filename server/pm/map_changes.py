@@ -35,11 +35,11 @@ from server.db.models import (
     InitiativeFeature,
     PersonaFeature,
     Project,
-    ProjectRepo,
     TriageProposal,
     WorkItem,
 )
 
+from . import product_repos
 from .classification import FEATURE_DOCS_DIR, feature_doc_path
 from .feature_index import FeatureDocsRead, FeatureIndexPlan, merge_branch_over_main, plan_feature_index
 from .featuredoc import FeatureDoc, FeatureDocError, FeatureLinkRef, parse_feature_doc
@@ -350,13 +350,11 @@ class MapChangesService:
         return await open_pointer_row(db, project.id)
 
     async def _primary_repo(self, db, project: Project) -> str:
-        row = (await db.execute(select(ProjectRepo).where(
-            ProjectRepo.project_id == project.id,
-            ProjectRepo.is_primary.is_(True)))).scalars().first()
-        if row is None or not row.repo:
+        repo = await product_repos.primary_repo(db, project.id)
+        if not repo:
             raise NoPrimaryRepo(
                 f"product '{project.slug}' has no primary repo to write capability docs to")
-        return row.repo
+        return repo
 
     async def _feature_by_slug(self, db, project: Project, slug: str) -> Feature | None:
         return (await db.execute(select(Feature).where(

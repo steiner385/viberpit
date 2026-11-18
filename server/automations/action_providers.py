@@ -263,6 +263,7 @@ _CICD_STATUS_MAP = {
     "exists": ("warn", "An issue is already filed for this finding"),
     "unknown": ("warn", "Finding is no longer open"),
     "file_failed": ("error", "Could not file the issue — see the automation feed"),
+    "repo_retired": ("warn", "The finding's repo is retired; no issue was filed"),
     # Systemic-red incidents (SystemicRedLoop.action_result).
     "brake_cleared": ("ok", "Brake cleared — it will not be re-applied for this incident"),
     "dismissed": ("ok", "Incident dismissed and its issue closed"),

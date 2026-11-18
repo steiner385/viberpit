@@ -15,6 +15,7 @@ from server.automations.product_admission import gather_implementation_snapshot
 from server.config import get_settings
 from server.db import db_session
 from server.db.models import Host, Project, ProjectRepo, Session as DbSession
+from server.pm.product_repos import ACTIVE
 from server.sessions.global_cap import read_global_cap
 
 from .capacity_readout import CapacitySources
@@ -50,7 +51,7 @@ def sources_for(orch) -> CapacitySources:
             rows = (await db.execute(
                 select(Project, ProjectRepo)
                 .outerjoin(ProjectRepo, and_(ProjectRepo.project_id == Project.id,
-                                             ProjectRepo.is_primary.is_(True)))
+                                             ProjectRepo.is_primary.is_(True), ACTIVE))
             )).all()
         seen: set[str] = set()
         out: list[dict] = []

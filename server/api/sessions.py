@@ -74,6 +74,7 @@ from server.sessions import sandbox as sandbox_mod
 from server.sessions.model_policy import quota_model
 from server.sessions.permissions import resolve_permission_mode
 from server.sessions.selection import AllAccountsBusy, select_account
+from server.pm.product_repos import RepoRetired
 from server.sessions.remote import AppCommandGateUnavailable
 from server.api.fleet_errors import FleetDispatchRefused, fleet_refusal_response
 from server.sessions.background_tasks import EMPTY_BACKGROUND_WORK
@@ -1117,6 +1118,8 @@ async def create_session(
                 },
             },
         )
+    except RepoRetired:
+        raise  # a ValueError, but a 409 (the app's RepoRetired handler), not invalid_cwd
     except ValueError as exc:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,

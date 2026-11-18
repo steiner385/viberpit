@@ -56,7 +56,8 @@ from server.pm.issue_disposition import CloseReason, IssueDecision
 from server.pm.map_changes import NoOpenMapChanges, NoPrimaryRepo, NotBehind, open_pointer_row
 from server.pm.map_changes_gh import GhWriteError
 from server.pm.map_changes_ops import SLUG_RE, MapOp, MapOpError
-from server.pm.product_repos import REPO_ORDER, RepoRetired
+from server.pm import product_repos
+from server.pm.product_repos import REPO_ORDER, RepoRetired, require_active
 from server.pm import repo_lifecycle
 from server.pm.repo_lifecycle import RepoLifecycleError
 from server.pm.outcomes import escalation_to_wire, list_outcomes_stmt, outcome_to_dict
@@ -591,16 +592,14 @@ async def update_project(
 
 @contextmanager
 def _repo_lifecycle_errors() -> Iterator[None]:
-    """Map server/pm/repo_lifecycle.py refusals to HTTP."""
+    """Map server/pm/repo_lifecycle.py refusals to HTTP (``RepoRetired`` -> the app's
+    409 handler)."""
     try:
         yield
     except OwnershipConflict as exc:
         raise HTTPException(status_code=409, detail={
             "error": "ownership_conflict", "ownershipState": exc.state, "message": str(exc),
         }) from exc
-    except RepoRetired as exc:
-        raise HTTPException(status_code=409, detail={
-            "error": "repo_retired", "message": str(exc)}) from exc
     except RepoLifecycleError as exc:
         raise HTTPException(status_code=exc.status, detail={
             "error": exc.code, "message": str(exc)}) from exc
@@ -1539,11 +1538,9 @@ async def get_onboarding(
     p = await _load_project(db, slug)
     orch = request.app.state.sessions
     view = await orch.pm_onboarding_counts(p.id)
-    primary = (await db.execute(select(ProjectRepo).where(
-        ProjectRepo.project_id == p.id,
-        ProjectRepo.is_primary.is_(True)))).scalars().first()
+    primary = await product_repos.primary_repo(db, p.id)
     map_pr = None
-    if primary is not None and primary.repo:
+    if primary:
         branch = map_branch_name(slug)
         # No PR number to link: this is the ARCHAEOLOGY map PR
         # (`classification.map_branch_name`, a one-shot synthesis), which has no
@@ -1555,7 +1552,7 @@ async def get_onboarding(
         # deterministic, so a GitHub PR search on it is the link.
         map_pr = {
             "branch": branch,
-            "url": f"https://github.com/{primary.repo}/pulls?q="
+            "url": f"https://github.com/{primary}/pulls?q="
                    + quote_plus(f"is:pr head:{branch}"),
         }
     return {
@@ -3218,6 +3215,11 @@ async def close_issues(body: IssueCloseBody, request: Request,
             why = f"{ref} is already closed"
         if wi is not None and dup is not None and wi.id == dup.id:
             why = f"{ref} cannot be closed as a duplicate of itself"
+        if why is None and wi is not None:
+            try:
+                await require_active(wi.repo)  # no comment on a retired repo's issue
+            except RepoRetired as exc:
+                why = str(exc)
         result: dict
         comment_url: str | None = None
         if why is not None:

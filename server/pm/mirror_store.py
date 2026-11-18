@@ -18,6 +18,7 @@ from .decisions import STATUS_PENDING
 from .dep_plan import DepRowView, observed_deps, plan_dep_rows
 from .gh_projects import GhProjectItemView, GhProjectView, IssueRelView
 from .journal import applied_keys, own_write_key
+from .product_repos import active_repos_sync
 from .reconcile_diff import remove_blocked_by_mutation
 from .refs import split_ref
 
@@ -81,8 +82,9 @@ def list_product_views(db: Session) -> list[ProductSyncView]:
     views = []
     for project in db.query(Project).all():
         gh = db.query(GhProject).filter_by(project_id=project.id).first()
-        repos = [r.repo for r in db.query(ProjectRepo)
-                 .filter_by(project_id=project.id).all() if r.repo]
+        # Active repos only, primary first: a retired repo drops out of every
+        # automation queue fed from here (Backlog Runner, needs-you, reconcile).
+        repos = active_repos_sync(db, project.id)
         views.append(ProductSyncView(
             project_id=project.id, slug=project.slug, name=project.name,
             gh_project_db_id=gh.id if gh else None,

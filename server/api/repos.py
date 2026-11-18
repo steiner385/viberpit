@@ -20,6 +20,7 @@ from server.auth.middleware import current_identity
 from server.db import get_db
 from server.github import ci_issues
 from server.ipc.client import DaemonError, DaemonUnavailable
+from server.pm.product_repos import require_active
 
 router = APIRouter(prefix="/api/github", tags=["github"])
 log = logging.getLogger(__name__)
@@ -164,6 +165,7 @@ async def create_github_issue(
     default: that default is the CI/CD Doctor's ``ci-doctor`` label, and an issue filed
     from here is not a doctor finding.
     """
+    await require_active(payload.repo)  # retired repo -> the app's 409 repo_retired
     text = ci_issues.with_authorship(
         payload.body, via=getattr(request.state, "via", None), identity=identity)
     number = await asyncio.to_thread(
@@ -199,6 +201,7 @@ async def comment_on_github_issue(
     repo = f"{owner}/{name}"
     if not ci_issues.valid_repo(repo):
         raise HTTPException(status_code=422, detail="repo must be 'owner/name'")
+    await require_active(repo)  # retired repo -> the app's 409 repo_retired
     via = getattr(request.state, "via", None)
     text = ci_issues.with_authorship(payload.body, via=via, identity=identity)
     url = await asyncio.to_thread(ci_issues.comment_on_issue, repo, number, text,

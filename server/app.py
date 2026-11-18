@@ -998,6 +998,16 @@ def create_app(
             "code": _exc.code, "message": f"This session is moving to {_exc.target}.",
             "movingTo": _exc.target}})
 
+    from server.pm.product_repos import RepoRetired
+
+    @app.exception_handler(RepoRetired)
+    async def _repo_retired_handler(_request, _exc):  # noqa: ANN001
+        # New work (a session, an issue/comment write, a lifecycle call) against a
+        # retired product repo. The one HTTP shape for that refusal.
+        return JSONResponse(status_code=409, content={"detail": {
+            "error": "repo_retired", "message": str(_exc), "repo": _exc.repo,
+            "supersededBy": _exc.superseded_by}})
+
     from server.sessions import sandbox as _sandbox
 
     def _sandbox_response(code: str, reason: str | None) -> JSONResponse:
