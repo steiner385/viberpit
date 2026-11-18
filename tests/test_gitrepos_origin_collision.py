@@ -155,3 +155,44 @@ def test_ensure_clone_rejects_illegal_names(root: str, tmp_path: Path, bad: str)
     assert not Path(root).exists() or not any(Path(root).rglob("*"))
     with pytest.raises(ValueError):
         gitrepos.collision_clone_path(tmp_path, bad)
+
+
+def test_remote_subsection_name_is_case_sensitive(tmp_path: Path) -> None:
+    d = _init(tmp_path / "d", None)
+    with (d / ".git" / "config").open("a") as f:
+        f.write('[remote "Origin"]\n\turl = https://github.com/a/b.git\n')
+    assert gitrepos._origin_url(d) is None
+    assert not gitrepos.clone_origin_matches(d, "a/b")
+
+
+def test_include_section_uses_git_fallback(tmp_path: Path) -> None:
+    d = _init(tmp_path / "d", None)
+    inc = tmp_path / "inc.cfg"
+    inc.write_text('[remote "origin"]\n\turl = https://github.com/a/b.git\n')
+    with (d / ".git" / "config").open("a") as f:
+        f.write(f"[include]\n\tpath = {inc}\n")
+    assert gitrepos._origin_url(d) == "https://github.com/a/b.git"
+    assert gitrepos.clone_origin_matches(d, "a/b")
+    assert not gitrepos.clone_origin_matches(d, "a/c")
+
+
+def test_url_with_inline_comment_uses_git_fallback(tmp_path: Path) -> None:
+    d = _init(tmp_path / "d", None)
+    with (d / ".git" / "config").open("a") as f:
+        f.write('[remote "origin"]\n\turl = https://github.com/a/b.git # moved\n')
+    assert gitrepos._origin_url(d) == "https://github.com/a/b.git"
+
+
+def test_origin_secret_never_logged(root: str, tmp_path: Path,
+                                    caplog: pytest.LogCaptureFixture) -> None:
+    _old_dir(root, "https://x-access-token:SECRET@example.com/a/b.git")
+    _old_dir(root, "https://x-access-token:SECRET@github.com/acme/other.git",
+             "acme/widget2")
+    caplog.set_level(logging.DEBUG)
+    remote = tmp_path / "r.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    gitrepos.ensure_clone(root, "acme/widget2", str(remote))
+    assert "clone.origin_mismatch" in caplog.text
+    assert "SECRET" not in caplog.text
+    assert "SECRET" not in "".join(str(r.__dict__) for r in caplog.records)
+    assert gitrepos._loggable_origin("https://u:SECRET@example.com/a/b.git") == "other"

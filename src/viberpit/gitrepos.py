@@ -440,30 +440,64 @@ def clone_origin_matches(path: Path, name_with_owner: str) -> bool:
     return "/".join(parts[-2:]).casefold() == name_with_owner.casefold()
 
 
-_REMOTE_ORIGIN_HEADER_RE = re.compile(r'^\[\s*remote\s+"origin"\s*\]\s*$', re.IGNORECASE)
+# Only the ``remote`` section keyword is case-insensitive in git; the quoted
+# subsection name is case-SENSITIVE, so ``[remote "Origin"]`` is another remote.
+_REMOTE_ORIGIN_HEADER_RE = re.compile(r'^\[\s*(?i:remote)\s+"origin"\s*\]\s*$')
+_CONFIG_NEEDS_GIT_RE = re.compile(r"^\[\s*(?i:include|url)\b")
 
 
 def _origin_url(path: Path) -> str | None:
-    """``[remote "origin"] url`` from ``<path>/.git/config``, else None.
+    """The clone's ``remote.origin.url``, else None.
 
-    Read straight off the file: ``clone_path`` runs on hot read paths (once per
-    repo-picker name), where a ``git`` subprocess per clone adds up. ``.git``
-    as a file (a linked worktree) or an unreadable config yields None.
+    ``clone_path`` runs on hot read paths (once per repo-picker name), so the
+    common case is a line scan of ``<path>/.git/config`` with no subprocess.
+    Anything the scan could read differently from git — an ``[include]`` /
+    ``[includeIf]`` section, a ``url.*`` (insteadOf) section, or a value with
+    escapes, quotes or inline comments — is delegated to ``git config``. An
+    unreadable config, ``.git`` as a file (a linked worktree), or a failed or
+    timed-out git call yields None.
     """
     try:
         text = (path / ".git" / "config").read_text(errors="replace")
     except OSError:
         return None
     in_origin = False
+    found: str | None = None
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("["):
+            if _CONFIG_NEEDS_GIT_RE.match(line):
+                return _origin_url_via_git(path)
             in_origin = bool(_REMOTE_ORIGIN_HEADER_RE.match(line))
         elif in_origin:
             key, sep, value = line.partition("=")
             if sep and key.strip().lower() == "url":
-                return value.strip().strip('"') or None
-    return None
+                value = value.strip()
+                if any(c in value for c in '\\"#;'):
+                    return _origin_url_via_git(path)
+                found = value or None
+    return found
+
+
+def _origin_url_via_git(path: Path) -> str | None:
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(path), "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, env=_git_env(None), timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = r.stdout.strip()
+    return out if r.returncode == 0 and out else None
+
+
+def _loggable_origin(url: str | None) -> str:
+    """A log-safe description of an origin URL: never the raw URL (userinfo/tokens)."""
+    if url is None:
+        return "unreadable"
+    parts = [p for p in _normalize_remote_url(url).split("/") if p]
+    if len(parts) >= 3 and parts[0] == "github.com":
+        return "/".join(parts[-2:])
+    return "other"
 
 
 def _resolve_clone(repo_root: str, name_with_owner: str) -> tuple[Path, Path | None]:
@@ -864,11 +898,8 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
     if rejected is not None:
         # INFO, not WARNING: the sink files an issue per WARNING, and this is
         # the designed outcome for a moved repo. The old dir is left untouched.
-        found = _origin_url(rejected)
         log.info("clone.origin_mismatch repo=%s existing=%s origin=%s using=%s",
-                 name_with_owner, rejected,
-                 "unreadable" if found is None else repo_at_path(str(rejected)) or found,
-                 dest)
+                 name_with_owner, rejected, _loggable_origin(_origin_url(rejected)), dest)
     owner = name_with_owner.partition("/")[0]
     # Recorded on the alert so the notification links to the page that fixes the
     # credential actually in use (App installation vs. personal access token).
