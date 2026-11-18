@@ -137,7 +137,7 @@ old/new pairs).
 3. **Make it primary.** Passing `makePrimary` on add does both. Merge or abandon any open
    map-changes PR first.
 4. **Retire the old repo**, giving a reason and `superseded by` the new repo. If you skipped
-   step 2 and the old repo is still primary, pass `newPrimary` here. From now on nothing new is created there.
+   step 3 and the old repo is still primary, pass `newPrimary` here. From now on nothing new is created there.
 5. **Wait for the first backfill** of the new repo, so its issues are mirrored. (Pairs recorded
    early are kept `pending` and migrate after the mirror catches up.)
 6. **Moved issues...**: accept the title-match suggestions, then add the missing pairs by hand
