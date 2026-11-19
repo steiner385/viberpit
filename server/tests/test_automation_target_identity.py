@@ -211,6 +211,54 @@ async def test_repository_snapshot_partial_or_failed_chunks_remain_unknown():
 
 
 @pytest.mark.asyncio
+async def test_one_deleted_repo_does_not_wipe_its_owners_chunk():
+    """#3415: GitHub answers a batch naming a deleted repo with partial ``data``
+    plus a per-alias NOT_FOUND error. The other aliases keep their identity and
+    the deleted one is verified absent (``REPO_NOT_FOUND``), not unknown."""
+    from server.automations.target_identity import REPO_NOT_FOUND, resolve_repositories
+    fetch = AsyncMock(return_value={
+        "data": {"r0": {"nameWithOwner": "o/live"}, "r1": None,
+                 "r2": {"nameWithOwner": "o/other"}},
+        "errors": [{"type": "NOT_FOUND", "path": ["r1"], "message": "Could not resolve"}],
+    })
+    assert await resolve_repositories(["o/live", "o/gone", "o/other"], fetch=fetch) == {
+        "o/live": "o/live", "o/gone": REPO_NOT_FOUND, "o/other": "o/other"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("errors", [
+    [{"type": "FORBIDDEN", "path": ["r1"], "message": "no"}],
+    [{"type": "NOT_FOUND", "message": "pathless"}],
+    [{"type": "NOT_FOUND", "path": ["r9"], "message": "unknown alias"}],
+    [{"type": "NOT_FOUND", "path": ["r0"], "message": "alias has data"}],
+    [{"type": "NOT_FOUND", "path": ["r1"]}, {"message": "secret"}],
+])
+async def test_any_other_error_still_leaves_the_whole_chunk_unknown(errors):
+    from server.automations.target_identity import resolve_repositories
+    fetch = AsyncMock(return_value={
+        "data": {"r0": {"nameWithOwner": "o/live"}, "r1": None}, "errors": errors})
+    assert await resolve_repositories(["o/live", "o/gone"], fetch=fetch) == {
+        "o/live": None, "o/gone": None}
+
+
+@pytest.mark.asyncio
+async def test_default_transport_returns_partial_not_found_payloads(monkeypatch):
+    """``gh`` exits non-zero on any ``errors`` array; the default fetch must hand
+    the GraphQL body back so a NOT_FOUND alias can be told apart from a failure."""
+    import json
+    from types import SimpleNamespace
+    from server.automations import target_identity
+    body = {"data": {"r0": None}, "errors": [{"type": "NOT_FOUND", "path": ["r0"]}]}
+    monkeypatch.setattr(target_identity.gitrepos, "app_token_for_owner", lambda owner: None)
+    monkeypatch.setattr(target_identity.gitrepos, "_run_gh", lambda *a, **k: SimpleNamespace(
+        returncode=1, stdout=json.dumps(body), stderr="gh: Could not resolve"))
+    assert await target_identity._fetch("o", "query { }", partial_ok=True) == body
+    # Target resolution keeps the strict default: any error is a failed chunk.
+    with pytest.raises(RuntimeError):
+        await target_identity._fetch("o", "query { }")
+
+
+@pytest.mark.asyncio
 async def test_repository_snapshot_bounds_chunks_and_propagates_cancellation():
     import asyncio
     from server.automations.target_identity import resolve_repositories
