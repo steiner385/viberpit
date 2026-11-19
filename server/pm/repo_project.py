@@ -48,14 +48,16 @@ async def resolve_repo_ownership(
     evidence, keyed by requested/registered spelling. Missing, invalid, failed,
     or contradictory entries are unknown. All registrations must be covered:
     an unknown alias could name any requested repository. Verified unrelated
-    registrations do not interfere. Multiple aliases in one product coalesce.
+    registrations do not interfere, and neither do registrations GitHub
+    verified absent (``REPO_NOT_FOUND``). Requesting one of those leaves it
+    unresolved. Multiple aliases in one product coalesce.
 
     Without a snapshot, only case-insensitive registration matches are examined
     for legacy callers. A local unique match has no canonical identity evidence;
     unmatched names are unresolved, never verified missing. New authorization
     callers must supply a snapshot, including an empty one when lookup failed.
     """
-    from server.automations.target_identity import valid_repo_name
+    from server.automations.target_identity import REPO_NOT_FOUND, valid_repo_name
 
     wanted = sorted({repo for repo in repos if repo})
     if not wanted:
@@ -70,7 +72,9 @@ async def resolve_repo_ownership(
     if canonical_repos is not None:
         for alias, value in canonical_repos.items():
             canonical = canonical_repo_name({"data": {"repository": {"nameWithOwner": value}}})
-            if not valid_repo_name(canonical):
+            if value == REPO_NOT_FOUND:
+                canonical = REPO_NOT_FOUND
+            elif not valid_repo_name(canonical):
                 canonical = None
             key = alias.casefold()
             previous = identities.get(key)
@@ -84,7 +88,7 @@ async def resolve_repo_ownership(
 
     out: dict[str, RepoOwnership] = {}
     for requested in wanted:
-        canonical = identities.get(requested.casefold())
+        canonical = identities.get(requested.casefold()) or None
         candidates: dict[str, RepoOwner] = {}
         unresolved: set[str] = set()
         if canonical_repos is not None and canonical is None:
@@ -96,6 +100,11 @@ async def resolve_repo_ownership(
                 matches = registered.casefold() == requested.casefold()
             else:
                 registered_canonical = identities.get(registered.casefold())
+                if registered_canonical == REPO_NOT_FOUND:
+                    # GitHub verified this spelling names no visible repo, so it is
+                    # not an alias of any repo it did resolve. Treating it as
+                    # unknown let one deleted repo halt every product (#3415).
+                    continue
                 if registered_canonical is None:
                     unresolved.add(registered)
                     continue

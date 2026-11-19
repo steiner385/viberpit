@@ -9,7 +9,7 @@ import asyncio
 import json
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Literal
+from typing import Final, Literal
 
 from viberpit import gitrepos
 
@@ -23,7 +23,13 @@ class TargetIdentityError(ValueError):
     """Resolution failed; callers must not fall back to display-ref ownership."""
 
 
-async def _fetch(owner: str, query: str) -> dict:
+#: ``resolve_repositories`` value for a spelling GitHub answered NOT_FOUND: verified
+#: absent (deleted, or invisible to its owner's credential), not unknown. Falsy and
+#: never a valid repo name, so a caller testing truthiness still reads "no identity".
+REPO_NOT_FOUND: Final = ""
+
+
+async def _fetch(owner: str, query: str, *, partial_ok: bool = False) -> dict:
     # Reuse the application's credential selection, subprocess isolation and
     # strict GraphQL decoder. Pin authority even when GH_HOST names Enterprise.
     token = await asyncio.to_thread(gitrepos.app_token_for_owner, owner)
@@ -32,7 +38,21 @@ async def _fetch(owner: str, query: str) -> dict:
         ["api", "--hostname", "github.com", "graphql", "-f", f"query={query}"],
         token=token, timeout=30,
     )
-    return payload_from_gh(proc, partial_ok=False)
+    return payload_from_gh(proc, partial_ok=partial_ok)
+
+
+def _not_found_aliases(payload: dict, data: dict, aliases: int) -> set[str] | None:
+    """The aliases a reply's ``errors`` name as NOT_FOUND, or ``None`` when any
+    error is anything else — that chunk stays unknown, exactly as before (#3415)."""
+    missing: set[str] = set()
+    for error in payload.get("errors") or ():
+        path = error.get("path") if isinstance(error, dict) else None
+        if (not isinstance(path, list) or len(path) != 1 or error.get("type") != "NOT_FOUND"
+                or path[0] not in {f"r{i}" for i in range(aliases)}
+                or data.get(path[0]) is not None):
+            return None
+        missing.add(path[0])
+    return missing
 
 
 def valid_repo_name(value: object) -> bool:
@@ -65,6 +85,11 @@ async def resolve_repositories(
     owners and 50-repository chunks share the existing target transport. Failed
     chunks remain unknown; a malformed/missing item cannot acquire an identity
     from another item. No alias is inferred from its spelling.
+
+    A reply whose only errors are per-alias NOT_FOUND keeps the rest of its
+    chunk and marks those spellings ``REPO_NOT_FOUND``: one deleted repo must
+    not erase its owner's other identities (#3415). Any other error still
+    leaves the whole chunk unknown.
     """
     result: dict[str, str | None] = dict.fromkeys(repos)
     spellings: dict[str, list[str]] = {}
@@ -86,16 +111,24 @@ async def resolve_repositories(
                     f"r{index}: repository(owner: {json.dumps(login)}, "
                     f"name: {json.dumps(name)}) {{ nameWithOwner }}")
             try:
-                payload = await (fetch or _fetch)(owner, "query { " + " ".join(aliases) + " }")
+                query = "query { " + " ".join(aliases) + " }"
+                payload = await (fetch(owner, query) if fetch else _fetch(owner, query, partial_ok=True))
             except Exception:
                 continue
-            if not isinstance(payload, dict) or payload.get("errors"):
+            if not isinstance(payload, dict):
                 continue
             data = payload.get("data")
             if not isinstance(data, dict):
                 continue
+            not_found = _not_found_aliases(payload, data, len(chunk))
+            if not_found is None:
+                continue
             for index, repo in enumerate(chunk):
                 repository = data.get(f"r{index}")
+                if f"r{index}" in not_found:
+                    for spelling in spellings[repo.casefold()]:
+                        result[spelling] = REPO_NOT_FOUND
+                    continue
                 if not isinstance(repository, dict):
                     continue
                 canonical = canonical_repo_name({"data": {"repository": repository}})

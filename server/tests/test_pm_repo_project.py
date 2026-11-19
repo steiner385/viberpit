@@ -175,6 +175,25 @@ async def test_unavailable_registration_blocks_unique_without_guessing_alias(db_
 
 
 @pytest.mark.asyncio
+async def test_registration_deleted_on_github_does_not_block_other_products(db_env):
+    """#3415: one product's repo was deleted on GitHub (NOT_FOUND). It cannot be
+    an alias of any repo GitHub did resolve, so every other product keeps its
+    unique ownership — the deleted repo itself stays unresolved."""
+    from server.automations.target_identity import REPO_NOT_FOUND
+    gone = "steiner385/ghostdriver-mcp"
+    ids = await _seed(db_env, [("product", REPO), ("other", OTHER_REPO), ("ghost", gone)])
+    snapshot = {REPO: REPO, OTHER_REPO: OTHER_REPO, gone: REPO_NOT_FOUND}
+    async with db_session() as db:
+        result = await resolve_repo_ownership(db, [REPO, OTHER_REPO, gone], canonical_repos=snapshot)
+    assert result[REPO].state == "unique"
+    assert result[REPO].owner == RepoOwner(ids["product"], "product")
+    assert result[REPO].unresolved_repos == ()
+    assert result[OTHER_REPO].owner == RepoOwner(ids["other"], "other")
+    assert result[gone].state == "unresolved"
+    assert result[gone].owner is None and result[gone].canonical_repo is None
+
+
+@pytest.mark.asyncio
 async def test_null_slug_is_unresolved_not_missing_or_unique(db_env):
     await _seed(db_env, [("product", REPO)])
     async with db_session() as db:
