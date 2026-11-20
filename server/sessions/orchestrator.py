@@ -14724,7 +14724,7 @@ class SessionOrchestrator:
                         log.info(
                             "pm_classify.ambiguous_work_item session=%s number=%s "
                             "kind=%s repos=%s — skipped", session_id, row.number,
-                            row.kind, sorted(m.repo for m in matches))
+                            row.kind, sorted(str(m.repo) for m in matches))
                         continue
                     matches = live
                 wi = matches[0] if matches else None
