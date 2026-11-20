@@ -92,3 +92,49 @@ def test_default_query_non_transient_failure_still_warns(caplog, monkeypatch):
     warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert len(warned) == 1
     assert "pr_poller.query_failed" in warned[0].getMessage()
+
+
+_DEAD_REPO_STDERR = "gh: Could not resolve to a Repository with the name 'o/gone'."
+
+
+def _partial_gh(stdout):
+    import subprocess
+
+    def fake_run_gh(args, **kwargs):
+        return subprocess.CompletedProcess(args, 1, stdout, _DEAD_REPO_STDERR)
+
+    return fake_run_gh
+
+
+def test_default_query_keeps_live_repos_when_one_is_deleted(caplog, monkeypatch):
+    """#3411: one deleted repo's NOT_FOUND alias must not drop the owner's other PRs."""
+    import json
+    import logging
+
+    live = {"pullRequests": {"nodes": []}}
+    monkeypatch.setattr(gitrepos, "_run_gh", _partial_gh(json.dumps({
+        "data": {"r0": None, "r1": live},
+        "errors": [{"type": "NOT_FOUND", "path": ["r0"], "message": "Could not resolve"}],
+    })))
+    with caplog.at_level(logging.DEBUG):
+        out = pr_poller._default_query([("o/gone", "b"), ("o/live", "b")])
+
+    assert out["data"] == {"r1": live}
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+    assert not any("pr_poller.query_failed" in r.getMessage() for r in caplog.records)
+
+
+def test_default_query_non_not_found_partial_still_warns_and_drops_owner(caplog, monkeypatch):
+    import json
+    import logging
+
+    monkeypatch.setattr(gitrepos, "_run_gh", _partial_gh(json.dumps({
+        "data": {"r0": None, "r1": {"pullRequests": {"nodes": []}}},
+        "errors": [{"type": "FORBIDDEN", "path": ["r0"], "message": "no access"}],
+    })))
+    with caplog.at_level(logging.DEBUG):
+        out = pr_poller._default_query([("o/gone", "b"), ("o/live", "b")])
+
+    assert out["data"] == {}
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warned) == 1 and "pr_poller.query_failed" in warned[0].getMessage()

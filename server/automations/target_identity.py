@@ -14,7 +14,7 @@ from typing import Final, Literal
 from viberpit import gitrepos
 
 from server.automations.ownership import CanonicalTarget
-from server.pm.gh_mutations import payload_from_gh
+from server.pm.gh_mutations import not_found_aliases, payload_from_gh
 from server.pm.github_sync import canonical_repo_name
 from server.pm.refs import split_ref
 
@@ -39,20 +39,6 @@ async def _fetch(owner: str, query: str, *, partial_ok: bool = False) -> dict:
         token=token, timeout=30,
     )
     return payload_from_gh(proc, partial_ok=partial_ok)
-
-
-def _not_found_aliases(payload: dict, data: dict, aliases: int) -> set[str] | None:
-    """The aliases a reply's ``errors`` name as NOT_FOUND, or ``None`` when any
-    error is anything else — that chunk stays unknown, exactly as before (#3415)."""
-    missing: set[str] = set()
-    for error in payload.get("errors") or ():
-        path = error.get("path") if isinstance(error, dict) else None
-        if (not isinstance(path, list) or len(path) != 1 or error.get("type") != "NOT_FOUND"
-                or path[0] not in {f"r{i}" for i in range(aliases)}
-                or data.get(path[0]) is not None):
-            return None
-        missing.add(path[0])
-    return missing
 
 
 def valid_repo_name(value: object) -> bool:
@@ -120,7 +106,7 @@ async def resolve_repositories(
             data = payload.get("data")
             if not isinstance(data, dict):
                 continue
-            not_found = _not_found_aliases(payload, data, len(chunk))
+            not_found = not_found_aliases(payload, data, len(chunk))
             if not_found is None:
                 continue
             for index, repo in enumerate(chunk):

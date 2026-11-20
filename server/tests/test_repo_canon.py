@@ -134,3 +134,37 @@ def test_repeated_lookup_failures_are_throttled_not_refiled(caplog):
     debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
     assert len(warnings) == 1
     assert len(debugs) == 1
+
+
+def _gh_exit(returncode: int, stdout: str, stderr: str = ""):
+    def run(args, **kw):
+        class P:
+            pass
+        P.returncode, P.stdout, P.stderr = returncode, stdout, stderr
+        return P()
+    return run
+
+
+def test_a_deleted_repo_in_the_batch_does_not_fail_the_whole_lookup(caplog):
+    """#3417: gh exits non-zero on a per-alias NOT_FOUND, but every other alias
+    resolved. The live slug canonicalizes; the dead one is simply absent."""
+    gh = _gh_exit(1, json.dumps({
+        "data": {"r0": {"nameWithOwner": "acme/new-name"}, "r1": None},
+        "errors": [{"type": "NOT_FOUND", "path": ["r1"], "message": "Could not resolve"}],
+    }), "gh: Could not resolve to a Repository with the name 'steiner385/gone'.")
+    repo_canon._LOOKUP_FAILED_THROTTLE.clear()
+    with caplog.at_level(logging.DEBUG, logger="server.github.repo_canon"):
+        out = repo_canon.canonical_slugs(["acme/old-name", "steiner385/gone"], gh_run=gh)
+    assert out == {"acme/old-name": "acme/new-name"}
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.parametrize("stdout", ["", "<html>502</html>", '{"message": "Bad credentials"}',
+                                    json.dumps({"data": {"r0": None},
+                                                "errors": [{"type": "FORBIDDEN", "path": ["r0"]}]})])
+def test_a_failed_lookup_that_is_not_a_dead_alias_still_warns(caplog, stdout):
+    repo_canon._LOOKUP_FAILED_THROTTLE.clear()
+    with caplog.at_level(logging.DEBUG, logger="server.github.repo_canon"):
+        out = repo_canon.canonical_slugs(["acme/old-name"], gh_run=_gh_exit(1, stdout, "gh failed"))
+    assert out == {}
+    assert [r for r in caplog.records if r.levelno == logging.WARNING]

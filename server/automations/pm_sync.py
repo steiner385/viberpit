@@ -44,6 +44,9 @@ from .engine_policy import EnginePolicy
 
 log = logging.getLogger(__name__)
 
+#: gh's message when a registered repo no longer exists on GitHub (#3412).
+_REPO_GONE_MARKER = "Could not resolve to a Repository"
+
 
 def log_gh_failure(*args: Any, **kwargs: Any) -> None:
     """``host_failures.log_gh_failure`` with GitHub-edge 5xx demoted to INFO:
@@ -376,6 +379,13 @@ class PmSyncLoop:
                 # host_failures.py documents for ci_issues/deployments/pr_poller
                 # on this exact incident (#1917-#1921, 2026-09-17). Anything
                 # else keeps reporting at WARNING with repo= exactly as before.
+                if _REPO_GONE_MARKER in str(exc):
+                    # The repo was deleted (or renamed away) on GitHub but is
+                    # still registered: an owner data fix (re-point or retire,
+                    # #3410), not a code fault — the sync_error event above is
+                    # the operator signal, so don't auto-file it per tick (#3412).
+                    log.info("pm_sync.repo_not_found repo=%s", view.repo)
+                    continue
                 log_gh_failure(log, str(exc), "pm_sync.repo_error repo=%s",
                                 view.repo, exc_info=True)
         if refreshed:

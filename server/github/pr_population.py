@@ -22,6 +22,7 @@ from viberpit import gitrepos
 from server.aio import cancel_and_reap
 from server.db.transient import is_transient_db_failure
 from server.github import app_auth
+from server.pm.gh_mutations import partial_not_found_reply
 from .api_budget import PriorityGate
 from .host_failures import is_transient_github_edge_failure, log_gh_failure
 from .merge_queue import build_merge_queue_query, parse_merge_queue_response
@@ -244,9 +245,13 @@ def _default_merge_queue_query(repos: list[str]) -> dict:
             continue
         token = app_auth.token_for_owner(owner)
         proc = gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"], token=token)
-        if proc.returncode != 0:
+        if proc.returncode == 0:
+            sub_data = (json.loads(proc.stdout or "{}").get("data") or {})
+        elif (partial := partial_not_found_reply(proc, len(subset))) is not None:
+            # A deleted repo in the owner's batch: keep every live alias.
+            sub_data = partial[0]
+        else:
             raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql (merge queue) failed")
-        sub_data = (json.loads(proc.stdout or "{}").get("data") or {})
         for j, global_i in enumerate(idxs):
             node = sub_data.get(f"r{j}")
             if node is not None:

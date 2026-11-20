@@ -17,6 +17,8 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from server.pm.gh_mutations import partial_not_found_reply
+
 from .host_failures import is_transient_github_edge_failure, log_gh_failure
 from .pr_status import _DEPLOY_NODE_FIELDS, _alias
 
@@ -146,6 +148,13 @@ def fetch_deployments(repos: list[str], *, run=None) -> dict[str, list[Deploymen
             proc = runner(["api", "graphql", "-f", f"query={query}"], token=token)
             if getattr(proc, "returncode", 1) == 0:
                 data = json.loads(getattr(proc, "stdout", "") or "")
+            elif (partial := partial_not_found_reply(proc, len(group))) is not None:
+                # A deleted repo in the group: gh exits non-zero but every live
+                # alias's data is good. Keep it — the missing alias parses to
+                # None — instead of blanking the whole group's deploy watch (#3414).
+                data = {"data": partial[0]}
+                log.info("github.deployments_repos_not_found repos='%s'",
+                         ",".join(sorted(group[int(a[1:])] for a in partial[1])))
             else:
                 stderr = str(getattr(proc, "stderr", "") or "")
                 if is_transient_github_edge_failure(stderr):

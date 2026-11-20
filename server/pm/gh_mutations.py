@@ -196,6 +196,44 @@ def payload_from_gh(proc: object, *, partial_ok: bool) -> dict:
         f"gh graphql failed: {(getattr(proc, 'stderr', '') or '').strip()[:500]}")
 
 
+def not_found_aliases(payload: dict, data: dict, aliases: int) -> set[str] | None:
+    """The ``r{i}`` aliases a reply's ``errors`` name as NOT_FOUND, or ``None`` when
+    any error is anything else — the caller then treats the batch as failed (#3415).
+
+    A NOT_FOUND counts only when it names exactly one of this document's own
+    ``r0..r{aliases-1}`` aliases and that alias's ``data`` node is null: a deleted
+    repo in an aliased batch, not a document-level failure."""
+    missing: set[str] = set()
+    for error in payload.get("errors") or ():
+        path = error.get("path") if isinstance(error, dict) else None
+        if (not isinstance(path, list) or len(path) != 1 or error.get("type") != "NOT_FOUND"
+                or path[0] not in {f"r{i}" for i in range(aliases)}
+                or data.get(path[0]) is not None):
+            return None
+        missing.add(path[0])
+    return missing
+
+
+def partial_not_found_reply(proc: object, aliases: int) -> tuple[dict, set[str]] | None:
+    """A failed ``gh api graphql`` exit that is only per-alias NOT_FOUNDs.
+
+    ``gh`` exits non-zero whenever a reply carries ``errors`` — so ONE deleted repo
+    in an aliased ``r{i}: repository(...)`` batch fails the whole call although
+    ``data`` holds every live alias. Returns ``(data, missing_aliases)`` when every
+    error is a per-alias NOT_FOUND (see :func:`not_found_aliases`); ``None`` for any
+    other failure (transport, auth, rate limit, a mixed error list), which the
+    caller keeps reporting exactly as before (#3411, #3414, #3417)."""
+    try:
+        payload = payload_from_gh(proc, partial_ok=True)
+    except RuntimeError:
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict) or not payload.get("errors"):
+        return None
+    missing = not_found_aliases(payload, data, aliases)
+    return None if missing is None else (data, missing)
+
+
 def build_rate_limit_query() -> str:
     return "query { rateLimit { cost remaining resetAt } }"
 
