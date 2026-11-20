@@ -239,3 +239,51 @@ def test_env_supplement_edge_failure_demotes_to_info(caplog, monkeypatch, stderr
     assert any(
         "pr_population.env_supplement_failed" in r.getMessage() for r in caplog.records
     )
+
+
+_REPO_GONE = ("gh: Could not resolve to a Repository with the name 'o/gone'.\n"
+              "Could not resolve to a Repository with the name 'o/gone'.")
+
+
+def test_deleted_repo_logs_info_once_not_a_warning(caplog):
+    """#3413: a repo deleted on GitHub stays watched forever (an archived
+    session still names it), so every tick hit WARNING and re-filed an
+    auto-error. Repo-gone is permanent and not ours to fix: INFO on the first
+    tick, DEBUG thereafter, and the board keeps the reason in last_error."""
+    def qfn(repo: str) -> dict:
+        raise pop.gitrepos.GhError(_REPO_GONE)
+
+    p = PrPopulationPoller(query_fn=qfn)
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(p.refresh_once(["o/gone"]))
+        asyncio.run(p.refresh_once(["o/gone"]))
+
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warned == [], [r.getMessage() for r in warned]
+    info = [r for r in caplog.records if r.levelno == logging.INFO
+            and "pr_population.repo_not_found repo=o/gone" in r.getMessage()]
+    assert len(info) == 1
+    assert "Could not resolve to a Repository" in p.last_error("o/gone")
+
+
+def test_deleted_repo_relogs_after_it_comes_back(caplog):
+    """A recovered repo (recreated / transfer restored) clears the once-latch,
+    so a later disappearance is reported again."""
+    gone = {"o/gone": True}
+
+    def qfn(repo: str) -> dict:
+        if gone[repo]:
+            raise pop.gitrepos.GhError(_REPO_GONE)
+        return {"data": {"repo": {"open": {"nodes": []}, "merged": {"nodes": []}}}}
+
+    p = PrPopulationPoller(query_fn=qfn)
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(p.refresh_once(["o/gone"]))
+        gone["o/gone"] = False
+        asyncio.run(p.refresh_once(["o/gone"]))
+        gone["o/gone"] = True
+        asyncio.run(p.refresh_once(["o/gone"]))
+
+    info = [r for r in caplog.records if r.levelno == logging.INFO
+            and "pr_population.repo_not_found" in r.getMessage()]
+    assert len(info) == 2
