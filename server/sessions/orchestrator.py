@@ -21680,6 +21680,31 @@ class SessionOrchestrator:
                 state[sid] = (status, paused_reason)
         return state
 
+    async def _pr_doctor_untrusted_targets(
+            self, checks: Mapping[str, Mapping[int, str]]) -> set[str]:
+        """The targets among *checks* (repo -> {PR number -> target}) whose PR
+        ``_pr_doctor_session_fix`` would refuse on author trust: the same
+        ``dispatch_trust.untrusted_prs`` judge, read without the feed event.
+
+        Read in ONE session because this is the admission hot path. A failed
+        read is contained here, like ``_pr_doctor_attached_stall_state``: the
+        unread targets keep gating rather than the caller's blanket ``except``
+        dropping every product's reservation."""
+        if not checks:
+            return set()
+        from server.pm import dispatch_trust
+        out: set[str] = set()
+        try:
+            async with db_session() as db:
+                for repo, by_number in checks.items():
+                    for number in await dispatch_trust.untrusted_prs(db, repo, list(by_number)):
+                        if (target := by_number.get(number)) is not None:
+                            out.add(target)
+        except Exception:
+            log.warning("orchestrator.pr_doctor_trust_read_failed", exc_info=True)
+            return set()
+        return out
+
     async def _pr_doctor_pending_products(self) -> dict[str, tuple[str, ...]]:
         """Product slug -> the PR refs PR Doctor will actually act on (spec
         2026-09-21 pr-doctor-priority; #2202). Backlog Runner's admission gate
@@ -21702,6 +21727,14 @@ class SessionOrchestrator:
         checks run at dispatch time, so a target whose claim is refused is
         dropped here too (``_pr_doctor_claim_unclaimable``) — otherwise the
         product stays reserved for a PR nothing can pick up.
+
+        The same goes for a session fix PR Doctor refuses BEFORE claiming
+        because the PR's author is not trusted (``_pr_doctor_session_fix``;
+        #3419). A Dependabot PR on KinDash (cairnea/KinDash#21046) held the
+        product's dispatch from 2026-11-17 to 2026-11-20 this way. A branch
+        update runs no agent and is never refused on trust, and a repair
+        already held under PR Doctor's token got past the check, so neither
+        is filtered.
 
         A claim that SUCCEEDED but then waits on an attached session is
         dropped too when that session is usage-stalled
@@ -21727,6 +21760,9 @@ class SessionOrchestrator:
             # Gating targets waiting on an attached session: their stall state
             # is resolved once, after the loop, for only these ids.
             attached_waits: list[tuple[str, str, str]] = []
+            # Session-fix targets PR Doctor has not yet claimed: repo -> {PR -> target},
+            # judged for author trust once, after the loop (#3419).
+            trust_checks: dict[str, dict[int, str]] = {}
             for repo, branch in await self._pr_doctor_scope_pairs():
                 info = self._pr_doctor_info_for(repo, branch)
                 if info is None or engine.target_terminal(info):
@@ -21750,6 +21786,8 @@ class SessionOrchestrator:
                         and engine.acted_at_head(engine.apply_rearm(state, info), action,
                                                  info.head_sha)):
                     continue
+                if isinstance(action, engine.SessionFix) and not state.get("ownership_token"):
+                    trust_checks.setdefault(repo, {})[info.number] = target
                 own_op_stuck = False
                 if state.get("ownership_token") and refusals.get(target) == info.head_sha:
                     own_op_stuck = self._pr_doctor_mechanical_stuck(
@@ -21761,6 +21799,15 @@ class SessionOrchestrator:
                     attached_waits.append((repo, target, sid))
                 else:
                     gating.setdefault(repo, []).append(target)
+            untrusted = await self._pr_doctor_untrusted_targets(trust_checks)
+            if untrusted:
+                for repo, refs in list(gating.items()):
+                    gating[repo] = [t for t in refs if t not in untrusted]
+                attached_waits = [w for w in attached_waits if w[1] not in untrusted]
+                for repo, by_number in trust_checks.items():
+                    dropped = unclaimable.setdefault(repo, [])
+                    dropped.extend(t for t in by_number.values()
+                                   if t in untrusted and t not in dropped)
             if attached_waits:
                 stall_state = await self._pr_doctor_attached_stall_state(
                     {sid for _, _, sid in attached_waits})
