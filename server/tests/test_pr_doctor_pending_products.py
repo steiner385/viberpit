@@ -728,3 +728,106 @@ def test_the_gate_reads_events_once_and_stall_rows_at_most_once(monkeypatch, tmp
         assert "remote-3" not in repr(selects[0])
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# #3419: a PR PR Doctor refuses on author trust must not reserve the product
+# ---------------------------------------------------------------------------
+
+def _untrusted(monkeypatch, refused):
+    """Override ``pr_authors_trusted``: the PRs in *refused* (``(repo, number)``)
+    are the ones ``dispatch_trust.untrusted_prs`` reports untrusted."""
+    async def _judge(_db, repo, numbers):
+        return [n for n in numbers if (repo, n) in refused]
+    monkeypatch.setattr("server.pm.dispatch_trust.untrusted_prs", _judge)
+
+
+def test_an_untrusted_author_session_fix_does_not_gate(monkeypatch, tmp_path, caplog):
+    """KinDash#21046: a Dependabot PR (merge conflict) held KinDash's dispatch for
+    days. PR Doctor refuses the session fix because its author is not trusted, so
+    the reservation could never clear on its own."""
+    async def run():
+        import logging
+        orch = await _gated_orch(monkeypatch, tmp_path)
+        _untrusted(monkeypatch, {("o/r", 7)})
+        with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+            assert await orch._pr_doctor_pending_products() == {}
+        assert "unclaimable=['o/r#7']" in caplog.text
+
+    asyncio.run(run())
+
+
+def test_only_the_untrusted_pr_stops_gating(monkeypatch, tmp_path):
+    """Per PR: a product's trusted stuck PR keeps reserving beside an untrusted one."""
+    async def run():
+        await _init_db(tmp_path)
+        await _set_mode(monkeypatch, "auto")
+        await _set_config(_ON)
+        await _register_repo("o/r", "product-a")
+        orch = _build_orch(
+            cache={("o/r", "feat/x"): _stuck(), ("o/r", "feat/y"): _stuck(number=8)},
+            pairs=[("o/r", "feat/x"), ("o/r", "feat/y")])
+        _untrusted(monkeypatch, {("o/r", 7)})
+
+        assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#8",)}
+
+    asyncio.run(run())
+
+
+def test_an_untrusted_author_branch_update_still_gates(monkeypatch, tmp_path):
+    """Trust guards handing a PR to an AGENT. A mechanical branch update runs no
+    agent and is never refused on trust, so its reservation stays real."""
+    async def run():
+        await _init_db(tmp_path)
+        await _set_mode(monkeypatch, "auto")
+        await _set_config({"auto_update_out_of_date": True})
+        await _register_repo("o/r", "product-a")
+        behind = _pr(checks="passing", merge_state_status="BEHIND")
+        orch = _build_orch(cache={("o/r", "feat/x"): behind}, pairs=[("o/r", "feat/x")])
+        _untrusted(monkeypatch, {("o/r", 7)})
+
+        assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#7",)}
+
+    asyncio.run(run())
+
+
+def test_an_untrusted_pr_with_a_running_repair_keeps_gating(monkeypatch, tmp_path):
+    """An operation held under PR Doctor's own token got past the trust check and
+    is the repair itself; it keeps reserving until it finishes."""
+    async def run():
+        orch = await _gated_orch(monkeypatch, tmp_path, state={"ownership_token": "tok-1"})
+        _untrusted(monkeypatch, {("o/r", 7)})
+
+        assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#7",)}
+
+    asyncio.run(run())
+
+
+def test_an_untrusted_pr_waiting_on_an_attached_session_does_not_gate(monkeypatch, tmp_path):
+    """The attached-session wait path is filtered too: trust is judged before
+    PR Doctor would ever reach that session."""
+    async def run():
+        orch = await _gated_orch(monkeypatch, tmp_path)
+        await orch._pr_doctor_ctx.emit(
+            "warn", "o/r#7 is still attached to session sess1", kind="ownership_wait",
+            target="o/r#7", detail={"attached_session": "sess1"})
+        _untrusted(monkeypatch, {("o/r", 7)})
+
+        assert await orch._pr_doctor_pending_products() == {}
+
+    asyncio.run(run())
+
+
+def test_a_failed_trust_read_keeps_the_reservation(monkeypatch, tmp_path):
+    """A trust-read failure is contained: the PR keeps gating (evidence, never
+    inference) instead of the blanket ``except`` dropping every product."""
+    async def run():
+        orch = await _gated_orch(monkeypatch, tmp_path)
+
+        async def _boom(_db, _repo, _numbers):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("server.pm.dispatch_trust.untrusted_prs", _boom)
+
+        assert await orch._pr_doctor_pending_products() == {"product-a": ("o/r#7",)}
+
+    asyncio.run(run())
