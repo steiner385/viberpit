@@ -48,6 +48,31 @@ def test_default_merge_queue_query_groups_by_owner_and_remaps_aliases(monkeypatc
 def test_default_merge_queue_query_empty_repos_returns_empty():
     assert _default_merge_queue_query([]) == {}
 
+
+def test_default_merge_queue_query_keeps_live_repos_when_one_is_deleted(monkeypatch):
+    """A deleted repo's per-alias NOT_FOUND must not fail the owner's whole batch."""
+    def fake_run_gh(args, token=None):
+        body = {"data": {"r0": None, "r1": {"mergeQueue": None}},
+                "errors": [{"type": "NOT_FOUND", "path": ["r0"], "message": "Could not resolve"}]}
+        return SimpleNamespace(returncode=1, stdout=json.dumps(body),
+                               stderr="gh: Could not resolve to a Repository")
+
+    monkeypatch.setattr(pop.app_auth, "token_for_owner", lambda owner: None)
+    monkeypatch.setattr(pop.gitrepos, "_run_gh", fake_run_gh)
+    assert _default_merge_queue_query(["acme/gone", "acme/web"]) == {
+        "data": {"r1": {"mergeQueue": None}}}
+
+
+def test_default_merge_queue_query_other_errors_still_raise(monkeypatch):
+    def fake_run_gh(args, token=None):
+        body = {"data": {"r0": None}, "errors": [{"type": "FORBIDDEN", "path": ["r0"]}]}
+        return SimpleNamespace(returncode=1, stdout=json.dumps(body), stderr="forbidden")
+
+    monkeypatch.setattr(pop.app_auth, "token_for_owner", lambda owner: None)
+    monkeypatch.setattr(pop.gitrepos, "_run_gh", fake_run_gh)
+    with pytest.raises(pop.gitrepos.GhError):
+        _default_merge_queue_query(["acme/web"])
+
 @pytest.mark.asyncio
 async def test_refresh_snapshots_merge_queue():
     captured = {}

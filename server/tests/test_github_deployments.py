@@ -124,3 +124,32 @@ def test_fetch_non_transient_failure_still_warns(caplog):
         out = mod.fetch_deployments(["a/b"], run=_failing("gh: HTTP 404"))
     assert out == {"a/b": None}
     assert [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def _partial(errors, data):
+    body = json.dumps({"data": data, "errors": errors})
+    return lambda args, token=None: SimpleNamespace(
+        returncode=1, stdout=body,
+        stderr="gh: Could not resolve to a Repository with the name 'a/gone'.")
+
+
+def test_fetch_deleted_repo_keeps_live_repos_without_warning(caplog):
+    """#3414: one deleted repo's per-alias NOT_FOUND must not blank the group."""
+    import logging
+    run = _partial([{"type": "NOT_FOUND", "path": ["r1"], "message": "Could not resolve"}],
+                   {"r0": {"deployments": {"nodes": [_node()]}}, "r1": None})
+    with caplog.at_level(logging.DEBUG, logger="server.github.deployments"):
+        out = mod.fetch_deployments(["a/live", "a/gone"], run=run)
+    assert out["a/gone"] is None
+    assert out["a/live"][0].env == "kindash / admin"
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_fetch_non_not_found_partial_still_warns_and_blanks_group(caplog):
+    import logging
+    run = _partial([{"type": "FORBIDDEN", "path": ["r1"], "message": "nope"}],
+                   {"r0": {"deployments": {"nodes": [_node()]}}, "r1": None})
+    with caplog.at_level(logging.DEBUG, logger="server.github.deployments"):
+        out = mod.fetch_deployments(["a/live", "a/gone"], run=run)
+    assert out == {"a/live": None, "a/gone": None}
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING]

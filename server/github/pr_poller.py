@@ -16,6 +16,7 @@ from typing import Awaitable, Callable, Union
 
 from viberpit import gitrepos
 from server.aio import cancel_and_reap
+from server.pm.gh_mutations import partial_not_found_reply
 
 from .api_budget import PriorityGate
 from .host_failures import is_transient_github_edge_failure, log_gh_failure
@@ -70,7 +71,16 @@ def _default_query(pairs: list[tuple[str, str]]) -> dict:
             token=gitrepos.app_token_for_owner(owner),
             input=query,
         )
-        if proc.returncode != 0:
+        partial = (partial_not_found_reply(proc, len(owner_pairs))
+                   if proc.returncode != 0 else None)
+        if partial is not None:
+            # A deleted repo in the batch: gh exits non-zero, but every other
+            # alias's data is good. Keep it rather than dropping the owner's
+            # whole PR poll every tick (#3411); DEBUG, so it files nothing.
+            owner_data, missing = partial
+            log.debug("pr_poller.repos_not_found owner='%s' repos=%s", owner,
+                      sorted(owner_pairs[int(a[1:])][0] for a in missing))
+        elif proc.returncode != 0:
             # owner is QUOTED so `normalize()` masks it: unquoted, #1926
             # (cairnea) and #1927 (steiner385) were filed as two issues for one
             # outage, and would be again for any per-owner-blind failure.
@@ -88,7 +98,8 @@ def _default_query(pairs: list[tuple[str, str]]) -> dict:
                 owner, proc.stderr.strip() or "gh api graphql failed",
             )
             continue
-        owner_data = (json.loads(proc.stdout or "{}").get("data")) or {}
+        else:
+            owner_data = (json.loads(proc.stdout or "{}").get("data")) or {}
         for local_i, global_i in enumerate(global_idxs):
             node = owner_data.get(f"r{local_i}")
             if node is not None:

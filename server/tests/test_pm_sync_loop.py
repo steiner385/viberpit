@@ -398,7 +398,7 @@ async def test_repo_error_still_warns_for_a_non_edge_incremental_failure(caplog)
     WARNING with ``repo=`` unchanged so the existing fingerprint lineage holds."""
     ctx = Ctx()
     views, fetch, calls = _incremental_pr_fetch_failing(
-        "GraphQL: Could not resolve to a Repository with the name 'o/bad'.")
+        "GraphQL: Field 'nope' doesn't exist on type 'Repository'")
     loop, saved, upserted, applied = _loop(ctx, views, [])
     loop._fetch = fetch
     with caplog.at_level(logging.DEBUG):
@@ -408,6 +408,28 @@ async def test_repo_error_still_warns_for_a_non_edge_incremental_failure(caplog)
               if r.name == "server.automations.pm_sync" and r.levelno >= logging.WARNING]
     assert len(warned) == 1
     assert warned[0].getMessage() == "pm_sync.repo_error repo=o/bad"
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_repo_logs_info_and_keeps_the_sync_error_event(caplog):
+    """#3412: a registered repo deleted on GitHub fails every tick. That is an owner
+    data fix (re-point/retire, #3410), not a defect — no WARNING (which auto-files
+    an issue per occurrence), but the operator card still gets ``sync_error``."""
+    ctx = Ctx()
+    views, fetch, calls = _incremental_pr_fetch_failing(
+        "gh graphql failed: gh: Could not resolve to a Repository with the name 'o/bad'.")
+    loop, saved, upserted, applied = _loop(ctx, views, [])
+    loop._fetch = fetch
+    with caplog.at_level(logging.DEBUG):
+        await loop.tick()
+
+    repo_records = [r for r in caplog.records if r.name == "server.automations.pm_sync"]
+    assert [r for r in repo_records if r.levelno >= logging.WARNING] == []
+    assert any(r.levelno == logging.INFO and r.getMessage() == "pm_sync.repo_not_found repo=o/bad"
+               for r in repo_records)
+    assert any(level == "warn" and kw.get("kind") == "sync_error"
+               and kw.get("target") == "o/bad" for level, _, kw in ctx.events)
+    assert loop._observation_degraded
 
 
 @pytest.mark.asyncio

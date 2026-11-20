@@ -28,6 +28,8 @@ from collections.abc import Callable, Sequence
 
 from viberpit import gitrepos
 
+from server.pm.gh_mutations import partial_not_found_reply
+
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 
 log = logging.getLogger(__name__)
@@ -98,10 +100,17 @@ def canonical_slugs(
         # make subprocess.run raise "Argument list too long" (test_gh_graphql_stdin).
         proc = gh_run(["api", "graphql", "-F", "query=@-"], input=query)
         if getattr(proc, "returncode", 1) != 0:
-            raise RuntimeError(
-                getattr(proc, "stderr", "") or getattr(proc, "stdout", "") or "gh failed"
-            )
-        payload = json.loads(getattr(proc, "stdout", "") or "{}")
+            # A deleted repo among the stored slugs fails gh's exit but leaves
+            # every other alias resolved: keep those, the dead slug is just absent
+            # (#3417). Anything else is still a failed lookup.
+            partial = partial_not_found_reply(proc, len(ordered))
+            if partial is None:
+                raise RuntimeError(
+                    getattr(proc, "stderr", "") or getattr(proc, "stdout", "") or "gh failed"
+                )
+            payload = {"data": partial[0]}
+        else:
+            payload = json.loads(getattr(proc, "stdout", "") or "{}")
     except Exception as exc:
         # Structured + throttled rather than a plain log.warning: the interpolated
         # exception text used to mint a fresh signature per distinct gh error,
