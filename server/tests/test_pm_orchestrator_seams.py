@@ -455,6 +455,38 @@ async def test_classify_ingest_tolerates_duplicate_pending_proposals(db_env):
 
 
 @pytest.mark.asyncio
+async def test_classify_ingest_survives_same_number_in_two_repos(db_env):
+    """#3418: a product with two repos holding issue #100 must not drop the batch."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    await _seed(db_env)
+    async with db_session() as db:
+        pid = (await db.execute(select(Project.id))).scalar_one()
+        db.add(ProjectRepo(project_id=pid, repo="steiner385/old"))
+        db.add(WorkItem(author="tony", author_id=TONY_ID, repo="steiner385/old",
+                        number=100, kind="issue", title="dup", state="open",
+                        triage_state="unclassified"))
+    orch = _bare_orch()
+    output = ('[{"number": 100, "kind": "issue", "feature_slug": "sessions",'
+              ' "rationale": "x", "confidence_level": "medium"},'
+              ' {"number": 101, "kind": "issue", "feature_slug": "sessions",'
+              ' "rationale": "y", "confidence_level": "medium"}]')
+    # Ambiguous (both repos active): row 100 skipped, 101 still written.
+    assert await orch._pm_classify_ingest("sess-1", "viberpit", output) == 1
+    # Retire the old repo: 100 now resolves to the active one.
+    async with db_session() as db:
+        r = (await db.execute(select(ProjectRepo).where(
+            ProjectRepo.repo == "steiner385/old"))).scalar_one()
+        r.retired_at = datetime.now(timezone.utc)
+    assert await orch._pm_classify_ingest("sess-1", "viberpit", output) == 1
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "steiner385/viberpit", WorkItem.number == 100))
+        ).scalar_one()
+        assert wi.triage_state == "proposed"
+
+
+@pytest.mark.asyncio
 async def test_apply_feature_plan_map_proposed_advances_to_map_merged(db_env):
     """Bug #2 regression: applying ≥1 feature to a map_proposed project must
     advance onboarding_state to map_merged."""

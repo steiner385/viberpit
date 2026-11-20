@@ -14702,16 +14702,32 @@ class SessionOrchestrator:
                 Project.slug == project_slug))).scalar_one_or_none()
             if proj is None:
                 return 0
-            repo_names = [r for r in (await db.execute(select(
-                ProjectRepo.repo).where(
-                    ProjectRepo.project_id == proj.id))).scalars().all() if r]
+            repo_rows = (await db.execute(select(
+                ProjectRepo.repo, ProjectRepo.retired_at).where(
+                    ProjectRepo.project_id == proj.id))).all()
+            repo_names = [r for r, _ in repo_rows if r]
+            active_repos = {r for r, retired in repo_rows if r and retired is None}
             feat_by_slug = {f.slug: f.id for f in (await db.execute(select(
                 Feature).where(Feature.project_id == proj.id))).scalars().all()}
             for row in rows:
-                wi = (await db.execute(select(WorkItem).where(
+                # The classifier row carries no repo, and work_items is unique on
+                # (repo, number, kind): a multi-repo product (or one re-pointed at a
+                # moved repo) can hold the same number twice. scalar_one_or_none()
+                # raised MultipleResultsFound and dropped the whole batch (#3418).
+                matches = list((await db.execute(select(WorkItem).where(
                     WorkItem.repo.in_(repo_names),
                     WorkItem.number == row.number,
-                    WorkItem.kind == row.kind))).scalar_one_or_none()
+                    WorkItem.kind == row.kind))).scalars().all())
+                if len(matches) > 1:
+                    live = [m for m in matches if m.repo in active_repos]
+                    if len(live) != 1:
+                        log.info(
+                            "pm_classify.ambiguous_work_item session=%s number=%s "
+                            "kind=%s repos=%s — skipped", session_id, row.number,
+                            row.kind, sorted(str(m.repo) for m in matches))
+                        continue
+                    matches = live
+                wi = matches[0] if matches else None
                 if wi is None:
                     continue
                 dup = (await db.execute(select(TriageProposal.id).where(
