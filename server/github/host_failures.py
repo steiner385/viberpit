@@ -215,6 +215,26 @@ def is_transient_github_edge_failure(stderr: str) -> bool:
     )
 
 
+#: GitHub GraphQL's NOT_FOUND wording for a repository that no longer exists
+#: (deleted, or renamed/transferred with no redirect). Case-insensitive because
+#: some callers have already lower-cased gh's stderr. Anchored on "a Repository"
+#: so a missing PR/issue/node inside a live repo does not match.
+_RE_REPO_NOT_FOUND = re.compile(
+    r"Could not resolve to a Repository with the name", re.IGNORECASE,
+)
+
+
+def is_repo_not_found(stderr: str) -> bool:
+    """Whether *stderr* is gh reporting that the target repository is gone.
+
+    Permanent and not a defect: a poller whose repo set outlives the repo
+    (archived sessions, product registrations) hits it every tick, so filing
+    it at WARNING re-mints the same non-actionable issue forever (#3413).
+    Callers should log it at INFO (once per repo) and keep the reason on the
+    target's degraded state instead of calling :func:`log_gh_failure`."""
+    return bool(_RE_REPO_NOT_FOUND.search(stderr))
+
+
 def log_gh_failure(
     caller_log: logging.Logger,
     stderr: str,

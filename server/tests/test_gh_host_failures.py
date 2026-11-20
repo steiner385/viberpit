@@ -585,3 +585,17 @@ def test_log_gh_failure_keeps_a_5xx_at_warning_by_default(caplog):
     with caplog.at_level(logging.DEBUG, logger=lg.name):
         host_failures.log_gh_failure(lg, "gh graphql failed: gh: HTTP 504", "x %s", "a")
     assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+
+def test_is_repo_not_found_matches_graphql_not_found():
+    """#3413: GitHub's GraphQL NOT_FOUND for a deleted/renamed-away repo."""
+    assert host_failures.is_repo_not_found(
+        "gh: Could not resolve to a Repository with the name 'o/r'.") is True
+    assert host_failures.is_repo_not_found(
+        "GraphQL: could not resolve to a repository with the name 'o/r'.") is True
+    # A missing PR/issue/node inside a live repo is not the repo being gone.
+    assert host_failures.is_repo_not_found(
+        "gh: Could not resolve to a PullRequest with the number of 1.") is False
+    assert host_failures.is_repo_not_found("gh: HTTP 502") is False
+    assert host_failures.is_repo_not_found(STDERR_UNREACHABLE) is False
+    assert host_failures.is_repo_not_found("") is False

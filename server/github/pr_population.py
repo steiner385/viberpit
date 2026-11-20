@@ -23,7 +23,11 @@ from server.aio import cancel_and_reap
 from server.db.transient import is_transient_db_failure
 from server.github import app_auth
 from .api_budget import PriorityGate
-from .host_failures import is_transient_github_edge_failure, log_gh_failure
+from .host_failures import (
+    is_repo_not_found,
+    is_transient_github_edge_failure,
+    log_gh_failure,
+)
 from .merge_queue import build_merge_queue_query, parse_merge_queue_response
 from .pr_status import (
     PullRequestInfo,
@@ -372,6 +376,9 @@ class PrPopulationPoller:
         # with no trace beyond a WARNING log line. Cleared on that repo's next
         # successful refresh.
         self._last_error: dict[str, str] = {}
+        # Repos already reported gone (#3413): their next miss logs at DEBUG.
+        # Cleared on that repo's next success so a later disappearance reports.
+        self._repo_gone: set[str] = set()
         self._repos_provider: (
             Callable[[], list[str]] | Callable[[], Awaitable[list[str]]] | None
         ) = None
@@ -729,6 +736,7 @@ class PrPopulationPoller:
                 new_cache[repo] = parse_population_response(response, repo)
                 any_ok = True
                 self._last_error.pop(repo, None)
+                self._repo_gone.discard(repo)
             except Exception as exc:
                 # ``_default_query`` raises ``GhError`` carrying gh's stderr, so
                 # a host condition (offline, rate-limited, no credential) is
@@ -741,6 +749,14 @@ class PrPopulationPoller:
                 if isinstance(exc, gitrepos.GhError) and is_transient_github_edge_failure(str(exc)):
                     log.info("pr_population.refresh_unavailable repo=%s: %s",
                              repo, exc)
+                elif isinstance(exc, gitrepos.GhError) and is_repo_not_found(str(exc)):
+                    # Deleted on GitHub but still watched (an archived session
+                    # names it): permanent, not ours to fix, and re-hit every
+                    # tick — INFO once per disappearance, never an auto-error
+                    # (#3413). ``_last_error`` below still shows it on the board.
+                    level = logging.DEBUG if repo in self._repo_gone else logging.INFO
+                    self._repo_gone.add(repo)
+                    log.log(level, "pr_population.repo_not_found repo=%s", repo)
                 else:
                     log_gh_failure(log, str(exc), "pr_population.refresh_failed repo=%s",
                                    repo, exc_info=True)
@@ -782,6 +798,7 @@ class PrPopulationPoller:
         # Drop error entries for repos no longer watched — same bound-the-map
         # rule as `_eta_cache`/`_prev_stage` (`_evict_stale`).
         self._last_error = {r: e for r, e in self._last_error.items() if r in repos}
+        self._repo_gone &= set(repos)
         if any_fail and not any_ok:
             self._fail_count += 1
             self._cooldown_until = self._clock() + min(
