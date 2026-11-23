@@ -11,6 +11,8 @@ import logging
 from collections.abc import Iterable
 from pathlib import Path
 
+from server.assistant.context import strip_context_header
+
 from .transcript_entries import is_harness_user_entry
 
 log = logging.getLogger(__name__)
@@ -116,7 +118,9 @@ def read_user_prompts_from_file(path: str | Path) -> list[str]:
                 message = obj.get("message")
                 if not isinstance(message, dict):
                     continue
-                prompt = _prompt_text(message)
+                # An Assistant-drawer prompt is journalled with its context header
+                # (the page the user was on) prepended; title the user's words.
+                prompt = strip_context_header(_prompt_text(message))[0].strip()
                 if prompt and not is_harness_user_entry(obj, prompt):
                     prompts.append(prompt)
     except OSError:

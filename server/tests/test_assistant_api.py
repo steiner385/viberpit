@@ -393,3 +393,23 @@ def test_unknown_host_is_a_typed_400(tmp_path):
     r = _refusal(tmp_path, UnknownHost("no orchestrator for host 'bogus'"))
     assert r.status_code == 400, r.text
     assert r.json()["error"]["code"] == "unknown_host"
+
+
+def test_new_thread_name_is_auto_so_the_titler_names_it(tmp_path):
+    """The thread is created under a placeholder name that the turn-end titler is
+    allowed to replace — a pinned name left every History row untitled."""
+    with _client(tmp_path) as c:
+        sid = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
+        rec = c.app.state.sessions._orch.record(sid)
+        assert rec.name_is_auto is True
+
+
+def test_history_snippet_is_the_generated_title():
+    from server.assistant.api import _history_dict
+    from server.db.models import Session as DbSession
+    titled = DbSession(id="a1", name="Stuck deploy queue", initial_prompt=None)
+    untitled = DbSession(id="a2", name="Assistant", initial_prompt=None)
+    legacy = DbSession(id="a3", name="Assistant", initial_prompt="what broke?")
+    assert _history_dict(titled)["snippet"] == "Stuck deploy queue"
+    assert _history_dict(untitled)["snippet"] is None
+    assert _history_dict(legacy)["snippet"] == "what broke?"

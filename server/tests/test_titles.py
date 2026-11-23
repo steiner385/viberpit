@@ -84,3 +84,20 @@ def test_scan_lines_skips_json_parse_of_lines_without_title_keys(monkeypatch):
     ])
     assert titles._scan_lines(text.splitlines()) == (None, "Real title")
     assert len(parsed) == 1
+
+
+def test_user_prompts_strip_the_assistant_context_header(tmp_path):
+    """The drawer prepends a ``<viberpit-context …/>`` line to the SDK-bound prompt and
+    the CLI journals that decorated text. The fallback titler must summarise the
+    user's words, not the page they were on — and a prompt that is ONLY the header
+    is not a prompt at all."""
+    rows = [
+        {"type": "user", "message": {"role": "user", "content":
+            '<viberpit-context route="/sessions/abc12345" session="abc12345" />\n'
+            "why is keel stuck in onboarding?"}},
+        {"type": "user", "message": {"role": "user", "content":
+            '<viberpit-context route="/pipeline" />'}},
+    ]
+    _write(tmp_path, "sid-ctx", rows)
+    path = tmp_path / "projects" / "encoded-cwd" / "sid-ctx.jsonl"
+    assert read_user_prompts_from_file(path) == ["why is keel stuck in onboarding?"]

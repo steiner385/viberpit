@@ -261,3 +261,32 @@ def test_turn_end_and_sweep_share_one_in_flight_title_query(tmp_path):
     n_calls, name = asyncio.run(run())
     assert n_calls == 1
     assert name == "Fix the nightly build"
+
+
+def test_turn_end_auto_name_titles_an_assistant_thread(tmp_path):
+    """Drawer threads are named by the same turn-end titler as every session, so the
+    Assistant History list can tell them apart (they used to all read "Untitled
+    conversation"). The periodic sweep still skips them — the turn-end trigger is the
+    only path, so an idle drawer never spends a Haiku query on a timer."""
+    transcript = tmp_path / "claude-s1.jsonl"
+    transcript.write_text(
+        '{"type":"user","message":{"role":"user","content":'
+        '"<viberpit-context route=\\"/pipeline\\" />\\nwhy is the deploy queue stuck?"}}\n'
+    )
+    seen = {}
+
+    async def stub_title_fn(prompts, *, account, cwd):
+        seen["prompts"] = prompts
+        return "Stuck deploy queue"
+
+    async def run():
+        orch = await _build_orch(tmp_path, title_fn=stub_title_fn, cwd=str(tmp_path),
+                                 name="Assistant", kind="assistant", status="idle")
+        orch.transcript_path = lambda sid: str(transcript)
+        await orch._titling_sweep()
+        swept = orch.record("s1").name
+        await orch._auto_name_once("s1")
+        return swept, orch.record("s1").name
+
+    assert asyncio.run(run()) == ("Assistant", "Stuck deploy queue")
+    assert seen["prompts"] == ["why is the deploy queue stuck?"]
