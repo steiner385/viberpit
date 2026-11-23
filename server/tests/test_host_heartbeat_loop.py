@@ -6,11 +6,14 @@ schema and fake_sdk_factory to satisfy the orchestrator constructor.
 """
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
 
+from server.db import dispose_db, init_db
 from server.sessions import host_heartbeat
+from server.sessions import orchestrator as orchestrator_module
 from server.sessions.orchestrator import SessionOrchestrator, self_host_name
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -121,3 +124,67 @@ async def test_tick_does_not_reregister_after_being_fenced(isolated_db, monkeypa
 
     register_mock.assert_not_awaited()
     assert orch._hb_fence is None, "a fenced daemon must not silently re-acquire a fence"
+
+
+# ---------------------------------------------------------------------------
+# 6-8. A heartbeat DB call that never RETURNS (as opposed to raising) must be
+#      bounded. A host hard-reset mid-beat leaves its old Postgres backend "idle in
+#      transaction" holding the host_heartbeats row lock; the server never notices
+#      the dead peer, so the restarted daemon's register() INSERT queued behind that
+#      lock forever. start() runs inside the daemon lifespan, BEFORE uvicorn binds,
+#      so rocky stayed off :9443 for 18 min with every session "unreachable"
+#      (2026-11-23). A bounded call turns the hang into the DB-error path that
+#      already exists: boot continues, the loop retries each beat.
+# ---------------------------------------------------------------------------
+
+async def _hang_forever(*_a, **_kw):
+    await asyncio.Event().wait()
+
+
+@pytest.fixture
+def _fast_heartbeat(monkeypatch):
+    monkeypatch.setattr(orchestrator_module, "heartbeat_interval_s", lambda: 0.05)
+
+
+@pytest.mark.asyncio
+async def test_start_is_not_held_hostage_by_a_hung_register(tmp_path, monkeypatch,
+                                                            _fast_heartbeat):
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setattr(host_heartbeat, "register", _hang_forever)
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'hb.db'}")
+    orch = _new_orch()
+    try:
+        await asyncio.wait_for(orch.start(), timeout=5.0)
+        assert orch._hb_fence is None, "a timed-out register leaves us un-registered"
+        assert not orch._hb_fenced, "...and NOT fenced, so the loop retries it"
+    finally:
+        await orch.stop()
+        await dispose_db()
+
+
+@pytest.mark.asyncio
+async def test_tick_bounds_a_hung_register(isolated_db, monkeypatch, _fast_heartbeat):
+    orch = _new_orch()
+    orch._hb_fence = None
+    orch._hb_fenced = False
+    monkeypatch.setattr(host_heartbeat, "register", _hang_forever)
+
+    await asyncio.wait_for(orch._heartbeat_tick(), timeout=5.0)
+
+    assert orch._hb_fence is None
+    assert not orch._hb_fenced
+
+
+@pytest.mark.asyncio
+async def test_tick_bounds_a_hung_beat(isolated_db, monkeypatch, _fast_heartbeat):
+    orch = _new_orch()
+    orch._hb_fence = 1
+    on_fenced_mock = AsyncMock()
+    monkeypatch.setattr(orch, "_on_fenced", on_fenced_mock)
+    monkeypatch.setattr(host_heartbeat, "beat", _hang_forever)
+
+    await asyncio.wait_for(orch._heartbeat_tick(), timeout=5.0)
+
+    assert orch._hb_fence == 1, "a timed-out beat is a DB error, not a fence rejection"
+    on_fenced_mock.assert_not_awaited()

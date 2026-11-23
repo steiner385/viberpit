@@ -610,6 +610,21 @@ async def effective_repo_root(fallback: str) -> str:
 
 _CloseFn = TypeVar("_CloseFn", bound=Callable[..., Awaitable[None]])
 
+_HbResult = TypeVar("_HbResult")
+
+
+async def _bounded_heartbeat_call(aw: Awaitable[_HbResult]) -> _HbResult:
+    """Await one host-heartbeat DB call for at most one beat interval.
+
+    The heartbeat's DB-error paths only handle a call that RAISES. One that never
+    returns is worse: a host hard-reset mid-beat leaves its old Postgres backend
+    "idle in transaction" holding the host_heartbeats row lock, the server never
+    notices the dead peer, and the restarted daemon's register() queues behind it
+    forever. start() runs inside the daemon lifespan before uvicorn binds, so that
+    kept rocky off :9443 for 18 min (2026-11-23). TimeoutError is an Exception, so
+    the existing handlers turn it into "un-registered, retry next beat"."""
+    return await asyncio.wait_for(aw, timeout=heartbeat_interval_s())
+
 
 def _in_closing_window(fn: _CloseFn) -> _CloseFn:
     """Hold the session id in ``self._closing`` for the whole call (D-17). close and
@@ -3309,7 +3324,8 @@ class SessionOrchestrator:
         # Per-host fenced heartbeat: register our row (adopting any surviving fence)
         # and beat it on an interval. DB failure here must not kill boot (NFR-5).
         try:
-            self._hb_fence = await host_heartbeat.register(self_host_name(), epoch=PROC_EPOCH)
+            self._hb_fence = await _bounded_heartbeat_call(
+                host_heartbeat.register(self_host_name(), epoch=PROC_EPOCH))
         except Exception:
             # Left un-registered, NOT fenced — _heartbeat_tick retries register() on
             # each beat until it lands, so a DB blip at boot costs one interval rather
@@ -3999,14 +4015,14 @@ class SessionOrchestrator:
             if self._hb_fenced:
                 return
             try:
-                self._hb_fence = await host_heartbeat.register(
-                    self_host_name(), epoch=PROC_EPOCH)
+                self._hb_fence = await _bounded_heartbeat_call(
+                    host_heartbeat.register(self_host_name(), epoch=PROC_EPOCH))
             except Exception:
                 log.warning("host-heartbeat: re-register failed (DB error) — "
                             "retrying next beat", exc_info=True)
             return
         try:
-            ok = await host_heartbeat.beat(self_host_name(), fence)
+            ok = await _bounded_heartbeat_call(host_heartbeat.beat(self_host_name(), fence))
         except Exception:
             log.warning("host-heartbeat: beat failed (DB error) — retrying next beat",
                         exc_info=True)
