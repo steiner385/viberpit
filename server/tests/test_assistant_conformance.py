@@ -103,6 +103,7 @@ ARGS: dict[str, dict] = {
     "update_product_repos": {"product": "a", "action": "retire", "repo": "o/old",
                              "expectedPrimary": "o/old", "newPrimary": "o/new"},
     "map_moved_issues": {"product": "a", "pairs": [{"old": "o/old#1", "new": "o/new#2"}]},
+    "create_product": {"name": "Keel", "repo": "steiner385/keel"},
     "apply_owner_digest": {"ids": ["hold:wi1"], "titles": ["Approve fable — o/r#1"],
                            "confirm": True},
     "list_adoptable_sessions": {}, "suggest_next_prompt": {"id": UUID},

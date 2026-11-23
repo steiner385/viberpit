@@ -441,9 +441,9 @@ table, so the model's redirects cannot drift from policy):
 | Hooks | arbitrary shell on the host | Settings → Hooks |
 | Library mutations (plugins/skills/commands/MCP servers), snapshots restore/import | shared config base; rollback semantics live in the UI | Library page |
 | Fleet host add / remove | topology change | Settings → Fleet |
-| Project/initiative authoring, feature-map proposals | multi-step reviewed flows | Products / Initiatives pages |
+| Project/initiative authoring beyond `create_product`, feature-map proposals | multi-step reviewed flows | Products / Initiatives pages |
 | PR merge/close/label/review beyond `ready_merge_pr` | B5 | the coding session or GitHub |
-| Deploy / upgrade / account refresh / product policy edits **when operator tier is off** | B1 | Settings → General → AI assistant |
+| Deploy / upgrade / account refresh / product policy edits / product creation **when operator tier is off** | B1 | Settings → General → AI assistant |
 
 ---
 

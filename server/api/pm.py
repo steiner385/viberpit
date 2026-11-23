@@ -62,7 +62,7 @@ from server.pm import moved_refs, repo_lifecycle
 from server.pm.repo_lifecycle import RepoLifecycleError
 from server.pm.outcomes import escalation_to_wire, list_outcomes_stmt, outcome_to_dict
 from server.pm.project_slugs import (
-    PROJECT_UPDATE_AUDIT_TYPE, former_slugs_after_rename)
+    PROJECT_UPDATE_AUDIT_TYPE, former_slugs_after_rename, slugify_product_name)
 from server.pm.fleet_platforms import fleet_platform_state
 from server.pm.queue import (MIN_STATUS_OPTIONS, SKIP_REASONS, age_days, rank, rank_key,
                              skip_detail)
@@ -102,11 +102,6 @@ router = APIRouter(prefix="/api/pm", tags=["pm"])
 # How long after accept/reject a proposal can be undone. The UI toast lasts
 # six seconds; the server keeps a wider window so a slow click still lands.
 TRIAGE_UNDO_WINDOW_S = 60
-
-
-def _slugify(name: str) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-    return s or "project"
 
 
 def _project_to_dict(p: Project) -> dict:
@@ -230,7 +225,7 @@ async def create_project(
             detail={"error": "no_repos", "message": "at least one repo is required"})
     for repo_in in body.repos:
         _validate_repo(repo_in.repo)
-    slug = body.slug or _slugify(body.name)
+    slug = body.slug or slugify_product_name(body.name)
     ownership = await gather_repo_ownership_snapshot([repo.repo for repo in body.repos])
     await lock_repo_registration(db)
     existing = (await db.execute(
