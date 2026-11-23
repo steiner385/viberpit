@@ -167,6 +167,11 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("POST", "/api/pm/issues/close", True),
     ("POST", "/api/pm/work-items/w1/issue", False),
     ("POST", "/api/pm/issues/close/all", False),
+    # Label edits (#3440): add/remove only.
+    ("POST", "/api/pm/issues/labels/add", True),
+    ("POST", "/api/pm/issues/labels/remove", True),
+    ("POST", "/api/pm/issues/labels/replace", False),
+    ("POST", "/api/pm/issues/labels", False),
     ("POST", "/api/github/issues/acme/billing/18", False),
     ("PATCH", "/api/github/issues/acme/billing/18/comments", False),
     # Phase 2 roadmap tree (#993 Task 8): the map and its per-node issue leaves are
