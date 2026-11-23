@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from server.sessions.native_display import NativeDisplay
     from server.sessions.replay import EngineReplay
 
+from viberpit import account_registry
 from viberpit import accounts as ccswitch_accounts
 from viberpit import brand
 from viberpit import configdir, copilot as _copilot_mod, crypto, gitrepos, worktree_diff, worktrees
@@ -61,7 +62,9 @@ from viberpit.accounts import (
     RefreshDeferred,
     eligible_enabled_accounts as _eligible_enabled_accounts,
     is_refresh_authority,
+    provider_of as _strict_provider_of,
     provider_or_none as _provider_of,
+    runner_uses_envelope as _runner_uses_envelope,
 )
 from viberpit.account_names import (
     assert_valid_account_name, validate_account_name, InvalidAccountName,
@@ -697,6 +700,54 @@ class SessionWorktreeMissing(RuntimeError):
         super().__init__(
             f"session {session_id}: managed worktree {path} is missing and its branch "
             f"is not in the local clone — refusing to relaunch in an empty directory")
+
+
+class AccountUnavailable(RuntimeError):
+    """An account cannot launch a Claude CLI on this host: it is not in the account
+    manifest, or its credential slot is gone (#3436). Raised by ``_driver_config_dir``
+    in place of the raw ``FileNotFoundError`` ``compose()`` surfaces. A permanent
+    condition until a person re-adds the account or reassigns the session, so the
+    boot-time sweeps (rearm, initial-prompt recovery, deploy restore) log it at INFO —
+    a WARNING auto-files an issue on every daemon start."""
+
+    def __init__(self, account: str, reason: str) -> None:
+        self.account = account
+        self.reason = reason
+        super().__init__(f"account {account!r} is unavailable ({reason}); "
+                         f"reassign the session to another account")
+
+
+def _account_unavailable_reason(engine: AgentEngine, account: str) -> str | None:
+    """Why *account* cannot be composed for an *engine* launch, or None if it can.
+
+    Mirrors ``configdir.compose``'s credential read exactly: Codex composes nothing, a
+    Copilot account and an envelope-launched runner read no slot, everything else
+    reads ``paths.slot_path``. A manifest FAULT (torn sshfs read, #1005) is not an
+    answer — it returns None and lets the build proceed, as ``provider_or_none`` does.
+    """
+    if engine is AgentEngine.CODEX:
+        return None
+    from viberpit import paths as _paths
+    try:
+        provider = _strict_provider_of(account)
+    except account_registry.UnknownAccountError:
+        return "not in the account manifest"
+    except (account_registry.AccountRegistryError, OSError):
+        return None
+    if provider == _copilot_mod.PROVIDER or _runner_uses_envelope(account):
+        return None
+    try:
+        if _paths.slot_path(account).is_file():
+            return None
+    except OSError:
+        return None
+    return "credential slot missing"
+
+
+def _resume_failure_level(exc: BaseException | None) -> int:
+    """The log level for a boot/recovery sweep's failed ``ensure_driver``: INFO for
+    the expected, permanent :class:`AccountUnavailable` (#3436), WARNING otherwise."""
+    return logging.INFO if isinstance(exc, AccountUnavailable) else logging.WARNING
 
 
 class DriverStartTimeout(TimeoutError):
@@ -2917,7 +2968,17 @@ class SessionOrchestrator:
         """
         if engine is AgentEngine.CODEX:
             return ""
-        cfg_dir = compose(account)
+        try:
+            cfg_dir = compose(account)
+        except (OSError, account_registry.AccountRegistryError) as exc:
+            # An account removed from the manifest, or whose slot is gone, can never
+            # be composed: name it with a typed error the boot sweeps treat as
+            # expected, not compose()'s raw FileNotFoundError (#3436). Any other
+            # fault (a torn sshfs read) re-raises unchanged.
+            reason = _account_unavailable_reason(engine, account)
+            if reason is None:
+                raise
+            raise AccountUnavailable(account, reason) from exc
         # compose() rewrites .claude.json from the store, so trust must follow it;
         # the assistant isolation copy must then be taken last.
         configdir.trust_project(account, cwd, disabled_mcp=disabled_mcp)
@@ -21232,6 +21293,8 @@ class SessionOrchestrator:
                             "undelivered, will retry next boot", session_id)
                 return
             await self.send_prompt(session_id, prompt)
+        except AccountUnavailable as exc:
+            log.info("initial_prompt_recover: %s — prompt still undelivered", exc)
         except Exception:
             log.warning("initial_prompt_recover: delivery failed for %s", session_id,
                         exc_info=True)
@@ -21261,6 +21324,11 @@ class SessionOrchestrator:
             async with sem:
                 try:
                     return await self._rearm_session(sid, snap, prompt)
+                except AccountUnavailable as exc:
+                    # Permanent until the session is reassigned; the retained
+                    # snapshot re-arms then via _maybe_rearm_on_attach (#3436).
+                    log.info("rearm: session %s skipped; snapshot retained: %s", sid, exc)
+                    return False
                 except Exception:
                     log.warning("rearm: session %s failed; snapshot retained", sid,
                                 exc_info=True)
@@ -25065,7 +25133,19 @@ class SessionOrchestrator:
             raise sandbox_mod.SandboxError(sandbox_mod.SANDBOX_HELD, rec.sandbox_reason)
         if not await self._claim_session(session_id, why="resume"):
             return None
+        try:
+            return await self._resume_claimed_driver(session_id, rec, identity)
+        except BaseException:
+            # No driver registered means no teardown path will drop the lease we just
+            # took: release it, as the cwd-gate refusal does, so a failed build never
+            # pins the session to this host until the TTL lapses (#3436).
+            if self._drivers.get(session_id) is None:
+                await self._release_session_lease(session_id)
+            raise
 
+    async def _resume_claimed_driver(self, session_id: str, rec: SessionRecord,
+                                     identity: str) -> AgentDriver | None:
+        """``_resume_detached_driver``'s build once the session lease is held."""
         # Build and start a new driver resuming from the stored engine_session_id,
         # ON THE SESSION'S OWN ENGINE. This used to hardcode CLAUDE_CODE, so a
         # detached Codex session came back as a Claude driver pointed at a Codex
@@ -31083,11 +31163,12 @@ class SessionOrchestrator:
                 continue
             try:
                 driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
-            except Exception:
+            except Exception as exc:
                 # Never swallow silently: this was the only trace of WHY a session
                 # came back wrong after a deploy, and it went nowhere.
-                log.warning("deploy.restore: ensure_driver failed session=%s", sid,
-                            exc_info=True)
+                level = _resume_failure_level(exc)
+                log.log(level, "deploy.restore: ensure_driver failed session=%s: %s",
+                        sid, exc, exc_info=level >= logging.WARNING)
                 driver = None
             if driver is None:
                 failed.append(sid)
@@ -31185,9 +31266,11 @@ class SessionOrchestrator:
                 continue
             try:
                 driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
-            except Exception:
-                log.warning("deploy.resume.retry: ensure_driver failed session=%s "
-                            "attempt=%d", sid, attempts + 1, exc_info=True)
+            except Exception as exc:
+                level = _resume_failure_level(exc)
+                log.log(level, "deploy.resume.retry: ensure_driver failed session=%s "
+                        "attempt=%d: %s", sid, attempts + 1, exc,
+                        exc_info=level >= logging.WARNING)
                 driver = None
             if driver is not None:
                 self._resume_recovery.pop(sid, None)
