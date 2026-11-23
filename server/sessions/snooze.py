@@ -25,6 +25,15 @@ REASON_MAX = 500
 #: model gate), or the session is over. Everything else — busy, idle, handed back,
 #: complete — may be snoozed.
 UNSNOOZABLE_STATUSES = frozenset({"queued", "pending_approval", "archived", "ended"})
+#: Statuses under which a snoozed session's `claude` process may be stopped to free
+#: its capacity slot: between turns with nothing open on the live driver. Not the
+#: mid-turn statuses (the work is running), and not the structured holds
+#: (``waiting_question`` / ``ready_review`` / ``waiting_input``): their card is
+#: answered THROUGH the live driver, so stopping it would orphan the card. A session
+#: with background work (a Monitor, a ``run_in_background`` shell, an armed wakeup)
+#: is also kept — that work lives inside the process (the orchestrator checks it).
+SNOOZE_RELEASABLE_STATUSES = frozenset(
+    {"idle", "done", "handed_back", "waiting_external", "needs_attention"})
 
 
 class SnoozeError(ValueError):

@@ -56,6 +56,10 @@ INACTIVE_SESSION_STATUSES: frozenset[str] = frozenset({"ended", "archived"})
 # `complete` session (ensure_driver) therefore transitions it back to `done`, so it
 # re-enters the count instead of running as an uncapped ghost.
 #
+# A snoozed session is the one non-status exemption: snooze is an overlay, so a
+# snoozed session that holds no process is exempt in _consumes_capacity_slot itself
+# (and the snooze sweep releases an idle snoozed session's process to get it there).
+#
 # _ACTIVE_STATUSES in orchestrator.py is a separate allow-list counter with its own
 # consumer (the deploy drain) and is intentionally not unified with this set.
 #
