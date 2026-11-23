@@ -8,7 +8,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any
 from urllib.parse import urlparse
 
@@ -340,24 +340,6 @@ def _int_arg(v: Any, *, field: str, default: int, lo: int, hi: int) -> int:
     except ValueError:
         raise ToolArgError(f"{field} must be a whole number") from None
     return max(lo, min(n, hi))
-
-
-_DURATION = re.compile(r"(\d+)\s*([mhdw])", re.IGNORECASE)
-_DURATION_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
-
-
-def snooze_until_arg(v: Any) -> str:
-    """`until` as an ISO-8601 UTC timestamp: an ISO string passes through for the
-    endpoint's own validation; a duration like ``24h`` / ``3d`` is resolved against now.
-    A model cannot reliably add 24 hours to a clock, so the tool does it."""
-    text = str(v or "").strip()
-    if not text:
-        raise ToolArgError("until is required: an ISO-8601 time or a duration like '24h'")
-    m = _DURATION.fullmatch(text)
-    if m is None:
-        return text
-    delta = timedelta(**{_DURATION_UNITS[m.group(2).lower()]: int(m.group(1))})
-    return (datetime.now(timezone.utc) + delta).isoformat(timespec="seconds")
 
 
 # Batch tools (spec v2 B4): each takes `ids` + `titles` (equal length, capped) and acts
@@ -694,6 +676,43 @@ def _create_product_items(tool_input: dict[str, Any]) -> list[str]:
 CARD_ITEMS["create_product"] = _create_product_items
 
 
+def _session_row(tool_input: dict[str, Any]) -> str:
+    title = tool_input.get("title")
+    return f"session: {title if isinstance(title, str) and title.strip() else tool_input.get('id')}"
+
+
+def _snooze_items(tool_input: dict[str, Any], *, tz: tzinfo | None = None) -> list[str]:
+    """`session`, `until` (in the operator's zone *tz*, with UTC beside it) and `reason`
+    for snooze_session (#3438). The wake time is resolved by the same rule the endpoint
+    applies (`snooze.resolve_until`), so a duration shows as the clock time it means; one
+    the endpoint will refuse is shown as given and marked."""
+    from server.sessions.snooze import SnoozeError, resolve_until
+    raw = tool_input.get("until")
+    try:
+        at = resolve_until(str(raw), datetime.now(timezone.utc)) if raw else None
+    except SnoozeError:
+        at = None
+    if at is None:
+        until = f"until: {raw!r} (not a valid time — the call will be refused)"
+    else:
+        local = at.astimezone(tz)
+        until = (f"until: {local:%a %b} {local.day}, {local:%I:%M %p %Z}"
+                 + ("" if local.utcoffset() == timedelta(0) else
+                    f" ({at.astimezone(timezone.utc):%H:%M} UTC)"))
+    rows = [_session_row(tool_input), until]
+    reason = tool_input.get("reason")
+    if isinstance(reason, str) and reason.strip():
+        rows.append(f"reason: {' '.join(reason.split())}")
+    return [r[:_CARD_ITEM_MAX] for r in rows]
+
+
+CARD_ITEMS["snooze_session"] = _snooze_items
+CARD_ITEMS["unsnooze_session"] = lambda tool_input: [_session_row(tool_input)[:_CARD_ITEM_MAX]]
+#: Card renderers that show a time: each also takes ``tz=``, the operator's zone
+#: (`card_items`).
+_ZONED_CARDS: frozenset[str] = frozenset({"snooze_session"})
+
+
 def batch_items(mcp_name: str, tool_input: dict[str, Any]) -> list[str] | None:
     """Item rows for a tool's permission card (spec v2 B4): the card must name every
     target, not count them. Called by the driver BEFORE `PermissionRegistry.request`, so
@@ -708,6 +727,29 @@ def batch_items(mcp_name: str, tool_input: dict[str, Any]) -> list[str] | None:
     except Exception:  # noqa: BLE001 - a card must still be raised on malformed input
         log.warning("card items renderer failed tool=%s", spec.name if spec else mcp_name,
                     exc_info=True)
+        return []
+
+
+async def card_items(mcp_name: str, tool_input: dict[str, Any]) -> list[str] | None:
+    """``batch_items``, with the operator's timezone (``policy.operator_timezone``)
+    handed to a renderer that shows a time — so a card states a wake time the way
+    the person approving it reads a clock. The driver's entry point."""
+    spec = annotation_for(mcp_name)
+    if spec is None or spec.name not in _ZONED_CARDS:
+        return batch_items(mcp_name, tool_input)
+    from server.db import db_session
+
+    from .policy import operator_timezone
+    try:
+        async with db_session() as db:
+            tz = await operator_timezone(db)
+    except Exception:  # noqa: BLE001 - a card must still be raised; the host zone it is
+        log.warning("card items: operator timezone read failed", exc_info=True)
+        tz = None
+    try:
+        return CARD_ITEMS[spec.name](tool_input if isinstance(tool_input, dict) else {}, tz=tz)  # type: ignore[call-arg]
+    except Exception:  # noqa: BLE001 - a card must still be raised on malformed input
+        log.warning("card items renderer failed tool=%s", spec.name, exc_info=True)
         return []
 
 
@@ -2299,18 +2341,24 @@ def build_tools(api: AssistantApi, *, operator: bool = False,
                "sets): it leaves the live list, frees its host and runner slot, and comes "
                "back when `until` passes. until is an ISO-8601 timestamp or a duration like "
                "'90m', '24h', '3d', '1w'. reason says why. title is the session's title, "
-               "shown on the confirmation card. unsnooze_session wakes it early.",
+               "shown on the confirmation card with the wake time in the operator's "
+               "timezone. unsnooze_session wakes it early.",
                _schema(("id", "until"), id=str, until=str, reason=str, title=str))
     @guarded
     async def snooze_session(args: dict[str, Any]) -> Any:
-        until = snooze_until_arg(args.get("until"))
+        # Sent as given: the endpoint resolves a duration like 24h by the snooze rules
+        # (`snooze.resolve_until`), the same rule the confirmation card shows it by.
+        until = str(args.get("until") or "").strip()
+        if not until:
+            raise ToolArgError("until is required: an ISO-8601 time or a duration like '24h'")
         reason = str(args.get("reason") or "").strip() or None
         return await api.post(f"/api/sessions/{args['id']}/snooze",
                               {"until": until, "reason": reason})
 
     @spec_tool("unsnooze_session",
                "Wake a snoozed session now. A session that snoozed itself gets its wake "
-               "prompt. Does nothing if it is not snoozed.", {"id": str})
+               "prompt. Does nothing if it is not snoozed. title is the session's title, "
+               "shown on the confirmation card.", _schema(("id",), id=str, title=str))
     @guarded
     async def unsnooze_session(args: dict[str, Any]) -> Any:
         return await api.delete(f"/api/sessions/{args['id']}/snooze") or {"ok": True}

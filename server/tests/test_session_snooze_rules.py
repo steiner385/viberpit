@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from server.sessions.snooze import (SELF_SNOOZE_MAX, SnoozeError, build_snooze, is_due,
-                                    snooze_until, wake_prompt)
+                                    resolve_until, snooze_until, wake_prompt)
 
 NOW = datetime(2026, 11, 6, 15, 0, tzinfo=timezone.utc)
 
@@ -29,7 +29,18 @@ def test_naive_time_is_read_as_utc():
     assert s["until"] == "2026-11-07T14:00:00+00:00"
 
 
-@pytest.mark.parametrize("until", ["not a time", "2026-11-06T14:00:00Z", "2028-01-01T00:00:00Z"])
+@pytest.mark.parametrize("until,delta", [("90m", timedelta(minutes=90)),
+                                         ("24h", timedelta(hours=24)),
+                                         ("2D", timedelta(days=2)), (" 1w ", timedelta(weeks=1))])
+def test_until_may_be_a_duration_from_now(until, delta):
+    """#3438: the assistant (and anyone) may say "24h" instead of computing a time."""
+    assert resolve_until(until, NOW) == NOW + delta
+    assert build_snooze(until=until, reason=None, by="user", now=NOW)["until"] == (
+        (NOW + delta).isoformat())
+
+
+@pytest.mark.parametrize("until", ["not a time", "2026-11-06T14:00:00Z", "2028-01-01T00:00:00Z",
+                                   "24x", "-1h", "0m", "1.5h", "10000d"])
 def test_user_snooze_rejects_malformed_past_or_far_future(until):
     with pytest.raises(SnoozeError):
         build_snooze(until=until, reason=None, by="user", now=NOW)

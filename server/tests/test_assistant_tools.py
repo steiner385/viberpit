@@ -2697,18 +2697,3 @@ async def test_resolve_decision_error_points_at_list_decisions():
     out = await _tool(build_tools(_api(lambda r: httpx.Response(200, json={}))),
                       "resolve_decision").handler({"proposal_id": "not valid!", "decision": "reject"})
     assert out["is_error"] is True and "list_decisions" in out["content"][0]["text"]
-
-
-@pytest.mark.parametrize("raw,hours", [("90m", 1.5), ("24h", 24), ("3d", 72), ("1w", 168)])
-def test_snooze_until_arg_resolves_durations(raw, hours):
-    from datetime import datetime, timezone
-    from server.assistant.tools import snooze_until_arg
-    got = datetime.fromisoformat(snooze_until_arg(raw))
-    assert abs((got - datetime.now(timezone.utc)).total_seconds() - hours * 3600) < 5
-
-
-def test_snooze_until_arg_passes_iso_and_rejects_empty():
-    from server.assistant.tools import ToolArgError, snooze_until_arg
-    assert snooze_until_arg("2030-01-01T00:00:00Z") == "2030-01-01T00:00:00Z"
-    with pytest.raises(ToolArgError):
-        snooze_until_arg("")

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import tzinfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 
@@ -39,6 +41,21 @@ async def operator_tools_enabled(db) -> bool:
     if row is not None and row.assistant_operator_tools is not None:
         return bool(row.assistant_operator_tools)
     return bool(get_settings().assistant_operator_tools)
+
+
+async def operator_timezone(db) -> tzinfo | None:
+    """The zone the operator reads times in: the IANA zone they set for quiet hours
+    (Settings → Notifications, defaulted there to the browser's), else None — which
+    ``datetime.astimezone`` reads as the host's local zone. For showing a time on a
+    confirmation card (#3438); an unknown zone name falls back the same way."""
+    row = await _row(db)
+    name = row.quiet_hours_timezone if row is not None else None
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
 
 
 def assistant_engine():
