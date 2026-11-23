@@ -128,7 +128,7 @@ async def test_untrusted_refusal_settles_the_job_for_its_own_target_without_repe
     orch = _orch()
 
     async def _untrusted(repo, numbers, *, target, head):
-        return list(numbers)
+        return {n: "untrusted_author" for n in numbers}
     monkeypatch.setattr(orch, "_pr_doctor_untrusted_prs", _untrusted)
 
     job_id = await orch._pr_doctor_trigger_async(
@@ -139,3 +139,21 @@ async def test_untrusted_refusal_settles_the_job_for_its_own_target_without_repe
     assert job["target"] == "cairnea/KinDash#20904"
     assert (job["status"], job["level"]) == ("error", "warn")
     assert job["message"] == "Not fixing: the PR's author is not a trusted author"
+
+
+@pytest.mark.asyncio
+async def test_unmirrored_refusal_says_so_and_is_retryable(monkeypatch, isolated_db):
+    """#3429: a PR the mirror has not synced yet is not blamed on its author."""
+    orch = _orch()
+
+    async def _unmirrored(repo, numbers, *, target, head):
+        return {n: "not_mirrored" for n in numbers}
+    monkeypatch.setattr(orch, "_pr_doctor_untrusted_prs", _unmirrored)
+
+    job_id = await orch._pr_doctor_trigger_async(
+        "cairnea/KinDash", "feat/x", _pr(number=20904), "merge_conflict", None)
+    await asyncio.gather(*list(orch._pr_doctor_job_tasks))
+
+    job = orch.pr_doctor_job(job_id)
+    assert (job["status"], job["level"]) == ("deferred", "warn")
+    assert "isn't mirrored" in job["message"] and "trusted" not in job["message"]

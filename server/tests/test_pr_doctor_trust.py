@@ -84,9 +84,38 @@ def test_session_fix_refuses_an_untrusted_pr_before_claiming(isolated_db):
     assert len(events) == 1  # reported once per head, not every sweep
     assert events[0][2]["kind"] == "untrusted_author"
     assert events[0][2]["detail"]["reason_codes"] == ["untrusted_author"]
-    # An unmirrored PR is refused too.
+    assert events[0][1] == "not fixing o/r#8: o/r#8 author not trusted"
+    # An unmirrored PR is refused too — and says so, rather than blaming its author (#3429).
     assert asyncio.run(orch._pr_doctor_session_fix(
-        "o/r", "feat/y", _pr(99), "merge_conflict", None))[0] == "untrusted_author"
+        "o/r", "feat/y", _pr(99), "merge_conflict", None))[0] == "not_mirrored"
+    assert events[1][1] == "not fixing o/r#99: o/r#99 not mirrored yet"
+    assert events[1][2]["detail"]["not_mirrored"] == [99]
+
+
+def test_unmirrored_prs_names_only_what_the_mirror_lacks(isolated_db):
+    from server.db import db_session
+    from server.pm.dispatch_trust import unmirrored_prs
+
+    async def run():
+        await _seed()
+        async with db_session() as db:
+            # 8 is mirrored (its author is untrusted); 99 is not mirrored at all.
+            return await unmirrored_prs(db, "o/r", [7, 99, 8])
+
+    assert asyncio.run(run()) == [99]
+
+
+def test_consolidation_says_not_mirrored_when_that_is_all(isolated_db):
+    asyncio.run(_seed())
+    orch, _events, claims = _orch()
+
+    class Pop:
+        def cached(self, repo):
+            return [_pr(7), _pr(99)]
+
+    orch._pr_population = Pop()
+    assert asyncio.run(orch._pr_doctor_consolidate("o/r", [7, 99])) == ("not_mirrored", None)
+    assert claims == []
 
 
 def test_session_fix_proceeds_for_a_trusted_pr(isolated_db):
@@ -115,3 +144,5 @@ def test_untrusted_status_has_an_honest_ui_message():
     from server.automations.action_providers import _consolidate_result, _pr_result
     assert "trusted author" in _pr_result("untrusted_author").message
     assert "trusted author" in _consolidate_result("untrusted_author").message
+    assert "isn't mirrored" in _pr_result("not_mirrored").message
+    assert "isn't mirrored" in _consolidate_result("not_mirrored").message

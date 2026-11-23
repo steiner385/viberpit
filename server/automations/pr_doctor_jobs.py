@@ -32,6 +32,8 @@ _TERMINAL = {
     "spawned": "ready", "sent": "ready",
     # "ceiling": reachable only from pre-account_limited daemons — remove after rollout (#2857)
     "ceiling": "deferred", "transient": "deferred",
+    # The mirror has not synced the PR yet: retryable, not a verdict on the author.
+    "not_mirrored": "deferred",
     "clone_failed": "error", "spawn_failed": "error", "failed": "error",
 }
 # Which pipeline phase a given failure status belongs to, so the UI can say
