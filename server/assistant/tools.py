@@ -28,6 +28,7 @@ from server.obs.metrics import assistant_gap_reports_total, assistant_tool_calls
 from server.pm.desired_state import HELD_KINDS
 from server.pm.issue_disposition import CLOSE_REASONS as _CLOSE_REASONS
 from server.pm.queue import MIN_STATUS_OPTIONS, SKIP_REASONS
+from server.pm.project_slugs import slugify_product_name
 from server.pm.refs import split_ref
 
 from .client import AssistantApi, AssistantApiError
@@ -189,6 +190,9 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     # opposite call (retire never deletes the repo's rows), and the card names the move.
     ToolSpec("update_product_repos", ToolClass.MUTATION, "Change a product's repos"),
     ToolSpec("map_moved_issues", ToolClass.MUTATION, "Map moved issues old → new"),
+    # MUTATION: registers a product row and its repos — the Products page's own create —
+    # and nothing runs against GitHub until the operator takes the onboarding steps.
+    ToolSpec("create_product", ToolClass.MUTATION, "Create and onboard a product"),
 ]}
 
 register_surface("assistant", TOOL_SPECS)
@@ -200,6 +204,7 @@ register_surface("assistant", TOOL_SPECS)
 OPERATOR_TOOLS: frozenset[str] = frozenset({
     "start_deploy", "upgrade_host", "refresh_account", "set_account_enabled", "start_reauth",
     "update_product_policy", "apply_owner_digest", "update_product_repos", "map_moved_issues",
+    "create_product",
 })
 
 
@@ -209,7 +214,7 @@ _REPO_REF = re.compile(r"\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 
 # Matches the allowlist's product- and automation-id character class
 # (server/assistant/policy.py) so a bad slug fails locally, not as a 403 from the route
-# allowlist. `server/api/pm.py:_slugify` mints product slugs from the same class, and every
+# allowlist. `server/pm/project_slugs.py:slugify_product_name` mints product slugs from the same class, and every
 # registered automation id (`autopilot`, `backlog-runner`, `cicd-doctor`, `pr-doctor`…) is
 # already in it — one class for both rather than a near-duplicate per pack. Initiative
 # slugs share the class but not the length cap: see `_INITIATIVE_SLUG`.
@@ -425,6 +430,7 @@ NO_SESSION_TARGET: dict[str, str] = {
     "update_product_repos": "operator tier: a product's repos",
     "map_moved_issues": "operator tier: moved-issue pairs of a product; releases the old "
                         "issues' holds",
+    "create_product": "operator tier: a NEW product by name and repos",
     "apply_owner_digest": "operator tier: closes/labels issues, accepts proposals and "
                           "dispatches NEW sessions; no path resumes or prompts a live one",
 }
@@ -595,6 +601,52 @@ def _moved_pair_items(tool_input: dict[str, Any]) -> list[str]:
 
 
 CARD_ITEMS["map_moved_issues"] = _moved_pair_items
+
+
+def _create_product_body(args: dict[str, Any]) -> dict[str, Any]:
+    """The `POST /api/pm/projects` body create_product sends — the Products page's own
+    create. Shared with the card renderer so the name, slug and repos a person confirms
+    are exactly the ones sent: an omitted slug is derived here the way the endpoint
+    would, never left for the server to pick after the card. Ownership and slug-taken
+    refusals stay server-side (409s the handler relays) — one rule set, not two."""
+    name = args.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ToolArgError("name is required")
+    raw_slug = args.get("slug")
+    if raw_slug is not None and not isinstance(raw_slug, str):
+        raise ToolArgError("slug must be a string")
+    slug = _slug(raw_slug or slugify_product_name(name.strip()), field="slug")
+    repo, extra = args.get("repo"), args.get("repos") or []
+    if not isinstance(repo, str) or not _REPO_REF.match(repo):
+        raise ToolArgError("repo must be owner/name")
+    if (not isinstance(extra, list) or len(extra) >= _BATCH_MAX
+            or not all(isinstance(r, str) and _REPO_REF.match(r) for r in extra)):
+        raise ToolArgError(f"repos must be at most {_BATCH_MAX - 1} owner/name strings")
+    body: dict[str, Any] = {
+        "name": name.strip(), "slug": slug,
+        "repos": [{"repo": repo, "isPrimary": True}]
+                 + [{"repo": r} for r in dict.fromkeys(extra) if r != repo]}
+    description = args.get("description")
+    if isinstance(description, str) and description.strip():
+        body["description"] = description.strip()
+    return body
+
+
+def _create_product_items(tool_input: dict[str, Any]) -> list[str]:
+    """`name`, `slug` and each repo (primary first) create_product registers."""
+    try:
+        body = _create_product_body(tool_input)
+    except ToolArgError:
+        return []
+    rows = [f"name: {body['name']}", f"slug: {body['slug']}"]
+    rows += [f"{'primary' if r.get('isPrimary') else 'repo'}: {r['repo']}"
+             for r in body["repos"]]
+    if "description" in body:
+        rows.append(f"description: {body['description']}")
+    return [r[:_CARD_ITEM_MAX] for r in rows]
+
+
+CARD_ITEMS["create_product"] = _create_product_items
 
 
 def batch_items(mcp_name: str, tool_input: dict[str, Any]) -> list[str] | None:
@@ -2668,6 +2720,25 @@ def build_tools(api: AssistantApi, *, operator: bool = False,
         return await api.post(f"/api/pm/projects/{slug}/moved-refs",
                               {"pairs": [{"old": p["old"], "new": p["new"]} for p in pairs]})
 
+    @spec_tool("create_product",
+               "Create a new product and start its onboarding, exactly as the Products "
+               "page does: name, repo (owner/name, the primary), optional repos (more "
+               "owner/name repos), slug (derived from the name when omitted) and "
+               "description. Refused if any repo already belongs to another product or "
+               "the slug is taken — relay the refusal, never retry with a different slug "
+               "unasked. Returns the slug and onboardingState; follow up with "
+               "get_onboarding_status for the next step.",
+               _schema(("name", "repo"), name=str, repo=str,
+                       repos={"type": "array", "items": {"type": "string"}}, slug=str,
+                       description=str))
+    @guarded
+    async def create_product(args: dict[str, Any]) -> Any:
+        res = await api.post("/api/pm/projects", _create_product_body(args)) or {}
+        return {"slug": res.get("slug"), "name": res.get("name"),
+                "onboardingState": res.get("onboardingState"),
+                "repos": [{"repo": r.get("repo"), "isPrimary": r.get("isPrimary")}
+                          for r in res.get("repos") or []]}
+
     @spec_tool("apply_owner_digest",
                "Carry out the recommended action of owner digest items. ids are item ids "
                "from get_owner_digest that HAVE a recommendation (\"approve all\" = every "
@@ -2732,5 +2803,5 @@ def build_tools(api: AssistantApi, *, operator: bool = False,
             dismiss_feedback_cluster, attach_feedback_to_issue, attach_feedback_to_session]
     operator_tools = [start_deploy, upgrade_host, refresh_account, set_account_enabled,
                       start_reauth, update_product_policy, apply_owner_digest,
-                      update_product_repos, map_moved_issues]
+                      update_product_repos, map_moved_issues, create_product]
     return base_tools + (operator_tools if operator else [])

@@ -51,6 +51,8 @@ def client(fixture=None):
 # 2baaf637a4bc277c34e18f07bb2a62078b67634873a7471c98a01ba55c12a108
 # Before update_product_repos / map_moved_issues (product repo lifecycle, 162 cases):
 # ecfd0ec92533039ba1b1380e5c7c8c258804f0e84646f1bf391c4272afedd434
+# Before create_product (#3433, 164 cases):
+# fdc79665fe2abc7b773cb0c58f1a60b84a2c8d39d9d79ca163e625264683091f
 def test_semantic_projection_unchanged():
     rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
     # `session_id` is semantic: it changes the context header and arms the side-chat scope.
@@ -60,10 +62,10 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "fdc79665fe2abc7b773cb0c58f1a60b84a2c8d39d9d79ca163e625264683091f"
-    assert len(rows) == 164
+    assert digest == "92e6c4361bdaa424704f382ef92fb478364fde31c73ade6c77fa9f7ba5077cdb"
+    assert len(rows) == 165
     assert sum(bool(r.get("session_id")) for r in rows) == 4
-    assert sum(bool(r.get("operator")) for r in rows) == 9
+    assert sum(bool(r.get("operator")) for r in rows) == 10
 
 
 def test_a_scoped_case_renders_its_session_into_the_context_header():

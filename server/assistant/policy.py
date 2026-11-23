@@ -239,7 +239,7 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 
 
 # Operator-tier routes (spec v2 §7, Task 9.2): deploy, host upgrade, account
-# refresh/enable/reauth, a product's automation policy and repos. Disjoint from ASSISTANT_ROUTE_ALLOW on purpose — these are
+# refresh/enable/reauth, a product's automation policy and repos, product creation. Disjoint from ASSISTANT_ROUTE_ALLOW on purpose — these are
 # reachable ONLY when `operator=True` is passed to `route_allowed`, which in turn is
 # gated on `operator_tools_enabled(db)`. A path here must never also appear above.
 OPERATOR_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
@@ -262,6 +262,9 @@ OPERATOR_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("POST", r"/api/pm/projects/[a-z0-9-]+/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
                  r"/(?:primary|retire|unretire)"),
         ("POST", r"/api/pm/projects/[a-z0-9-]+/moved-refs"),
+        # create_product (#3433): the Products page's create, which registers a
+        # product's repos and starts onboarding — operator tier, like the repo edits.
+        ("POST", r"/api/pm/projects"),
     ]
 )
 

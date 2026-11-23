@@ -140,7 +140,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   session power tools, GitHub, proactive notices, opt-in operator tier, external MCP/CLI access) are
   in `docs/superpowers/specs/2026-09-05-ai-assistant-capabilities-v2-design.md`; plan:
   `docs/superpowers/plans/2026-09-05-ai-assistant-capabilities-v2.md`.
-- **Tool surface (v2)** — 117 tools are registered in `server/assistant/tools.py`; 108 are exposed by
+- **Tool surface (v2)** — 118 tools are registered in `server/assistant/tools.py`; 108 are exposed by
   default, Pack O's operator tools registering only once the operator tier is enabled. Packs X and
   U (external access, UX/feedback) add no new `TOOL_SPECS` rows — X reaches the existing table
   through a different transport (see "Use from other agents" below) and U instruments how the
@@ -158,7 +158,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   | C — session-start conveniences | 4 | presets, templates + render, permission profiles |
   | N — proactive notices | 10 | notification channels/rules, watches, quiet hours, test notification |
   | G — GitHub | 7 | PR detail (checks with conclusions/urls, reviews, mergeability, owning session) and its changed files with patches (capped at 100 files / 24 kB of patch per call, every cut reported, framed as the PR author's untrusted text), plus the writes that leave ViberPit, each signed with an authorship trailer: PR comment, issue creation, issue comment (unmarked, so it counts as the operator's word), and the bulk (≤20 refs) triage writes — `set_board_status` (add to the owning product's Project and/or set Status, journaled, validated against the board's real options) and the destructive `close_issue` (completed / not planned / duplicate-of, a signed comment posted first) |
-  | O — operator tier | 9 | deploy/host/account administration, product automation policy edits (the card lists each field before → after; the write is refused with a 409 if the live policy no longer matches the "before"), and `apply_owner_digest` (destructive class: the card names each digest item and what will happen; each runs through its own path — a model approval, a hygiene recommendation, a triage accept), `update_product_repos` (add / set primary / retire / un-retire a product's repo; the card shows `primary: expected → after`, and setting the primary or retiring needs `expectedPrimary` read off `get_product`) and `map_moved_issues` (old → new issue pairs whose holds, dependencies and notes migrate), flag-gated off by default |
+  | O — operator tier | 10 | deploy/host/account administration, product automation policy edits (the card lists each field before → after; the write is refused with a 409 if the live policy no longer matches the "before"), and `apply_owner_digest` (destructive class: the card names each digest item and what will happen; each runs through its own path — a model approval, a hygiene recommendation, a triage accept), `update_product_repos` (add / set primary / retire / un-retire a product's repo; the card shows `primary: expected → after`, and setting the primary or retiring needs `expectedPrimary` read off `get_product`) and `map_moved_issues` (old → new issue pairs whose holds, dependencies and notes migrate) and `create_product` (registers a new product and starts its onboarding through the Products page's own create; the card lists the name, slug and repos, and a repo owned by another product or a taken slug is refused with a 409), flag-gated off by default |
 
   These counts are pinned by `test_feature_doc_tool_counts_match_the_registry` — a new tool fails
   CI until this table places it in a pack, because the numbers above went stale within a day of
@@ -326,7 +326,7 @@ re-declaring one. The bridge runs wherever the client runs and talks to the edge
   Give a mutation-capable bridge a token whose scope is `act`, and prefer a client that confirms
   tool calls.
 - **Operator-tier tools are never served** — `start_deploy`, `upgrade_host`, `refresh_account`,
-  `set_account_enabled`, `start_reauth`, `update_product_policy`, `update_product_repos`, `map_moved_issues` and `apply_owner_digest` are
+  `set_account_enabled`, `start_reauth`, `update_product_policy`, `update_product_repos`, `map_moved_issues`, `create_product` and `apply_owner_digest` are
   withheld regardless of
   flags, matching the
   middleware, which pins `operator=False` for every `ccas2:` request.

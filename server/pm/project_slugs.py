@@ -29,7 +29,16 @@ the audit log at startup — see its docstring.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Iterable, Mapping, Sequence
+
+
+def slugify_product_name(name: str) -> str:
+    """The slug ``POST /api/pm/projects`` mints when none is given. The assistant's
+    create_product card derives it here too, so the slug a person confirms is the one
+    the endpoint would mint."""
+    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return s or "project"
 
 #: The audit record ``PATCH /api/pm/projects/{slug}`` writes. Named here because
 #: this module reads it back (``backfill_former_slugs``): the writer and the

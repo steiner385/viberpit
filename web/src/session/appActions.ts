@@ -128,6 +128,7 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   update_product_policy: 'Changed product automation policy',
   update_product_repos: 'Changed product repos',
   map_moved_issues: 'Mapped moved issues',
+  create_product: 'Created a product',
   apply_owner_digest: 'Applied owner digest recommendations',
 }
 
