@@ -24,7 +24,7 @@ from .backlog_github import (closeout_hold_reason, escalation_detail, evidence_d
                              is_deferred)
 from .backlog_grouping import RefreshSummary, load_plan, mark_consumed, plan_to_batch
 from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
-from .claim_liveness import DEAD_HOLDER_KEY
+from .claim_liveness import DEAD_HOLDER_KEY, SNOOZED_HOLDER_KEY
 from .base import AutomationStatus, ConfigField
 from .context import AutomationContext
 from .engine_policy import EnginePolicy
@@ -253,9 +253,14 @@ def is_in_flight(state: dict) -> bool:
     A row ``claim_liveness.mark_dead_claims`` stamped (its holder session is
     archived/ended/complete/gone) holds no slot either: a phantom claim must
     never count toward a cap while it waits for the sweep to settle it.
+
+    A row whose holder is SNOOZED (``SNOOZED_HOLDER_KEY``) holds no slot while it
+    sleeps either: the operator put it aside so other backlog work could run. The
+    claim row is kept (the issue stays claimed, never dispatched twice); it counts
+    again once the snooze clears.
     """
     return (not state.get("gave_up") and not state.get("handed_off")
-            and not state.get(DEAD_HOLDER_KEY))
+            and not state.get(DEAD_HOLDER_KEY) and not state.get(SNOOZED_HOLDER_KEY))
 
 
 def _by_product(states: dict, predicate: Callable[[dict], bool]) -> dict[str, int]:

@@ -301,3 +301,25 @@ async def test_a_failed_heal_never_costs_the_plan_write():
     await loop.tick()
     assert ctx.kinds().count("capacity_defect") == 1
     assert ctx.capacity_counts["defects"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Snoozed holders (2026-11-23: KinDash's 1/1 cap sat full behind one)         #
+# --------------------------------------------------------------------------- #
+
+def test_a_snoozed_holder_releases_its_in_flight_share_but_keeps_its_claim(tmp_path):
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'snz.db'}")
+        await _session("s-asleep", "idle")
+        await _session("s-awake", "idle")
+        async with db_session() as db:
+            row = await db.get(DbSession, "s-asleep")
+            row.snooze = {"at": "2026-11-23T00:00:00+00:00", "until": None,
+                          "reason": "r", "by": "user"}
+        states = {"o/r#1": _claim("s-asleep"), "o/r#2": _claim("s-awake")}
+        marked = await mark_dead_claims(states)
+        assert in_flight_by_product(marked) == {"kindash": 1}
+        # The claim row itself is untouched: the issue stays claimed, never re-dispatched.
+        assert states["o/r#1"] == _claim("s-asleep") and "o/r#1" in marked
+
+    asyncio.run(run())

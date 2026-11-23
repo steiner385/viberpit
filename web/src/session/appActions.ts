@@ -74,6 +74,8 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   resolve_model_approval: 'Resolved model approval',
   archive_session: 'Archived session',
   unarchive_session: 'Unarchived session',
+  snooze_session: 'Snoozed session',
+  unsnooze_session: 'Woke session',
   archive_sessions: 'Archived sessions',
   unarchive_sessions: 'Unarchived sessions',
   resume_sessions: 'Resumed sessions',

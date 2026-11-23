@@ -19,6 +19,7 @@ from server.pm.product_repos import ACTIVE
 from server.sessions.global_cap import read_global_cap
 
 from .capacity_readout import CapacitySources
+from .claim_liveness import snoozed_session_ids
 
 if TYPE_CHECKING:
     from server.automations.product_admission import ImplementationSnapshot
@@ -131,6 +132,7 @@ def sources_for(orch) -> CapacitySources:
         products=products,
         decide=decide,
         session_status=session_status,
+        snoozed_sessions=snoozed_session_ids,
         plan=_safe_plan,
         governor_config=orch._capacity_governor_read_config,
         kill_switch=lambda: bool(get_settings().capacity_governor_enabled),

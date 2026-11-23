@@ -8,7 +8,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -137,6 +137,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("move_in_queue", ToolClass.MUTATION, "Reorder queued session"),
     ToolSpec("pin_account", ToolClass.MUTATION, "Pin session to account"),
     ToolSpec("rotate_session", ToolClass.MUTATION, "Rotate to a different account"),
+    ToolSpec("snooze_session", ToolClass.MUTATION, "Snooze session"),
+    ToolSpec("unsnooze_session", ToolClass.MUTATION, "Wake a snoozed session"),
     ToolSpec("reload_session", ToolClass.MUTATION, "Reload session"),
     ToolSpec("adopt_session", ToolClass.MUTATION, "Adopt an untracked session"),
     ToolSpec("create_notification_rule", ToolClass.MUTATION, "Create notification rule"),
@@ -335,6 +337,24 @@ def _int_arg(v: Any, *, field: str, default: int, lo: int, hi: int) -> int:
     return max(lo, min(n, hi))
 
 
+_DURATION = re.compile(r"(\d+)\s*([mhdw])", re.IGNORECASE)
+_DURATION_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+
+
+def snooze_until_arg(v: Any) -> str:
+    """`until` as an ISO-8601 UTC timestamp: an ISO string passes through for the
+    endpoint's own validation; a duration like ``24h`` / ``3d`` is resolved against now.
+    A model cannot reliably add 24 hours to a clock, so the tool does it."""
+    text = str(v or "").strip()
+    if not text:
+        raise ToolArgError("until is required: an ISO-8601 time or a duration like '24h'")
+    m = _DURATION.fullmatch(text)
+    if m is None:
+        return text
+    delta = timedelta(**{_DURATION_UNITS[m.group(2).lower()]: int(m.group(1))})
+    return (datetime.now(timezone.utc) + delta).isoformat(timespec="seconds")
+
+
 # Batch tools (spec v2 B4): each takes `ids` + `titles` (equal length, capped) and acts
 # on every id in one confirmed action.
 BATCH_TOOLS: frozenset[str] = frozenset({"archive_sessions", "unarchive_sessions",
@@ -377,7 +397,7 @@ SESSION_TARGET_KEYS: dict[str, tuple[str, ...]] = {
         "set_model", "set_permission_mode", "resolve_model_approval", "archive_session",
         "unarchive_session", "set_autopilot_paused", "fix_pr", "rename_session",
         "move_in_queue", "pin_account", "rotate_session", "reload_session",
-        "delete_session", "cancel_queued_session")},
+        "snooze_session", "unsnooze_session", "delete_session", "cancel_queued_session")},
     **{name: ("ids",) for name in BATCH_TOOLS},
     # Sends the reports to the session as a prompt.
     "attach_feedback_to_session": ("session_id",),
@@ -2203,6 +2223,27 @@ def build_tools(api: AssistantApi, *, operator: bool = False,
     async def rotate_session(args: dict[str, Any]) -> Any:
         return await api.post(f"/api/sessions/{args['id']}/rotate")
 
+    @spec_tool("snooze_session",
+               "Put a session to sleep until a time (the same snooze the UI's Snooze action "
+               "sets): it leaves the live list, frees its host and runner slot, and comes "
+               "back when `until` passes. until is an ISO-8601 timestamp or a duration like "
+               "'90m', '24h', '3d', '1w'. reason says why. title is the session's title, "
+               "shown on the confirmation card. unsnooze_session wakes it early.",
+               _schema(("id", "until"), id=str, until=str, reason=str, title=str))
+    @guarded
+    async def snooze_session(args: dict[str, Any]) -> Any:
+        until = snooze_until_arg(args.get("until"))
+        reason = str(args.get("reason") or "").strip() or None
+        return await api.post(f"/api/sessions/{args['id']}/snooze",
+                              {"until": until, "reason": reason})
+
+    @spec_tool("unsnooze_session",
+               "Wake a snoozed session now. A session that snoozed itself gets its wake "
+               "prompt. Does nothing if it is not snoozed.", {"id": str})
+    @guarded
+    async def unsnooze_session(args: dict[str, Any]) -> Any:
+        return await api.delete(f"/api/sessions/{args['id']}/snooze") or {"ok": True}
+
     @spec_tool("reload_session",
                "Rebuild a session's driver in place — the recovery for a session that stopped "
                "responding (answers rejected, a stuck turn, a driver the daemon lost).",
@@ -2791,6 +2832,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False,
             archive_sessions, unarchive_sessions, resume_sessions, rotate_sessions,
             set_automation_enabled,
             rename_session, move_in_queue, pin_account, rotate_session, reload_session,
+            snooze_session, unsnooze_session,
             adopt_session,
             create_notification_rule, delete_notification_rule,
             watch, delete_watch,

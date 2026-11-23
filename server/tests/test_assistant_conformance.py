@@ -111,6 +111,7 @@ ARGS: dict[str, dict] = {
     "move_in_queue": {"id": UUID, "op": "top"},
     "pin_account": {"id": UUID, "pinned": True},
     "rotate_session": {"id": UUID}, "reload_session": {"id": UUID},
+    "snooze_session": {"id": UUID, "until": "24h"}, "unsnooze_session": {"id": UUID},
     "adopt_session": {"claude_session_id": "ext-1"},
 }
 

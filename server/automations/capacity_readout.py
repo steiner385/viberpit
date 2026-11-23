@@ -10,7 +10,8 @@ from typing import Any, Awaitable, Callable
 
 from .backlog_runner import in_flight_by_product, is_in_flight, pipeline_by_product
 from .capacity_apply import apply_product_plan, plan_is_live, plan_overlays
-from .claim_liveness import DEAD_CLAIM_STATUSES, DEAD_HOLDER_KEY, holder_session_id, is_dead_status
+from .claim_liveness import (DEAD_CLAIM_STATUSES, DEAD_HOLDER_KEY, SNOOZED_HOLDER_KEY,
+                              holder_session_id, is_dead_status)
 from .capacity_plan import (AccountHeadroom, CapacityInputs, HostCapacity, ProductCapacity,
                             RESERVE_PCT, fleet_reason, product_cap_note, product_order,
                             push_level_of)
@@ -111,6 +112,10 @@ class CapacitySources:
     # ``GlobalCap.to_wire()`` — so the Global row can say which ceiling binds.
     # None (older callers / pure tests) degrades the three fields to null.
     global_limits: Callable[[], Awaitable[dict | None]] | None = None
+    # Optional: the ids among the given sessions that are snoozed — they hold no
+    # in-flight share while asleep (``claim_liveness.SNOOZED_HOLDER_KEY``). None
+    # (pure tests) = nothing is snoozed.
+    snoozed_sessions: Callable[[list[str]], Awaitable[set[str]]] | None = None
 
 
 async def build_readout(src: CapacitySources) -> dict:
@@ -162,6 +167,12 @@ async def build_readout(src: CapacitySources) -> dict:
     # row itself; until it does, the defect is surfaced, never charged.
     dead = {d["target"] for d in defects}
     counted = {t: ({**st, DEAD_HOLDER_KEY: True} if t in dead else st) for t, st in states.items()}
+    if src.snoozed_sessions is not None:
+        holders = {t: sid for t, st in counted.items() if t not in dead
+                   and (sid := holder_session_id(st)) is not None}
+        asleep = await src.snoozed_sessions(sorted(set(holders.values())))
+        counted = {t: ({**st, SNOOZED_HOLDER_KEY: True} if holders.get(t) in asleep else st)
+                   for t, st in counted.items()}
     in_flight_total = sum(1 for s in counted.values() if is_in_flight(s))
     by_product = in_flight_by_product(counted)
     pipeline_by = pipeline_by_product(states)
