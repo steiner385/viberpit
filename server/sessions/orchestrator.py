@@ -20526,7 +20526,9 @@ class SessionOrchestrator:
         enabled_hosts = await self._enabled_host_names()
         for sid, rec in list(self._records.items()):
             if is_assistant(rec):
-                continue   # the drawer names its own threads; no transcript titling
+                # Drawer threads are titled only by the turn-end trigger: never spend
+                # a Haiku query on a timer for a chat nobody is typing into.
+                continue
             if rec.status == "ended" or not rec.name_is_auto:
                 continue
             if not self._owns_record(rec, enabled_hosts):
