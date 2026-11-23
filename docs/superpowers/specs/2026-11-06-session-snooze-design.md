@@ -80,3 +80,9 @@ and a Wake button; the card overflow menu gets Snooze presets.
 - JSON column over four scalar columns: one field through every codec.
 - The 30-day self-snooze cap mirrors `hand_back(recheck_at)`.
 - A user wake of a self-snoozed session still sends the wake prompt ("check now").
+- Capacity (2026-11-23): a snoozed session holds a host slot only while it holds a
+  `claude` process (`_consumes_capacity_slot`). Within a minute of its turn ending,
+  the snooze sweep stops the process of a snoozed session that is between turns with
+  no card open and no background work (`SNOOZE_RELEASABLE_STATUSES`); the wake or the
+  next prompt resumes it. A snoozed session waiting on its own Monitor keeps its
+  process, and its slot.

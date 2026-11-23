@@ -4571,8 +4571,28 @@ class SessionOrchestrator:
 
         The assistant is excluded: it is a UI affordance, not fleet work, so counting it
         would silently shrink the operator's coding-session cap by one.
+
+        A SNOOZED session counts only while it holds a `claude` process. Snooze is an
+        overlay, not a status, so the status test alone billed a session someone had
+        put aside for hours against the host cap: on 2026-11-23 three user-snoozed
+        `handed_back` sessions and a self-snoozed `waiting_external` one held four of
+        eleven fleet slots, and the Capacity Governor throttled every product to fleet
+        3. ``_release_snoozed_driver`` frees the process of a snoozed session that is
+        between turns with no background work; a snoozed session that still has its
+        process (mid-turn, a card open, a background task running) keeps counting —
+        the invariant above (a live driver is never capacity-exempt) still holds.
         """
-        return record.status not in CAPACITY_EXEMPT_STATUSES and not is_assistant(record)
+        if record.status in CAPACITY_EXEMPT_STATUSES or is_assistant(record):
+            return False
+        if getattr(record, "snooze", None) and not self._holds_process(record.id):
+            return False
+        return True
+
+    def _holds_process(self, session_id: str) -> bool:
+        """A live driver, or one being built, on THIS daemon (``_sync_detached``'s
+        condition). getattr: harnesses build the orchestrator via ``__new__``."""
+        return (session_id in getattr(self, "_drivers", {})
+                or session_id in getattr(self, "_spawning", {}))
 
     def _active_session_count(self) -> int:
         """Sessions consuming a runtime capacity slot (see CAPACITY_EXEMPT_STATUSES).
@@ -8046,22 +8066,7 @@ class SessionOrchestrator:
         # _maybe_autoarchive_completed schedules the archive instead of awaiting it
         # inline.)
         if status == "complete":
-            live_driver = self._drivers.pop(session_id, None)
-            if live_driver is not None:
-                async def _release(d=live_driver, sid=session_id):
-                    try:
-                        with contextlib.suppress(Exception):
-                            await self._close_automation_driver(d, sid)
-                    finally:
-                        # Clear only our own entry — never a newer release that
-                        # (defensively) replaced this one for the same session_id.
-                        # Runs on both success and failure so a stuck/erroring
-                        # release can never make the session permanently unopenable
-                        # (ensure_driver awaits this entry before rebuilding).
-                        if self._releasing.get(sid) is asyncio.current_task():
-                            self._releasing.pop(sid, None)
-                self._releasing[session_id] = self._spawn(
-                    _release(), name="completion-driver-release")
+            self._release_driver_keep_record(session_id, name="completion-driver-release")
         self._maybe_autoarchive_completed(session_id, status, rec)
         if status == "done" and rec is not None and self._pm_onboard_is_map_diff(rec):
             # A map-diff objective can be discharged by repository evidence even
@@ -8098,6 +8103,34 @@ class SessionOrchestrator:
         if status in CAPACITY_EXEMPT_STATUSES and status != "queued":
             self._spawn(self._maybe_start_queued(), name="queue-drain-on-status")
         return status
+
+    def _release_driver_keep_record(self, session_id: str, *, name: str) -> bool:
+        """Stop *session_id*'s `claude` process but keep its record and transcript —
+        reopening lazily rebuilds the driver via ``ensure_driver`` (resume=). False when
+        no driver was registered.
+
+        The pop is synchronous (capacity accounting sees it the instant this returns);
+        the close is deferred to a task published in ``_releasing``, because a caller
+        may be the driver's own on_status hook (aclose awaits that pump: the task
+        waiting on itself) and because ensure_driver waits on that entry before
+        rebuilding, so a new process never races the old one's transcript flush."""
+        live_driver = self._drivers.pop(session_id, None)
+        if live_driver is None:
+            return False
+
+        async def _release(d=live_driver, sid=session_id):
+            try:
+                with contextlib.suppress(Exception):
+                    await self._close_automation_driver(d, sid)
+            finally:
+                # Clear only our own entry — never a newer release that (defensively)
+                # replaced this one for the same session_id. Runs on both success and
+                # failure so a stuck/erroring release can never make the session
+                # permanently unopenable (ensure_driver awaits this entry first).
+                if self._releasing.get(sid) is asyncio.current_task():
+                    self._releasing.pop(sid, None)
+        self._releasing[session_id] = self._spawn(_release(), name=name)
+        return True
 
     async def _certify_unmarked_map_diff_turn(
             self, rec: SessionRecord, revision: datetime | None,
@@ -21299,7 +21332,7 @@ class SessionOrchestrator:
         returns its driver, so an attach that lands mid-spawn must take the live
         path — the read-only one never pops the deferred initial prompt, and nothing
         re-attaches once the driver lands (incident 2026-09-04)."""
-        rec.detached = rec.id not in self._drivers and rec.id not in self._spawning
+        rec.detached = not self._holds_process(rec.id)
         return rec
 
     def list_sessions(self, *, include_assistant: bool = False) -> list[SessionRecord]:
@@ -28930,6 +28963,63 @@ class SessionOrchestrator:
             await record_audit(db, "session.snooze", identity,
                                {"session_id": session_id, **snooze},
                                via="session" if snooze.get("by") == "session" else None)
+        # A person snoozing an idle session frees its slot now; a session's own snooze
+        # arrives mid-turn (it is a tool call), so the sweep frees it after the turn.
+        try:
+            await self._release_snoozed_driver(session_id)
+        except Exception:  # noqa: BLE001 - the snooze is recorded; the sweep retries
+            log.warning("snooze.release_failed session=%s", session_id, exc_info=True)
+
+    async def _has_background_work(self, session_id: str) -> bool:
+        """Open background work living inside this session's process: a Monitor or
+        ``run_in_background`` task, or (Claude) an armed self-scheduled wakeup. Any
+        failed read answers True — keeping a process is the safe side of not knowing."""
+        try:
+            if self._engine_of(session_id) is AgentEngine.CLAUDE_CODE:
+                from .background_tasks import scan_background_state
+                path = await asyncio.to_thread(self.transcript_path, session_id)
+                if not path:
+                    return False
+                tasks, wakeup = await asyncio.to_thread(scan_background_state, path)
+                return bool(tasks) or wakeup is not None
+            return bool(await self._open_background_work(session_id))
+        except Exception:  # noqa: BLE001
+            log.debug("snooze.bg_scan_failed session=%s", session_id, exc_info=True)
+            return True
+
+    async def _release_snoozed_driver(self, session_id: str) -> bool:
+        """Stop the `claude` process of a snoozed session that has nothing running, so
+        it stops holding a host capacity slot (``_consumes_capacity_slot``). True when
+        a process was released.
+
+        Kept: a session mid-turn or mid-drain, one with a card open on its driver or
+        any other status outside ``SNOOZE_RELEASABLE_STATUSES``, one being swapped, and
+        one with background work — that work runs inside the process, and a snoozed
+        session waiting on its own Monitor is exactly what snooze is for. The record,
+        transcript and snooze stay; the wake (``wake_session`` → ``ensure_driver``) or
+        the next prompt resumes it."""
+        from .snooze import SNOOZE_RELEASABLE_STATUSES
+        rec = self._records.get(session_id)
+        drivers = getattr(self, "_drivers", {})   # __new__-built harnesses have none
+        driver = drivers.get(session_id)
+        if rec is None or driver is None:
+            return False
+
+        def releasable(r: SessionRecord, d: AgentDriver) -> bool:
+            return (bool(getattr(r, "snooze", None))
+                    and r.status in SNOOZE_RELEASABLE_STATUSES
+                    and drivers.get(session_id) is d
+                    and not d.turn_active and not d.drain_alive
+                    and session_id not in getattr(self, "_swapping", {}))
+        if not releasable(rec, driver) or await self._has_background_work(session_id):
+            return False
+        # Re-check after the transcript read: a wake or prompt may have landed.
+        if not releasable(rec, driver):
+            return False
+        self._release_driver_keep_record(session_id, name="snooze-driver-release")
+        log.info("snooze.process_released session=%s status=%s", session_id, rec.status)
+        self._spawn(self._maybe_start_queued(), name="queue-drain-on-snooze-release")
+        return True
 
     async def wake_session(self, session_id: str, *, cause: str = "user",
                            identity: str = SYSTEM_IDENTITY) -> bool:
@@ -28982,7 +29072,11 @@ class SessionOrchestrator:
 
     async def _wake_due_snoozes_once(self, now: datetime | None = None) -> int:
         """Wake every snooze on THIS daemon's records whose time has come. A snooze on
-        a session that has since ended or been archived is dropped without a wake."""
+        a session that has since ended or been archived is dropped without a wake.
+
+        A snooze that is not due yet gets ``_release_snoozed_driver`` instead: that is
+        how a session's own snooze (set mid-turn) frees its slot once the turn ends,
+        and how a process outlives the background work it was kept for."""
         from datetime import datetime, timezone
 
         from .snooze import UNSNOOZABLE_STATUSES, is_due
@@ -29001,6 +29095,11 @@ class SessionOrchestrator:
                         woken += 1
                 except Exception:  # noqa: BLE001 - one bad wake must not stall the rest
                     log.warning("snooze.wake_failed session=%s", sid, exc_info=True)
+            elif sid in getattr(self, "_drivers", {}):
+                try:
+                    await self._release_snoozed_driver(sid)
+                except Exception:  # noqa: BLE001 - one bad release must not stall the rest
+                    log.warning("snooze.release_failed session=%s", sid, exc_info=True)
         return woken
 
     async def _snooze_wake_loop(self, interval: float = 60.0) -> None:
