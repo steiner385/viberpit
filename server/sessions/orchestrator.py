@@ -18953,7 +18953,7 @@ class SessionOrchestrator:
         ``_pr_doctor_session_fix`` verbatim (single source of truth for the fix
         pipeline + its feed events) — only the job bookkeeping is new."""
         from server.automations.action_providers import _PR_STATUS_MAP
-        from server.automations.pr_doctor_jobs import finalize
+        from server.automations.pr_doctor_jobs import finalize, outcome_message
         try:
             status, sid, reason = await self._pr_doctor_session_fix(
                 repo, branch, info, kind, rec,
@@ -18968,9 +18968,8 @@ class SessionOrchestrator:
         # causes into one label; `reason`, when the executor supplied one, is
         # the specific cause — surface that instead of the generic message so
         # the manual-trigger button says *why* it's refusing, not just *that*.
-        if reason:
-            message = f"{message} — {reason}"
-        finalize(job, status, level=level, message=message, session_id=sid)
+        finalize(job, status, level=level, message=outcome_message(message, reason),
+                 session_id=sid)
 
     def pr_doctor_job(self, job_id: str) -> dict | None:
         """Current state of an async manual-trigger job, or None if unknown

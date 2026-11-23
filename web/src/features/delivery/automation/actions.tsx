@@ -4,64 +4,27 @@
  * `AutomationActions`/`ActionButton` — only the classes changed, to `ui/`
  * primitives on tokens.
  */
-import { useEffect, useRef, useState } from 'react'
-import { useAutomationActionable, useAutomationTrigger } from '@/api/hooks'
-import { fetchPrDoctorJob, splitActionable, type ActionableItem, type ActionSpec } from '@/api/automations'
+import { useEffect, useState } from 'react'
+import { useAutomationActionable } from '@/api/hooks'
+import { splitActionable, type ActionableItem, type ActionSpec } from '@/api/automations'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
 import { SectionHeading } from '@/ui/SectionHeading'
-import { outcomeToast } from './outcomeToast'
+import { useActionJobs, type ItemJob } from './useActionJobs'
 
 // Async job phases → button label (issue #668). Shown while the background
 // clone→assess→spawn pipeline runs so the user sees which phase is slow.
 const PHASE_LABEL: Record<string, string> = {
   queued: 'Queued…', cloning: 'Cloning…', assessing: 'Assessing…', spawning: 'Spawning…',
 }
-const JOB_TERMINAL = new Set(['ready', 'error', 'deferred'])
-const JOB_POLL_MS = 750
 
-type Outcome = { level: string; message: string }
-
-// Poll an async trigger job (issue #668) until it settles, reporting each phase
-// to `onPhase`. Returns the final outcome, or a feed fallback if the job
-// vanished (evicted / daemon restart → 404). `alive` lets the caller abandon the
-// loop when the button unmounts.
-async function pollJob(
-  jobId: string, onPhase: (phase: string) => void, alive: () => boolean,
-): Promise<Outcome> {
-  while (alive()) {
-    let job
-    try {
-      job = await fetchPrDoctorJob(jobId)
-    } catch {
-      return { level: 'warn', message: 'Lost track of the job — check the activity feed.' }
-    }
-    onPhase(job.phase)
-    if (JOB_TERMINAL.has(job.status)) return { level: job.level, message: job.message }
-    await new Promise((res) => setTimeout(res, JOB_POLL_MS))
-  }
-  return { level: 'warn', message: 'Cancelled' }
-}
-
-export function ActionButton(
-  { item, action, automationId }:
-  { item: { id: string }; action: ActionSpec; automationId: string },
+/** One action's button. Its job and result are the row's (`useActionJobs`);
+ *  only the risky-action confirm is the button's own. */
+function ActionButton(
+  { action, busy, phase, onFire }:
+  { action: ActionSpec; busy: boolean; phase: string | null; onFire: () => void },
 ) {
-  const trigger = useAutomationTrigger(automationId)
   const [armed, setArmed] = useState(false)
-  const [outcome, setOutcome] = useState<Outcome | null>(null)
-  // Non-null phase while an async trigger (issue #668) is in flight.
-  const [phase, setPhase] = useState<string | null>(null)
-  // Flipped false on unmount so an in-flight poll loop abandons quietly.
-  const alive = useRef(true)
-  useEffect(() => () => { alive.current = false }, [])
-  const busy = trigger.isPending || phase !== null
-
-  useEffect(() => {
-    if (!outcome) return
-    const id = setTimeout(() => setOutcome(null), 4000)
-    return () => clearTimeout(id)
-  }, [outcome])
 
   // Auto-disarm a risky confirm so a user who reconsiders isn't left with a
   // sticky "Confirm?" — mirrors the outcome-badge auto-clear (#466).
@@ -71,27 +34,10 @@ export function ActionButton(
     return () => clearTimeout(id)
   }, [armed])
 
-  async function fire() {
-    setArmed(false)
-    const r = await trigger.mutateAsync({ item_id: item.id, kind: action.kind })
-    // Async path (issue #668): poll the job for live phases, then settle. The
-    // trigger RPC now returns in milliseconds instead of blocking 12–41 s.
-    if (r.job_id && r.status === 'queued') {
-      setPhase(r.phase ?? 'queued')
-      const final = await pollJob(r.job_id, setPhase, () => alive.current)
-      if (!alive.current) return
-      setPhase(null)
-      setOutcome(final)
-      outcomeToast(final)
-      return
-    }
-    setOutcome({ level: r.level, message: r.message })
-    outcomeToast(r)
-  }
-
   function onClick() {
     if (action.style === 'risky' && !armed) { setArmed(true); return }
-    void fire()
+    setArmed(false)
+    onFire()
   }
 
   // While a job runs, show its live phase; otherwise the generic pending label.
@@ -112,12 +58,17 @@ export function ActionButton(
           Cancel
         </Button>
       )}
-      {outcome && (
-        <Badge tone={outcome.level === 'ok' ? 'success' : outcome.level === 'warn' ? 'warning' : 'danger'}>
-          {outcome.message}
-        </Badge>
-      )}
     </span>
+  )
+}
+
+function OutcomeBadge({ job }: { job: ItemJob | undefined }) {
+  const outcome = job?.outcome
+  if (!outcome) return null
+  return (
+    <Badge tone={outcome.level === 'ok' ? 'success' : outcome.level === 'warn' ? 'warning' : 'danger'}>
+      {outcome.message}
+    </Badge>
   )
 }
 
@@ -140,6 +91,9 @@ export function AutomationActions({ automationId, enabled, variant, paused = fal
   onSeeAll?: () => void
 }) {
   const actionable = useAutomationActionable(automationId, enabled)
+  // One job map for every row this list renders, so a result outlives its
+  // row's button and follows the item between the decisions and the fold.
+  const jobs = useActionJobs(automationId)
   // Decisions are what "needs you"; maintenance (an Unmute on a muted
   // signature, a File-now on a row the loop itself throttled) is settled
   // housekeeping — said, folded, never counted (2026-10-01 Delivery critique, P0).
@@ -151,7 +105,7 @@ export function AutomationActions({ automationId, enabled, variant, paused = fal
       <section className="space-y-2">
         <SectionHeading>{parkedHeading ?? 'Actionable items'}</SectionHeading>
         <div className="rounded-md border border-edge p-2">
-          <ActionableRows items={decisions.slice(0, PREVIEW_ROWS)} automationId={automationId} />
+          <ActionableRows items={decisions.slice(0, PREVIEW_ROWS)} jobs={jobs} />
         </div>
         {onSeeAll && decisions.length > PREVIEW_ROWS && (
           <div>
@@ -166,14 +120,14 @@ export function AutomationActions({ automationId, enabled, variant, paused = fal
       {parkedHeading && <ParkedNotice heading={parkedHeading} />}
       {decisions.length === 0
         ? <p className="text-sm text-ink-muted">Nothing needs you.</p>
-        : <ActionableRows items={decisions} automationId={automationId} />}
+        : <ActionableRows items={decisions} jobs={jobs} />}
       {maintenance.length > 0 && (
         <details className="text-sm">
           <summary className="cursor-pointer select-none text-ink-muted">
             {maintenance.length} maintenance
           </summary>
           <div className="mt-2">
-            <ActionableRows items={maintenance} automationId={automationId} />
+            <ActionableRows items={maintenance} jobs={jobs} />
           </div>
         </details>
       )}
@@ -194,11 +148,14 @@ export function ParkedNotice({ heading }: { heading: string }) {
   )
 }
 
-function ActionableRows({ items, automationId }: { items: ActionableItem[]; automationId: string }) {
+function ActionableRows(
+  { items, jobs: { jobs, run } }: { items: ActionableItem[]; jobs: ReturnType<typeof useActionJobs> },
+) {
   return (
     <ul className="space-y-1.5 text-sm">
       {items.map((item) => {
         const number = item.id.split('#')[1]
+        const job = jobs[item.id]
         return (
           <li key={item.id} className="flex items-center gap-2">
             <span className="min-w-0 flex-1">
@@ -212,8 +169,15 @@ function ActionableRows({ items, automationId }: { items: ActionableItem[]; auto
               <span className="text-xs text-ink-muted">{item.status}</span>
             )}
             {item.actions.map((action) => (
-              <ActionButton key={action.kind} item={item} action={action} automationId={automationId} />
+              <ActionButton
+                key={action.kind}
+                action={action}
+                busy={job?.busy ?? false}
+                phase={job?.phase ?? null}
+                onFire={() => void run(item, action)}
+              />
             ))}
+            <OutcomeBadge job={job} />
           </li>
         )
       })}

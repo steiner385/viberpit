@@ -17,6 +17,7 @@ restart mid-job orphans the spawn regardless; a stale id polled afterwards just
 from __future__ import annotations
 
 import secrets
+import time
 from dataclasses import dataclass
 
 # Ordered lifecycle. ``queued`` is the pre-run state; ``cloning`` → ``assessing``
@@ -37,6 +38,11 @@ _TERMINAL = {
 # "clone failed" vs "spawn failed" rather than a generic error.
 _ERROR_PHASE = {"clone_failed": "cloning", "spawn_failed": "spawning", "failed": "spawning"}
 
+# How long a settled job stays readable. The UI polls every 750 ms and stops at
+# the first terminal answer, so minutes is generous; past this a settled job
+# 404s ("job gone") rather than serving a days-old error to whoever asks (#3429).
+SETTLED_TTL_S = 15 * 60
+
 
 @dataclass
 class Job:
@@ -49,6 +55,7 @@ class Job:
     error_phase: str | None = None
     message: str = ""
     level: str = "ok"         # ok | warn | error (mirrors TriggerResult)
+    settled_at: float | None = None  # time.monotonic() at finalize; None while running
 
     def to_dict(self) -> dict:
         return {"job_id": self.job_id, "target": self.target, "kind": self.kind,
@@ -62,14 +69,22 @@ class JobStore:
 
     Not thread-safe by design: every caller runs on the daemon event loop, so a
     plain dict needs no lock. Bounded to ``cap`` entries — the oldest are evicted
-    on create so a long-lived daemon never accumulates jobs without limit.
+    on create so a long-lived daemon never accumulates jobs without limit — and
+    a settled job expires ``ttl_s`` after it settled, so an old outcome is never
+    served as if it were current (#3429). A running job never expires.
     """
 
-    def __init__(self, *, cap: int = 200) -> None:
+    def __init__(self, *, cap: int = 200, ttl_s: float = SETTLED_TTL_S) -> None:
         self._jobs: dict[str, Job] = {}
         self._cap = cap
+        self._ttl_s = ttl_s
+
+    def _expired(self, job: Job) -> bool:
+        return job.settled_at is not None and time.monotonic() - job.settled_at > self._ttl_s
 
     def create(self, *, target: str, kind: str) -> Job:
+        for stale in [jid for jid, j in self._jobs.items() if self._expired(j)]:
+            del self._jobs[stale]
         job = Job(job_id=f"prd-{secrets.token_hex(4)}", target=target, kind=kind)
         self._jobs[job.job_id] = job
         while len(self._jobs) > self._cap:
@@ -79,12 +94,24 @@ class JobStore:
         return job
 
     def get(self, job_id: str) -> Job | None:
-        return self._jobs.get(job_id)
+        job = self._jobs.get(job_id)
+        if job is not None and self._expired(job):
+            del self._jobs[job_id]
+            return None
+        return job
 
     def advance(self, job: Job, phase: str) -> None:
         """Mark the job as running and entering ``phase``."""
         job.status = "running"
         job.phase = phase
+
+
+def outcome_message(message: str, reason: str | None) -> str:
+    """The status label plus the executor's specific ``reason`` — unless the
+    label already says it, which would read "X — X" (#3429)."""
+    if not reason or reason.casefold() in message.casefold():
+        return message
+    return f"{message} — {reason}"
 
 
 def finalize(job: Job, raw_status: str, *, level: str, message: str,
@@ -98,6 +125,7 @@ def finalize(job: Job, raw_status: str, *, level: str, message: str,
     job.level = level
     job.message = message
     job.session_id = session_id
+    job.settled_at = time.monotonic()
     if job.status == "ready":
         job.phase = "ready"
     elif job.status == "error":
