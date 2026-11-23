@@ -245,3 +245,12 @@ is called, the more real user data a rollback discards. Decide quickly.
 - **`--raw-days` defaults to 7.0** and only affects `ci_test_result`'s retention scoping; every
   other table copies in full regardless of this flag. No need to pass it explicitly unless you are
   deliberately changing the raw-result retention window for this migration.
+- **Set `idle_in_transaction_session_timeout` on the app role.** Out of the box Postgres never
+  reaps a backend whose client died mid-transaction (a session runner hard-reset), so its row
+  locks are held until someone runs `pg_terminate_backend`. On 2026-11-23 a lock left on
+  `host_heartbeats` this way kept rocky's restarted daemon from binding :9443 for ~18 min (#3443).
+  Production sets it to 5 min on the app role named in `VIBERPIT_DB_URL` (roles are
+  cluster-wide, so no `-d`; new connections pick it up; no restart):
+  `sudo -u postgres psql -c "ALTER ROLE <app-role> SET idle_in_transaction_session_timeout = '300s'"`.
+  The flip side: app code must never hold a DB transaction open across a slow await (subprocess,
+  HTTP, model call) for 5+ minutes, or the server will cut its connection.
