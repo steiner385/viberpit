@@ -13,6 +13,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from server.github.pr_status import HUMAN_HOLD_LABEL
 from server.sessions.host_platforms import KNOWN_PLATFORMS, LINUX_ONLY
 
 from .desired_state import (HELD_KINDS, STATUS_BACKLOG, STATUS_BLOCKED,
@@ -50,8 +51,15 @@ SKIP_ISSUE_TITLES = frozenset({"dependency dashboard"})
 # held count is read beside the holds list, which lists real holds only. ``PARKED`` is
 # the label as the operator writes it, the skip reason's name, and the kind the release
 # rule (``holds.release_refusal``) and ``POST /api/pm/holds/release`` call it.
+#
+# ``hold:human`` (``pr_status.HUMAN_HOLD_LABEL``) on an ISSUE reads the same way
+# (#3440): the operator put cairnea/KinDash#20202 on hold with it and the runner kept
+# re-claiming it, because only ``parked`` was a label-level "not now". Every reader
+# of this set — the queue skip, ``release_hold``'s owner rule, the parked-review
+# hygiene — then treats the two alike, so no one label is a hold to one surface and
+# work to another.
 PARKED = "parked"
-PARKED_LABELS = frozenset({PARKED})
+PARKED_LABELS = frozenset({PARKED, HUMAN_HOLD_LABEL})
 
 # Self-closing trackers (#2683): issues a CI workflow files AND closes by itself —
 # a per-test ``[flaky]`` tracker closes after N green scheduled runs, a

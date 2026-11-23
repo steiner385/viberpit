@@ -51,6 +51,8 @@ ARGS: dict[str, dict] = {
     "create_issue": {"repo": "o/n", "title": "t", "body": "b"},
     "comment_on_issue": {"repo": "o/n", "number": 1, "body": "b"},
     "set_board_status": {"refs": ["o/n#1"], "titles": ["T"], "status": "Ready"},
+    "add_issue_labels": {"refs": ["o/n#1"], "titles": ["T"], "labels": ["hold:human"]},
+    "remove_issue_labels": {"refs": ["o/n#1"], "titles": ["T"], "labels": ["p1"]},
     "close_issue": {"refs": ["o/n#1"], "titles": ["T"], "reason": "completed",
                     "comment": "Done in #2"},
     "set_automation_enabled": {"id": "autopilot", "enabled": False},

@@ -118,6 +118,9 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("POST", r"/api/github/issues/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/\d+/comments"),
         ("POST", r"/api/pm/board-status"),
         ("POST", r"/api/pm/issues/close"),
+        # Label edits (#3440): add/remove (MUTATION). The route refuses removing a hold
+        # label — that is release_hold's, with its owner rule — and refuses PRs.
+        ("POST", r"/api/pm/issues/labels/(add|remove)"),
         ("GET", r"/api/pipeline/insights/checks"),
         ("GET", r"/api/pipeline/repos"),
         ("GET", r"/api/github/repos"),

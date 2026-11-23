@@ -2281,6 +2281,68 @@ async def test_triage_write_tools_reject_bad_args_locally(name, args, msg):
     assert calls == []
 
 
+@pytest.mark.asyncio
+async def test_issue_label_tools_post_refs_and_labels():
+    seen: list = []
+
+    def handler(req: httpx.Request):
+        seen.append((req.url.path, json.loads(req.content)))
+        return httpx.Response(200, json={"results": []})
+
+    tools = build_tools(_api(handler))
+    for name, op in (("add_issue_labels", "add"), ("remove_issue_labels", "remove")):
+        out = await _tool(tools, name).handler(
+            {"refs": [" cairnea/KinDash#20202 "], "titles": ["Hold me"],
+             "labels": [" hold:human "] if op == "add" else ["p1"]})
+        assert out.get("is_error") is not True
+    assert seen == [
+        ("/api/pm/issues/labels/add", {"refs": ["cairnea/KinDash#20202"],
+                                       "labels": ["hold:human"]}),
+        ("/api/pm/issues/labels/remove", {"refs": ["cairnea/KinDash#20202"],
+                                          "labels": ["p1"]})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["add_issue_labels", "remove_issue_labels"])
+@pytest.mark.parametrize("args,msg", [
+    ({"refs": ["o/r#1"], "titles": ["t"], "labels": []}, "labels"),
+    ({"refs": ["o/r#1"], "titles": ["t"], "labels": [" "]}, "labels"),
+    ({"refs": ["o/r#1"], "titles": ["t"], "labels": [str(i) for i in range(11)]},
+     "at most 10"),
+    ({"refs": [f"o/r#{i}" for i in range(21)], "titles": ["t"] * 21, "labels": ["x"]},
+     "at most 20"),
+    ({"refs": ["o/r#1", "o/r#2"], "titles": ["t"], "labels": ["x"]}, "get_priority_queue"),
+    ({"refs": ["o/r"], "titles": ["t"], "labels": ["x"]}, "owner/repo#123"),
+])
+async def test_issue_label_tools_reject_bad_args_locally(name, args, msg):
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), name).handler(args)
+    assert out["is_error"] is True
+    assert msg in out["content"][0]["text"]
+    assert calls == []
+
+
+def test_issue_label_tools_class_card_and_trust_rule():
+    assert TOOL_SPECS["add_issue_labels"].tool_class is ToolClass.MUTATION
+    assert TOOL_SPECS["remove_issue_labels"].tool_class is ToolClass.MUTATION
+    inp = {"refs": ["o/r#1", "o/r#2"], "titles": ["One"], "labels": ["hold:human", "p1"]}
+    assert batch_items(MCP_PREFIX + "add_issue_labels", inp) == [
+        "o/r#1 — One: +hold:human, +p1", "o/r#2: +hold:human, +p1"]
+    assert batch_items(MCP_PREFIX + "remove_issue_labels", {**inp, "labels": ["p1"]}) == [
+        "o/r#1 — One: −p1", "o/r#2: −p1"]
+    tools = build_tools(_api(lambda _: httpx.Response(200)))
+    for name in ("add_issue_labels", "remove_issue_labels"):
+        desc = _tool(tools, name).description
+        assert "Only ever call this when the OPERATOR asked" in desc
+        assert "Pull requests are refused" in desc
+    assert "release_hold" in _tool(tools, "remove_issue_labels").description
+
+
 def test_triage_bulk_cards_enumerate_every_ref():
     inp = {"refs": ["acme/billing#18", "acme/billing#20"], "titles": ["Proration", "CSV"]}
     for name in ("set_board_status", "close_issue"):

@@ -1444,7 +1444,7 @@ async def release_holds(
         placer = None
         if refused is None and label is not None:
             placer = await asyncio.to_thread(ci_issues.label_placer, wi.repo or "",
-                                             int(wi.number or 0), PARKED)
+                                             int(wi.number or 0), label)
             if not gh_login_read:
                 gh_login, gh_login_read = await asyncio.to_thread(ci_issues.viewer_login), True
             refused = release_refusal(PARKED, placer, actor=actor, operator=gh_login)
@@ -3322,4 +3322,103 @@ async def close_issues(body: IssueCloseBody, request: Request,
                         "error": result.get("error"), "commentUrl": comment_url})
     return {"reason": body.reason, "results": results,
             "closed": sum(1 for r in results if r["ok"]),
+            "refused": sum(1 for r in results if not r["ok"])}
+
+
+#: Labels one ``POST /api/pm/issues/labels/{op}`` may name; GitHub's own name cap.
+_LABELS_MAX = 10
+_LABEL_NAME_MAX = 50
+
+
+class IssueLabelsBody(BaseModel):
+    refs: list[str] = Field(min_length=1, max_length=_REF_BATCH_MAX)
+    labels: list[str] = Field(min_length=1, max_length=_LABELS_MAX)
+
+
+def _clean_labels(raw: list[str]) -> list[str]:
+    """The request's labels stripped and de-duplicated case-insensitively (GitHub
+    label names are), first spelling kept; 422 on an empty or over-long one."""
+    out: dict[str, str] = {}
+    for lbl in raw:
+        name = lbl.strip()
+        if not name or len(name) > _LABEL_NAME_MAX or name in (".", ".."):
+            raise HTTPException(status_code=422, detail={
+                "error": "bad_label",
+                "message": f"each label must be 1–{_LABEL_NAME_MAX} characters, got {lbl!r}"})
+        out.setdefault(name.lower(), name)
+    return list(out.values())
+
+
+@router.post("/issues/labels/{op}")
+async def edit_issue_labels(op: str, body: IssueLabelsBody, request: Request,
+                            identity: str = Depends(current_identity),
+                            db=Depends(get_db)) -> dict:
+    """Add (``op=add``) or remove (``op=remove``) labels on up to 20 issues — the
+    assistant's add_issue_labels / remove_issue_labels (#3440).
+
+    Add creates a label the repo lacks (``ci_issues.add_label``). Remove refuses a
+    hold label (``PARKED_LABELS``): taking one off returns the issue to the queue,
+    which is ``POST /api/pm/holds/release`` and its owner rule, not a bare label edit.
+    Pull requests, unmirrored and retired-repo refs are refused per ref.
+
+    The mirror's ``WorkItem.labels`` is written in this request for every label
+    GitHub accepted, so a hold label applied here is a ``parked`` skip on the very
+    next queue read — the runner stops claiming the issue without waiting for a
+    sync. Per-ref results ``{ref, ok, labels, failed, error}``, partial success
+    visible; one ``pm.label.add|remove`` audit row per ref."""
+    from server.pm.queue import PARKED_LABELS
+    if op not in ("add", "remove"):
+        raise HTTPException(status_code=404, detail={
+            "error": "bad_op", "message": "op must be 'add' or 'remove'"})
+    labels = _clean_labels(body.labels)
+    if op == "remove":
+        held = [lbl for lbl in labels if lbl.lower() in PARKED_LABELS]
+        if held:
+            raise HTTPException(status_code=422, detail={
+                "error": "hold_label", "message": (
+                    f"{', '.join(held)} keeps the issue out of the queue; release it with "
+                    "release_hold (POST /api/pm/holds/release), which applies the owner rule")})
+    via = getattr(request.state, "via", None)
+    results: list[dict] = []
+    for ref in dict.fromkeys(r.strip() for r in body.refs):
+        wi, why = await _ref_work_item(db, ref)
+        if why is None and wi is not None:
+            try:
+                await require_active(wi.repo)
+            except RepoRetired as exc:
+                why = str(exc)
+        done: list[str] = []
+        failed: list[str] = []
+        if why is None and wi is not None:
+            current = {str(lbl).strip().lower(): str(lbl) for lbl in (wi.labels or [])}
+            for lbl in labels:
+                if op == "add":
+                    ok = await asyncio.to_thread(ci_issues.add_label, wi.repo or "",
+                                                 int(wi.number or 0), lbl)
+                else:  # remove the label as the issue spells it
+                    ok = await asyncio.to_thread(
+                        ci_issues.remove_label, wi.repo or "", int(wi.number or 0),
+                        current.get(lbl.lower(), lbl))
+                (done if ok else failed).append(lbl)
+            gone = {lbl.lower() for lbl in done}
+            if op == "add":
+                wi.labels = list(wi.labels or []) + [lbl for lbl in done
+                                                     if lbl.lower() not in current]
+            elif gone:
+                wi.labels = [lbl for lbl in (wi.labels or [])
+                             if str(lbl).strip().lower() not in gone]
+            if failed:
+                why = (f"GitHub refused adding {', '.join(failed)}" if op == "add" else
+                       f"GitHub refused removing {', '.join(failed)} (is it on the issue?)")
+        result = {"ref": ref, "ok": why is None, "labels": done, "failed": failed,
+                  "error": why}
+        await record_audit(db=db, type=f"pm.label.{op}", identity=identity, via=via,
+                           detail={"ref": ref, "workItemId": wi.id if wi else None,
+                                   "labels": done, "failed": failed, "ok": result["ok"]})
+        results.append(result)
+    # Commit before answering: a hold label applied here must be visible to the
+    # runner's next tick, not only once the dependency's teardown commits.
+    await db.commit()
+    return {"op": op, "results": results,
+            "updated": sum(1 for r in results if r["ok"]),
             "refused": sum(1 for r in results if not r["ok"])}

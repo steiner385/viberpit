@@ -1879,6 +1879,30 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
             "reason": body.get("reason"), "results": results,
             "closed": sum(r["ok"] for r in results),
             "refused": sum(not r["ok"] for r in results)})
+    # Label edits (#3440), in the real route's wire shape: per-ref results, the
+    # route's own 422 for taking a hold label off (that is release_hold's).
+    if method == "POST" and path in ("/api/pm/issues/labels/add",
+                                     "/api/pm/issues/labels/remove"):
+        from server.pm.queue import PARKED_LABELS
+        body = json.loads(request.content or b"{}")
+        known = {e["ref"] for e in _queue({}, fixture.now).json()["entries"]}
+        refs, labels = body.get("refs") or [], body.get("labels") or []
+        op = path.rsplit("/", 1)[1]
+        if not refs or len(refs) > 20 or not labels:
+            return httpx.Response(422, json={"detail": "refs (1-20) and labels are required"})
+        held = [lbl for lbl in labels if lbl.strip().lower() in PARKED_LABELS]
+        if op == "remove" and held:
+            return httpx.Response(422, json={"detail": {
+                "error": "hold_label", "message": f"{', '.join(held)} keeps the issue out "
+                "of the queue; release it with release_hold"}})
+        results = []
+        for ref in refs:
+            why = f"{ref} is not a mirrored issue" if ref not in known else None
+            results.append({"ref": ref, "ok": why is None, "labels": [] if why else labels,
+                            "failed": [], "error": why})
+        return httpx.Response(200, json={
+            "op": op, "results": results, "updated": sum(r["ok"] for r in results),
+            "refused": sum(not r["ok"] for r in results)})
     if method == "DELETE":
         return httpx.Response(204)
     return httpx.Response(200, json={"ok": True})

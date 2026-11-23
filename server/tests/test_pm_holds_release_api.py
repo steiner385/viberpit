@@ -155,6 +155,27 @@ def test_parked_label_follows_the_owner_rule(gh):
             ("Parked", GH_LOGIN, "ready to go"), ("Parked", "renovate[bot]", "ready to go")]
 
 
+def test_a_hold_human_label_is_released_by_the_same_rule_reading_its_own_placer(gh, monkeypatch):
+    """#3440: ``hold:human`` on an issue is a park, so release_hold lifts it — and the
+    owner rule must read who placed THAT label, not who placed a ``parked`` one."""
+    asked: list[str] = []
+
+    def placer(repo, n, name):
+        asked.append(name)
+        return {1: GH_LOGIN, 2: "someone-else"}[n]
+    monkeypatch.setattr("server.github.ci_issues.label_placer", placer)
+    with _client() as c:
+        _seed(c, *({"number": n, "labels": ["bug", "hold:human"]} for n in (1, 2)))
+        r = _assistant(c).post("/api/pm/holds/release",
+                               json={"refs": ["o/r#1", "o/r#2"], "reason": "go"})
+        res = {x["ref"]: x for x in r.json()["results"]}
+        assert res["o/r#1"]["released"] == ["parked"]
+        assert "someone-else" in res["o/r#2"]["refused"]
+        assert asked == ["hold:human", "hold:human"]
+        assert gh["removed"] == [("o/r", 1, "hold:human")]
+        assert _rows(c, 1)[0].labels == ["bug"]
+
+
 def test_parked_label_refused_when_the_operators_login_is_unknown(gh):
     gh["placers"], gh["login"] = {1: GH_LOGIN}, None
     with _client() as c:

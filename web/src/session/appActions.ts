@@ -87,6 +87,8 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   comment_on_issue: 'Commented on an issue',
   set_board_status: 'Moved issues on the board',
   close_issue: 'Closed issues',
+  add_issue_labels: 'Labeled issues',
+  remove_issue_labels: 'Removed issue labels',
   set_automation_enabled: 'Changed automation',
   rename_session: 'Renamed session',
   move_in_queue: 'Reordered queued session',

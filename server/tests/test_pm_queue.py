@@ -8,7 +8,7 @@ import pytest
 from server.tests._trust_ids import TONY_ID, STEINER_ID
 from server.pm.desired_state import STATUS_OPTIONS, STATUS_READY
 from server.pm.queue import (MIN_STATUS_OPTIONS, SKIP_REASONS, URGENT_LABELS, QueueRow,
-                             is_trusted_author, rank_key, to_candidate)
+                             is_trusted_author, rank_key, skip_detail, to_candidate)
 from server.pm.queue import rank as _rank
 from server.pm.queue import skip_reason as _skip_reason
 
@@ -461,6 +461,15 @@ def test_a_parked_label_is_a_persons_park():
     assert skip_reason(_row(labels=("parked",)), skip_trackers=False, **kw) == "parked"
     # A real hold still reads ``held``.
     assert skip_reason(_row(labels=("parked",), hold_kind="owner_action"), **kw) == "held"
+
+
+def test_a_hold_human_label_on_an_issue_is_a_park_too():
+    """#3440: the operator held cairnea/KinDash#20202 with ``hold:human`` and the runner
+    kept re-claiming it — only ``parked`` was a label-level "not now"."""
+    kw = dict(min_status="Ready", respect_dependencies=True, now=NOW)
+    assert skip_reason(_row(labels=("Hold:Human",)), **kw) == "parked"
+    assert skip_detail(_row(labels=("hold:human",)), "parked") == {
+        "label": "hold:human", "since": None}
 
 
 # Regression cases named after the issues the runner looped on (#2683). Each is the
