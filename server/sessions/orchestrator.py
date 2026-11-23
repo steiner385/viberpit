@@ -177,7 +177,7 @@ from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import (
-    ASSISTANT_KIND, AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE, SessionRecord, SYSTEM_IDENTITY,
+    ASSISTANT_KIND, ASSISTANT_PLACEHOLDER_NAME, AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE, SessionRecord, SYSTEM_IDENTITY,
     RESUME_ELIGIBLE_STATUSES, PROMPT_UUID_CAP, TURN_ANCHOR_CAP, is_assistant, is_assistant_kind,
 )
 from server.auth.identity import OPEN_LAN_IDENTITY
@@ -1262,6 +1262,7 @@ class SessionOrchestrator:
         # has no title, summarize the user's own prompts with a one-shot Haiku query.
         # Injectable so tests can stub it without a live SDK call.
         self._title_fn: Callable = title_fn or self._default_title_fn
+        self._assistant_backfill_delay_s = 60.0
         self._registry = PermissionRegistry()
         self._registry.rule_gate = StandingRuleGate(self._rule_facts)
         self._custom_driver_registry = driver_registry is not None
@@ -3293,6 +3294,8 @@ class SessionOrchestrator:
         self._titling_task = asyncio.create_task(
             self._titling_monitor(), name="titling-monitor"
         )
+        self._spawn(self._delayed_assistant_title_backfill(),
+                    name="assistant-title-backfill")
         self._goal_task = asyncio.create_task(
             self._goal_monitor(), name="goal-inference-monitor"
         )
@@ -20534,6 +20537,65 @@ class SessionOrchestrator:
             if not self._owns_record(rec, enabled_hosts):
                 continue
             await self._auto_name_once(sid)   # never raises: one session can't break the sweep
+
+    async def _backfill_assistant_titles(self) -> None:
+        """Title drawer threads that still carry ``ASSISTANT_PLACEHOLDER_NAME``. Never raises.
+
+        Threads archived before drawer titling existed were created with a pinned
+        placeholder name, so History listed every one as "Untitled conversation".
+        Archived rows are not in ``_records``, so this works from the DB row and
+        ``resolve_transcript_path`` (its archived-row fallback) rather than the
+        record-keyed ``_maybe_apply_auto_name``. Sequential, newest first, one Haiku
+        query per thread; ownership-gated like ``_titling_sweep``. A titled thread
+        drops out of the WHERE clause, so a later pass (the next daemon start) only
+        retries threads that had no prompts or whose query failed.
+        """
+        from sqlalchemy import select as sa_select, update as sa_update
+        try:
+            enabled_hosts = await self._enabled_host_names()
+            async with db_session() as db:
+                rows = (await db.execute(
+                    sa_select(DbSession.id, DbSession.account_name, DbSession.cwd,
+                              DbSession.host)
+                    .where(DbSession.kind == ASSISTANT_KIND,
+                           DbSession.name == ASSISTANT_PLACEHOLDER_NAME)
+                    .order_by(DbSession.created_at.desc())
+                )).all()
+        except Exception:
+            log.warning("assistant title backfill: listing failed", exc_info=True)
+            return
+        titled = 0
+        for sid, account, cwd, host in rows:
+            if not self._owns_record_by_stamp(host, enabled_hosts):
+                continue
+            try:
+                if self._account_limited(account):
+                    continue
+                path = await self.resolve_transcript_path(sid)
+                prompts = (await asyncio.to_thread(read_user_prompts_from_file, path)
+                           if path else [])
+                if not prompts:
+                    continue
+                title = await self._title_fn(prompts, account=account, cwd=cwd)
+                if not title or title == ASSISTANT_PLACEHOLDER_NAME:
+                    continue
+                async with db_session() as db:
+                    await db.execute(sa_update(DbSession).where(DbSession.id == sid)
+                                     .values(name=title, name_is_auto=True))
+                rec = self._records.get(sid)
+                if rec is not None:
+                    rec.name, rec.name_is_auto = title, True
+                titled += 1
+            except Exception:  # one thread's failure must not stop the rest
+                log.warning("assistant title backfill failed for %s", sid, exc_info=True)
+        if rows:
+            log.info("assistant.title_backfill candidates=%d titled=%d", len(rows), titled)
+
+    async def _delayed_assistant_title_backfill(self) -> None:
+        """Run the backfill once, off the boot path: a startup spike of Haiku helpers
+        would compete with rehydrate's own resumes."""
+        await asyncio.sleep(self._assistant_backfill_delay_s)
+        await self._backfill_assistant_titles()
 
     async def _titling_monitor(self) -> None:
         """Background loop: sweep titles every ``self._titling_interval`` seconds."""
