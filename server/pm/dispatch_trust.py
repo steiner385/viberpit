@@ -126,6 +126,16 @@ def author_trusted(by_repo: Mapping[str, frozenset[str]], repo: str | None,
                              author_id=author_id)
 
 
+async def unmirrored_prs(db: AsyncSession, repo: str, numbers: Iterable[int]) -> list[int]:
+    """The PR numbers among *numbers* the mirror does not hold yet, in the order given —
+    the part of an ``untrusted_prs`` verdict a later sync can lift, so a refusal can
+    say "not mirrored yet" instead of blaming the author (#3429)."""
+    nums = [int(n) for n in numbers]
+    held = set((await db.execute(select(WorkItem.number).where(
+        WorkItem.repo == repo, WorkItem.number.in_(nums), WorkItem.kind == "pr"))).scalars())
+    return [n for n in nums if n not in held]
+
+
 async def untrusted_prs(db: AsyncSession, repo: str, numbers: Iterable[int]) -> list[int]:
     """The PR numbers among *numbers* whose MIRRORED author is not trusted for *repo*
     (fail-closed: a PR the mirror does not hold is untrusted), in the order given."""

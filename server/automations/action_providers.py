@@ -28,7 +28,7 @@ _PR_RISKY = {"merge_conflict"}
 # status → (level, message). Statuses come from the pr-doctor session/mechanical executors:
 #   session executor: sent | spawned | ceiling | transient | clone_failed | spawn_failed
 #   mechanical:       updated | failed
-#   gates:            no_pr | not_actionable
+#   gates:            no_pr | not_actionable | untrusted_author | not_mirrored
 _PR_STATUS_MAP = {
     "spawned": ("ok", "Spawned fix session"),
     "sent": ("ok", "Sent fix prompt to live session"),
@@ -43,6 +43,7 @@ _PR_STATUS_MAP = {
     "failed": ("error", "Branch update failed — see the automation feed"),
     "refused": ("warn", "Launch refused by engine policy — see the automation feed"),
     "untrusted_author": ("warn", "Not fixing: the PR's author is not a trusted author"),
+    "not_mirrored": ("warn", "Not fixing yet: the PR isn't mirrored — try again after the next sync"),
 }
 
 
@@ -161,6 +162,7 @@ _CONSOLIDATE_STATUS_MAP = {
     "too_few": ("warn", "Select at least 2 PRs"),
     "not_actionable": ("warn", "One or more PRs are no longer open"),
     "untrusted_author": ("warn", "Not consolidating: a PR's author is not a trusted author"),
+    "not_mirrored": ("warn", "Not consolidating yet: a PR isn't mirrored — try again after the next sync"),
     "human_hold": ("warn", "Not consolidating: a PR carries hold:human — its merge is a human's"),
 }
 

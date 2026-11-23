@@ -18760,30 +18760,40 @@ class SessionOrchestrator:
         return await asyncio.to_thread(_do)
 
     async def _pr_doctor_untrusted_prs(self, repo: str, numbers: list[int], *,
-                                       target: str, head: str | None = None) -> list[int]:
-        """The PRs among *numbers* PR Doctor must not hand to an agent: the MIRRORED PR
-        author is not trusted under the owning product's policy (``dispatch_trust``;
-        fail-closed for an unmirrored PR or an unowned repo).
+                                       target: str, head: str | None = None) -> dict[int, str]:
+        """The PRs among *numbers* PR Doctor must not hand to an agent, each mapped to
+        why: ``"not_mirrored"`` (the mirror has not synced it yet — a later sync can
+        lift it) or ``"untrusted_author"`` (the MIRRORED author is not trusted under the
+        owning product's policy, or the repo is unowned). Fail-closed (``dispatch_trust``).
 
         PR Doctor's scope is every open PR in its repos, fork PRs included, and a fix
         session runs ``gh pr checkout`` + the PR's tests with full permissions, its
         prompt carrying the PR title -- on a public repo that is anyone's code. The
         refusal is reported once per (target, head) rather than every sweep."""
-        from server.pm.dispatch_trust import untrusted_prs
+        from server.pm.dispatch_trust import unmirrored_prs, untrusted_prs
         async with db_session() as db:
             bad = await untrusted_prs(db, repo, numbers)
-        if bad:
+            unmirrored = set(await unmirrored_prs(db, repo, bad)) if bad else set()
+        refused = {n: "not_mirrored" if n in unmirrored else "untrusted_author" for n in bad}
+        if refused:
             seen: set = self.__dict__.setdefault("_pr_doctor_untrusted_seen", set())
             key = (target, head)
             if key not in seen:
                 seen.add(key)
+                why = {"not_mirrored": "not mirrored yet", "untrusted_author": "author not trusted"}
                 await self._pr_doctor_ctx.emit(
                     "warn", f"not fixing {target}: "
-                            f"{', '.join(f'{repo}#{n}' for n in bad)} not mirrored or "
-                            "author not trusted",
+                            + ", ".join(f"{repo}#{n} {why[r]}" for n, r in refused.items()),
                     kind="untrusted_author", target=target,
-                    detail={"reason_codes": ["untrusted_author"], "prs": bad})
-        return bad
+                    detail={"reason_codes": ["untrusted_author"], "prs": bad,
+                            "not_mirrored": [n for n in bad if n in unmirrored]})
+        return refused
+
+    @staticmethod
+    def _pr_doctor_refusal_status(refused: dict[int, str]) -> str:
+        """``not_mirrored`` when a sync is all that stands in the way, else
+        ``untrusted_author`` — so the operator is told the real cause (#3429)."""
+        return "not_mirrored" if set(refused.values()) == {"not_mirrored"} else "untrusted_author"
 
     async def _pr_doctor_session_fix(self, repo, branch, info, kind, rec, on_phase=None,
                                      *, expected_state=None, recheck_live=False):
@@ -18793,9 +18803,9 @@ class SessionOrchestrator:
         target = f"{repo}#{info.number}"
         # Before the claim, so a refusal changes no durable state and the next sweep
         # re-judges (the mirror may simply not have synced a fresh PR yet).
-        if await self._pr_doctor_untrusted_prs(repo, [info.number], target=target,
-                                               head=info.head_sha):
-            return "untrusted_author", None, "the PR's author is not a trusted author"
+        if refused := await self._pr_doctor_untrusted_prs(repo, [info.number], target=target,
+                                                          head=info.head_sha):
+            return self._pr_doctor_refusal_status(refused), None, None
         try:
             expected = await self._pr_doctor_claim(repo, [info.number], target,
                                                   source="manual" if on_phase else "automatic",
@@ -18965,7 +18975,7 @@ class SessionOrchestrator:
         ``_pr_doctor_session_fix`` verbatim (single source of truth for the fix
         pipeline + its feed events) — only the job bookkeeping is new."""
         from server.automations.action_providers import _PR_STATUS_MAP
-        from server.automations.pr_doctor_jobs import finalize
+        from server.automations.pr_doctor_jobs import finalize, outcome_message
         try:
             status, sid, reason = await self._pr_doctor_session_fix(
                 repo, branch, info, kind, rec,
@@ -18980,9 +18990,8 @@ class SessionOrchestrator:
         # causes into one label; `reason`, when the executor supplied one, is
         # the specific cause — surface that instead of the generic message so
         # the manual-trigger button says *why* it's refusing, not just *that*.
-        if reason:
-            message = f"{message} — {reason}"
-        finalize(job, status, level=level, message=message, session_id=sid)
+        finalize(job, status, level=level, message=outcome_message(message, reason),
+                 session_id=sid)
 
     def pr_doctor_job(self, job_id: str) -> dict | None:
         """Current state of an async manual-trigger job, or None if unknown
@@ -19054,9 +19063,9 @@ class SessionOrchestrator:
         if any(p.human_hold for p in prs):
             # Superseding a held PR closes it — a human owns that merge (#3072).
             return "human_hold", None
-        if await self._pr_doctor_untrusted_prs(
+        if refused := await self._pr_doctor_untrusted_prs(
                 repo, want, target=consolidation_target(repo, want)):
-            return "untrusted_author", None
+            return self._pr_doctor_refusal_status(refused), None
         cands = [ConsolidationCandidate(
             number=p.number, title=p.title, url=p.url, checks=p.checks,
             mergeable=p.mergeable, updated_at=p.updated_at, scope="") for p in prs]
