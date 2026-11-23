@@ -4584,7 +4584,10 @@ class SessionOrchestrator:
         """
         if record.status in CAPACITY_EXEMPT_STATUSES or is_assistant(record):
             return False
-        if getattr(record, "snooze", None) and not self._holds_process(record.id):
+        # isinstance, not truthiness: ``snooze`` is ``dict | None``, and a Mock record
+        # in a test double answers any attribute with a truthy Mock.
+        snooze = getattr(record, "snooze", None)
+        if isinstance(snooze, dict) and snooze and not self._holds_process(record.id):
             return False
         return True
 
