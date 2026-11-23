@@ -23,7 +23,8 @@ import pytest
 
 from server.automations import product_admission as admission
 from server.automations.backlog_runner import in_flight_by_product, is_in_flight
-from server.automations.claim_liveness import (DEAD_CLAIM_STATUSES, holder_session_id,
+from server.automations.claim_liveness import (DEAD_CLAIM_STATUSES, DEAD_HOLDER_KEY,
+                                               SNOOZED_HOLDER_KEY, holder_session_id,
                                                mark_dead_claims)
 from server.db import db_session, init_db
 from server.db.models import Project, ProjectRepo, Session as DbSession
@@ -125,6 +126,44 @@ def test_the_fleet_in_flight_count_ignores_phantom_claims(tmp_path):
         assert await orch._backlog_count_in_flight() == 1
 
     asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# Snoozed holders (#3438)                                                     #
+# --------------------------------------------------------------------------- #
+
+_SNOOZE = {"at": "2026-11-23T05:00:00+00:00", "until": "2026-11-24T05:00:00+00:00",
+           "reason": "wait for the nightly", "by": "session"}
+
+
+async def _snoozed(sid: str, status: str = "waiting_external") -> None:
+    async with db_session() as db:
+        db.add(DbSession(id=sid, name=sid, account_name="a", cwd="/tmp", status=status,
+                         snooze=_SNOOZE))
+
+
+@pytest.mark.asyncio
+async def test_a_snoozed_holder_frees_the_product_capacity_gate(isolated_db):
+    await _product(max_in_flight=1)
+    await _snoozed("s-asleep")
+    context = AsyncMock()
+    context.list_target_states.return_value = {"o/r#1": _claim("s-asleep")}
+    assert await admission.repo_capacity_status("o/r", context=context) == ("kindash", 0, 1)
+
+
+@pytest.mark.asyncio
+async def test_a_woken_holder_counts_again(isolated_db):
+    await _session("s-awake", "idle")      # snooze is NULL: awake
+    marked = await mark_dead_claims({"o/r#1": _claim("s-awake")})
+    assert in_flight_by_product(marked) == {"kindash": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_dead_holder_that_is_also_snoozed_is_dead(isolated_db):
+    """Dead wins: the readout reports it as a defect, never as merely asleep."""
+    await _snoozed("s-gone", status="archived")
+    marked = await mark_dead_claims({"o/r#1": _claim("s-gone")})
+    assert marked["o/r#1"].get(DEAD_HOLDER_KEY) and not marked["o/r#1"].get(SNOOZED_HOLDER_KEY)
 
 
 # --------------------------------------------------------------------------- #
@@ -321,5 +360,21 @@ def test_a_snoozed_holder_releases_its_in_flight_share_but_keeps_its_claim(tmp_p
         assert in_flight_by_product(marked) == {"kindash": 1}
         # The claim row itself is untouched: the issue stays claimed, never re-dispatched.
         assert states["o/r#1"] == _claim("s-asleep") and "o/r#1" in marked
+
+    asyncio.run(run())
+
+
+def test_refill_stall_holders_omit_a_snoozed_holder(tmp_path):
+    """2026-11-23: ``refill_stalled`` named snoozed b12bb314 as a holder behind
+    "2/2 in flight". The holders listed must be exactly the rows the count counts."""
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'holders.db'}")
+        await _snoozed("s-asleep")
+        await _session("s-live", "in_progress")
+        loop, _rec, ctx = build_loop()
+        loop._mark_dead_claims = mark_dead_claims
+        await ctx.set_target_state("o/r#1", _claim("s-asleep"))
+        await ctx.set_target_state("o/r#2", _claim("s-live"))
+        assert [h["target"] for h in await loop._slot_holders()] == ["o/r#2"]
 
     asyncio.run(run())

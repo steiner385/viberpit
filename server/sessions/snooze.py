@@ -7,6 +7,7 @@ words the prompt a self-snoozed session wakes to. The orchestrator owns the writ
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from xml.sax.saxutils import escape
@@ -40,12 +41,28 @@ class SnoozeError(ValueError):
     """A snooze request that cannot be honoured; the message is shown to the caller."""
 
 
+#: A relative ``until`` (#3438): ``90m``, ``24h``, ``2d``, ``1w`` — one whole number
+#: and one unit, so "24h" can never be misread as a clock time.
+_DURATION = re.compile(r"(\d{1,4})\s*([mhdw])", re.IGNORECASE)
+_DURATION_UNIT = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+
+
 def _parse_time(raw: str) -> datetime:
     try:
         at = datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00"))
     except ValueError:
-        raise SnoozeError("until must be an ISO-8601 timestamp, e.g. 2026-11-07T14:00:00Z") from None
+        raise SnoozeError("until must be an ISO-8601 timestamp, e.g. 2026-11-07T14:00:00Z, "
+                          "or a duration like 90m, 24h, 2d") from None
     return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+
+
+def resolve_until(raw: str, now: datetime) -> datetime:
+    """An ``until`` as an aware time: an ISO-8601 timestamp (naive = UTC), or a
+    duration from *now*. ``SnoozeError`` for anything else."""
+    m = _DURATION.fullmatch(str(raw).strip())
+    if m:
+        return _aware(now) + timedelta(**{_DURATION_UNIT[m.group(2).lower()]: int(m.group(1))})
+    return _parse_time(raw)
 
 
 def _aware(dt: datetime) -> datetime:
@@ -70,7 +87,7 @@ def build_snooze(*, until: str | None, reason: str | None, by: str,
                               f"(at most {SELF_SNOOZE_MAX.days} days out)")
         at = None
     else:
-        at = _parse_time(until)
+        at = resolve_until(until, now)
         lo, hi = ((SELF_SNOOZE_MIN, SELF_SNOOZE_MAX) if by == "session"
                   else (timedelta(0), USER_SNOOZE_MAX))
         if at <= now + lo or at > now + hi:

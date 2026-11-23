@@ -1181,7 +1181,7 @@ class ClaudeAgentDriver:
                          self.session_id, tool_name)
                 return PermissionResultDeny(
                     message=f"{assistant_tools.SCOPED_READ_ONLY}: {refusal}")
-        items = assistant_tools.batch_items(tool_name, tool_input)
+        items = await assistant_tools.card_items(tool_name, tool_input)
         perm_id, fut, always_allowed = await self._reg.request(
             self.session_id, turn_id, tool_name, tool_input,
             mode=self.mode, denylist=self.denylist, identity=self.identity,

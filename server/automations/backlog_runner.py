@@ -1452,6 +1452,12 @@ class BacklogRunnerLoop:
         13 hours on 2026-09-16 with its sessions long deleted)."""
         try:
             states = await self._ctx.list_target_states()
+            mark = getattr(self, "_mark_dead_claims", None)
+            if mark is not None:
+                # The same stamps the count applies, so the holders listed are
+                # exactly the rows behind "N/M in flight": on 2026-11-23 the event
+                # named a snoozed session as a holder (#3438).
+                states = await mark(states)
         except Exception:  # pragma: no cover — a diagnostic read must not stall the tick
             log.warning("backlog_runner.slot_holders_failed", exc_info=True)
             return []
