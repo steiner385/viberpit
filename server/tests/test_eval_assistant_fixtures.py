@@ -51,6 +51,8 @@ def client(fixture=None):
 # 2baaf637a4bc277c34e18f07bb2a62078b67634873a7471c98a01ba55c12a108
 # Before update_product_repos / map_moved_issues (product repo lifecycle, 162 cases):
 # ecfd0ec92533039ba1b1380e5c7c8c258804f0e84646f1bf391c4272afedd434
+# Before snooze_session (#3438, 165 cases):
+# 92e6c4361bdaa424704f382ef92fb478364fde31c73ade6c77fa9f7ba5077cdb
 # Before create_product (#3433, 164 cases):
 # fdc79665fe2abc7b773cb0c58f1a60b84a2c8d39d9d79ca163e625264683091f
 def test_semantic_projection_unchanged():
@@ -62,8 +64,8 @@ def test_semantic_projection_unchanged():
                    for k in keys} for r in rows]
     digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()
-    assert digest == "92e6c4361bdaa424704f382ef92fb478364fde31c73ade6c77fa9f7ba5077cdb"
-    assert len(rows) == 165
+    assert digest == "887ff53c346fe564723b6fba6c59c1ade4b3bfef5fb76d3efeaa0c2a3cf67b4b"
+    assert len(rows) == 167
     assert sum(bool(r.get("session_id")) for r in rows) == 4
     assert sum(bool(r.get("operator")) for r in rows) == 10
 

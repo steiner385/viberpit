@@ -218,6 +218,8 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("POST", _S + r"/account-pin"),
         ("POST", _S + r"/rotate"),
         ("POST", _S + r"/reload"),
+        ("POST", _S + r"/snooze"),
+        ("DELETE", _S + r"/snooze"),
         ("POST", _S + r"/suggest"),
         ("POST", r"/api/sessions/adopt"),
         ("GET", r"/api/notifications/channels"),

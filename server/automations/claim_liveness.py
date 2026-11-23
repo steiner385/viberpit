@@ -34,6 +34,15 @@ DEAD_CLAIM_STATUSES: frozenset[str] = INACTIVE_SESSION_STATUSES | {"complete"}
 #: the stored row, so it can never pass a ``compare_target_state`` fence by accident.
 DEAD_HOLDER_KEY = "_holder_dead"
 
+#: Same idea for a SNOOZED holder: the session is asleep (a person's or its own
+#: ``snooze``), so it works on nothing and its slot is free for other backlog work
+#: (KinDash's 1/1 cap sat full for days behind one snoozed runner session,
+#: 2026-11-23). Unlike a dead holder the claim stays — the row is not settled, so the
+#: runner never dispatches the same issue twice — and it counts again once the
+#: snooze clears. A different key so the capacity readout's defect list (dead
+#: holders only) never reports a sleeping session as a defect.
+SNOOZED_HOLDER_KEY = "_holder_snoozed"
+
 
 def holder_session_id(state: dict) -> str | None:
     """The session a token-bearing, slot-holding claim is waiting on, else None.
@@ -64,6 +73,18 @@ async def session_statuses(session_ids: Iterable[str]) -> dict[str, str]:
     return {sid: status for sid, status in rows}
 
 
+async def snoozed_session_ids(session_ids: Iterable[str]) -> set[str]:
+    """The subset of *session_ids* whose row carries a snooze; one batched read."""
+    ids = sorted(set(session_ids))
+    if not ids:
+        return set()
+    async with db_session() as db:
+        rows = (await db.execute(
+            select(DbSession.id).where(DbSession.id.in_(ids),
+                                       DbSession.snooze.isnot(None)))).all()
+    return {sid for (sid,) in rows}
+
+
 async def dead_claim_targets(states: dict) -> dict[str, tuple[str, str | None]]:
     """``{target: (session_id, status-or-None)}`` for every claim whose holder is dead."""
     holders = {target: sid for target, st in states.items()
@@ -74,17 +95,27 @@ async def dead_claim_targets(states: dict) -> dict[str, tuple[str, str | None]]:
 
 
 async def mark_dead_claims(states: dict) -> dict:
-    """*states* with every dead-holder row replaced by a stamped copy.
+    """*states* with every dead-holder row stamped ``DEAD_HOLDER_KEY`` and every
+    snoozed-holder row stamped ``SNOOZED_HOLDER_KEY`` (on copies).
 
-    For capacity ACCOUNTING only (the stamp makes ``is_in_flight`` False); the
+    For capacity ACCOUNTING only (either stamp makes ``is_in_flight`` False); the
     input dict and its rows are never mutated, and the result must never be
-    written back. A failed status read returns *states* unchanged — counting a
-    dead claim for one more read is the pre-existing behaviour, never worse."""
+    written back. A failed read returns *states* unchanged — counting a dead or
+    sleeping claim for one more read is the pre-existing behaviour, never worse."""
     try:
         dead = await dead_claim_targets(states)
+        holders = {target: sid for target, st in states.items()
+                   if target not in dead and (sid := holder_session_id(st)) is not None}
+        asleep = await snoozed_session_ids(holders.values())
     except Exception:  # noqa: BLE001 — accounting must not fail on a liveness read
         return states
-    if not dead:
+    if not dead and not asleep:
         return states
-    return {target: ({**st, DEAD_HOLDER_KEY: True} if target in dead else st)
-            for target, st in states.items()}
+    out = {}
+    for target, st in states.items():
+        if target in dead:
+            st = {**st, DEAD_HOLDER_KEY: True}
+        elif holders.get(target) in asleep:
+            st = {**st, SNOOZED_HOLDER_KEY: True}
+        out[target] = st
+    return out
