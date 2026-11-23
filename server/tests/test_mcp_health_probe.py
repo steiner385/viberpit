@@ -1,4 +1,5 @@
 import asyncio
+import weakref
 
 import pytest
 
@@ -142,6 +143,9 @@ async def test_hung_client_is_skipped_and_releases_everything(monkeypatch, tmp_p
 async def test_account_without_a_slot_before_deadline_is_budget_exhausted(monkeypatch, tmp_path, isolated_db):
     monkeypatch.setattr(probe, "_cfg_dir_for", lambda a: tmp_path)
     monkeypatch.setattr(probe, "_MAX_CONCURRENT", 1)
+    # The semaphore is cached per loop and sized on first use: a cap-2 one left by an earlier test
+    # on a reused loop would let both accounts in (#3444). Start from an empty cache.
+    monkeypatch.setattr(probe, "_sems", weakref.WeakKeyDictionary())
     opened = []
 
     def hang(account, cfg_dir):
