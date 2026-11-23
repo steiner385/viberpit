@@ -1164,6 +1164,16 @@ def local_host_stamp() -> str | None:
     return self_host_name() if daemon_role() == "worker" else None
 
 
+def is_chained_helper_launch(origin: str | None, origin_ref: str | None) -> bool:
+    """A one-shot PM classify / SDLC materialize session whose output a daemon-side
+    chain harvests (`_await_session_settled`). It commits nothing, so it must not wait
+    behind the product's in-flight cap: that cap is held by long coding sessions, and
+    the chain gives up after 24 h and drops the harvest (#3369: every give-up since
+    2026-11-21 reported ``blocker=product_capacity``). The global/host caps still apply."""
+    return origin == "pm-classify" or (
+        origin == "sdlc-synthesizer" and ":materialize:" in (origin_ref or ""))
+
+
 class SessionOrchestrator:
     """Orchestrates session lifecycle: creation, rotation, termination.
 
@@ -4371,7 +4381,8 @@ class SessionOrchestrator:
             # The assistant is exempt for the same reason the global cap is.
             queue_reason = await self._launch_queue_reason(
                 kind=kind, repo=repo, ownership_token=ownership_token,
-                wait_for_slot=wait_for_slot, queue_only=queue_only)
+                wait_for_slot=wait_for_slot, queue_only=queue_only,
+                chained_helper=is_chained_helper_launch(origin, origin_ref))
             if queue_reason is not None:
                 return await self._enqueue_session(
                     session_id, name=name, account=account,
@@ -4464,7 +4475,7 @@ class SessionOrchestrator:
 
     async def _launch_queue_reason(
         self, *, kind: str | None, repo: str | None, ownership_token: str | None,
-        wait_for_slot: bool, queue_only: bool,
+        wait_for_slot: bool, queue_only: bool, chained_helper: bool = False,
     ) -> str | None:
         """Launch admission, capacity half — shared by ``create_session`` and
         ``fork_session``: why this launch must wait for a slot instead of spawning
@@ -4479,6 +4490,7 @@ class SessionOrchestrator:
         - ``host_capacity``: the edge found every enabled, healthy host full
           (*queue_only*). Product capacity wins the label when both apply — it is the
           stricter wait (the drain re-checks it per entry), host capacity merely a slot.
+          A *chained_helper* (see ``is_chained_helper_launch``) skips this cap (#3369).
         - ``global_cap``: at/over the active-session cap, or (``host_capacity``) this host's own
           ``Host.max_sessions``. Applies to EVERY origin —
           automations included (their claims simply wait)."""
@@ -4486,7 +4498,7 @@ class SessionOrchestrator:
             return None
         if wait_for_slot:
             return "runner_capacity"
-        if ownership_token is None and repo is not None:
+        if ownership_token is None and repo is not None and not chained_helper:
             from server.automations.product_admission import repo_capacity_status
             _slug, _count, _cap = await repo_capacity_status(repo, context=self._backlog_ctx)
             if _slug is not None and _count is not None and _cap is not None and _count >= _cap:

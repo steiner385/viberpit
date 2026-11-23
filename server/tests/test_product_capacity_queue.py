@@ -175,3 +175,29 @@ def test_queue_drain_starts_a_runner_capacity_entry_once_another_claim_clears(tm
             await _stop_orch(orch)
 
     asyncio.run(run())
+
+
+def test_chained_helper_launch_skips_product_cap(tmp_path):
+    """#3369: a PM classify / SDLC materialize session is harvested by a daemon-side
+    chain that gives up after 24 h — it must not queue behind the product pin,
+    while a manual launch (and a non-materialize synthesizer session) still does."""
+    from server.sessions.orchestrator import is_chained_helper_launch
+    assert is_chained_helper_launch("pm-classify", "acme:classify:abc")
+    assert is_chained_helper_launch("sdlc-synthesizer", "acme:materialize:1")
+    assert not is_chained_helper_launch("sdlc-synthesizer", "acme:spec:1")
+    assert not is_chained_helper_launch("manual", None)
+
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'h.db'}"
+        orch = await _make_capacity_orch(db_url=db_url, tmp_path=tmp_path)
+        try:
+            await _seed_product_at_cap("acme/widgets")
+            rec = await orch.create_session(
+                "pm classify acme", repo="acme/widgets", initial_prompt="hi",
+                cwd=str(tmp_path / "reporoot"),
+                origin="pm-classify", origin_ref="acme:classify:abc")
+            assert rec.status != "queued"
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
