@@ -290,3 +290,42 @@ def test_turn_end_auto_name_titles_an_assistant_thread(tmp_path):
 
     assert asyncio.run(run()) == ("Assistant", "Stuck deploy queue")
     assert seen["prompts"] == ["why is the deploy queue stuck?"]
+
+
+def test_backfill_titles_archived_assistant_threads(tmp_path):
+    """Threads archived before drawer titling existed keep the placeholder name and a
+    pinned ``name_is_auto=False``. The one-shot backfill titles them from their
+    transcript, once: a titled thread is no longer a placeholder, so a second pass
+    (the next daemon start) issues no query. A non-assistant session named
+    "Assistant" is left alone."""
+    transcript = tmp_path / "claude-a1.jsonl"
+    transcript.write_text(
+        '{"type":"user","message":{"role":"user","content":'
+        '"<viberpit-context route=\\"/pipeline\\" />\\nwhy is keel stuck?"}}\n'
+    )
+    calls = []
+
+    async def stub_title_fn(prompts, *, account, cwd):
+        calls.append(prompts)
+        return "Keel stuck in onboarding"
+
+    async def run():
+        orch = await _build_orch(tmp_path, title_fn=stub_title_fn, cwd=str(tmp_path))
+        await _seed([
+            dict(id="a1", name="Assistant", account_name="acct1", kind="assistant",
+                 engine_session_id="claude-a1", status="archived", cwd=str(tmp_path),
+                 name_is_auto=False),
+            dict(id="c1", name="Assistant", account_name="acct1",
+                 engine_session_id="claude-c1", status="archived", cwd=str(tmp_path)),
+        ])
+
+        async def resolve(sid):
+            return str(transcript) if sid == "a1" else None
+        orch.resolve_transcript_path = resolve
+        await orch._backfill_assistant_titles()
+        await orch._backfill_assistant_titles()
+        async with db_session() as db:
+            return {sid: (await db.get(DbSession, sid)).name for sid in ("a1", "c1")}
+
+    assert asyncio.run(run()) == {"a1": "Keel stuck in onboarding", "c1": "Assistant"}
+    assert calls == [["why is keel stuck?"]]

@@ -30,7 +30,7 @@ from server.obs.metrics import assistant_feedback_total
 from server.sessions.model_policy import resolve_model_policy
 from server.sessions.notify_rules import is_expired
 from server.sessions.engine import AgentEngineUnavailable
-from server.sessions.types import ASSISTANT_KIND
+from server.sessions.types import ASSISTANT_KIND, ASSISTANT_PLACEHOLDER_NAME
 from server.time_iso import iso_utc
 
 from . import notices as watch_notices
@@ -44,9 +44,6 @@ router = APIRouter(prefix="/api/assistant", tags=["assistant"])
 # GET /history returns at most this many rows, newest-archived first — no pagination
 # (spec: the drawer's "History" list is a short recency list, not a full archive browser).
 _HISTORY_LIMIT = 20
-# A new thread's name until the turn-end auto-namer replaces it with a title of the
-# conversation (the History list's label). Never shown in the drawer itself.
-_PLACEHOLDER_NAME = "Assistant"
 
 
 class CreateBody(BaseModel):
@@ -122,7 +119,7 @@ async def create(body: CreateBody, request: Request,
 
     try:
         rec = await orch.create_session(
-            name=_PLACEHOLDER_NAME, cwd=_scratch_cwd(identity), identity=identity,
+            name=ASSISTANT_PLACEHOLDER_NAME, cwd=_scratch_cwd(identity), identity=identity,
             permission_mode="interactive", name_is_auto=True, model=model,
             kind=ASSISTANT_KIND, owner_identity=identity, engine=engine)
     except FleetDispatchRefused as e:
@@ -150,7 +147,7 @@ async def create(body: CreateBody, request: Request,
 def _history_dict(row: DbSession) -> dict:
     # The auto-namer's title of the thread; threads that never got one (no completed
     # turn, or created before threads were titled) fall back to `initial_prompt`.
-    titled = row.name if row.name and row.name != _PLACEHOLDER_NAME else None
+    titled = row.name if row.name and row.name != ASSISTANT_PLACEHOLDER_NAME else None
     return {
         "id": row.id,
         "snippet": titled or row.initial_prompt,

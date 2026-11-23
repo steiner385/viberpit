@@ -40,6 +40,10 @@ VALID_SESSION_MODES = frozenset({
 })
 
 ASSISTANT_KIND = "assistant"
+# A drawer thread's name until the turn-end auto-namer titles the conversation (the
+# History list's label). Threads archived before titling existed still carry it; the
+# daemon's one-shot backfill (`_backfill_assistant_titles`) titles those.
+ASSISTANT_PLACEHOLDER_NAME = "Assistant"
 
 
 # `SessionRecord.auto_archive_opt_out_reason` value for a session whose creator
