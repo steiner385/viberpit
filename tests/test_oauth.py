@@ -618,3 +618,69 @@ class TestHttpRequestBodyCap(unittest.TestCase):
         with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=[err]):
             with self.assertRaises(oauth.TransientError):
                 oauth.http_request("POST", "https://x", max_retries=0, idempotent=False)
+
+
+class TestSlotBlobFromTokenResponse(unittest.TestCase):
+    """The one token-response → ``claudeAiOauth`` builder (refresh and code-paste login)."""
+
+    def test_a_fresh_login_response_becomes_the_cli_shape(self):
+        before = int(time.time() * 1000)
+        blob = oauth.slot_blob_from_token_response(
+            {"access_token": "AT", "refresh_token": "RT", "expires_in": 3600,
+             "refresh_token_expires_in": 86400,
+             "scope": "user:profile user:inference user:sessions:claude_code"},
+            {"subscriptionType": "max", "rateLimitTier": "default_claude_max_20x"})
+        self.assertEqual(blob["accessToken"], "AT")
+        self.assertEqual(blob["refreshToken"], "RT")
+        self.assertGreaterEqual(blob["expiresAt"], before + 3600_000)
+        self.assertGreaterEqual(blob["refreshTokenExpiresAt"], before + 86400_000)
+        self.assertEqual(blob["scopes"],
+                         ["user:profile", "user:inference", "user:sessions:claude_code"])
+        self.assertEqual(blob["subscriptionType"], "max")
+        self.assertEqual(blob["rateLimitTier"], "default_claude_max_20x")
+
+    def test_without_a_lifetime_no_refresh_expiry_is_invented(self):
+        blob = oauth.slot_blob_from_token_response(
+            {"access_token": "AT", "refresh_token": "RT", "expires_in": 60})
+        self.assertNotIn("refreshTokenExpiresAt", blob)
+        self.assertEqual(blob["scopes"], [])
+
+    def test_a_refresh_that_does_not_rotate_keeps_the_grant(self):
+        blob = oauth.slot_blob_from_token_response(
+            {"access_token": "AT2", "expires_in": 60},
+            {"refreshTokenExpiresAt": 123, "scopes": ["user:inference"]},
+            prior_refresh_token="RT")
+        self.assertEqual(blob["refreshToken"], "RT")
+        self.assertEqual(blob["refreshTokenExpiresAt"], 123)
+        self.assertEqual(blob["scopes"], ["user:inference"])
+
+
+class TestFetchProfile(unittest.TestCase):
+    PROFILE = {"account": {"uuid": "u", "email": "a@example.com"},
+               "organization": {"uuid": "o", "organization_type": "claude_max",
+                                "rate_limit_tier": "default_claude_max_20x"}}
+
+    def test_200_returns_the_profile(self):
+        with mock.patch.object(oauth, "http_request",
+                               return_value=(200, json.dumps(self.PROFILE).encode())) as hr:
+            self.assertEqual(oauth.fetch_profile("tok"), self.PROFILE)
+        self.assertEqual(hr.call_args.args[:2], ("GET", oauth.PROFILE_URL))
+        self.assertEqual(hr.call_args.kwargs["headers"]["Authorization"], "Bearer tok")
+
+    def test_401_is_an_auth_error_and_other_failures_are_transient(self):
+        with mock.patch.object(oauth, "http_request", return_value=(401, b"{}")):
+            with self.assertRaises(oauth.AuthError):
+                oauth.fetch_profile("tok")
+        for status, body in ((403, b"error code: 1010"), (500, b"x"), (200, b"not json"),
+                             (200, b"[]")):
+            with mock.patch.object(oauth, "http_request", return_value=(status, body)):
+                with self.assertRaises(oauth.TransientError):
+                    oauth.fetch_profile("tok")
+
+    def test_subscription_type_follows_claudes_own_map(self):
+        self.assertEqual(oauth.subscription_type_for("claude_max"), "max")
+        self.assertEqual(oauth.subscription_type_for("claude_pro"), "pro")
+        self.assertEqual(oauth.subscription_type_for("claude_team"), "team")
+        self.assertEqual(oauth.subscription_type_for("claude_enterprise"), "enterprise")
+        self.assertIsNone(oauth.subscription_type_for("api_individual"))
+        self.assertIsNone(oauth.subscription_type_for(None))

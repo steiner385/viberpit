@@ -293,7 +293,7 @@ def _note_slot_refresh(name: str, *, rejected: bool) -> None:
 
 def clear_slot_refresh_rejection(name: str) -> None:
     """A fresh browser login was just captured into *name*'s slot: drop any recorded
-    refresh rejection. Called by ``auth_login.capture_login`` only."""
+    refresh rejection. Called by ``auth_login.install_claude_login`` only."""
     _note_slot_refresh(name, rejected=False)
 
 
@@ -1104,7 +1104,7 @@ def set_account_defaults(
 def mark_reauthenticated(name: str) -> None:
     """Clear the stale ``needs-reauth`` status after a successful reauth.
 
-    ``capture_login`` writes the fresh token to the slot but does not touch the
+    ``install_claude_login`` writes the fresh token to the slot but does not touch the
     ledger, so the stored ``needs-reauth`` status and pre-death cached usage
     would otherwise linger until the cache TTL expires. ``get_accounts`` reads
     the stored status *before* it refreshes usage, so the correction has to be
@@ -1117,7 +1117,7 @@ def mark_reauthenticated(name: str) -> None:
         ledger.set_status(led, name, "ok")
         ledger.clear_cached_usage(led, name)
         # NOT ``slotRefreshRejected``: a setup-token re-auth leaves a dead slot dead.
-        # Only a fresh browser login into the slot clears it (``capture_login``).
+        # Only a fresh claude.ai login into the slot clears it (``install_claude_login``).
     # A successful re-auth replaces the credential behind this account, so the
     # non-secret generation counter advances alongside the health record.
     _record_health(name, "ok")

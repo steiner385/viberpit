@@ -1,9 +1,18 @@
-"""In-process OAuth2 PKCE flow for generating long-lived setup-tokens.
+"""In-process OAuth2 PKCE code-paste flows against claude's own OAuth client.
 
-Replaces driving `claude setup-token` headlessly (which relies on a browser+poll
-path that does not work without a browser). Constants are claude's own OAuth
-client config, read from the bundled binary — verify against the real binary if
-generation suddenly starts failing. NEVER log the token or the pasted code.
+Two exchanges share one ``begin()`` (PKCE authorize URL, ``code=true`` manual
+redirect) and one token POST (``_post_code``):
+
+* ``exchange()`` mints a long-lived setup-token (``expires_in`` = 1 year) — the
+  re-auth path. Replaces driving `claude setup-token` headlessly.
+* ``exchange_login()`` is the full claude.ai login (``FULL_LOGIN_SCOPE``, no
+  ``expires_in``): an access + refresh token pair, the grant
+  ``claude auth login --claudeai`` stores. Signs an existing account in to
+  claude.ai for Remote Control from the operator's own browser.
+
+Constants are claude's own OAuth client config, read from the bundled binary —
+verify against the real binary if generation suddenly starts failing. NEVER log a
+token or the pasted code.
 """
 from __future__ import annotations
 
@@ -45,6 +54,13 @@ FALLBACK_SCOPE = "user:inference"
 # covers the one failure mode the exchange-time fallback cannot see: a refusal on
 # the *authorize* page, where the user never gets a code to submit.
 SCOPE_ENV = "VIBERPIT_SETUP_TOKEN_SCOPE"
+# The full claude.ai login's scope set — what `claude auth login --claudeai`
+# requests (verified against claude 2.1.331, whose live slots carry exactly these
+# five). ``user:sessions:claude_code`` is the one Remote Control needs; a
+# setup-token never carries it.
+FULL_LOGIN_SCOPE = (
+    "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+)
 # Mimic the binary's exchange client (captured: axios/1.15.2) for WAF/Cloudflare friendliness.
 _USER_AGENT = "axios/1.15.2"
 # Captured: claude requests a 1-year token lifetime in the exchange body. Required.
@@ -88,6 +104,11 @@ class SetupTokenNoToken(SetupTokenError):
     pass
 
 
+class SetupTokenNoRefreshToken(SetupTokenNoToken):
+    """A full-login exchange answered 200 without a refresh token. The slot would
+    die with its first access token, so nothing may be saved."""
+
+
 @dataclass
 class SetupTokenChallenge:
     authorize_url: str
@@ -129,24 +150,28 @@ def begin(scope: str | None = None) -> SetupTokenChallenge:
     return SetupTokenChallenge(f"{AUTHORIZE_URL}?{query}", verifier, state, scope)
 
 
-def exchange(pasted_code: str, challenge: SetupTokenChallenge) -> str:
-    """Exchange a pasted ``code#state`` for a long-lived sk-ant-oat01 token.
+def _post_code(pasted_code: str, challenge: SetupTokenChallenge,
+               *, expires_in: int | None) -> httpx.Response:
+    """POST a pasted ``code#state`` to the token endpoint: a 200 response, or a raise.
 
-    NEVER log pasted_code or the returned token.
+    ``expires_in`` is sent only when given — the setup-token asks for a 1-year
+    token, the full login leaves it out (claude's own login omits it too).
+    NEVER log pasted_code or the response body.
     """
     code, _, state = pasted_code.strip().partition("#")
     if not state or state != challenge.state:
         raise SetupTokenStateMismatch("pasted code state does not match this request")
 
-    body = {
+    body: dict[str, object] = {
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": REDIRECT_URI,
         "client_id": CLIENT_ID,
         "code_verifier": challenge.verifier,
         "state": state,
-        "expires_in": _EXPIRES_IN,
     }
+    if expires_in is not None:
+        body["expires_in"] = expires_in
     headers = {
         "User-Agent": _USER_AGENT,
         "Accept": "application/json",
@@ -166,6 +191,15 @@ def exchange(pasted_code: str, challenge: SetupTokenChallenge) -> str:
         raise SetupTokenTransient(f"token endpoint {resp.status_code}")
     if resp.status_code != 200:
         raise SetupTokenError(f"unexpected token endpoint status {resp.status_code}")
+    return resp
+
+
+def exchange(pasted_code: str, challenge: SetupTokenChallenge) -> str:
+    """Exchange a pasted ``code#state`` for a long-lived sk-ant-oat01 token.
+
+    NEVER log pasted_code or the returned token.
+    """
+    resp = _post_code(pasted_code, challenge, expires_in=_EXPIRES_IN)
 
     # The setup-token is the JSON `access_token` (verified). Regex is a fallback.
     try:
@@ -178,3 +212,31 @@ def exchange(pasted_code: str, challenge: SetupTokenChallenge) -> str:
     if not token.startswith("sk-ant-oat01-"):
         raise SetupTokenNoToken("token endpoint returned no setup-token")
     return token
+
+
+def exchange_login(pasted_code: str, challenge: SetupTokenChallenge) -> dict:
+    """Exchange a pasted ``code#state`` for a full claude.ai login.
+
+    Returns the token endpoint's standard response unchanged: ``access_token``,
+    ``refresh_token``, ``expires_in``, ``scope`` and — when the server sends them —
+    ``refresh_token_expires_in``, ``account`` and ``organization``. The caller turns
+    it into the slot blob. Raises ``SetupTokenNoToken`` without an access token and
+    ``SetupTokenNoRefreshToken`` without a refresh token: a login that cannot
+    refresh must never be saved.
+
+    NEVER log pasted_code or the returned dict.
+    """
+    resp = _post_code(pasted_code, challenge, expires_in=None)
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        raise SetupTokenNoToken("claude.ai returned no access token")
+    access = data.get("access_token")
+    if not isinstance(access, str) or not access:
+        raise SetupTokenNoToken("claude.ai returned no access token")
+    refresh = data.get("refresh_token")
+    if not isinstance(refresh, str) or not refresh:
+        raise SetupTokenNoRefreshToken("claude.ai did not return a refresh token")
+    return data

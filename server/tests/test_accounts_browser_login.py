@@ -44,15 +44,26 @@ def _client(fake_rm: FakeReauthManager | None = None):
         return _make_client(fake_rm or FakeReauthManager())
 
 
-def test_browser_login_starts_the_identity_checked_login_for_an_existing_account():
+def test_browser_login_starts_the_code_paste_claude_login_for_an_existing_account():
     fake_rm = FakeReauthManager()
     with temp_env():
         _write_slot("primary")
         with _client(fake_rm) as client:
             resp = client.post("/api/accounts/primary/browser-login", headers=IDENTITY_HEADERS)
     assert resp.status_code == 202
-    assert resp.json()["state"] == "running"
-    assert fake_rm.last_start_mode == "browser_login"   # identity-checked capture
+    assert fake_rm.last_start_mode == "claude_login"    # code paste, no login browser
+
+
+def test_the_pasted_code_goes_to_the_shared_reauth_code_route():
+    fake_rm = FakeReauthManager()
+    with temp_env():
+        _write_slot("primary")
+        with _client(fake_rm) as client:
+            client.post("/api/accounts/primary/browser-login", headers=IDENTITY_HEADERS)
+            resp = client.post("/api/accounts/primary/reauth/code",
+                               json={"code": "AUTHCODE#STATE"}, headers=IDENTITY_HEADERS)
+    assert resp.status_code == 200
+    assert fake_rm.last_submit_code == ("primary", "AUTHCODE#STATE")
 
 
 def test_browser_login_404_for_unknown_account():
@@ -109,8 +120,8 @@ def test_browser_login_refused_for_a_non_person(monkeypatch):
 
 def test_browser_login_admits_the_trusted_local_browser(monkeypatch):
     """With the operator's VIBERPIT_RULES_TRUST_LOCAL_HOST opt-in, the browser on the
-    ViberPit host itself may start the sign-in: it can't complete without a person at
-    the claude.ai login, and a mismatched account is refused by the identity check."""
+    ViberPit host itself may start the sign-in: it can't complete without a person
+    approving at claude.ai, and a mismatched account is refused by the identity check."""
     from server.auth import identity
     # The route imports human_gate_via at call time, so patch it at its source.
     monkeypatch.setattr(identity, "human_gate_via", lambda _req: identity.LOCAL_TRUSTED_VIA)
@@ -169,31 +180,105 @@ def test_accounts_list_reports_remote_control_login_per_slot():
         assert secret not in body
 
 
-# ── the re-login must be the same claude.ai identity ────────────────────────────────
+# ── ReauthManager mode="claude_login": the code paste in the operator's own browser ──
 
 
-def test_only_the_existing_account_relogin_checks_identity():
-    from server.reauth import MODE_BROWSER_LOGIN, MODE_LOGIN, verifies_identity
-    assert verifies_identity(MODE_BROWSER_LOGIN) is True
-    assert verifies_identity(MODE_LOGIN) is False        # /accounts/add is unchanged
+def _manager(runner=None):
+    from server.reauth import ReauthManager
+
+    async def _no_runner(name: str) -> bool:
+        raise AssertionError("claude_login must never start the login-browser runner")
+
+    return ReauthManager(runner=runner or _no_runner, key_available=lambda: True, timeout_s=5)
 
 
 @pytest.mark.asyncio
-async def test_a_wrong_account_login_ends_in_a_coded_error():
-    import asyncio
-    from viberpit.auth_login import WrongAccountLogin
-    from server.reauth import ReauthManager
+async def test_claude_login_publishes_a_full_scope_authorize_url_and_waits_for_the_code():
+    from urllib.parse import parse_qs, urlparse
+    from viberpit import setup_token_oauth as sto
 
-    async def _runner(name: str) -> bool:
-        raise WrongAccountLogin("a@example.com", "b@example.com")
+    m = _manager()
+    state = await m.start("primary", "tester@example.com", mode="claude_login")
+    assert state.state == "awaiting_code"
+    assert state.vnc_session is None                     # no virtual display, no VNC
+    q = parse_qs(urlparse(state.auth_url).query)
+    assert q["scope"] == [sto.FULL_LOGIN_SCOPE]
+    assert "user:sessions:claude_code" in q["scope"][0]   # what Remote Control needs
 
-    m = ReauthManager(runner=_runner, key_available=lambda: True, timeout_s=5)
-    await m.start("primary", "tester@example.com", mode="browser_login")
-    for _ in range(100):
-        if m.status("primary").state != "running":
-            break
-        await asyncio.sleep(0.01)
-    state = m.status("primary").to_dict()
+
+@pytest.mark.asyncio
+async def test_a_pasted_claude_login_code_is_exchanged_and_installed(monkeypatch):
+    from viberpit import auth_login, setup_token_oauth as sto
+
+    seen: dict = {}
+    monkeypatch.setattr(sto, "exchange_login",
+                        lambda code, ch: seen.update(code=code, scope=ch.scope) or {"t": 1})
+    monkeypatch.setattr(sto, "exchange",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("setup-token path")))
+    monkeypatch.setattr(auth_login, "complete_code_login",
+                        lambda name, resp: seen.update(name=name, resp=resp))
+    m = _manager()
+    await m.start("primary", "tester@example.com", mode="claude_login")
+    state = await m.submit_code("primary", "AUTHCODE#STATE")
+    assert state.state == "success" and state.message is None
+    assert seen == {"code": "AUTHCODE#STATE", "scope": sto.FULL_LOGIN_SCOPE,
+                    "name": "primary", "resp": {"t": 1}}
+
+
+@pytest.mark.asyncio
+async def test_a_setup_token_code_never_takes_the_claude_login_path(monkeypatch):
+    from viberpit import accounts, crypto, setup_token_oauth as sto
+
+    monkeypatch.setattr(sto, "exchange_login",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("claude_login path")))
+    monkeypatch.setattr(sto, "exchange", lambda code, ch: "sk-ant-oat01-X")
+    monkeypatch.setattr(crypto, "store_oauth_token", lambda name, tok: None)
+    monkeypatch.setattr(accounts, "mark_reauthenticated", lambda name: None)
+    monkeypatch.setattr("server.reauth.ReauthManager._usage_scope_note",
+                        staticmethod(lambda *a: None))
+    m = _manager()
+    await m.start("primary", "tester@example.com", mode="claude_login")
+    await m.start("primary", "tester@example.com", mode="setup_token")   # replaces it
+    assert (await m.submit_code("primary", "AUTHCODE#STATE")).state == "success"
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_account_sign_in_ends_in_a_coded_error(monkeypatch):
+    from viberpit import auth_login, setup_token_oauth as sto
+
+    def _wrong(name, resp):
+        raise auth_login.WrongAccountLogin("a@example.com", "b@example.com")
+
+    monkeypatch.setattr(sto, "exchange_login", lambda code, ch: {"t": 1})
+    monkeypatch.setattr(auth_login, "complete_code_login", _wrong)
+    m = _manager()
+    await m.start("primary", "tester@example.com", mode="claude_login")
+    state = (await m.submit_code("primary", "AUTHCODE#STATE")).to_dict()
     assert state["state"] == "error"
     assert state["code"] == "browser_login_wrong_account"
-    assert state["message"].startswith("You signed in as b@example.com, expected a@example.com")
+    assert state["message"] == ("You signed in as b@example.com, expected a@example.com. "
+                                "Nothing was saved.")
+
+
+@pytest.mark.parametrize("exc_name, message", [
+    ("SetupTokenNoRefreshToken", "claude.ai did not return a refresh token. Nothing was saved."),
+    ("SetupTokenInvalidCode", "Code invalid or expired — start the sign-in again."),
+    ("SetupTokenStateMismatch", "Code didn't match this request — start the sign-in again."),
+    ("SetupTokenTransient", "Couldn't reach claude.ai — try again."),
+])
+@pytest.mark.asyncio
+async def test_exchange_failures_save_nothing_and_say_why(monkeypatch, caplog, exc_name, message):
+    from viberpit import auth_login, setup_token_oauth as sto
+
+    def _raise(code, ch):
+        raise getattr(sto, exc_name)("boom")
+
+    installed: list = []
+    monkeypatch.setattr(sto, "exchange_login", _raise)
+    monkeypatch.setattr(auth_login, "complete_code_login", lambda *a: installed.append(a))
+    m = _manager()
+    await m.start("primary", "tester@example.com", mode="claude_login")
+    state = await m.submit_code("primary", "SECRETCODE#STATE")
+    assert state.state == "error" and state.message == message and state.code is None
+    assert installed == []
+    assert "SECRETCODE" not in caplog.text

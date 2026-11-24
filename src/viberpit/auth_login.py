@@ -292,7 +292,7 @@ WRONG_ACCOUNT_CODE = "browser_login_wrong_account"
 
 
 class WrongAccountLogin(Exception):
-    """A browser login for an EXISTING account signed in as a different claude.ai
+    """A claude.ai sign-in for an EXISTING account came back as a different claude.ai
     identity (or one that cannot be checked). Nothing was written.
 
     ``code`` is ``browser_login_wrong_account``; the message names both e-mails and is
@@ -323,21 +323,20 @@ def _identity(claude_json: object) -> tuple[str | None, str | None]:
             email if isinstance(email, str) and email else None)
 
 
-def _check_same_identity(name: str, captured_claude_json: str) -> None:
-    """Refuse (``WrongAccountLogin``) unless the captured login is *name*'s own
-    claude.ai identity: same ``accountUuid``, or — when either side lacks one — the
-    same e-mail (case-insensitive). An identity that cannot be compared fails closed."""
+def _stored_claude_json(name: str) -> dict:
+    """*name*'s stored ``.claude.json``, or ``{}`` when absent/unreadable."""
     try:
         stored = read_json(paths.store_claude_json_path(name))
     except (OSError, ValueError):
-        stored = {}
-    want_uuid, want_email = _identity(stored)
-    try:
-        captured = (read_json(Path(captured_claude_json))
-                    if os.path.exists(captured_claude_json) else {})
-    except (OSError, ValueError):
-        captured = {}
-    got_uuid, got_email = _identity(captured)
+        return {}
+    return stored if isinstance(stored, dict) else {}
+
+
+def _check_same_identity(name: str, got_uuid: str | None, got_email: str | None) -> None:
+    """Refuse (``WrongAccountLogin``) unless the signed-in identity is *name*'s own
+    claude.ai identity: same ``accountUuid``, or — when either side lacks one — the
+    same e-mail (case-insensitive). An identity that cannot be compared fails closed."""
+    want_uuid, want_email = _identity(_stored_claude_json(name))
     if want_uuid is None and want_email is None:
         raise WrongAccountLogin(None, got_email)
     if want_uuid and got_uuid:
@@ -354,12 +353,13 @@ def capture_login(
     env_extra: dict | None = None,
     claude_bin: Sequence[str] | None = None,
     extra_login_args: Sequence[str] | None = None,
-    verify_identity: bool = False,
 ) -> bool:
     """Run `claude auth login --claudeai` in a capture dir under reauth-tmp and store creds.
 
-    The capture CLAUDE_CONFIG_DIR is created under `~/.config/ccswitch/reauth-tmp/`
-    (never /tmp) and is cleaned up in a try/finally regardless of success or failure.
+    The add-account login. The capture CLAUDE_CONFIG_DIR is created under
+    `~/.config/ccswitch/reauth-tmp/` (never /tmp) and is cleaned up in a try/finally
+    regardless of success or failure. What it stores goes through
+    ``install_claude_login`` — the same writes as the code-paste sign-in.
 
     The captured credential blob is NEVER logged or printed.
 
@@ -368,15 +368,6 @@ def capture_login(
         env_extra: Additional environment variables to merge (e.g. BROWSER, DISPLAY).
             Applied last, so they override the injected session-bus variables.
         claude_bin: Override the claude command argv list (default: ["claude"]).
-        verify_identity: re-login of an EXISTING account (the Remote Control browser
-            login): before anything is written, the captured ``oauthAccount`` must be
-            the stored account's own (``accountUuid``, else e-mail), or
-            ``WrongAccountLogin`` is raised and the slot, the stored ``.claude.json``
-            and the composed dir are left untouched. The add flow leaves it off.
-
-    On success the slot holds a fresh login, so a recorded slot-refresh rejection
-    (``slotRefreshRejected``) is cleared here — and only here, never by a setup-token
-    re-auth, which leaves the slot as dead as it was.
 
     Returns:
         True if credentials were captured and stored; False otherwise.
@@ -418,41 +409,142 @@ def capture_login(
         if not os.path.exists(cred_path):
             return False
 
-        captured_claude_json = os.path.join(capture_dir, ".claude.json")
-        if verify_identity:
-            # Before ANY write: a login as someone else must not replace this account.
-            _check_same_identity(name, captured_claude_json)
-
         # Extract and store credentials — blob is never logged
-        full_blob = read_json(Path(cred_path))
-        claude_oauth, mcp = split_credentials(full_blob)
-
-        paths.store_dir().mkdir(parents=True, exist_ok=True)
-        write_credentials(paths.slot_path(name), claude_oauth)
-        from .accounts import clear_slot_refresh_rejection
-
-        clear_slot_refresh_rejection(name)
-
-        # Warn if not a Max subscription
-        sub_type = claude_oauth.get("subscriptionType")
-        if sub_type != "max":
-            log.warning("account %s is not a Max subscription (got %r)", name, sub_type)
-
-        if mcp:
-            capture_cfg_mcp(mcp)
-
-        # Capture per-account .claude.json (identity + caches)
-        if os.path.exists(captured_claude_json):
-            claude_json_data = read_json(Path(captured_claude_json))
-            write_json_secure(paths.store_claude_json_path(name), claude_json_data)
-            # merge shareable keys into claude.shared.json (deferred import to avoid cycle)
-            from .accounts import _merge_shared_claude_json
-
-            _merge_shared_claude_json(claude_json_data)
-
-        configdir.compose(name)
+        claude_oauth, mcp = split_credentials(read_json(Path(cred_path)))
+        captured_claude_json = os.path.join(capture_dir, ".claude.json")
+        claude_json = (read_json(Path(captured_claude_json))
+                       if os.path.exists(captured_claude_json) else None)
+        install_claude_login(name, claude_oauth, claude_json, mcp=mcp)
         return True
 
     finally:
         cleanup_reauth_profile(capture_dir)
+
+
+def install_claude_login(name: str, claude_oauth: dict, claude_json: dict | None,
+                         *, mcp: dict | None = None) -> None:
+    """Store a fresh claude.ai login into *name*'s slot — the one write path.
+
+    Shared by the add-account capture (``capture_login``) and the code-paste sign-in
+    (``complete_code_login``), so both leave exactly the same state behind:
+
+    * the slot holds *claude_oauth* in the CLI's ``claudeAiOauth`` shape (the refresh
+      token encrypted by ``write_credentials``);
+    * a recorded slot-refresh rejection (``slotRefreshRejected``) is cleared — here
+      and only here, never by a setup-token re-auth, which leaves a dead slot dead;
+    * *claude_json*'s top-level keys are merged over the stored per-account
+      ``.claude.json`` (other keys kept), and its shareable keys over
+      ``claude.shared.json``;
+    * the account's config dir is re-composed.
+
+    NEVER logs *claude_oauth*.
+    """
+    # Deferred: accounts imports this module.
+    from .accounts import _merge_shared_claude_json, clear_slot_refresh_rejection
+
+    paths.store_dir().mkdir(parents=True, exist_ok=True)
+    write_credentials(paths.slot_path(name), claude_oauth)
+    clear_slot_refresh_rejection(name)
+
+    sub_type = claude_oauth.get("subscriptionType")
+    if sub_type != "max":
+        log.warning("account %s is not a Max subscription (got %r)", name, sub_type)
+
+    if mcp:
+        capture_cfg_mcp(mcp)
+
+    if claude_json is not None:
+        write_json_secure(paths.store_claude_json_path(name),
+                          {**_stored_claude_json(name), **claude_json})
+        _merge_shared_claude_json(claude_json)
+
+    configdir.compose(name)
+
+
+class LoginIdentityUnavailable(Exception):
+    """The signed-in claude.ai identity could not be read (no ``account`` in the token
+    response and no profile), so it cannot be checked. Nothing was written."""
+
+    def __init__(self) -> None:
+        super().__init__("Couldn't tell which claude.ai account signed in, so nothing "
+                         "was saved. Try again.")
+
+
+def _first_str(*values: object) -> str | None:
+    return next((v for v in values if isinstance(v, str) and v), None)
+
+
+def _dict_at(obj: object, key: str) -> dict:
+    value = obj.get(key) if isinstance(obj, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+def _login_identity(token_response: dict, profile: dict | None) -> dict:
+    """The ``oauthAccount`` fields of a code-paste login: the token response's
+    ``account``/``organization`` first (``email_address``), then the profile's
+    (``email``). Only keys with a value are returned."""
+    acct, org = _dict_at(token_response, "account"), _dict_at(token_response, "organization")
+    p_acct, p_org = _dict_at(profile, "account"), _dict_at(profile, "organization")
+    fields = {
+        "accountUuid": _first_str(acct.get("uuid"), p_acct.get("uuid")),
+        "emailAddress": _first_str(acct.get("email_address"), p_acct.get("email"),
+                                   p_acct.get("email_address")),
+        "organizationUuid": _first_str(org.get("uuid"), p_org.get("uuid")),
+        "organizationName": _first_str(org.get("name"), p_org.get("name")),
+        "displayName": _first_str(p_acct.get("display_name")),
+    }
+    return {k: v for k, v in fields.items() if v}
+
+
+def _plan_from(profile: dict | None, name: str) -> dict:
+    """``subscriptionType`` / ``rateLimitTier`` for the slot blob: the profile's when it
+    names them, else whatever *name*'s current slot already records."""
+    from . import oauth
+
+    p_org = _dict_at(profile, "organization")
+    plan = {"subscriptionType": oauth.subscription_type_for(p_org.get("organization_type")),
+            "rateLimitTier": _first_str(p_org.get("rate_limit_tier"))}
+    try:
+        current = read_json(paths.slot_path(name))
+    except (OSError, ValueError):
+        current = {}
+    for key, value in list(plan.items()):
+        if value is None and isinstance(current, dict) and current.get(key):
+            plan[key] = current[key]
+    return {k: v for k, v in plan.items() if v}
+
+
+def complete_code_login(name: str, token_response: dict) -> None:
+    """Install a code-paste claude.ai login (``setup_token_oauth.exchange_login``)
+    into EXISTING account *name*'s slot — the Remote Control sign-in.
+
+    Identity comes from the token response's ``account``/``organization`` and the
+    profile endpoint (always asked, best-effort: it also names the plan). Before ANY
+    write the identity must be the stored account's own (``_check_same_identity``),
+    or ``WrongAccountLogin`` is raised; an unreadable identity raises
+    ``LoginIdentityUnavailable``. Both leave the slot, ``.claude.json`` and the
+    composed dir untouched. On success the writes are ``install_claude_login``'s,
+    plus ``mark_reauthenticated``.
+
+    NEVER logs the token response.
+    """
+    from . import oauth
+    from .accounts import mark_reauthenticated
+
+    profile: dict | None = None
+    try:
+        profile = oauth.fetch_profile(token_response["access_token"], max_retries=1)
+    except (oauth.AuthError, oauth.TransientError) as exc:
+        log.info("claude.ai sign-in for %s: profile unavailable (%s)", name,
+                 type(exc).__name__)
+
+    identity = _login_identity(token_response, profile)
+    if not identity.get("accountUuid") and not identity.get("emailAddress"):
+        raise LoginIdentityUnavailable()
+    _check_same_identity(name, identity.get("accountUuid"), identity.get("emailAddress"))
+
+    blob = oauth.slot_blob_from_token_response(token_response, _plan_from(profile, name))
+    stored_account = _dict_at(_stored_claude_json(name), "oauthAccount")
+    install_claude_login(name, blob, {"oauthAccount": {**stored_account, **identity}})
+    mark_reauthenticated(name)
 

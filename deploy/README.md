@@ -753,10 +753,18 @@ REPL, so it does nothing here.
   (`account_auth.remote_control_env_for`). The refresh token never leaves the primary, which
   is the only refresher (Principle II). An account set up with a setup-token needs
   **Accounts → "Sign in to claude.ai (Remote Control)"** once; the Accounts list shows the
-  slot as `remoteControlLogin: ok | login_needed | missing`. That re-login must be the
-  account's own claude.ai identity (`oauthAccount.accountUuid`, else e-mail). Signing in as
-  anyone else ends with `browser_login_wrong_account` ("You signed in as X, expected Y") and
-  writes nothing. A setup-token re-auth does not mark a dead login as fixed.
+  slot as `remoteControlLogin: ok | login_needed | missing`. The sign-in is a code paste in
+  your own browser, like the setup-token re-auth: ViberPit shows a claude.ai authorize link
+  (the CLI login's full scope set, including `user:sessions:claude_code`), you open it where
+  you are already signed in to claude.ai, approve, and paste the code back. No virtual
+  display or login browser runs on the host. The code is exchanged for the access + refresh
+  token pair `claude auth login` would store, and written to the slot through the same path
+  as the add-account login (`auth_login.install_claude_login`). The sign-in must be the
+  account's own claude.ai identity (`oauthAccount.accountUuid`, else e-mail, read from the
+  token response or `GET /api/oauth/profile`). Signing in as anyone else ends with
+  `browser_login_wrong_account` ("You signed in as X, expected Y. Nothing was saved.") and
+  writes nothing; so does a response without a refresh token. A setup-token re-auth does not
+  mark a dead login as fixed.
 - **The token in the environment.** The CLI scrubs `CLAUDE_CODE_OAUTH_TOKEN` from every tool
   subprocess by default. This was verified live on 2.1.331: a Bash tool's `printenv` shows no
   token. `CLAUDE_CODE_ORGANIZATION_UUID` is visible to tools, which is harmless. That scrub,
