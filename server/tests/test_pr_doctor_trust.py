@@ -84,12 +84,48 @@ def test_session_fix_refuses_an_untrusted_pr_before_claiming(isolated_db):
     assert len(events) == 1  # reported once per head, not every sweep
     assert events[0][2]["kind"] == "untrusted_author"
     assert events[0][2]["detail"]["reason_codes"] == ["untrusted_author"]
-    assert events[0][1] == "not fixing o/r#8: o/r#8 author not trusted"
+    # The feed names the product whose list refused it, and where to edit it (#3449).
+    assert events[0][1] == ("not fixing o/r#8: o/r#8 author not trusted (the author is not on "
+                            "product prod's trusted authors list — edit at "
+                            "/roadmap/prod?tab=automation)")
+    assert events[0][2]["detail"]["edit_path"] == "/roadmap/prod?tab=automation"
     # An unmirrored PR is refused too — and says so, rather than blaming its author (#3429).
     assert asyncio.run(orch._pr_doctor_session_fix(
         "o/r", "feat/y", _pr(99), "merge_conflict", None))[0] == "not_mirrored"
     assert events[1][1] == "not fixing o/r#99: o/r#99 not mirrored yet"
     assert events[1][2]["detail"]["not_mirrored"] == [99]
+    assert events[1][2]["detail"]["trust_gap"] is None
+
+
+def test_manual_fix_of_an_onboarding_product_explains_and_links_to_its_trust_list(isolated_db):
+    """keel (#3449): registered, no policy — every PR refused. The Fix CI result says
+    why and links straight to the product's trusted authors."""
+    from server.automations.pr_doctor_jobs import JobStore
+    from server.db import db_session
+    from server.db.models import Project, ProjectRepo, WorkItem
+
+    async def seed():
+        async with db_session() as db:
+            p = Project(slug="keel", name="keel", onboarding_state="registered")
+            db.add(p)
+            await db.flush()
+            db.add(ProjectRepo(project_id=p.id, repo="o/keel", is_primary=True))
+            db.add(WorkItem(author="tony", author_id=TONY_ID, repo="o/keel", number=65,
+                            kind="pr", state="open"))
+    asyncio.run(seed())
+    orch, _events, claims = _orch()
+    orch._pr_doctor_jobs = JobStore()
+    job = orch._pr_doctor_jobs.create(target="o/keel#65", kind="failing_ci")
+    asyncio.run(orch._pr_doctor_job_run(job, "o/keel", "feat/x", _pr(65), "failing_ci", None))
+    assert claims == []
+    out = job.to_dict()
+    assert (out["status"], out["level"]) == ("error", "warn")
+    assert out["message"] == (
+        "Not fixing: the PR's author is not a trusted author — product keel has no "
+        "automation policy yet (still onboarding: registered), so no author is trusted; add "
+        "them under Trusted issue authors in its Automation settings")
+    assert out["link"] == "/roadmap/keel?tab=automation"
+    assert out["link_label"] == "Edit keel's trusted authors"
 
 
 def test_unmirrored_prs_names_only_what_the_mirror_lacks(isolated_db):

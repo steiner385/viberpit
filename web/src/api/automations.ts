@@ -215,6 +215,10 @@ export interface PrDoctorJob {
   error_phase: string | null
   message: string
   level: 'ok' | 'warn' | 'error'
+  /** Where the operator fixes a refusal (an app path), e.g. the product's trusted
+   *  authors for an untrusted-author refusal (#3449). Null when nothing to edit. */
+  link?: string | null
+  link_label?: string | null
 }
 
 export function fetchAutomationActionable(id: string): Promise<ActionableItem[]> {

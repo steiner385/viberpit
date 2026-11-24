@@ -5,7 +5,9 @@
 // never opted in) against the server's defaults (Capacity-owned dials appear
 // as one read-only line, deprecated ones not at all — spec 2026-09-20 D5/D6).
 // Disabled — with an explanatory note — until the product is live: the
-// onboarding wizard above it is what gets it there.
+// onboarding wizard above it is what gets it there. The one exception is Trust
+// (#3449): who is trusted gates PR Doctor and triage from the moment a product is
+// registered, so a product mid-onboarding must not be stuck refusing its own PRs.
 import { Link } from 'react-router-dom'
 import { productPath } from '../roadmapNavState'
 import type { ConfigField } from '@/api/automations'
@@ -31,11 +33,13 @@ function orderedFields(schema: ConfigField[]): ConfigField[] {
 }
 
 // Findability (spec 2026-09-12 D9, reshaped by 2026-09-20 D5): the dials group
-// under four legends. *Dispatch* holds what this card OWNS (dispatch, reach,
-// eligibility); rank, cap mode and pin are owned by Delivery → Capacity
+// under five legends. *Queue* holds what this card OWNS (dispatch, reach,
+// eligibility) — not "Dispatch", which read "Dispatch / Dispatch" above the
+// Dispatch field (#3449); rank, cap mode and pin are owned by Delivery → Capacity
 // (`surface: 'capacity'`) and appear here as one read-only line; a deprecated
 // field (D6) appears nowhere. A key this schema does not yet know about falls
-// into Dispatch rather than vanishing.
+// into Queue rather than vanishing. *Trust* comes first and is editable before
+// the product is live (#3449).
 // The two auto-escalation dials (#2679) belong beside the ladder top they climb past.
 const MODELS_FIELD_KEYS = new Set([
   'default_model', 'ladder_top', 'unattended_model_floor', 'auto_escalate_match',
@@ -55,8 +59,10 @@ const GATES_FIELD_KEYS = new Set([
 // What may act on this product's sessions once they run (#1611): Autopilot's
 // answering, approving and nudging, restrictable per product.
 const ASSISTANCE_FIELD_KEYS = new Set(['session_assistance'])
+const TRUST_FIELD_KEYS = new Set(['trusted_authors'])
 
 interface FieldGroups {
+  trust: ConfigField[]
   dispatch: ConfigField[]
   models: ConfigField[]
   gates: ConfigField[]
@@ -64,10 +70,11 @@ interface FieldGroups {
 }
 
 function groupFields(fields: ConfigField[]): FieldGroups {
-  const groups: FieldGroups = { dispatch: [], models: [], gates: [], assistance: [] }
+  const groups: FieldGroups = { trust: [], dispatch: [], models: [], gates: [], assistance: [] }
   for (const field of fields) {
     if (field.deprecated || field.surface === 'capacity') continue
-    if (MODELS_FIELD_KEYS.has(field.key)) groups.models.push(field)
+    if (TRUST_FIELD_KEYS.has(field.key)) groups.trust.push(field)
+    else if (MODELS_FIELD_KEYS.has(field.key)) groups.models.push(field)
     else if (GATES_FIELD_KEYS.has(field.key)) groups.gates.push(field)
     else if (ASSISTANCE_FIELD_KEYS.has(field.key)) groups.assistance.push(field)
     else groups.dispatch.push(field)
@@ -186,9 +193,11 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
       {!live && (
         <Banner
           tone="info"
-          title="Automation settings can be edited once the product is live."
+          title="Trusted authors can be edited now; the other automation settings unlock once the product is live."
           className="sticky top-0 z-raised"
-        />
+        >
+          PR Doctor only works on PRs by trusted authors, so set them while the product onboards.
+        </Banner>
       )}
       {/* A rejected save must say so: without it the control springs back to its
           old value on the next refetch with no explanation of why. */}
@@ -198,7 +207,9 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
           title={extractMutationErrorMessage(update.error, 'Could not save the automation settings')}
         />
       )}
-      {live && project.automationPolicy === null && (
+      {/* Keyed on dispatch, not a null policy: a new product's policy is seeded with
+          the fleet's trusted authors (#3449) and still has dispatch unset. */}
+      {live && project.automationPolicy?.dispatch === undefined && (
         <p className="text-sm text-ink-muted">
           Issue dispatch is off until you explicitly change Dispatch from off.
         </p>
@@ -206,9 +217,15 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
       {/* A native fieldset disables every descendant control at once — ConfigInput
           itself carries no `disabled` prop (it is shared verbatim with the
           automations Config tab, which never disables a field). */}
+      {groups.trust.length > 0 && (
+        <fieldset disabled={update.isPending} className="flex flex-col gap-3 disabled:opacity-60">
+          <legend className="text-sm font-medium">Trust</legend>
+          {groups.trust.map(renderField)}
+        </fieldset>
+      )}
       <fieldset disabled={!live || update.isPending} className="flex flex-col gap-4 disabled:opacity-60">
         <fieldset className="flex flex-col gap-3">
-          <legend className="text-sm font-medium">Dispatch</legend>
+          <legend className="text-sm font-medium">Queue</legend>
           {groups.dispatch.map(renderField)}
         </fieldset>
         <fieldset className="flex flex-col gap-3">

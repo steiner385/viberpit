@@ -58,12 +58,17 @@ class Job:
     message: str = ""
     level: str = "ok"         # ok | warn | error (mirrors TriggerResult)
     settled_at: float | None = None  # time.monotonic() at finalize; None while running
+    # Where the operator fixes a refusal (an app path), e.g. the product's trusted
+    # authors for an untrusted_author refusal (#3449); None when there is nothing to edit.
+    link: str | None = None
+    link_label: str | None = None
 
     def to_dict(self) -> dict:
         return {"job_id": self.job_id, "target": self.target, "kind": self.kind,
                 "status": self.status, "phase": self.phase,
                 "session_id": self.session_id, "error_phase": self.error_phase,
-                "message": self.message, "level": self.level}
+                "message": self.message, "level": self.level,
+                "link": self.link, "link_label": self.link_label}
 
 
 class JobStore:

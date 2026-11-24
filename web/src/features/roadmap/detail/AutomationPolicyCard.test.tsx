@@ -20,6 +20,7 @@ const SCHEMA = [
   { key: 'skip_labels', label: 'Labels to skip', type: 'string-list', default: [], help: '', choices: null },
   { key: 'risk_tolerance', label: 'Risk tolerance', type: 'enum', default: 'cautious', help: '', choices: ['cautious', 'balanced', 'bold'] },
   { key: 'session_assistance', label: 'Session assistance', type: 'enum', default: 'on', help: '', choices: ['on', 'off'] },
+  { key: 'trusted_authors', label: 'Trusted issue authors', type: 'string-list', default: [], help: '', choices: null },
 ] as const
 
 const GATES = {
@@ -107,6 +108,24 @@ describe('AutomationPolicyCard', () => {
     expect(labels[0]).toHaveTextContent('Dispatch')
   })
 
+  it('saves trusted authors while the product is still onboarding (#3449)', () => {
+    renderCard(<AutomationPolicyCard product={product} project={makeProject({
+      onboardingState: 'registered', automationPolicy: null })} />)
+    const input = screen.getByLabelText('Trusted issue authors')
+    fireEvent.change(input, { target: { value: 'steiner385' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(h.update).toHaveBeenCalledWith({
+      policy: { trusted_authors: ['steiner385'] }, expectedUpdatedAt: null,
+    })
+  })
+
+  it('keeps the not-opted-in note for a product seeded with trusted authors only (#3449)', () => {
+    renderCard(<AutomationPolicyCard product={product} project={makeProject({
+      automationPolicy: { trusted_authors: ['app/viberpit'] },
+    })} />)
+    expect(screen.getByText(/Issue dispatch is off until you explicitly change Dispatch from off/)).toBeInTheDocument()
+  })
+
   it('adding a skip label sends the full list, additive to whatever is already there', () => {
     renderCard(<AutomationPolicyCard product={product} project={makeProject({
       automationPolicy: { skip_labels: ['renovate'] },
@@ -152,9 +171,10 @@ describe('AutomationPolicyCard', () => {
     expect(screen.getByLabelText('Dispatch')).toBeInTheDocument()
   })
 
-  it('disables every field and shows the not-live note until the product is live', () => {
+  it('disables every field but Trust and shows the not-live note until the product is live', () => {
     renderCard(<AutomationPolicyCard product={product} project={makeProject({ onboardingState: 'map_merged' })} />)
-    expect(screen.getByText('Automation settings can be edited once the product is live.')).toBeInTheDocument()
+    expect(screen.getByText('Trusted authors can be edited now; the other automation settings unlock once the product is live.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Trusted issue authors')).toBeEnabled()
     expect(screen.getByLabelText('Dispatch')).toBeDisabled()
     expect(screen.getByLabelText('Minimum board status')).toBeDisabled()
     expect(screen.getByLabelText('Respect issue dependencies')).toBeDisabled()
@@ -202,16 +222,18 @@ describe('AutomationPolicyCard', () => {
   // dials among model and gate settings with no way back to the real capacity
   // page. Grouping is verified at the DOM level (which fieldset's legend an
   // input sits under), not just "the legend text exists somewhere".
-  it('groups fields into Dispatch / Models / Gates / Assistance fieldsets, in that order', () => {
+  it('groups fields into Trust / Queue / Models / Gates / Assistance fieldsets, in that order', () => {
     const { container } = renderCard(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: null })} />)
     // Only the four grouped inner fieldsets carry a `<legend>` — the outer
     // disabled fieldset that gates every control at once does not.
     const legends = Array.from(container.querySelectorAll('legend')).map((el) => el.textContent)
-    expect(legends).toEqual(['Dispatch', 'Models', 'Gates', 'Assistance'])
-    expect(legendFor(screen.getByLabelText('Dispatch'))).toBe('Dispatch')
-    expect(legendFor(screen.getByLabelText('Minimum board status'))).toBe('Dispatch')
-    expect(legendFor(screen.getByLabelText('Respect issue dependencies'))).toBe('Dispatch')
-    expect(legendFor(screen.getByLabelText('Labels to skip'))).toBe('Dispatch')
+    // Never "Dispatch" over the Dispatch field: that read "Dispatch / Dispatch" (#3449).
+    expect(legends).toEqual(['Trust', 'Queue', 'Models', 'Gates', 'Assistance'])
+    expect(legendFor(screen.getByLabelText('Trusted issue authors'))).toBe('Trust')
+    expect(legendFor(screen.getByLabelText('Dispatch'))).toBe('Queue')
+    expect(legendFor(screen.getByLabelText('Minimum board status'))).toBe('Queue')
+    expect(legendFor(screen.getByLabelText('Respect issue dependencies'))).toBe('Queue')
+    expect(legendFor(screen.getByLabelText('Labels to skip'))).toBe('Queue')
     expect(legendFor(screen.getByLabelText('Ladder top tier'))).toBe('Models')
     expect(legendFor(screen.getByLabelText('Session model'))).toBe('Models')
     expect(legendFor(screen.getByLabelText('Risk tolerance'))).toBe('Gates')
@@ -249,13 +271,13 @@ describe('AutomationPolicyCard', () => {
     expect(screen.queryByRole('link', { name: "See the fleet's capacity" })).toBeNull()
   })
 
-  it('places a field the grouping lists do not recognize into Dispatch rather than dropping it', () => {
+  it('places a field the grouping lists do not recognize into Queue rather than dropping it', () => {
     Object.assign(h.schema, { data: [
       ...SCHEMA,
       { key: 'not_yet_categorized', label: 'Not yet categorized', type: 'bool', default: false, help: '', choices: null },
     ] })
     renderCard(<AutomationPolicyCard product={product} project={makeProject()} />)
-    expect(legendFor(screen.getByLabelText('Not yet categorized'))).toBe('Dispatch')
+    expect(legendFor(screen.getByLabelText('Not yet categorized'))).toBe('Queue')
   })
 
   it('groups the triage dials (#2908) under Gates, with the server schema defaults', () => {

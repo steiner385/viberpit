@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from server.pm.evidence import PathResolution
+    from server.pm.dispatch_trust import TrustGap
 
     from server.assistant.client import AssistantApi
     from server.automations.completion_bar import PrFacts
@@ -18897,13 +18898,26 @@ class SessionOrchestrator:
             if key not in seen:
                 seen.add(key)
                 why = {"not_mirrored": "not mirrored yet", "untrusted_author": "author not trusted"}
+                gap = (await self._pr_doctor_trust_gap(repo)
+                       if "untrusted_author" in refused.values() else None)
+                where = f" — edit at {gap.edit_path}" if gap and gap.edit_path else ""
                 await self._pr_doctor_ctx.emit(
                     "warn", f"not fixing {target}: "
-                            + ", ".join(f"{repo}#{n} {why[r]}" for n, r in refused.items()),
+                            + ", ".join(f"{repo}#{n} {why[r]}" for n, r in refused.items())
+                            + (f" ({gap.text}{where})" if gap else ""),
                     kind="untrusted_author", target=target,
                     detail={"reason_codes": ["untrusted_author"], "prs": bad,
-                            "not_mirrored": [n for n in bad if n in unmirrored]})
+                            "not_mirrored": [n for n in bad if n in unmirrored],
+                            "trust_gap": gap.text if gap else None,
+                            "edit_path": gap.edit_path if gap else None})
         return refused
+
+    async def _pr_doctor_trust_gap(self, repo: str) -> "TrustGap":
+        """``dispatch_trust.trust_gap`` for *repo*: which product's trust list refused
+        the author and where to edit it (#3449)."""
+        from server.pm.dispatch_trust import trust_gap
+        async with db_session() as db:
+            return await trust_gap(db, repo)
 
     @staticmethod
     def _pr_doctor_refusal_status(refused: dict[int, str]) -> str:
@@ -19102,6 +19116,13 @@ class SessionOrchestrator:
                      message="Action failed — see the automation feed")
             return
         level, message = _PR_STATUS_MAP.get(status, ("error", "Action failed — see the feed"))
+        if status == "untrusted_author":
+            # Name the product whose trust list refused it, and link to where that
+            # list is edited, so the operator can fix it in one click (#3449).
+            gap = await self._pr_doctor_trust_gap(repo)
+            reason = gap.text
+            if gap.edit_path:
+                job.link, job.link_label = gap.edit_path, f"Edit {gap.product}'s trusted authors"
         # A generic status (e.g. "transient") collapses several distinct root
         # causes into one label; `reason`, when the executor supplied one, is
         # the specific cause — surface that instead of the generic message so

@@ -138,7 +138,11 @@ async def test_untrusted_refusal_settles_the_job_for_its_own_target_without_repe
     job = orch.pr_doctor_job(job_id)
     assert job["target"] == "cairnea/KinDash#20904"
     assert (job["status"], job["level"]) == ("error", "warn")
-    assert job["message"] == "Not fixing: the PR's author is not a trusted author"
+    # Stated once, then which trust list refused it (#3449) — here no product owns it.
+    assert job["message"] == ("Not fixing: the PR's author is not a trusted author — no "
+                              "single product owns cairnea/KinDash, so no author is "
+                              "trusted there")
+    assert job["link"] is None  # no owning product, so no list to link to
 
 
 @pytest.mark.asyncio

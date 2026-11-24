@@ -649,6 +649,35 @@ def trusted_user_logins(policy: "Mapping | None") -> frozenset[str]:
     return frozenset(e.login for e in _readable_trusted_entries(policy) if e.login)
 
 
+async def fleet_default_trusted_authors(db: AsyncSession) -> list[str]:
+    """The ``trusted_authors`` a NEW product starts with (#3449): the entries every
+    product that has a non-empty list agrees on, in the first such product's order.
+
+    Without a seed a new product trusts nobody, and every trust-gated automation (PR
+    Doctor, dispatch, triage) refuses all of its work until someone notices. The
+    intersection rather than the union keeps the seed conservative: an author trusted
+    on only some products is a per-product grant and is not spread to a new one. Only
+    entries that grant trust are carried (``app/<slug>`` and bound ``login#<id>``) — an
+    unbound login trusts nobody and would need a GitHub lookup to store."""
+    lists: list[list[str]] = []
+    for raw in (await db.execute(select(Project.automation_policy))).scalars():
+        entries = (raw or {}).get("trusted_authors") if isinstance(raw, dict) else None
+        granting: list[str] = []
+        for entry in entries or ():
+            try:
+                parsed = parse_trusted_entry(entry)
+            except ValueError:
+                continue
+            if parsed is not None and (parsed.app or parsed.user_id is not None):
+                granting.append(str(entry).strip().lower())
+        if granting:
+            lists.append(granting)
+    if not lists:
+        return []
+    common = set.intersection(*(set(entries) for entries in lists))
+    return [e for e in dict.fromkeys(lists[0]) if e in common]
+
+
 def _is_readable_entry(entry: object) -> bool:
     try:
         return parse_trusted_entry(entry) is not None
