@@ -19,6 +19,18 @@ RuntimeDirectoryPreserve=yes
 ExecStart=/home/tony/GitHub/viberpit-deploy/.venv/bin/python -m server.deploy serve
 Restart=on-failure
 RestartSec=5
+# Memory backstop. Unbounded, a per-tick heap leak (a fresh CA bundle per httpx client,
+# server/http_tls.py) grew this process to VmSize 4.7 GB in 11 days on dobby (2026-11-24),
+# 4.2 GB of it in swap. Sized from a real deploy: the controller idles at ~170-250 MB and
+# `npm run build` (tsc + vite) runs in this cgroup at a measured 1.37 GB peak. Above
+# MemoryHigh the kernel throttles and reclaims; at MemoryMax it OOM-kills, and
+# Restart=on-failure brings the controller back (its status file survives the restart).
+MemoryHigh=2G
+MemoryMax=3G
+# MemoryMax counts RAM only. Leaked pages are never touched again, so they swap out and
+# never reach it: the 2026-11-24 process sat at 51 MB RSS with 4.2 GB swapped. Capping
+# swap makes a leak hit MemoryMax instead of filling the host's swap.
+MemorySwapMax=1G
 
 [Install]
 WantedBy=multi-user.target

@@ -8,6 +8,7 @@ import logging
 import re
 
 import httpx
+from server.http_tls import shared_ssl_context
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +24,8 @@ async def fetch_listing(listing_id: str, *,
     if not isinstance(listing_id, str) or not _ID_RE.fullmatch(listing_id):
         return None
     try:
-        async with httpx.AsyncClient(timeout=DIRECTORY_TIMEOUT_S, transport=transport) as client:
+        async with httpx.AsyncClient(timeout=DIRECTORY_TIMEOUT_S, transport=transport,
+                                     verify=shared_ssl_context()) as client:
             resp = await client.get(f"{DIRECTORY_URL}/{listing_id}",
                                     headers={"User-Agent": "viberpit"})
         if resp.status_code != 200:

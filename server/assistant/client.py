@@ -10,6 +10,7 @@ from viberpit import brand
 from server.api.ratelimit import TokenBucketRateLimiter
 from server.auth.middleware import ASSISTANT_SESSION_HEADER, VIA_HEADER
 from server.http_keepalive import CLIENT_KEEPALIVE_EXPIRY_S
+from server.http_tls import shared_ssl_context
 from server.mcp_spec import ToolArgError
 from server.sessions.types import SYSTEM_IDENTITY
 
@@ -82,6 +83,9 @@ class AssistantApi:
                  timeout_s: float = 20.0) -> None:
         self._client = httpx.AsyncClient(
             base_url=base_url, transport=transport, timeout=timeout_s, limits=_LIMITS,
+            # One client per assistant session: share the process CA context
+            # rather than load a bundle per session (server/http_tls.py).
+            verify=shared_ssl_context(),
             # Header NAMES come from `auth.middleware`, which is also the accept side
             # (`request_attribution`): emitter and acceptor share one spelling so the
             # rebrand cannot leave them pointing at different headers (#1368).

@@ -587,10 +587,14 @@ def _default_fetch(url: str) -> str:
     rolled back a healthy deploy (#780). 8s clears that warmup latency while still capping how
     long a genuinely-wedged /healthz (~10s of connect timeouts, daemon:"unavailable") drags
     each poll — so a dead daemon still rolls back in bounded time.
+
+    Called every detect tick for the controller's lifetime: the shared context keeps
+    each throwaway client from loading (and stranding) its own CA bundle (server/http_tls.py).
     """
     import httpx
+    from server.http_tls import shared_ssl_context
     try:
-        return httpx.get(url, timeout=8.0).text
+        return httpx.get(url, timeout=8.0, verify=shared_ssl_context()).text
     except Exception:
         return ""
 
@@ -736,7 +740,8 @@ DEFAULT_PROBE_PATHS: tuple[str, ...] = ("/api/sessions", "/api/accounts", "/api/
 def _default_status_fetch(url: str) -> int:
     """GET *url* and return its status code. Raises on transport failure."""
     import httpx
-    return httpx.get(url, timeout=10.0).status_code
+    from server.http_tls import shared_ssl_context
+    return httpx.get(url, timeout=10.0, verify=shared_ssl_context()).status_code
 
 
 def probe_endpoints(base_url: str, paths, *, attempts: int = 3, sleep_s: float = 2.0,

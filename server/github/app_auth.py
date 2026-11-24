@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
 from viberpit import brand
+from server.http_tls import shared_ssl_context
 
 log = logging.getLogger("server.github.app_auth")
 
@@ -74,7 +75,7 @@ AppRest = Callable[[str, str, str], Any]
 
 
 def default_app_rest(method: str, path: str, jwt: str) -> Any:
-    with httpx.Client(timeout=15.0) as client:
+    with httpx.Client(timeout=15.0, verify=shared_ssl_context()) as client:
         res = client.request(
             method, f"{_REST_BASE}{path}",
             headers={

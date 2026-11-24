@@ -933,7 +933,8 @@ async def draft_skill(
     if body.examples:
         user_msg += f"\n\nExamples:\n{body.examples}"
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    from server.http_tls import shared_ssl_context
+    async with httpx.AsyncClient(timeout=30.0, verify=shared_ssl_context()) as client:
         resp = await client.post(
             "https://api.anthropic.com/v1/messages",
             headers={
