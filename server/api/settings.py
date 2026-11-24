@@ -361,7 +361,7 @@ async def put_settings_row(
             try:
                 require_human(_identity, human_gate_via(request),
                               action="show new sessions in the Claude apps (Remote Control)",
-                              code=SESSION_CONTROL_HUMAN_ONLY_CODE, trust_local_host=False)
+                              code=SESSION_CONTROL_HUMAN_ONLY_CODE, trust_local_host=True)
             except ActionError as exc:
                 raise HTTPException(status_code=exc.http,
                                     detail={"code": exc.code, "message": exc.message}) from exc

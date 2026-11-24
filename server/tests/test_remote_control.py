@@ -631,11 +631,37 @@ def test_payload_follows_the_cached_default() -> None:
 
 # ── Person-only enable: Remote Control opens a path around ViberPit's auth ─────────────
 
-def _as_local_agent(monkeypatch) -> None:
+def _as_via(monkeypatch, via: str) -> None:
     from server.auth import identity
-    monkeypatch.setattr(identity, "human_gate_via", lambda _req: identity.LOCAL_TRUSTED_VIA)
-    monkeypatch.setattr("server.api.sessions.human_gate_via",
-                        lambda _req: identity.LOCAL_TRUSTED_VIA)
+    monkeypatch.setattr(identity, "human_gate_via", lambda _req: via)
+    monkeypatch.setattr("server.api.sessions.human_gate_via", lambda _req: via)
+
+
+def _as_local_agent(monkeypatch) -> None:
+    # A process on the ViberPit host asserting an identity, WITHOUT the operator's
+    # VIBERPIT_RULES_TRUST_LOCAL_HOST opt-in: not provably a person.
+    from server.auth import identity
+    _as_via(monkeypatch, identity.LOCAL_PROCESS_VIA)
+
+
+def test_the_trusted_local_browser_may_enable_and_set_the_default(monkeypatch) -> None:
+    # With the operator's local-host opt-in (LOCAL_TRUSTED_VIA), the browser on the
+    # ViberPit host itself is admitted, as it is for rules.
+    from server.auth import identity
+    _as_via(monkeypatch, identity.LOCAL_TRUSTED_VIA)
+
+    async def fake(self, session_id, enabled, *, identity="system"):
+        return {"enabled": enabled, "url": None}
+
+    with patch.dict(os.environ, _ENV), _client() as c, \
+            patch.object(SessionOrchestrator, "set_remote_control", fake), \
+            patch("server.api.sessions.record_audit"):
+        on = _post(c, {"enabled": True})
+        c.put("/api/settings", json={"remoteControlDefault": False}, headers=_H)
+        default_on = c.put("/api/settings", json={"remoteControlDefault": True}, headers=_H)
+    assert on.status_code == 200
+    assert default_on.status_code == 200 and default_on.json()["remoteControlDefault"] is True
+    rc._cache = None
 
 
 def test_a_non_person_cannot_enable_but_can_disable(monkeypatch) -> None:

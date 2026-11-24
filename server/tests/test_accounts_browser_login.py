@@ -107,6 +107,22 @@ def test_browser_login_refused_for_a_non_person(monkeypatch):
     assert fake_rm.last_start_mode is None
 
 
+def test_browser_login_admits_the_trusted_local_browser(monkeypatch):
+    """With the operator's VIBERPIT_RULES_TRUST_LOCAL_HOST opt-in, the browser on the
+    ViberPit host itself may start the sign-in: it can't complete without a person at
+    the claude.ai login, and a mismatched account is refused by the identity check."""
+    from server.auth import identity
+    # The route imports human_gate_via at call time, so patch it at its source.
+    monkeypatch.setattr(identity, "human_gate_via", lambda _req: identity.LOCAL_TRUSTED_VIA)
+    fake_rm = FakeReauthManager()
+    with temp_env():
+        _write_slot("primary")
+        with _client(fake_rm) as client:
+            resp = client.post("/api/accounts/primary/browser-login", headers=IDENTITY_HEADERS)
+    assert resp.status_code == 202
+    assert fake_rm.last_start_mode is not None
+
+
 def test_browser_login_refused_for_a_copilot_account():
     from viberpit import paths
     fake_rm = FakeReauthManager()

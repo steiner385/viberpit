@@ -734,7 +734,10 @@ REPL, so it does nothing here.
 - **Default:** Settings → Session defaults → "Show sessions in the Claude apps". A stored
   NULL reads as on. Each session can override it from the rail.
 - **Who can turn it on:** only a person in the UI (403 `SESSION_CONTROL_HUMAN_ONLY`), for
-  both the per-session switch and the default. Anyone can turn it off.
+  the per-session switch, the default and "Sign in to claude.ai (Remote Control)". Anyone can
+  turn it off. These gates honour `VIBERPIT_RULES_TRUST_LOCAL_HOST`, as rules do: with that
+  opt-in, the browser on the ViberPit host itself may use them. Without it, use another device
+  on the tailnet.
 - **Not eligible:** Codex sessions, Copilot accounts (no claude.ai login) and the
   Assistant drawer.
 - **Security:** anyone signed in to that claude.ai account can drive the session and its
