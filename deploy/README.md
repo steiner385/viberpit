@@ -823,6 +823,17 @@ restart time is `daemonRestartedAt` in the persisted status, so it survives a co
 To override for an urgent fix, start the deploy with `{"force": true}` in the
 `POST /api/deploy/start` body (the UI does not send it).
 
+**Memory backstop.** The unit caps the controller at `MemoryHigh=2G` / `MemoryMax=3G` /
+`MemorySwapMax=1G`. The frontend build runs inside this cgroup (measured 1.37 GB peak), and the
+controller idles at ~170–250 MB. The swap cap matters: leaked pages are never touched again, so
+without it they swap out and never reach `MemoryMax`. Exactly that happened when a per-tick leak
+grew the controller to 4.2 GB of swap at 51 MB RSS (2026-11-24, fixed via `server/http_tls.py`).
+A host with its own installed copy of the unit needs the limits added. `set-property` applies
+them to the running unit without a restart and persists them as a drop-in:
+
+    sudo systemctl set-property viberpit-deploy-controller.service \
+        MemoryHigh=2G MemoryMax=3G MemorySwapMax=1G
+
 **Cutover from the old auto-deploy (one-time).** The merge that ships this controller also
 deletes `scripts/auto-deploy.sh`, so the old `ccswitch-deploy.timer` keeps firing against a
 now-missing script (`203/EXEC`) until you disable it. The new controller is a separate systemd

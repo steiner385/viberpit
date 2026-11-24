@@ -15,6 +15,7 @@ import logging
 import httpx
 
 from server.auth.internal_token import ALLOWED_PATH, CERTIFY_PATH, mint_token
+from server.http_tls import shared_ssl_context
 from server.ipc.client import DaemonError, reconstruct_create_session_error
 from server.sessions.types import SessionRecord
 
@@ -40,7 +41,8 @@ async def create_via_edge(
     url = f"http://127.0.0.1:{port}{ALLOWED_PATH}"
     headers = {"Authorization": f"Bearer {mint_token()}"}
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT_S, transport=transport) as client:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S, transport=transport,
+                                     verify=shared_ssl_context()) as client:
             r = await client.post(url, json=kwargs, headers=headers)
     except httpx.HTTPError as exc:
         raise EdgeUnreachable(f"{exc.__class__.__name__}: {exc}") from exc
@@ -83,7 +85,8 @@ async def certify_harvested_via_edge(
     url = f"http://127.0.0.1:{port}{CERTIFY_PATH}"
     headers = {"Authorization": f"Bearer {mint_token()}"}
     try:
-        async with httpx.AsyncClient(timeout=_CERTIFY_TIMEOUT_S, transport=transport) as client:
+        async with httpx.AsyncClient(timeout=_CERTIFY_TIMEOUT_S, transport=transport,
+                                     verify=shared_ssl_context()) as client:
             r = await client.post(url, json={"session_id": session_id}, headers=headers)
     except httpx.HTTPError as exc:
         raise EdgeUnreachable(f"{exc.__class__.__name__}: {exc}") from exc

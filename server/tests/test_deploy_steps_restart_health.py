@@ -48,8 +48,9 @@ def test_gate_fetch_timeout_outlasts_a_slow_but_healthy_healthz(monkeypatch):
 
     captured: dict = {}
 
-    def fake_get(url, timeout):
+    def fake_get(url, timeout, **kwargs):
         captured["timeout"] = timeout
+        captured["verify"] = kwargs.get("verify")
 
         class _R:
             text = ""
@@ -59,6 +60,9 @@ def test_gate_fetch_timeout_outlasts_a_slow_but_healthy_healthz(monkeypatch):
     monkeypatch.setattr(httpx, "get", fake_get)
     steps._default_fetch("http://h/healthz")
     assert captured["timeout"] >= 6.0
+    # Polled every detect tick: a per-call CA bundle leaks heap (test_httpx_heap_bounded).
+    from server.http_tls import shared_ssl_context
+    assert captured["verify"] is shared_ssl_context()
 
 
 def test_remote_runners_configured_reads_the_fleet(monkeypatch):

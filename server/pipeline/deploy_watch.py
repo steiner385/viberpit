@@ -85,8 +85,12 @@ async def _default_http_get(url: str) -> object:
     if not _url_allowed(url):
         raise ValueError(f"healthUrl target not allowed: {url!r}")
     # follow_redirects stays False (httpx default): a redirect must not be able
-    # to bounce the fetch to a blocked target after the guard passed.
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_S) as client:
+    # to bounce the fetch to a blocked target after the guard passed. One client per
+    # poll, so it shares the process CA context instead of loading its own
+    # (server/http_tls.py).
+    from server.http_tls import shared_ssl_context
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_S,
+                                 verify=shared_ssl_context()) as client:
         return await client.get(url)
 
 

@@ -406,9 +406,15 @@ class DaemonClient:
         # direct unix/tailnet peer and must never be proxied.)
         if endpoint.is_unix:
             self._ssl = None
-            self._transport = httpx.AsyncHTTPTransport(uds=endpoint.path, limits=_LIMITS)
+            # A unix socket never speaks TLS, but httpx still builds (and loads the CA
+            # bundle into) a context per transport unless handed one — two per client,
+            # and the deploy runners build a client per call (server/http_tls.py).
+            from server.http_tls import shared_ssl_context
+            self._transport = httpx.AsyncHTTPTransport(uds=endpoint.path, limits=_LIMITS,
+                                                       verify=shared_ssl_context())
             self._info_transport = httpx.AsyncHTTPTransport(uds=endpoint.path,
-                                                           limits=_INFO_LIMITS)
+                                                           limits=_INFO_LIMITS,
+                                                           verify=shared_ssl_context())
             base_url = "http://daemon"
         else:
             from server.ipc.tls import client_ssl_context, client_tls_files
