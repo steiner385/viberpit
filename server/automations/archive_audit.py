@@ -92,7 +92,8 @@ class ArchiveAuditLoop:
                  clock: Callable[[], float],
                  record_findings_fn: "Callable[[list[dict], str], Awaitable[dict]]",
                  mark_auto_reopen_failed_fn: "Callable[[str], Awaitable[None]] | None" = None,
-                 defer_to_edge_fn: "Callable[[str], Awaitable[None]] | None" = None
+                 defer_to_edge_fn: "Callable[[str], Awaitable[None]] | None" = None,
+                 reopen_refused_fn: "Callable[[str], Awaitable[bool]] | None" = None,
                  ) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -104,6 +105,7 @@ class ArchiveAuditLoop:
         self._record_findings_fn = record_findings_fn
         self._mark_auto_reopen_failed_fn = mark_auto_reopen_failed_fn
         self._defer_to_edge_fn = defer_to_edge_fn
+        self._reopen_refused_fn = reopen_refused_fn
         self._lock = asyncio.Lock()
 
     async def tick(self) -> None:
@@ -144,9 +146,20 @@ class ArchiveAuditLoop:
         to_unarchive = outcome.get("to_unarchive", [])
         unarchived: list[str] = []
         deferred: list[str] = []
+        fenced: list[str] = []
         from server.sessions.orchestrator import (ArchiveOwnedElsewhereError,
                                                   ArchiveOwnerUnreachableError)
         for sid in to_unarchive:
+            if await self._reopen_refused(sid):
+                # The automation that ran it (a Backlog Runner claim, say) released
+                # its targets at archive, so the execution fence refuses every start:
+                # reopened, the first autopilot nudge parked it "Turn failed" with its
+                # PR already open (#3452). The PR follow-up stays with a human.
+                log.info("archive_audit loop: not reopening sid=%s — its automation "
+                         "operation released it; left open for a human", sid)
+                fenced.append(sid)
+                await self._revert_to_open(sid)
+                continue
             try:
                 await self._unarchive_fn(sid)
                 unarchived.append(sid)
@@ -173,12 +186,7 @@ class ArchiveAuditLoop:
                 # unarchive would fail. Revert it to "open" (auto_reopen_failed=True)
                 # so a human sees it via the action provider instead of the session
                 # staying silently "resolved" while archived and broken forever (#1906).
-                if self._mark_auto_reopen_failed_fn is not None:
-                    try:
-                        await self._mark_auto_reopen_failed_fn(sid)
-                    except Exception:
-                        log.warning("archive_audit mark_auto_reopen_failed failed sid=%s",
-                                   sid, exc_info=True)
+                await self._revert_to_open(sid)
         from collections import Counter
         counts = Counter(r["bucket"] for r in results)
         open_findings = outcome.get("open_total", 0)
@@ -186,10 +194,10 @@ class ArchiveAuditLoop:
         # (mirrors CicdDoctorLoop). status() reads 'total', 'unarchived', 'open_findings'.
         publish_observation(self._ctx, "archive_audit_counts", {
             "total": len(rows), "unarchived": len(unarchived), "open_findings": open_findings,
-            "deferred_to_edge": len(deferred),
+            "deferred_to_edge": len(deferred), "fenced": len(fenced),
             **{b: counts.get(b, 0) for b in ("legit", "premature", "review", "ambiguous")},
         }, degraded=bool(counts.get("ambiguous")
-                         or len(unarchived) + len(deferred) < len(to_unarchive)))
+                         or len(unarchived) + len(deferred) + len(fenced) < len(to_unarchive)))
         if not rows:
             return
         summary = (f"unarchived {len(unarchived)} premature"
@@ -203,6 +211,26 @@ class ArchiveAuditLoop:
             kind="audit",
             detail={"counts": dict(counts), "unarchived": unarchived,
                     "deferred_to_edge": deferred, "findings": outcome})
+
+    async def _reopen_refused(self, sid: str) -> bool:
+        """True when the execution fence would refuse ``sid`` every start. An
+        unreadable answer is not proof: reopen as before."""
+        if self._reopen_refused_fn is None:
+            return False
+        try:
+            return await self._reopen_refused_fn(sid)
+        except Exception:
+            log.warning("archive_audit reopen_refused check failed sid=%s", sid, exc_info=True)
+            return False
+
+    async def _revert_to_open(self, sid: str) -> None:
+        if self._mark_auto_reopen_failed_fn is None:
+            return
+        try:
+            await self._mark_auto_reopen_failed_fn(sid)
+        except Exception:
+            log.warning("archive_audit mark_auto_reopen_failed failed sid=%s",
+                        sid, exc_info=True)
 
     async def _defer_to_edge(self, sid: str) -> bool:
         """Flag ``sid``'s finding for the edge's unarchive pass; False if that fails,
