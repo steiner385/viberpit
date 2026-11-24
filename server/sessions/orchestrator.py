@@ -1507,6 +1507,15 @@ class SessionOrchestrator:
         # have become deletable (e.g. the sshfs mount recovered).
         self._archive_purge_strikes: dict[str, int] = {}
         self._archive_purge_poisoned: set[str] = set()
+        # Single-flight for the archived-cap purge (#3458): every archive spawns an
+        # _enforce_archive_limit pass, so a batch archive started N passes that each
+        # counted the same excess and picked the same oldest ids. Serialising them
+        # makes each pass re-count after the previous one finished.
+        self._archive_limit_lock = asyncio.Lock()
+        # In-flight permanent_delete per session id (#3458): a concurrent delete of
+        # the same id awaits the running one instead of racing its rmtree against
+        # the first call's recovery snapshot.
+        self._permanent_delete_inflight: dict[str, asyncio.Future[bool]] = {}
         # Cached enabled-hosts registry snapshot for _owns_record (#852):
         # (monotonic_ts, names) — None until the first read. See _enabled_host_names.
         self._ownership_hosts_cache: tuple[float, frozenset[str]] | None = None
@@ -31025,6 +31034,10 @@ class SessionOrchestrator:
 
         deleted: list[str] = []
         for sid in ids:
+            if sid in self._permanent_delete_inflight:
+                # Another caller (a manual delete) is already deleting it (#3458):
+                # neither re-delete it nor count it as this purge's.
+                continue
             try:
                 ok = await self.permanent_delete(sid)
             except Exception:
@@ -31060,7 +31073,14 @@ class SessionOrchestrator:
     async def _enforce_archive_limit(self) -> int:
         """Purge oldest archived sessions until the count is within
         ``max_archived_sessions``. Returns the number deleted (0 when the cap is unset
-        or already satisfied)."""
+        or already satisfied).
+
+        Single-flight (#3458): passes run one at a time, so a burst of archives
+        cannot start several purges that each select — and delete — the same ids."""
+        async with self._archive_limit_lock:
+            return await self._enforce_archive_limit_locked()
+
+    async def _enforce_archive_limit_locked(self) -> int:
         limit = await self._read_max_archived_sessions()
         if limit is None:
             return 0
@@ -31351,6 +31371,35 @@ class SessionOrchestrator:
             )
 
     async def permanent_delete(self, session_id: str) -> bool:
+        """Permanently delete a session (see ``_permanent_delete_once``).
+
+        Coalesced per id (#3458): a call for an id whose delete is already running
+        awaits that delete's outcome instead of starting a second one, whose rmtree
+        would otherwise race the first one's recovery snapshot (and double-write the
+        recovery ref, the DB delete and the purge count). The caller that started
+        the delete owns it; a waiter's cancellation never cancels it.
+        """
+        inflight = self._permanent_delete_inflight.get(session_id)
+        if inflight is not None:
+            return await asyncio.shield(inflight)
+        fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        self._permanent_delete_inflight[session_id] = fut
+        try:
+            ok = await self._permanent_delete_once(session_id)
+        except BaseException as exc:
+            if isinstance(exc, asyncio.CancelledError):
+                fut.cancel()
+            else:
+                fut.set_exception(exc)
+                fut.exception()  # mark retrieved: no waiter may exist to consume it
+            raise
+        else:
+            fut.set_result(ok)
+            return ok
+        finally:
+            self._permanent_delete_inflight.pop(session_id, None)
+
+    async def _permanent_delete_once(self, session_id: str) -> bool:
         """Permanently delete a session: remove its on-disk directory + DB row.
 
         This is where archived-session disk is actually reclaimed (archiving
