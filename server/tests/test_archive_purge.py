@@ -641,14 +641,14 @@ def _count_deletes(orch: SessionOrchestrator) -> list[str]:
             await asyncio.sleep(0)
         return await real(sid)
 
-    orch._permanent_delete_once = slow_once  # type: ignore[method-assign]
+    setattr(orch, "_permanent_delete_once", slow_once)
     return calls
 
 
 def test_concurrent_enforce_archive_limit_deletes_each_id_once(tmp_path):
     """Three concurrent passes over max=2 / 5 archived purge the 3 oldest exactly
     once between them — not 3x each (#3458)."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
 
     async def run():
         with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
@@ -671,7 +671,7 @@ def test_concurrent_enforce_archive_limit_deletes_each_id_once(tmp_path):
 def test_concurrent_permanent_delete_of_one_id_runs_once(tmp_path):
     """Two concurrent permanent_delete(sid) calls share one delete and both see
     its outcome (#3458)."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
 
     async def run():
         with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
@@ -693,7 +693,7 @@ def test_concurrent_permanent_delete_of_one_id_runs_once(tmp_path):
 def test_concurrent_permanent_delete_shares_the_failure(tmp_path):
     """A failing delete raises to every coalesced caller, and a later call
     retries instead of reusing the stale outcome (#3458)."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
 
     async def run():
         with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
@@ -706,7 +706,7 @@ def test_concurrent_permanent_delete_shares_the_failure(tmp_path):
                 await asyncio.sleep(0)
                 raise OSError("rmtree failed")
 
-            orch._permanent_delete_once = boom  # type: ignore[method-assign]
+            setattr(orch, "_permanent_delete_once", boom)
             results = await asyncio.gather(
                 orch.permanent_delete("x"), orch.permanent_delete("x"),
                 return_exceptions=True)
