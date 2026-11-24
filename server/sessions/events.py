@@ -458,10 +458,20 @@ class UserMessage:
     # reload by `replay.strip_origin_header` from the marker the CLI journalled, so the
     # two halves cannot disagree (see server/sessions/prompt_origin.py).
     origin: PromptOrigin | None = None
-    def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid,
-                               "images": self.images or [], "ts": self.ts,
-                               "ownerPrefix": self.owner_prefix, "context": self.context,
-                               "origin": self.origin}
+    # True when the prompt reached the CLI from OUTSIDE ViberPit — typed by the person
+    # in the Claude web/desktop app over Remote Control — and was surfaced from the CLI's
+    # `--replay-user-messages` echo (translator). Still a human prompt (`origin` None,
+    # exactly as a reload rebuilds it), so it renders as one. On the wire only when
+    # set; the client may ignore it.
+    remote: bool = False
+    def to_wire(self):
+        out = {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid,
+               "images": self.images or [], "ts": self.ts,
+               "ownerPrefix": self.owner_prefix, "context": self.context,
+               "origin": self.origin}
+        if self.remote:
+            out["remote"] = True
+        return out
 
 @dataclass
 class QueueUpdate:

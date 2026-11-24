@@ -1,6 +1,7 @@
 from __future__ import annotations
 import dataclasses as _dc
 import logging
+from collections import deque
 from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, UserMessage,
                               ResultMessage, ToolUseBlock, ToolResultBlock, TextBlock,
                               RateLimitEvent, TaskStartedMessage, TaskProgressMessage,
@@ -12,8 +13,13 @@ from .completion import (has_completion_marker, parse_hand_back_marker, parse_tu
                          resolution_from_text)
 from .model_request import parse_model_request
 from .tools.registry import TURN_SIGNAL_NAMES
+from .transcript_entries import is_cli_plumbing_text
 
 log = logging.getLogger(__name__)
+
+# How many of ViberPit's own sent prompt texts (and accounted-for prompt uuids) the
+# translator remembers to tell its own echoes from a prompt typed in the Claude apps.
+_SENT_CAP = 64
 
 # Wire vocabulary for a finished sub-agent (spec §4.1). The SDK's `killed` (a stop_task
 # outcome reported by task_updated) is the same end state the notification calls `stopped`.
@@ -61,6 +67,15 @@ class Translator:
         # sent to the SDK), set by the driver as it sends a prompt, consumed by the CLI's
         # `--replay-user-messages` echo of it. Turn-scoped.
         self._pending_prompt: tuple[str, str] | None = None
+        # Every prompt text ViberPit itself handed the CLI (stripped), newest last, and
+        # the uuids of the user entries already accounted for. The CLI echoes ALL user
+        # prompts — ours and one typed in the Claude apps over Remote Control — and only
+        # a text NOT in here becomes a bubble. Translator-lifetime and bounded: the
+        # single `_pending_prompt` slot forgets an older queued prompt, and an echo can
+        # land after its turn's reset. Trade-off: an app prompt identical to one of
+        # the last `_SENT_CAP` ViberPit sent runs but shows no bubble until a reload.
+        self._sent_texts: deque[str] = deque(maxlen=_SENT_CAP)
+        self._seen_prompt_uuids: deque[str] = deque(maxlen=_SENT_CAP)
         # Task sub-agents: CLI task id -> the spawning Task tool-use id. Lives for the
         # translator's lifetime, NOT the turn: a background sub-agent's notices arrive
         # after the turn that spawned it ended (through the driver's idle listener).
@@ -105,29 +120,51 @@ class Translator:
         of it onto that turn (``UserPromptUuid``). *sent_text* is what the SDK receives,
         headers included — the echo carries exactly that."""
         self._pending_prompt = (turn_id, sent_text)
+        self.note_sent(sent_text)
+
+    def note_sent(self, text: str) -> None:
+        """Record *text* as a prompt ViberPit itself delivered to the CLI — a turn's
+        prompt (via :meth:`expect_prompt`) or a steer — so its echo never renders as a
+        prompt typed in the Claude apps."""
+        self._sent_texts.append(text.strip())
 
     def _prompt_echo(self, msg) -> list:
-        """``UserPromptUuid`` when *msg* is the CLI's echo of the pending prompt, else [].
+        """What a top-level, non-tool-result user message the CLI echoed means.
 
-        Matched on the sent text, not merely "the next user message": the CLI echoes
-        other user entries too (local-command stdout, synthetic meta prompts), and a
-        wrong uuid would point a rewind at a row that is not this prompt. A miss only
-        costs the live turn its target until a reload, where the turn id IS the uuid."""
-        pending = self._pending_prompt
+        * The echo of the pending prompt → ``UserPromptUuid``. Matched on the sent text,
+          not merely "the next user message": the CLI echoes other user entries too
+          (local-command stdout, synthetic meta prompts), and a wrong uuid would point a
+          rewind at a row that is not this prompt. A miss only costs the live turn its
+          target until a reload, where the turn id IS the uuid.
+        * The echo of any other prompt ViberPit sent (an older queued one, a steer) →
+          nothing: the driver already emitted its bubble.
+        * CLI plumbing (local-command records, task notifications, the interrupt
+          marker) or an empty text → nothing, as replay treats them.
+        * Anything else is a prompt someone typed in the Claude apps (Remote Control)
+          → one ``UserMessage`` keyed by its uuid, exactly as a reload rebuilds it."""
         uuid = getattr(msg, "uuid", None)
-        if pending is None or not uuid or getattr(msg, "parent_tool_use_id", None) is not None:
+        if not uuid or getattr(msg, "parent_tool_use_id", None) is not None:
             return []
         content = msg.content
         if isinstance(content, str):
-            text = content
+            first = joined = content
         else:
             if any(isinstance(b, ToolResultBlock) for b in content):
                 return []
-            text = next((b.text for b in content if isinstance(b, TextBlock)), "")
-        if text.strip() != pending[1].strip():
+            texts = [b.text for b in content if isinstance(b, TextBlock)]
+            first, joined = (texts[0] if texts else ""), "".join(texts)
+        if uuid in self._seen_prompt_uuids:
             return []
-        self._pending_prompt = None
-        return [ev.UserPromptUuid(pending[0], uuid)]
+        pending = self._pending_prompt
+        if pending is not None and first.strip() == pending[1].strip():
+            self._pending_prompt = None
+            self._seen_prompt_uuids.append(uuid)
+            return [ev.UserPromptUuid(pending[0], uuid)]
+        if (first.strip() in self._sent_texts or not joined.strip()
+                or is_cli_plumbing_text(joined)):
+            return []
+        self._seen_prompt_uuids.append(uuid)
+        return [ev.UserMessage(turn_id=uuid, text=joined, src_uuid=uuid, remote=True)]
 
     def in_flight_ids(self) -> frozenset[str]:
         """Ids naming the turn still in flight, live or replayed: its stream turn id and
@@ -364,8 +401,9 @@ class Translator:
 
         if isinstance(msg, UserMessage):
             pid = getattr(msg, "parent_tool_use_id", None)
-            # A prompt echo yields only its uuid: the driver already emitted the prompt
-            # as this turn's UserMessage, and the echo opens no turn of its own.
+            # A prompt echo yields only its uuid (the driver already emitted the prompt
+            # as this turn's UserMessage) — or, for a prompt typed in the Claude apps,
+            # its bubble. Either way the echo opens no assistant turn of its own.
             out = self._prompt_echo(msg)
             if isinstance(msg.content, str):
                 return out

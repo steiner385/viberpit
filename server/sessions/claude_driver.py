@@ -1492,6 +1492,9 @@ class ClaudeAgentDriver:
                 # get their own UserMessage when that turn starts, so echoing here
                 # would double them.
                 if text.strip():
+                    # Ours: should the CLI ever echo it as a user prompt, it is not a
+                    # prompt typed in the Claude apps (translator._prompt_echo).
+                    self._tr.note_sent(text)
                     echo = uuid.uuid4().hex
                     self._emit(ev.UserMessage(turn_id=echo, text=text, src_uuid=echo,
                                               images=None, context=context,
