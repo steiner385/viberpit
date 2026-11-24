@@ -1134,6 +1134,31 @@ class FleetOrchestrator:
                           name, account, exc_info=exc)
         return {"invalidated": invalidated, "failed": failed}
 
+    async def apply_remote_control_default(self, enabled: bool) -> dict:
+        """The Remote Control app default changed: apply it on EVERY reachable host, each
+        for the sessions it owns that follow the default. Turning it off is a revocation,
+        so a host that failed is named (``failedHosts``) and logged, never raised — one
+        dead worker must not fail the Settings save for the rest."""
+        async def _one(name: str):
+            try:
+                return name, await self._router.get(name).apply_remote_control_default(
+                    enabled), None
+            except Exception as e:  # noqa: BLE001 — one host must not block the rest
+                return name, None, e
+
+        sessions = failed = 0
+        failed_hosts: list[str] = []
+        for name, res, exc in await asyncio.gather(
+                *(_one(n) for n in await self._fanout_names())):
+            if exc is not None:
+                failed_hosts.append(name)
+                log.info("fleet.remote_control_default host=%s enabled=%s failed: %s",
+                         name, enabled, exc)
+                continue
+            sessions += int((res or {}).get("sessions") or 0)
+            failed += int((res or {}).get("failed") or 0)
+        return {"sessions": sessions, "failed": failed, "failedHosts": failed_hosts}
+
     async def plugin_op_everywhere(self, op: str, args: dict) -> list[dict]:
         """Run one plugin op on EVERY registered host and name each outcome (D-16c, D2).
 

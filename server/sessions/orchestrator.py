@@ -9482,6 +9482,53 @@ class SessionOrchestrator:
                  enabled, identity, live)
         return {"enabled": enabled, "url": rec.remote_control_url}
 
+    async def apply_remote_control_default(self, enabled: bool) -> dict:
+        """The app default changed: make every live session on THIS host that FOLLOWS it
+        (``remote_control`` is None) match, without writing an override. Off is a
+        revocation — each follower's CLI is told ``enabled: false`` (sent even with the
+        kill switch off) and its URL cleared; on opens bridges for eligible followers,
+        best-effort. An in-flight spawn-time enable is reaped first so it cannot reopen
+        a bridge after the teardown. Per-session failures are logged at INFO and counted,
+        never raised. Returns ``{sessions, failed}``."""
+        enabled = bool(enabled)
+        targets: list[tuple[str, Any]] = []
+        for session_id, driver in list(self._drivers.items()):
+            rec = self._records.get(session_id)
+            if (rec is None or rec.remote_control is not None
+                    or not hasattr(driver, "set_remote_control")):
+                continue
+            if enabled and not self._stamp_remote_control_available(session_id):
+                continue
+            targets.append((session_id, driver))
+
+        async def _one(session_id: str, driver: Any) -> bool | None:
+            pending = self._remote_control_task_map().pop(session_id, None)
+            if pending is not None:
+                await cancel_and_reap(pending, phase="remote_control.default_change")
+            try:
+                reply = await driver.set_remote_control(enabled)
+            except Exception as exc:
+                if getattr(exc, "code", None) == _remote_control.REMOTE_CONTROL_NOT_LIVE:
+                    # No live CLI, so no bridge: nothing to revoke, the URL is stale.
+                    if not enabled:
+                        await self._persist_remote_control(session_id,
+                                                           remote_control_url=None)
+                    return None
+                log_event(log, logging.INFO, "session.remote_control_default_failed",
+                          session_id=session_id, enabled=enabled,
+                          code=getattr(exc, "code", None), error=str(exc))
+                return False
+            url = _remote_control.session_url(reply) if enabled else None
+            await self._persist_remote_control(session_id, remote_control_url=url)
+            return True
+
+        results = await asyncio.gather(*(_one(sid, d) for sid, d in targets))
+        out = {"sessions": sum(1 for r in results if r is True),
+               "failed": sum(1 for r in results if r is False)}
+        log.info("session.remote_control_default enabled=%s sessions=%s failed=%s",
+                 enabled, out["sessions"], out["failed"])
+        return out
+
     def _remote_control_task_map(self) -> dict[str, asyncio.Task]:
         # Lazy: some tests build the orchestrator with ``__new__`` (as for _bg_tasks).
         tasks = getattr(self, "_remote_control_tasks", None)

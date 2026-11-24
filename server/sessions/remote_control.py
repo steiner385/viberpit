@@ -77,9 +77,11 @@ def eligible(*, engine: Any, kind: str | None, provider: str | None) -> bool:
             and provider != _copilot.PROVIDER)
 
 
-def effective(override: bool | None, default: bool) -> bool:
-    """The session's override when it has one, else the app default."""
-    return bool(default) if override is None else bool(override)
+def effective(override: bool | None, default: bool | None) -> bool:
+    """The session's override when it has one, else the app default. An UNKNOWN default
+    (None: never read on this process) is off — fail closed; a stored NULL is not
+    unknown, it reads as on (``stored_default``)."""
+    return default is True if override is None else bool(override)
 
 
 def session_url(reply: Mapping[str, Any] | None) -> str | None:
@@ -105,9 +107,10 @@ def stored_default(value: bool | None) -> bool:
 _cache: tuple[bool, float] | None = None
 
 
-def cached_default() -> bool:
-    """The last app default read on this process, or on (the NULL default) if none."""
-    return _cache[0] if _cache is not None else True
+def cached_default() -> bool | None:
+    """The last app default read on this process, or None when nothing has been read
+    yet (unknown — callers treat it as off)."""
+    return _cache[0] if _cache is not None else None
 
 
 def remember_default(value: bool) -> None:
@@ -118,8 +121,10 @@ def remember_default(value: bool) -> None:
 
 async def read_default() -> bool:
     """``AppSettings.remote_control_default`` from the DB (NULL = on), remembered for the
-    sync serializer. A failed read keeps the last value (INFO) — Remote Control is
-    best-effort, so a DB hiccup must never fail a spawn or a page."""
+    sync serializer. A failed read keeps the last known value, and with none FAILS
+    CLOSED (off): an unknown default must never open a bridge to the Claude apps. Logged
+    at INFO either way — Remote Control is best-effort, so a DB hiccup never fails a
+    spawn or a page."""
     from sqlalchemy import select as sa_select
     from server.db import db_session
     from server.db.models import AppSettings
@@ -128,10 +133,12 @@ async def read_default() -> bool:
             value = (await db.execute(sa_select(AppSettings.remote_control_default).where(
                 AppSettings.id == "singleton"))).scalar_one_or_none()
     except Exception as exc:
-        log.info("remote_control default not read: %s", exc)
-        return cached_default()
+        known = cached_default()
+        log.info("remote_control default not read (using %s): %s",
+                 "last known value" if known is not None else "off, fail closed", exc)
+        return known is True
     remember_default(stored_default(value))
-    return cached_default()
+    return stored_default(value)
 
 
 async def refresh_default(max_age: float = DEFAULT_CACHE_TTL_S) -> bool:

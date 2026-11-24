@@ -247,6 +247,21 @@ async def read_output_style(path: str, _identity: str = Depends(current_identity
     return out
 
 
+async def _apply_remote_control_default(request: Request, enabled: bool) -> None:
+    orch = getattr(request.app.state, "sessions", None)
+    apply = getattr(orch, "apply_remote_control_default", None)
+    if apply is None:
+        return
+    try:
+        result = await apply(enabled)
+    except Exception as exc:  # noqa: BLE001 — best-effort; the default itself is saved
+        log.info("settings: remote control default %s not applied to live sessions: %s",
+                 "on" if enabled else "off", exc)
+        return
+    log.info("settings: remote control default %s applied to live sessions: %s",
+             "on" if enabled else "off", result)
+
+
 @router.get("")
 async def get_settings_row(_identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
     row = await get_or_create_app_settings(db)
@@ -262,6 +277,7 @@ async def put_settings_row(
     db=Depends(get_db),
 ) -> dict:
     row = await get_or_create_app_settings(db)
+    rc_default_changed = False
     if body.defaultPermissionMode is not None:
         if body.defaultPermissionMode not in _VALID_MODES:
             raise HTTPException(status_code=422, detail="invalid defaultPermissionMode")
@@ -350,6 +366,7 @@ async def put_settings_row(
                 raise HTTPException(status_code=exc.http,
                                     detail={"code": exc.code, "message": exc.message}) from exc
         row.remote_control_default = body.remoteControlDefault
+        rc_default_changed = True
     if "branchPrefix" in body.model_fields_set:
         from server.sessions import branch_prefix as bp
         # Unchanged → nothing to validate (D-22): re-running the clash scan on every
@@ -379,4 +396,11 @@ async def put_settings_row(
     await db.flush()
     # This edge's session payloads read the cached default (refreshed on a TTL).
     remote_control.remember_default(remote_control.stored_default(row.remote_control_default))
+    if rc_default_changed:
+        # Committed first, so a spawn racing this reads the new default. Then every
+        # host's live sessions that FOLLOW the default are brought in line — off is a
+        # revocation of their bridges. Failures are logged, never fail the save.
+        await db.commit()
+        await _apply_remote_control_default(
+            request, remote_control.stored_default(row.remote_control_default))
     return _to_dict(row, await read_global_cap(db))

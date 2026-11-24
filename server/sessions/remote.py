@@ -1483,6 +1483,12 @@ class RemoteOrchestrator:
         except DaemonError as exc:
             raise _remote_control_error(exc) from exc
 
+    async def apply_remote_control_default(self, enabled: bool) -> dict:
+        """Proxy apply_remote_control_default to this daemon: ``{sessions, failed}``.
+        Each session's request is bounded on the daemon; they run concurrently."""
+        return await self._client.call("apply_remote_control_default", enabled=enabled,
+                                       timeout=REMOTE_CONTROL_RPC_TIMEOUT)
+
     async def set_output_style(self, session_id, style: str | None, *,
                                identity: str = SYSTEM_IDENTITY) -> dict:
         """Proxy set_output_style (D-16a) to the daemon that owns the session. Errors

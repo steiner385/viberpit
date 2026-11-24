@@ -378,6 +378,9 @@ def register_orchestrator_rpc(app, orch) -> None:
         # Remote Control: {enabled, url}, applied on the daemon that owns the live client.
         # A refusal raises RemoteControlError, whose error_data carries the code.
         "set_remote_control",
+        # ...and the app default changed: {sessions, failed} for THIS daemon's followers
+        # (the edge fans it out to every host).
+        "apply_remote_control_default",
         # D-16a output style: {style}, applied on the daemon that owns the live client
         # and the CLI's style list. A refusal raises SettingsError (code in error_data).
         "set_output_style",

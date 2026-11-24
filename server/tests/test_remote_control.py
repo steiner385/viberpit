@@ -658,3 +658,174 @@ def test_a_non_person_cannot_turn_the_default_on_but_can_turn_it_off(monkeypatch
     assert on.status_code == 403
     assert unchanged_off.status_code == 200
     rc._cache = None
+
+
+# ── Fail closed: an UNKNOWN app default never opens a bridge ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_default_with_nothing_cached_reads_as_off(rc_on, caplog) -> None:
+    caplog.set_level(logging.INFO)
+    rc._cache = None
+    with patch("server.db.db_session", side_effect=RuntimeError("db down")):
+        assert await rc.read_default() is False
+        assert await rc.refresh_default() is False
+    assert rc.cached_default() is None          # nothing was learned
+    assert any("remote_control default" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_default_keeps_the_last_known_value(rc_on) -> None:
+    rc.remember_default(True)
+    with patch("server.db.db_session", side_effect=RuntimeError("db down")):
+        assert await rc.read_default() is True
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_opens_no_bridge_when_the_default_is_unknown(env) -> None:
+    rc._cache = None
+    with patch("server.db.db_session", side_effect=RuntimeError("db down")):
+        assert await rc.read_default() is False
+    with patch("server.sessions.remote_control.read_default", return_value=False):
+        rec = await env.make()
+    assert _rc_sent(env.control) == []
+    assert rec.remote_control_url is None
+
+
+def test_the_payload_does_not_claim_on_before_the_default_was_read() -> None:
+    rec: Any = SessionRecord(id=SID, name="n", account="a", engine=AgentEngine.CLAUDE_CODE,
+                             engine_session_id="c", cols=80, rows=24, cwd="/tmp")
+    rec.remote_control_available = True
+    with patch.dict(os.environ, _ENV):
+        rc._cache = None
+        assert _payload(rec)["remoteControl"] is False
+        rec.remote_control = True                 # an explicit override needs no default
+        assert _payload(rec)["remoteControl"] is True
+
+
+# ── Revocation: the default turned off tears down bridges of sessions that follow it ───
+
+
+@pytest.mark.asyncio
+async def test_default_off_tears_down_followers_and_keeps_overrides(env) -> None:
+    env.control.replies = [ON_REPLY]
+    follower = await env.make("follower")
+    env.control.replies = [ON_REPLY]
+    pinned = await env.make("pinned")
+    env.control.replies = [ON_REPLY]
+    await env.orch.set_remote_control(pinned.id, True)
+    sent_before = len(_rc_sent(env.control))
+    env.control.replies = [{}]
+    result = await env.orch.apply_remote_control_default(False)
+    assert result == {"sessions": 1, "failed": 0}
+    assert _rc_sent(env.control)[sent_before:] == [{"subtype": "remote_control",
+                                                    "enabled": False}]
+    assert follower.remote_control is None            # no override was written
+    assert follower.remote_control_url is None
+    row = await _row(follower.id)
+    assert row.remote_control is None and row.remote_control_url is None
+    assert pinned.remote_control_url == URL           # an explicit override is untouched
+
+
+@pytest.mark.asyncio
+async def test_default_off_tears_down_even_with_the_kill_switch_off(env, monkeypatch) -> None:
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+    monkeypatch.setenv("VIBERPIT_REMOTE_CONTROL_ENABLED", "false")
+    env.control.replies = [{}]
+    assert (await env.orch.apply_remote_control_default(False))["sessions"] == 1
+    assert _rc_sent(env.control)[-1] == {"subtype": "remote_control", "enabled": False}
+    assert rec.remote_control_url is None
+
+
+@pytest.mark.asyncio
+async def test_default_on_opens_bridges_for_followers(env) -> None:
+    await _set_default(False)
+    rec = await env.make()
+    assert _rc_sent(env.control) == []
+    env.control.replies = [ON_REPLY]
+    assert (await env.orch.apply_remote_control_default(True))["sessions"] == 1
+    assert rec.remote_control_url == URL and rec.remote_control is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_teardown_is_counted_and_logged_not_raised(env, caplog) -> None:
+    caplog.set_level(logging.INFO)
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+    env.control.replies = [_control_error("busy")]
+    assert await env.orch.apply_remote_control_default(False) == {"sessions": 0,
+                                                                   "failed": 1}
+    assert rec.remote_control_url == URL              # the bridge may still be up
+    assert any("remote_control_default_failed" in r.getMessage() for r in caplog.records)
+    assert _no_warnings(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_default_off_reaps_an_in_flight_spawn_enable(env) -> None:
+    env.control.gate = asyncio.Event()
+    env.control.replies = [ON_REPLY, {}]
+    rec = await env.orch.create_session("gated", cwd="/tmp", permission_mode="full-auto")
+    for _ in range(50):
+        await asyncio.sleep(0)
+    task = env.orch._remote_control_task_map().get(rec.id)
+    assert task is not None and not task.done()
+    env.control.gate.set()
+    await env.orch.apply_remote_control_default(False)
+    assert rec.id not in env.orch._remote_control_task_map()
+    assert rec.remote_control_url is None
+
+
+@pytest.mark.asyncio
+async def test_remote_and_fleet_fan_out_the_default_to_every_host(caplog) -> None:
+    client = _RecordingClient(result={"sessions": 2, "failed": 0})
+    assert await RemoteOrchestrator(client).apply_remote_control_default(False) == {
+        "sessions": 2, "failed": 0}
+    assert client.calls == [("apply_remote_control_default", {"enabled": False})]
+
+    class _Host:
+        def __init__(self, name, boom=False):
+            self.name, self.boom, self.calls = name, boom, []
+
+        async def apply_remote_control_default(self, enabled):
+            self.calls.append(enabled)
+            if self.boom:
+                raise RuntimeError("host down")
+            return {"sessions": 1, "failed": 0}
+
+    class _Router:
+        def __init__(self, orchs):
+            self._orchs = orchs
+
+        def get(self, name):
+            return self._orchs[name]
+
+        def names(self):
+            return sorted(self._orchs)
+
+    dobby, rocky, gone = _Host("dobby"), _Host("rocky"), _Host("gone", boom=True)
+    fo = FleetOrchestrator(_Router({"dobby": dobby, "rocky": rocky, "gone": gone}),  # type: ignore[arg-type]
+                           primary="dobby")
+    caplog.set_level(logging.INFO)
+    out = await fo.apply_remote_control_default(False)
+    assert out == {"sessions": 2, "failed": 0, "failedHosts": ["gone"]}
+    assert dobby.calls == rocky.calls == gone.calls == [False]
+    adapter = InProcessOrchestratorAdapter(dobby)  # type: ignore[arg-type]
+    assert await adapter.apply_remote_control_default(True) == {"sessions": 1, "failed": 0}
+
+
+def test_settings_put_applies_a_changed_default_to_live_sessions() -> None:
+    calls: list[bool] = []
+
+    async def fake(self, enabled):
+        calls.append(enabled)
+        return {"sessions": 0, "failed": 0}
+
+    with patch.dict(os.environ, _ENV), _client() as c, \
+            patch.object(SessionOrchestrator, "apply_remote_control_default", fake):
+        c.put("/api/settings", json={"remoteControlDefault": False}, headers=_H)
+        c.put("/api/settings", json={"remoteControlDefault": False}, headers=_H)  # unchanged
+        c.put("/api/settings", json={"thinkingCollapsed": True}, headers=_H)
+        c.put("/api/settings", json={"remoteControlDefault": True}, headers=_H)
+    assert calls == [False, True]
+    rc._cache = None

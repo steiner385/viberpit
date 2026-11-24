@@ -666,7 +666,10 @@ def test_every_remote_method_is_classified():
                 # D-16c follow-up (#3314): reload_plugins_everywhere is defined on
                 # FleetOrchestrator, names EVERY host's outcome and calls reload_plugins_live
                 # per host by name; not merge-all, so an unreachable host stays visible.
-                "reload_plugins_live", "reload_plugins_everywhere"}
+                "reload_plugins_live", "reload_plugins_everywhere",
+                # Remote Control: the app default changed. FleetOrchestrator fans it out
+                # to EVERY host and names the ones that failed (a revocation).
+                "apply_remote_control_default"}
     # Global/primary-routed: everything not per-session, fan-out, merge-all, or
     # explicit. Listed so adding a NEW method forces a conscious classification here.
     GLOBAL = {
@@ -918,7 +921,8 @@ def test_api_orchestrator_reads_are_all_classified():
     EXPLICIT = {"create_session", "list_sessions", "codex_account_status",
                 "codex_invalidate_credentials", "automation_statuses",
                 "automation_overview", "plugin_op_everywhere",
-                "reload_plugins_everywhere"}  # fleet-wide on FleetOrchestrator
+                "reload_plugins_everywhere",
+                "apply_remote_control_default"}  # fleet-wide on FleetOrchestrator
     classified = (_PER_SESSION | _FANOUT_BY_IDS | set(_MERGE_ALL_HOSTS)
                   | PRIMARY_LOCAL | EXPLICIT)
 
