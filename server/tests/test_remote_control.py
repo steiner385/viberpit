@@ -16,7 +16,9 @@ the suite; the ``rc_on`` fixture turns it back on here.
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
+import json
 import logging
 import os
 from pathlib import Path
@@ -54,6 +56,8 @@ _H = {"Tailscale-User-Login": "testuser@example.com"}
 URL = "https://claude.ai/code/session_abc"
 ON_REPLY = {"session_url": URL, "connect_url": "https://claude.ai/connect/x",
             "environment_id": "env_1"}
+SLOT_TOKEN = "sk-ant-oat01-SLOT-ACCESS"
+SLOT_ENV = {"CLAUDE_CODE_OAUTH_TOKEN": SLOT_TOKEN, "CLAUDE_CODE_ORGANIZATION_UUID": "org-1"}
 
 
 @pytest.fixture
@@ -202,6 +206,11 @@ async def env(tmp_path: Path, monkeypatch):
         patch("server.sessions.orchestrator.configdir.trust_project"),
         patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")),
         patch("server.sessions.orchestrator.generate_title", _no_title),
+        # The account has a usable claude.ai login: sessions launch on the slot token
+        # (Task B), the only credential a bridge opens on. Login-less cases patch these.
+        patch("server.sessions.orchestrator.remote_control_env_for",
+              side_effect=lambda account, **kw: dict(SLOT_ENV)),
+        patch("server.sessions.orchestrator.remote_control_slot_ready", return_value=True),
     ]
     for p in patches:
         p.start()
@@ -740,12 +749,32 @@ async def test_default_off_tears_down_even_with_the_kill_switch_off(env, monkeyp
 
 @pytest.mark.asyncio
 async def test_default_on_opens_bridges_for_followers(env) -> None:
-    await _set_default(False)
-    rec = await env.make()
-    assert _rc_sent(env.control) == []
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()                    # launched on the claude.ai login
+    env.control.replies = [{}]
+    await env.orch.apply_remote_control_default(False)
+    assert rec.remote_control_url is None
     env.control.replies = [ON_REPLY]
     assert (await env.orch.apply_remote_control_default(True))["sessions"] == 1
     assert rec.remote_control_url == URL and rec.remote_control is None
+
+
+@pytest.mark.asyncio
+async def test_default_on_skips_followers_running_on_the_setup_token(env) -> None:
+    """A follower launched while the default was off runs on the setup-token, which no
+    bridge opens on: a default change never respawns it; its next spawn uses the login."""
+    await _set_default(False)
+    rec = await env.make()
+    assert rec.launch_credential != "slot"   # no setup-token seeded here: "cfg"
+    assert (await env.orch.apply_remote_control_default(True))["sessions"] == 0
+    assert _rc_sent(env.control) == []
+    await _set_default(True)
+    driver = env.orch._drivers.pop(rec.id)
+    await driver.aclose()
+    env.control.replies = [ON_REPLY]
+    await env.orch.ensure_driver(rec.id)
+    await env.settle(rec.id)
+    assert rec.launch_credential == "slot" and rec.remote_control_url == URL
 
 
 @pytest.mark.asyncio
@@ -840,7 +869,9 @@ LOGIN_REJECTED = "Claude.ai login was rejected — run /login, then /remote-cont
 def test_refusal_reason_reads_the_cli_message() -> None:
     assert rc.refusal_reason(LOGIN_REJECTED) == rc.REASON_LOGIN_REJECTED
     assert rc.refusal_reason("something else") == rc.REASON_REFUSED
-    assert rc.LOGIN_REJECTED_MESSAGE.startswith("This account signs in with an inference-only")
+    assert rc.LOGIN_REJECTED_MESSAGE.startswith("claude.ai rejected this account's login")
+    assert rc.refusal_message(rc.REASON_LOGIN_NEEDED) == rc.LOGIN_NEEDED_MESSAGE
+    assert rc.refusal_message(rc.REASON_RUNNER) == rc.RUNNER_MESSAGE
 
 
 @pytest.mark.asyncio
@@ -940,3 +971,331 @@ def test_the_reason_rides_the_daemon_to_edge_copy_and_forces_off() -> None:
         p = _payload(rec)
     assert p["remoteControl"] is False
     assert p["remoteControlUnavailableReason"] == rc.REASON_LOGIN_REJECTED
+
+
+# ── Task B: launch on the account's claude.ai login, rotate its token live ──────────────
+
+_ORCH = "server.sessions.orchestrator"
+
+
+def _capture_spawn_env(orch) -> list[dict]:
+    """Record the ``extra_env`` of every spawn the orchestrator's factory makes."""
+    seen: list[dict] = []
+    base = orch._sdk_factory
+
+    @functools.wraps(base)
+    def wrapped(*a, extra_env=None, **kw):
+        seen.append(dict(extra_env or {}))
+        return base(*a, extra_env=extra_env, **kw)
+    orch._sdk_factory = wrapped
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_remote_control_spawn_launches_on_the_slot_token_and_org(env) -> None:
+    seen = _capture_spawn_env(env.orch)
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+    assert seen[-1]["CLAUDE_CODE_OAUTH_TOKEN"] == SLOT_TOKEN
+    assert seen[-1]["CLAUDE_CODE_ORGANIZATION_UUID"] == "org-1"
+    assert rec.launch_credential == "slot"
+    assert env.orch._session_uses_setup_token(rec) is False
+    assert rec.remote_control_url == URL
+
+
+@pytest.mark.asyncio
+async def test_with_remote_control_off_the_spawn_stays_on_the_setup_token(env) -> None:
+    await _set_default(False)
+    seen = _capture_spawn_env(env.orch)
+    with patch("server.sessions.account_auth.crypto") as crypto:
+        crypto.read_oauth_token.return_value = "sk-ant-oat01-SETUP"
+        rec = await env.make()
+    assert seen[-1]["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-SETUP"
+    assert "CLAUDE_CODE_ORGANIZATION_UUID" not in seen[-1]
+    assert rec.launch_credential == "setup"
+    assert rec.remote_control_unavailable_reason is None
+
+
+@pytest.mark.asyncio
+async def test_no_usable_login_launches_on_the_setup_token_as_login_needed(env) -> None:
+    with patch(f"{_ORCH}.remote_control_env_for", return_value=None), \
+            patch(f"{_ORCH}.remote_control_slot_ready", return_value=False):
+        rec = await env.make()
+        assert rec.launch_credential != "slot"
+        assert rec.remote_control_unavailable_reason == rc.REASON_LOGIN_NEEDED
+        assert _rc_sent(env.control) == []           # no doomed enable
+        p = _payload(rec)
+        assert p["remoteControl"] is False
+        assert p["remoteControlUnavailableReason"] == rc.REASON_LOGIN_NEEDED
+        with pytest.raises(rc.RemoteControlError) as ei:
+            await env.orch.set_remote_control(rec.id, True)
+    assert ei.value.code == rc.REMOTE_CONTROL_REFUSED
+    assert str(ei.value) == rc.LOGIN_NEEDED_MESSAGE
+    assert (await _row(rec.id)).remote_control is None    # nothing was changed
+    assert _rc_sent(env.control) == []
+
+
+@pytest.mark.asyncio
+async def test_login_needed_lifts_once_the_account_signs_in_again(env) -> None:
+    with patch(f"{_ORCH}.remote_control_env_for", return_value=None), \
+            patch(f"{_ORCH}.remote_control_slot_ready", return_value=False):
+        rec = await env.make()
+        await env.orch._recheck_remote_control_logins()
+    assert rec.remote_control_unavailable_reason == rc.REASON_LOGIN_NEEDED
+    await env.orch._recheck_remote_control_logins()          # the slot is ready now
+    assert rec.remote_control_unavailable_reason is None
+    # ...and the toggle respawns the session onto the login and opens the bridge.
+    env.control.replies = [ON_REPLY]
+    assert await env.orch.set_remote_control(rec.id, True) == {"enabled": True, "url": URL}
+    assert rec.launch_credential == "slot"
+
+
+@pytest.mark.asyncio
+async def test_toggle_on_respawns_a_setup_token_session_onto_the_login(env) -> None:
+    await _set_default(False)
+    rec = await env.make()
+    assert rec.launch_credential != "slot"
+    first = env.orch._drivers[rec.id]
+    env.control.replies = [ON_REPLY]
+    assert await env.orch.set_remote_control(rec.id, True) == {"enabled": True, "url": URL}
+    assert env.orch._drivers[rec.id] is not first           # respawned
+    assert rec.launch_credential == "slot"
+    assert _rc_sent(env.control) == [{"subtype": "remote_control", "enabled": True}]
+
+
+@pytest.mark.asyncio
+async def test_toggle_on_mid_turn_is_busy_and_does_not_respawn(env) -> None:
+    await _set_default(False)
+    rec = await env.make()
+    first = env.orch._drivers[rec.id]
+    rec.status = "working"
+    with pytest.raises(rc.RemoteControlError) as ei:
+        await env.orch.set_remote_control(rec.id, True)
+    assert ei.value.code == rc.REMOTE_CONTROL_BUSY
+    assert env.orch._drivers[rec.id] is first
+    assert _rc_sent(env.control) == []
+
+
+@pytest.mark.asyncio
+async def test_a_runner_session_is_unavailable_as_runner(env) -> None:
+    with patch(f"{_ORCH}.is_refresh_authority", return_value=False):
+        rec = await env.make()
+        assert rec.launch_credential != "slot"
+        assert rec.remote_control_unavailable_reason == rc.REASON_RUNNER
+        with pytest.raises(rc.RemoteControlError) as ei:
+            await env.orch.set_remote_control(rec.id, True)
+    assert str(ei.value) == rc.RUNNER_MESSAGE
+    assert _rc_sent(env.control) == []
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_pushes_a_refreshed_token_to_live_slot_sessions(env, caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+    driver = env.orch._drivers[rec.id]
+    pushed: list[str] = []
+
+    async def _push(token: str) -> None:
+        pushed.append(token)
+    driver.push_oauth_token = _push
+    with patch(f"{_ORCH}.slot_access_token", return_value=SLOT_TOKEN):
+        await env.orch._push_slot_tokens()
+    assert pushed == []                                      # the CLI already holds it
+    fresh = "sk-ant-oat01-REFRESHED"
+    with patch(f"{_ORCH}.slot_access_token", return_value=fresh):
+        await env.orch._push_slot_tokens()
+        await env.orch._push_slot_tokens()
+    assert pushed == [fresh]                                 # once per new token
+    assert fresh not in caplog.text and SLOT_TOKEN not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_failed_push_is_logged_retried_and_never_kills_the_session(env, caplog) -> None:
+    caplog.set_level(logging.INFO)
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+    driver = env.orch._drivers[rec.id]
+    calls = 0
+
+    async def _push(token: str) -> None:
+        nonlocal calls
+        calls += 1
+        raise rc.RemoteControlError(rc.REMOTE_CONTROL_FAILED, "no reply")
+    driver.push_oauth_token = _push
+    with patch(f"{_ORCH}.slot_access_token", return_value="sk-ant-oat01-NEW"):
+        await env.orch._push_slot_tokens()
+        await env.orch._push_slot_tokens()
+    assert calls == 2
+    assert env.orch._drivers[rec.id] is driver
+    assert any("token_push_failed" in r.getMessage() for r in caplog.records)
+    assert "sk-ant-oat01-NEW" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_setup_token_sessions_are_never_pushed_a_slot_token(env) -> None:
+    await _set_default(False)
+    rec = await env.make()
+    pushed: list[str] = []
+
+    async def _push(token: str) -> None:
+        pushed.append(token)
+    env.orch._drivers[rec.id].push_oauth_token = _push
+    with patch(f"{_ORCH}.slot_access_token", return_value="sk-ant-oat01-NEW"):
+        await env.orch._push_slot_tokens()
+    assert pushed == []
+
+
+@pytest.mark.asyncio
+async def test_the_refresh_sweep_runs_the_remote_control_upkeep(env) -> None:
+    upkeep = []
+
+    async def _upkeep() -> None:
+        upkeep.append(1)
+    env.orch._maintain_remote_control_logins = _upkeep
+    with patch("viberpit.accounts.list_accounts", return_value=[]):
+        await env.orch._refresh_idle_tokens_once()
+    assert upkeep == [1]
+
+
+@pytest.mark.asyncio
+async def test_a_rejection_memo_lifts_when_the_slot_token_changes(env) -> None:
+    env.control.replies = [_control_error(LOGIN_REJECTED)]
+    rec = await env.make()
+    assert rec.remote_control_unavailable_reason == rc.REASON_LOGIN_REJECTED
+    with patch(f"{_ORCH}.slot_access_token", return_value=SLOT_TOKEN):
+        await env.orch._recheck_remote_control_logins()      # same token: still refused
+    assert rec.remote_control_unavailable_reason == rc.REASON_LOGIN_REJECTED
+    with patch(f"{_ORCH}.slot_access_token", return_value="sk-ant-oat01-RELOGIN"):
+        await env.orch._recheck_remote_control_logins()      # a fresh browser login
+    assert "alpha" not in env.orch._remote_control_refused_accounts()
+    assert rec.remote_control_unavailable_reason is None
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_on_a_new_slot_token_drops_the_memo(env) -> None:
+    env.control.replies = [_control_error(LOGIN_REJECTED)]
+    await env.make()
+    relogin = {**SLOT_ENV, "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-RELOGIN"}
+    env.control.replies = [ON_REPLY]
+    with patch(f"{_ORCH}.remote_control_env_for", return_value=relogin):
+        second = await env.make("second")
+    assert second.remote_control_unavailable_reason is None
+    assert second.remote_control_url == URL
+
+
+@pytest.mark.asyncio
+async def test_slot_session_credential_checks_follow_the_launch(env) -> None:
+    from viberpit import oauth as real_oauth
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+
+    async def _dead(account: str) -> None:
+        raise real_oauth.AuthError("slot rejected")
+    env.orch._refresh_stored_token = _dead
+    with patch(f"{_ORCH}.crypto") as crypto:
+        crypto.read_oauth_token.return_value = "sk-ant-oat01-SETUP"
+        assert env.orch._session_uses_setup_token(rec) is False
+        # Only the claude.ai login died; the setup-token still carries the account.
+        assert await env.orch._stored_credentials_valid(rec) is True
+        crypto.read_oauth_token.return_value = None
+        assert await env.orch._stored_credentials_valid(rec) is False
+    rec.launch_credential = "setup"
+    assert env.orch._session_uses_setup_token(rec) is True
+
+
+# ── driver: the live token rotation message ────────────────────────────────────────────
+
+
+class _Transport:
+    """The SDK transport plus the reply its reader would route: a ``control_response``
+    for the line's ``request_id``, resolved through the query's pending table."""
+
+    def __init__(self, query: Any, reply: Any) -> None:
+        self.lines: list[str] = []
+        self.query = query
+        self.reply = reply
+
+    async def write(self, data: str) -> None:
+        self.lines.append(data)
+        if self.reply is None:
+            return                          # the CLI never answers
+        if isinstance(self.reply, BaseException):
+            raise self.reply                # the write itself failed
+        rid = json.loads(data)["request_id"]
+        # An ("error", text) reply is the CLI's error control_response, which the SDK's
+        # reader stores as an Exception.
+        self.query.pending_control_results[rid] = (
+            Exception(self.reply[1]) if isinstance(self.reply, tuple)
+            else {"subtype": "success", "request_id": rid, "response": self.reply})
+        self.query.pending_control_responses[rid].set()
+
+
+async def _driver_with_transport(reply: Any):
+    control = FakeControl()
+    control.pending_control_responses = {}  # type: ignore[attr-defined]
+    control.pending_control_results = {}    # type: ignore[attr-defined]
+    d = _driver(control)
+    await d.start()
+    transport = _Transport(control, reply)
+    client: Any = d._client
+    client._transport = transport
+    return d, control, transport
+
+
+@pytest.mark.asyncio
+async def test_push_oauth_token_writes_the_top_level_update(caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    d, control, transport = await _driver_with_transport(
+        {"applied": ["CLAUDE_CODE_OAUTH_TOKEN"]})
+    try:
+        await d.push_oauth_token("sk-ant-oat01-NEW")
+    finally:
+        await d.aclose()
+    assert len(transport.lines) == 1 and transport.lines[0].endswith("\n")
+    msg = json.loads(transport.lines[0])
+    assert msg["type"] == "update_environment_variables"   # top level, not control_request
+    assert msg["variables"] == {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-NEW"}
+    assert isinstance(msg["request_id"], str) and msg["request_id"]
+    assert control.pending_control_responses == {}          # cleaned up
+    assert control.sent == []                               # not a control request
+    assert "sk-ant-oat01-NEW" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply,code", [
+    ({"applied": []}, rc.REMOTE_CONTROL_REFUSED),
+    (("error", "variables must be an object of string values"), rc.REMOTE_CONTROL_REFUSED),
+    (CLIConnectionError("closed"), rc.REMOTE_CONTROL_NOT_LIVE),
+    (RuntimeError("boom"), rc.REMOTE_CONTROL_FAILED),
+])
+async def test_push_oauth_token_failures_map_to_one_code(reply, code, caplog) -> None:
+    d, _, _ = await _driver_with_transport(reply)
+    try:
+        with pytest.raises(rc.RemoteControlError) as ei:
+            await d.push_oauth_token("sk-ant-oat01-NEW")
+    finally:
+        await d.aclose()
+    assert ei.value.code == code
+    assert "sk-ant-oat01-NEW" not in caplog.text and "sk-ant-oat01-NEW" not in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_push_oauth_token_without_a_reply_times_out(monkeypatch) -> None:
+    monkeypatch.setattr(rc, "TOKEN_PUSH_TIMEOUT_S", 0.05)
+    d, control, _ = await _driver_with_transport(None)
+    try:
+        with pytest.raises(rc.RemoteControlError) as ei:
+            await d.push_oauth_token("tok")
+    finally:
+        await d.aclose()
+    assert ei.value.code == rc.REMOTE_CONTROL_FAILED
+    assert control.pending_control_responses == {}
+
+
+@pytest.mark.asyncio
+async def test_push_oauth_token_needs_a_live_client() -> None:
+    d = _driver(FakeControl())
+    with pytest.raises(rc.RemoteControlError) as ei:
+        await d.push_oauth_token("tok")
+    assert ei.value.code == rc.REMOTE_CONTROL_NOT_LIVE

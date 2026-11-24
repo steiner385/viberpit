@@ -450,9 +450,11 @@ export interface Session {
    *  Copilot), not the assistant drawer, and the server's kill switch on. The rail's
    *  controls show only when true; absent (an older server) reads as false. */
   remoteControlAvailable?: boolean
-  /** Why an available session still can't open a bridge — the CLI refused its account
-   *  (`login_rejected`: an inference-only setup-token login; `refused`: anything else).
-   *  `remoteControl` is false while set. Null/absent = no known refusal. */
+  /** Why an available session still can't open a bridge: `login_needed` (the account has
+   *  no usable claude.ai login, so the session runs on its inference-only setup-token),
+   *  `runner` (a session runner), or the CLI's own refusal (`login_rejected`: claude.ai
+   *  rejected the login; `refused`: anything else). `remoteControl` is false while set.
+   *  Null/absent = nothing known. */
   remoteControlUnavailableReason?: string | null
   /** Fast mode (D-14): the session's stored choice. Off unless set. */
   fastMode?: boolean

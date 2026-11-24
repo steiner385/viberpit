@@ -123,6 +123,19 @@ describe('RemoteControlControls', () => {
     expect(posts).toEqual([])
   })
 
+  it('tells the operator to sign in to claude.ai when the account has no usable login', () => {
+    mount({ enabled: false, unavailableReason: 'login_needed' })
+    expect(toggle()).toBeDisabled()
+    expect(screen.getByTestId('remote-control-unavailable')).toHaveTextContent(
+      'Sign in to claude.ai for this account (Accounts → Sign in to claude.ai) to use Remote Control')
+  })
+
+  it('names a session runner as the reason', () => {
+    mount({ enabled: false, unavailableReason: 'runner' })
+    expect(screen.getByTestId('remote-control-unavailable')).toHaveTextContent(
+      REMOTE_CONTROL_UNAVAILABLE_COPY.runner)
+  })
+
   it('explains any other refusal in plain words', () => {
     mount({ unavailableReason: 'something_new' })
     expect(screen.getByTestId('remote-control-unavailable')).toHaveTextContent(

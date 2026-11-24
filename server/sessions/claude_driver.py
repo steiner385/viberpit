@@ -7,6 +7,7 @@ import dataclasses
 import functools
 import hashlib
 import inspect
+import json
 import logging
 import os
 import time
@@ -470,6 +471,8 @@ class ClaudeAgentDriver:
         # Serializes ``apply_flag_settings``: each reply is awaited before the next write
         # goes out, since back-to-back writes read stale values (D-14 spike §1.3).
         self._flag_settings_lock = asyncio.Lock()
+        # Serializes ``push_oauth_token``: one environment update in flight at a time.
+        self._env_push_lock = asyncio.Lock()
         # Sandbox (D-23): this driver's spawn carries the sandbox block and start() does
         # not return until the CLI proves it is running (`_enter_sandboxed`). The stderr
         # tail is where the CLI's own refusal text lands when the spawn fails.
@@ -2672,6 +2675,70 @@ class ClaudeAgentDriver:
         log.info("driver.remote_control session=%s enabled=%s", self.session_id,
                  bool(enabled))
         return resp if isinstance(resp, dict) else {}
+
+    async def push_oauth_token(self, token: str) -> None:
+        """Hand the running CLI a fresh ``CLAUDE_CODE_OAUTH_TOKEN`` (Remote Control's live
+        token rotation, plan 2026-11-24 Task B). Returns once the CLI confirmed it applied
+        the key; refusals raise ``RemoteControlError`` logged at INFO. The token is never
+        logged.
+
+        Written raw to the SDK transport as a TOP-LEVEL ``update_environment_variables``
+        line (spike E4; a ``control_request`` subtype of that name is rejected as
+        unsupported). With a ``request_id`` the CLI answers a ``control_response`` whose
+        ``response.applied`` lists the keys it took; the SDK's reader resolves that reply
+        through its pending-control table like any control reply, so it is awaited there,
+        bounded by ``remote_control.TOKEN_PUSH_TIMEOUT_S``. ``REMOTE_CONTROL_NOT_LIVE``: no live CLI or
+        transport. ``REMOTE_CONTROL_REFUSED``: an error reply, or the key not applied.
+        ``REMOTE_CONTROL_FAILED``: no reply in time (it may or may not have landed)."""
+        from server.sessions import remote_control as rc
+        async with self._env_push_lock:
+            client = self._client
+            if client is None or self._stream_ended:
+                raise self._remote_control_refused(rc.RemoteControlError(
+                    rc.REMOTE_CONTROL_NOT_LIVE, "session not live"))
+            write = getattr(getattr(client, "_transport", None), "write", None)
+            query = getattr(client, "_query", None)
+            pending = getattr(query, "pending_control_responses", None)
+            results = getattr(query, "pending_control_results", None)
+            if write is None or not isinstance(pending, dict) or not isinstance(results, dict):
+                raise self._remote_control_refused(rc.RemoteControlError(
+                    rc.REMOTE_CONTROL_NOT_LIVE, "SDK client has no raw transport"))
+            request_id = f"viberpit_env_{uuid.uuid4().hex[:12]}"
+            replied = asyncio.Event()
+            # The SDK's reader calls ``.set()`` on whatever it finds here (an anyio Event
+            # in its own requests); asyncio's has the same method.
+            pending[request_id] = replied
+            line = json.dumps({"type": "update_environment_variables",
+                               "request_id": request_id,
+                               "variables": {"CLAUDE_CODE_OAUTH_TOKEN": token}})
+            try:
+                await write(line + "\n")
+                await asyncio.wait_for(replied.wait(), timeout=rc.TOKEN_PUSH_TIMEOUT_S)
+                result = results.get(request_id)
+            except CLIConnectionError as exc:
+                raise self._remote_control_refused(rc.RemoteControlError(
+                    rc.REMOTE_CONTROL_NOT_LIVE, f"transport closed: {type(exc).__name__}")
+                ) from None
+            except asyncio.TimeoutError:
+                raise self._remote_control_refused(rc.RemoteControlError(
+                    rc.REMOTE_CONTROL_FAILED, "no reply to update_environment_variables")
+                ) from None
+            except Exception as exc:  # noqa: BLE001 — never echo the line (it holds the token)
+                raise self._remote_control_refused(rc.RemoteControlError(
+                    rc.REMOTE_CONTROL_FAILED,
+                    f"update_environment_variables not sent: {type(exc).__name__}")) from None
+            finally:
+                pending.pop(request_id, None)
+                results.pop(request_id, None)
+        if isinstance(result, Exception):
+            raise self._remote_control_refused(rc.RemoteControlError(
+                rc.REMOTE_CONTROL_REFUSED, f"update_environment_variables refused: {result}"))
+        reply = result.get("response") if isinstance(result, dict) else None
+        applied = reply.get("applied") if isinstance(reply, dict) else None
+        if not isinstance(applied, list) or "CLAUDE_CODE_OAUTH_TOKEN" not in applied:
+            raise self._remote_control_refused(rc.RemoteControlError(
+                rc.REMOTE_CONTROL_REFUSED, "the CLI did not apply the token"))
+        log.info("driver.oauth_token_pushed session=%s", self.session_id)
 
     def _remote_control_refused(self, err: Exception) -> Exception:
         """Log an expected Remote Control refusal (INFO: a WARNING would auto-file an

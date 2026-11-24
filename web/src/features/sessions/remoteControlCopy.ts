@@ -15,12 +15,16 @@ export const REMOTE_CONTROL_DEFAULT_COPY =
 
 export const REMOTE_CONTROL_TOGGLE_FALLBACK = "Couldn't change Remote Control"
 
-/** Why an eligible session still can't use it, keyed by `remoteControlUnavailableReason`
- *  (the CLI's own refusal, learned at runtime). */
+/** Why an eligible session still can't use it, keyed by `remoteControlUnavailableReason`:
+ *  the CLI's own refusal learned at runtime (`login_rejected`, `refused`), or known before
+ *  any request (`login_needed`: no usable claude.ai login; `runner`: a session runner). */
 export const REMOTE_CONTROL_UNAVAILABLE_COPY: Record<string, string> = {
+  login_needed:
+    'Sign in to claude.ai for this account (Accounts → Sign in to claude.ai) to use Remote Control',
   login_rejected:
-    'This account signs in with an inference-only token; Remote Control needs a full claude.ai login.',
+    "claude.ai rejected this account's login for Remote Control. Sign in to claude.ai again (Accounts → Sign in to claude.ai).",
   refused: 'The Claude CLI refused Remote Control for this account.',
+  runner: 'Remote Control is not available yet for sessions on a session runner.',
 }
 
 /** The explanation for *reason*, or a plain line for one this build does not know. */

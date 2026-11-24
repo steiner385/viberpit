@@ -97,7 +97,11 @@ from server.sessions import adopt as _adopt
 from server.sessions import branch_ownership as _branch_ownership
 from server.sessions import branch_prefix as _branch_prefix
 from server.sessions.helper_call import helper_cwd
-from server.sessions.account_auth import account_store_io, oauth_env_for
+from server.sessions import account_auth as _account_auth
+from server.sessions.account_auth import (
+    account_store_io, oauth_env_for, oauth_launch_env, remote_control_env_for,
+    remote_control_slot_ready, slot_access_token, token_fingerprint,
+)
 from server.sessions.scratch_config import helper_config_dir
 from server.sessions import deploy_snapshot as _deploy_snapshot
 from server.sessions.archive_move import mountpoint, restore_from_archive
@@ -2199,6 +2203,12 @@ class SessionOrchestrator:
         self._bg_tasks: set[asyncio.Task] = set()
         # Remote Control: the spawn-time enable in flight per session (a toggle reaps it).
         self._remote_control_tasks: dict[str, asyncio.Task] = {}
+        # ...and its launch-credential bookkeeping (Task B; lazily re-created by the
+        # ``_rc_*`` accessors for orchestrators built with ``__new__``).
+        self._rc_login_needed_ids: set[str] = set()
+        self._rc_spawn_enable_hold: set[str] = set()
+        self._rc_token_fingerprints: dict[str, str] = {}
+        self._rc_refusal_fingerprints: dict[str, str] = {}
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
@@ -2265,13 +2275,113 @@ class SessionOrchestrator:
 
         For copilot accounts, returns the proxy env ({ANTHROPIC_BASE_URL, …}) from
         the CopilotProxyManager.  For standard accounts, returns the oauth-token env.
+
+        Stamps ``launch_credential`` on the record with what this launch uses
+        (``copilot`` | ``envelope`` | ``setup`` | ``cfg``): the token-ownership question
+        (``live_session_owns_slot_family``) reads that stamp, never the current store.
+        A Remote Control launch on the slot's access token goes through
+        ``_remote_control_launch_env`` instead and is stamped ``slot``.
         """
         rec = self._records.get(session_id)
         if rec is None:
             return {}
         if self._copilot is not None and _provider_of(rec.account) == _copilot_mod.PROVIDER:
+            rec.launch_credential = _account_auth.LAUNCH_COPILOT
             return self._copilot.env_for(rec.account)
-        return oauth_env_for(rec.account)
+        # Unknown until the store answers: a raise below leaves it "may own" (None).
+        rec.launch_credential = None
+        env, kind = oauth_launch_env(rec.account)
+        rec.launch_credential = kind
+        return env
+
+    # ------------------------------------------------------------------
+    # Remote Control launch credential (plan 2026-11-24 Task B)
+    # ------------------------------------------------------------------
+
+    def _rc_login_needed(self) -> set[str]:
+        """Sessions that launched on the setup-token while Remote Control was effectively
+        on because their account had no usable claude.ai login (reason ``login_needed``).
+        Lazy: some tests build the orchestrator with ``__new__``."""
+        found: set[str] | None = getattr(self, "_rc_login_needed_ids", None)
+        if found is None:
+            found = self._rc_login_needed_ids = set()
+        return found
+
+    def _rc_spawn_enable_held(self) -> set[str]:
+        """Sessions a Remote Control toggle is respawning: their spawn-time enable is
+        skipped, the toggle sends its own (and reports its outcome)."""
+        held: set[str] | None = getattr(self, "_rc_spawn_enable_hold", None)
+        if held is None:
+            held = self._rc_spawn_enable_hold = set()
+        return held
+
+    def _rc_token_fps(self) -> dict[str, str]:
+        """Session -> fingerprint of the slot access token its live CLI holds (launched
+        with, or last pushed). Never the token itself."""
+        fps: dict[str, str] | None = getattr(self, "_rc_token_fingerprints", None)
+        if fps is None:
+            fps = self._rc_token_fingerprints = {}
+        return fps
+
+    def _rc_refusal_fps(self) -> dict[str, str]:
+        """Account -> fingerprint of the slot token a ``login_rejected`` refusal was
+        learned on. A launch on a DIFFERENT token (a refresh, or a fresh browser login)
+        drops the memo, so a re-login needs no daemon restart."""
+        fps: dict[str, str] | None = getattr(self, "_rc_refusal_fingerprints", None)
+        if fps is None:
+            fps = self._rc_refusal_fingerprints = {}
+        return fps
+
+    def _rc_slot_launch_candidate(self, session_id: str) -> bool:
+        """Could this spawn launch on the account's slot access token? Cheap, sync checks
+        only: the primary refresh authority, a Remote-Control-eligible session, and no
+        per-session override turning it off. The app default and the slot itself are read
+        by ``_remote_control_launch_env``."""
+        rec = self._records.get(session_id)
+        if rec is None or rec.remote_control is False or not rec.account:
+            return False
+        if not is_refresh_authority():
+            return False
+        return self.remote_control_available(session_id)
+
+    async def _remote_control_launch_env(self, session_id: str) -> dict[str, str] | None:
+        """The slot launch env when Remote Control is effectively on for this session and
+        its account has a usable claude.ai login, else None (the caller launches on the
+        setup-token, ``_oat_env``). Records the outcome: ``login_needed`` when Remote
+        Control is on but the login is not usable, the launch token's fingerprint (for
+        live rotation) when it is. Never raises: any failure is a setup-token launch."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            return None
+        needed = self._rc_login_needed()
+        try:
+            default = await _remote_control.refresh_default()
+            if not _remote_control.effective(rec.remote_control, default):
+                needed.discard(session_id)
+                return None
+            # A live session that owns the slot's family (a cfg launch) must not see the
+            # slot refreshed under it: then only an already-fresh token may be used.
+            owned = await asyncio.to_thread(self.live_session_owns_slot_family, rec.account)
+            env = await account_store_io(remote_control_env_for, rec.account,
+                                         allow_refresh=not owned, default=None)
+        except Exception as exc:  # noqa: BLE001 — Remote Control never fails a spawn
+            log.info("remote control: slot launch env unavailable for %s (%s)",
+                     session_id, type(exc).__name__)
+            env = None
+        if env is None:
+            needed.add(session_id)
+            log.info("session.remote_control_login_needed id=%s account=%s", session_id,
+                     rec.account)
+            return None
+        needed.discard(session_id)
+        fp = token_fingerprint(env[_account_auth.TOKEN_ENV])
+        self._rc_token_fps()[session_id] = fp
+        refusals = self._remote_control_refused_accounts()
+        if rec.account in refusals and self._rc_refusal_fps().get(rec.account) != fp:
+            # The refusal was learned on another token: this login gets its own try.
+            refusals.pop(rec.account, None)
+            self._rc_refusal_fps().pop(rec.account, None)
+        return env
 
     def _isolated_dir_for(self, cfg_dir: Path, kind: str | None) -> Path:
         """Map an ALREADY-composed, ALREADY-trusted config dir to the one this session
@@ -2733,7 +2843,33 @@ class SessionOrchestrator:
             declared = set()
         def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None,
                      **fork_kw):
-            extra = {**self._display_env(session_id), **self._oat_env(session_id)}
+            # Remote Control (plan 2026-11-24 Task B): a session that may launch on the
+            # account's slot access token resolves its auth env asynchronously — the app
+            # default is a DB read and the slot refresh may hit the token endpoint, neither
+            # of which may run on the loop. Every other launch stays synchronous.
+            if not self._rc_slot_launch_candidate(session_id):
+                self._rc_login_needed().discard(session_id)
+                return _build(cwd, config_dir, can_use_tool, mode, resume, on_pre_compact,
+                              fork_kw, None)
+
+            async def _slot_launch():
+                rc_env = await self._remote_control_launch_env(session_id)
+                client = _build(cwd, config_dir, can_use_tool, mode, resume, on_pre_compact,
+                                fork_kw, rc_env)
+                return await client if inspect.isawaitable(client) else client
+            return _slot_launch()
+
+        def _build(cwd, config_dir, can_use_tool, mode, resume, on_pre_compact, fork_kw,
+                   rc_env):
+            if rc_env is not None:
+                rec = self._records.get(session_id)
+                if rec is not None:
+                    rec.launch_credential = _account_auth.LAUNCH_SLOT
+                auth_env = rc_env
+            else:
+                self._rc_token_fps().pop(session_id, None)   # nothing to rotate live
+                auth_env = self._oat_env(session_id)
+            extra = {**self._display_env(session_id), **auth_env}
             # `fork_kw` is the driver's fork request (D-8: fork_session + extra_args),
             # forwarded only when present, so a factory that never forks keeps its
             # signature.
@@ -4159,6 +4295,10 @@ class SessionOrchestrator:
                 await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, name)
             except Exception:
                 log.debug("token-refresh: acquire_valid_token failed for %s", name, exc_info=True)
+        # Remote Control: hand every live slot-launched CLI the token just refreshed (the
+        # sweep refreshes within ``expiry_skew_sec`` of expiry and runs every
+        # ``poll_interval``, so the push lands before the old token lapses).
+        await self._maintain_remote_control_logins()
 
     async def _token_refresh_monitor(self) -> None:
         """Run an idle-token refresh immediately (restart recovery), then every
@@ -9464,6 +9604,25 @@ class SessionOrchestrator:
                      session_id, err.error_data)
             raise err
         known = self._known_remote_control_refusal(session_id) if enabled else None
+        # A live CLI on the setup-token cannot open a bridge, and the org UUID the bridge
+        # also needs is not one the CLI takes from a live ``update_environment_variables``
+        # (its allowlist is the three token keys, checked against claude 2.1.331) — so
+        # turning it on RESPAWNS the session onto the account's claude.ai login, idle only,
+        # through the sandbox toggle's swap primitive.
+        respawn = (enabled and known in (None, _remote_control.REASON_LOGIN_NEEDED)
+                   and self._remote_control_driver(session_id) is not None
+                   and rec.launch_credential != _account_auth.LAUNCH_SLOT)
+        if enabled and (respawn or known == _remote_control.REASON_LOGIN_NEEDED):
+            # Metadata only (never a token): is the claude.ai login usable now? A fresh
+            # browser login since the launch lifts ``login_needed`` here, not at a restart.
+            ready = await account_store_io(remote_control_slot_ready, rec.account,
+                                           default=False)
+            if ready:
+                self._rc_login_needed().discard(session_id)
+                known = self._known_remote_control_refusal(session_id)
+            else:
+                self._rc_login_needed().add(session_id)
+                known = self._known_remote_control_refusal(session_id)
         if known is not None:
             # The CLI already refused this account: refuse without a doomed request.
             err = _remote_control.RemoteControlError(
@@ -9477,6 +9636,22 @@ class SessionOrchestrator:
         if pending is not None:
             await cancel_and_reap(pending, phase="remote_control.spawn_enable")
         await self._persist_remote_control(session_id, remote_control=enabled)
+        if respawn:
+            # The respawn's own spawn-time enable would race the explicit one below.
+            held = self._rc_spawn_enable_held()
+            held.add(session_id)
+            try:
+                await self._respawn_for_remote_control(session_id)
+            finally:
+                held.discard(session_id)
+            if rec.launch_credential != _account_auth.LAUNCH_SLOT:
+                # The slot became unusable between the check and the spawn.
+                self._rc_login_needed().add(session_id)
+                reason = self._known_remote_control_refusal(session_id) or \
+                    _remote_control.REASON_LOGIN_NEEDED
+                raise _remote_control.RemoteControlError(
+                    _remote_control.REMOTE_CONTROL_REFUSED,
+                    _remote_control.refusal_message(reason))
         driver = self._remote_control_driver(session_id)
         url: str | None = None
         live = False
@@ -9520,6 +9695,10 @@ class SessionOrchestrator:
             if enabled and (not self._stamp_remote_control_available(session_id)
                             or self._known_remote_control_refusal(session_id)):
                 continue
+            if enabled and rec.launch_credential != _account_auth.LAUNCH_SLOT:
+                # Running on the setup-token: no bridge without a respawn, which a default
+                # change never forces. Its next spawn launches on the claude.ai login.
+                continue
             targets.append((session_id, driver))
 
         async def _one(session_id: str, driver: Any) -> bool | None:
@@ -9556,8 +9735,9 @@ class SessionOrchestrator:
     def _remote_control_refused_accounts(self) -> dict[str, str]:
         """Account -> why the CLI refused Remote Control for it (``REASON_*``). Learned
         from a real refusal, so later spawns on the account skip the doomed request.
-        In memory, per daemon: nothing signals an account's credential change to the
-        orchestrator, so a re-login is picked up after a daemon restart."""
+        In memory, per daemon, and tied to the slot token it was learned on
+        (``_rc_refusal_fps``): a launch on another token, or the sweep seeing the slot's
+        token change (a refresh, a fresh browser login), drops it — no restart needed."""
         memo: dict[str, str] | None = getattr(self, "_remote_control_refusals", None)
         if memo is None:
             memo = {}
@@ -9565,13 +9745,20 @@ class SessionOrchestrator:
         return memo
 
     def _known_remote_control_refusal(self, session_id: str) -> str | None:
-        """Stamp the session with its account's remembered refusal (or clear it) and
-        return it."""
+        """Stamp the session with why it cannot open a bridge (or clear it) and return it:
+        ``runner`` on a host that is not the refresh authority (it holds no claude.ai
+        login), ``login_needed`` when it launched on the setup-token for want of a usable
+        login, else its account's remembered refusal."""
         rec = self._records.get(session_id)
         if rec is None:
             return None
-        reason = (self._remote_control_refused_accounts().get(rec.account)
-                  if rec.account else None)
+        if not is_refresh_authority():
+            reason: str | None = _remote_control.REASON_RUNNER
+        elif session_id in self._rc_login_needed():
+            reason = _remote_control.REASON_LOGIN_NEEDED
+        else:
+            reason = (self._remote_control_refused_accounts().get(rec.account)
+                      if rec.account else None)
         rec.remote_control_unavailable_reason = reason
         return reason
 
@@ -9586,6 +9773,13 @@ class SessionOrchestrator:
             # refusal may be transient, so it must not block the account until a restart.
             if rec.account and reason == _remote_control.REASON_LOGIN_REJECTED:
                 self._remote_control_refused_accounts()[rec.account] = reason
+                # Learned on THIS token: a different one (a refresh or a fresh browser
+                # login) drops the memo (``_remote_control_launch_env`` and the sweep).
+                fp = self._rc_token_fps().get(session_id)
+                if fp is not None:
+                    self._rc_refusal_fps()[rec.account] = fp
+                else:
+                    self._rc_refusal_fps().pop(rec.account, None)
         await self._persist_remote_control(session_id, remote_control_url=None)
         log.info("session.remote_control_unavailable id=%s account=%s reason=%s",
                  session_id, rec.account if rec is not None else None, reason)
@@ -9617,6 +9811,8 @@ class SessionOrchestrator:
             return
         # The session takes its account's memo (or loses a reason from another account).
         self._known_remote_control_refusal(session_id)
+        if session_id in self._rc_spawn_enable_held():
+            return   # a toggle's respawn: the toggle sends the enable itself
         tasks = self._remote_control_task_map()
         previous = tasks.get(session_id)
         if previous is not None and not previous.done():
@@ -9647,6 +9843,15 @@ class SessionOrchestrator:
             if rec.remote_control_url is not None:
                 await self._persist_remote_control(session_id, remote_control_url=None)
             return
+        if rec.launch_credential != _account_auth.LAUNCH_SLOT:
+            # Only the account's full claude.ai login can open a bridge (spike E3o); a CLI
+            # on the setup-token would be refused. It picks the slot up at its next spawn
+            # (or a toggle respawns it onto the slot).
+            log.info("session.remote_control skipped id=%s launch=%s (not the claude.ai "
+                     "login)", session_id, rec.launch_credential)
+            if rec.remote_control_url is not None:
+                await self._persist_remote_control(session_id, remote_control_url=None)
+            return
         try:
             reply = await driver.set_remote_control(True)
         except Exception as exc:
@@ -9661,6 +9866,116 @@ class SessionOrchestrator:
         url = _remote_control.session_url(reply)
         await self._persist_remote_control(session_id, remote_control_url=url)
         log.info("session.remote_control_on id=%s url=%s", session_id, url)
+
+    async def _respawn_for_remote_control(self, session_id: str) -> None:
+        """Relaunch an idle session in place on its own account so the new CLI starts on
+        the account's claude.ai login (the factory decides, ``_remote_control_launch_env``),
+        resuming the conversation without replaying a prompt. The sandbox toggle's swap
+        primitive (``_transfer_slot`` + ``_reassign_locked``). A mid-turn or still-swapping
+        session raises ``REMOTE_CONTROL_BUSY``; a failed relaunch ``REMOTE_CONTROL_FAILED``."""
+        from server.sessions import session_move as sm
+        busy = _remote_control.RemoteControlError(_remote_control.REMOTE_CONTROL_BUSY,
+                                                  _remote_control.BUSY_MESSAGE)
+        try:
+            async with self._transfer_slot(session_id):
+                current = await self._record_still_live(session_id)
+                if current is None:
+                    raise KeyError(session_id)
+                if await self._worktree_control_busy(session_id, current):
+                    raise busy
+                ok = await self._reassign_locked(
+                    current, current.account, reason="remote_control",
+                    replay_last_prompt=False, publish_rotated=False, clear_pause=False)
+        except sm.MoveError as exc:
+            if exc.code != sm.MOVE_MID_TURN:
+                raise
+            raise busy from exc
+        if not ok:
+            raise _remote_control.RemoteControlError(
+                _remote_control.REMOTE_CONTROL_FAILED,
+                "The session could not restart on the account's claude.ai login.")
+        log.info("session.remote_control_respawned id=%s launch=%s", session_id,
+                 getattr(self._records.get(session_id), "launch_credential", None))
+
+    async def _maintain_remote_control_logins(self) -> None:
+        """The refresh authority's per-sweep Remote Control upkeep (after the slots were
+        refreshed): push each live slot session the account's current access token when it
+        changed, and lift ``login_needed`` / a stale ``login_rejected`` memo once the
+        account's claude.ai login is usable again. Best-effort; never raises."""
+        try:
+            await self._push_slot_tokens()
+            await self._recheck_remote_control_logins()
+        except Exception:  # noqa: BLE001 — upkeep must never break the token sweep
+            log.warning("remote control: login upkeep failed", exc_info=True)
+
+    async def _push_slot_tokens(self) -> None:
+        """Rotate the access token live in every local CLI launched on its account's slot
+        (``launch_credential == "slot"``) whose token differs from the slot's current one —
+        the ``update_environment_variables`` message the CLI accepts (spike E4). Compared by
+        fingerprint only; the token is never logged. A failed push is logged and retried
+        next sweep; it never touches the session (its old token lives until expiry, and a
+        401 recomposes it onto a fresh one)."""
+        fps = self._rc_token_fps()
+        for sid in [s for s in fps if s not in self._drivers]:
+            fps.pop(sid, None)
+        by_account: dict[str, list[tuple[str, Any]]] = {}
+        for sid, driver in list(self._drivers.items()):
+            rec = self._records.get(sid)
+            if (rec is None or rec.launch_credential != _account_auth.LAUNCH_SLOT
+                    or not hasattr(driver, "push_oauth_token")):
+                continue
+            by_account.setdefault(rec.account, []).append((sid, driver))
+        for account, targets in by_account.items():
+            token = await account_store_io(slot_access_token, account, default=None)
+            if not token:
+                continue
+            fp = token_fingerprint(token)
+            for sid, driver in targets:
+                if fps.get(sid) == fp:
+                    continue
+                try:
+                    await driver.push_oauth_token(token)
+                except Exception as exc:  # noqa: BLE001 — never kills the session
+                    log.info("session.remote_control_token_push_failed id=%s account=%s "
+                             "code=%s", sid, account,
+                             getattr(exc, "code", None) or type(exc).__name__)
+                    continue
+                fps[sid] = fp
+                log.info("session.remote_control_token_pushed id=%s account=%s", sid,
+                         account)
+
+    async def _recheck_remote_control_logins(self) -> None:
+        """Lift ``login_needed`` from sessions whose account's claude.ai login is usable
+        again (a browser login since they launched), and drop a ``login_rejected`` memo
+        once the slot holds a different token than the one refused — so a re-login needs
+        no daemon restart. Toggling on then respawns the session onto the login."""
+        needed = self._rc_login_needed()
+        for sid in [s for s in needed if s not in self._records]:
+            needed.discard(sid)
+        refusals = self._remote_control_refused_accounts()
+        refusal_fps = self._rc_refusal_fps()
+        for account in list(refusals):
+            token = await account_store_io(slot_access_token, account, default=None)
+            if token and token_fingerprint(token) != refusal_fps.get(account):
+                refusals.pop(account, None)
+                refusal_fps.pop(account, None)
+                log.info("remote control: %s has a new claude.ai token; refusal memo "
+                         "cleared", account)
+        accounts = {rec.account for sid in needed
+                    if (rec := self._records.get(sid)) is not None and rec.account}
+        for account in accounts:
+            if await account_store_io(remote_control_slot_ready, account, default=False):
+                for sid in [s for s in needed
+                            if getattr(self._records.get(s), "account", None) == account]:
+                    needed.discard(sid)
+                    self._known_remote_control_refusal(sid)
+                log.info("remote control: %s can sign in to claude.ai again", account)
+        for sid in list(self._drivers):
+            rec = self._records.get(sid)
+            if (rec is not None and rec.account not in refusals
+                    and rec.remote_control_unavailable_reason
+                    == _remote_control.REASON_LOGIN_REJECTED):
+                self._known_remote_control_refusal(sid)
 
     async def _persist_mcp_status(self, session_id: str, states: list) -> None:
         """Driver ``on_mcp_status`` callback: record the latest per-server status for this
@@ -23436,28 +23751,24 @@ class SessionOrchestrator:
         return await self._poller.get(name)
 
     def live_session_owns_slot_family(self, account: str) -> bool:
-        """True when a live session on *account* owns its store slot's token family, so
-        only that session's SDK may refresh it.
+        """True when a live session on *account* (fleet-wide, as ``has_live_session``
+        sees it) may own its store slot's token family, so only that session's CLI may
+        refresh it.
 
-        A session owns the family only when it launched from the composed cfg-dir
-        ``claudeAiOauth`` — the CLI then rotates that refresh token itself. A session
-        launched with an env token (``CLAUDE_CODE_OAUTH_TOKEN``: the account's
-        setup-token, or a broker envelope's access token) never touches the cfg-dir
-        blob, so the refresh authority may refresh the slot under it with no rotation
-        race. Every launch goes through ``oauth_env_for`` (``_oat_env``), so whether the
-        account yields an env token answers this for all of its sessions fleet-wide.
+        Decided from what each live session ACTUALLY launched with
+        (``SessionRecord.launch_credential``, stamped at spawn), never from the current
+        store: a session launched from the cfg-dir ``claudeAiOauth`` before a setup-token
+        was added still owns the family it rotates. Only a launch with an env token
+        (``slot`` access token, ``setup``-token, broker ``envelope``) is known not to
+        touch the family; ``cfg``, ``copilot`` and an unrecorded launch (rehydrated,
+        adopted, a mirror from an older daemon) all count as owning it — fail closed: a
+        false True only delays a proactive refresh, a false False rotates a family out
+        from under a running process.
 
-        Errs toward "owned", like ``has_live_session``: an unreadable store answers
-        True, which only delays a proactive refresh. Blocking IO (the store read) —
-        call it from a thread, never on the event loop.
+        Sync and lock-free (snapshots only), so safe from the poller's threadpool thread.
         """
-        if not self.has_live_session(account):
-            return False
-        try:
-            return not oauth_env_for(account)
-        except Exception:  # noqa: BLE001 — unreadable store: assume the session owns it
-            log.debug("token-ownership: launch env unreadable for %s", account, exc_info=True)
-            return True
+        return any(kind not in _account_auth.NON_OWNING_LAUNCHES
+                   for kind in self._live_session_launches(account))
 
     def has_live_session(self, account: str) -> bool:
         """Return True if a live AgentDriver anywhere IN THE FLEET is running on *account*.
@@ -23482,13 +23793,21 @@ class SessionOrchestrator:
         on-demand acquire_valid_token path still runs), while a false False rotates
         the token out from under a running process and kills the account.
         """
-        # Snapshot values() before iterating: _drivers is mutated by the event
+        return bool(self._live_session_launches(account))
+
+    def _live_session_launches(self, account: str) -> list[str | None]:
+        """The ``launch_credential`` of every live session on *account* across the fleet
+        (None where unrecorded): ``has_live_session``'s set, with what each launched on."""
+        # Snapshot items() before iterating: _drivers is mutated by the event
         # loop (create_session / close_session / _do_rotate) while this method
         # can be called from a threadpool thread (the poller's usage_fn closure).
         # Iterating the live dict while the event loop mutates it raises
         # RuntimeError: dictionary changed size during iteration.
-        if any(d.account == account for d in list(self._drivers.values())):
-            return True
+        records = self._records
+        launches: list[str | None] = []
+        for sid, d in list(self._drivers.items()):
+            if d.account == account:
+                launches.append(getattr(records.get(sid), "launch_credential", None))
         # Only REMOTE rows are consulted. For this host _drivers above is authoritative
         # and never stale, so falling back to _records locally could only add false
         # positives (a lingering row whose process is gone would suppress proactive
@@ -23504,10 +23823,11 @@ class SessionOrchestrator:
         # Unlike _active_session_count, assistant sessions are NOT excluded: the
         # assistant is a real `claude` process holding a real token family.
         me = self_host_name()
-        return any(r.account == account
-                   and r.host is not None and r.host != me
-                   and r.status not in CAPACITY_EXEMPT_STATUSES
-                   for r in list(self._records.values()))
+        launches.extend(r.launch_credential for r in list(records.values())
+                        if r.account == account
+                        and r.host is not None and r.host != me
+                        and r.status not in CAPACITY_EXEMPT_STATUSES)
+        return launches
 
     async def mcp_status_for(self, session_id: str) -> list[dict] | None:
         """Live MCP status of a session's driver; ``None`` when it has no live driver.
@@ -28558,14 +28878,22 @@ class SessionOrchestrator:
     async def _stored_credentials_valid(self, record: SessionRecord) -> bool:
         """False only when the account's STORED credentials are known dead — the
         refresh grant was rejected (``AuthError``). A worker that must defer the
-        refresh to the primary (``RefreshDeferred``), a setup-token account (no
-        refresh grant to test), or any other failure is not proof of death: True,
+        refresh to the primary (``RefreshDeferred``), a session launched on the
+        setup-token (no refresh grant to test — ``_session_uses_setup_token``, which
+        follows the launch credential, so a slot-launched Remote Control session IS
+        checked against its slot), or any other failure is not proof of death: True,
         and the bounded relaunch ladder decides."""
         if self._session_uses_setup_token(record):
             return True
         try:
             await self._refresh_stored_token(record.account)
         except _oauth.AuthError:
+            if getattr(record, "launch_credential", None) == _account_auth.LAUNCH_SLOT:
+                # Only the claude.ai login died: a relaunch falls back to the account's
+                # setup-token (the slot now reads login_needed), so the account is dead
+                # only when it has none.
+                return bool(await account_store_io(crypto.read_oauth_token, record.account,
+                                                   default=True))
             return False
         except RefreshDeferred:
             return True
@@ -28581,7 +28909,15 @@ class SessionOrchestrator:
     def _session_uses_setup_token(self, record: SessionRecord) -> bool:
         """True when this session authenticates via a stored long-lived setup-token
         (CLAUDE_CODE_OAUTH_TOKEN). A 401 on such a session is terminal — there is no
-        OAuth grant to recompose — so it goes straight to needs-reauth."""
+        OAuth grant to recompose — so it goes straight to needs-reauth.
+
+        Follows what the session's CLI actually launched with (``launch_credential``): a
+        Remote Control session on the slot's short-lived access token is NOT a setup-token
+        session — its 401 is a stale access token that a refresh + recompose heals. Only an
+        unrecorded launch falls back to asking the store."""
+        kind = getattr(record, "launch_credential", None)
+        if kind is not None:
+            return kind == _account_auth.LAUNCH_SETUP
         return bool(crypto.read_oauth_token(record.account))
 
     async def _replay_same_account(self, record: SessionRecord, retry_after: float,

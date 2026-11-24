@@ -7,8 +7,10 @@
  *   (Claude, a claude.ai account, not the assistant drawer, kill switch on).
  * - The switch sets the session's override and applies live — no respawn, so no confirm.
  * - A refusal is shown inline under the row, never as a bare toast.
- * - When the CLI refused the session's account (`unavailableReason`, e.g. an
- *   inference-only login) the switch is off and disabled, with the reason.
+ * - When the session can't open a bridge (`unavailableReason`, e.g. `login_needed`: the
+ *   account has no usable claude.ai login) the switch is off and disabled, with the reason.
+ * - Turning it on for a session still running on the setup-token respawns it onto the
+ *   account's claude.ai login server-side (idle only; mid-turn answers REMOTE_CONTROL_BUSY).
  */
 import { useId, useState } from 'react'
 import { ExternalLink } from 'lucide-react'
@@ -27,7 +29,7 @@ export interface RemoteControlControlsProps {
   override?: boolean | null
   /** `session.remoteControlUrl` — the Claude-app link, or null. */
   url?: string | null
-  /** `session.remoteControlUnavailableReason` — set when the CLI refused this account. */
+  /** `session.remoteControlUnavailableReason` — set when the session can't open a bridge. */
   unavailableReason?: string | null
 }
 

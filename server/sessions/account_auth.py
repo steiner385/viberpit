@@ -30,13 +30,17 @@ has an account name and needs no reverse mapping) to drop the operator's plugins
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import time
 from collections.abc import Callable
 from typing import Any, TypeVar
 
+from viberpit import account_registry
 from viberpit import accounts as _accounts
 from viberpit import credential_envelope, crypto
+from viberpit.creds import read_json
 from viberpit.config import load_config
 from viberpit.env_compat import withheld_env
 from viberpit import paths as _paths
@@ -56,20 +60,148 @@ _T = TypeVar("_T")
 _RAISE: Any = object()  # account_store_io's "no default given" marker
 
 
+TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+ORG_ENV = "CLAUDE_CODE_ORGANIZATION_UUID"
+
+# What a Claude session actually launched with (``SessionRecord.launch_credential``),
+# recorded at spawn by the orchestrator's factory and never re-derived from the store:
+#   slot     — the browser-login slot's short-lived ACCESS token (Remote Control launch)
+#   setup    — the account's long-lived inference-only setup-token
+#   envelope — a broker runner's envelope access token (#2629)
+#   cfg      — no env token: the CLI reads the composed cfg-dir ``claudeAiOauth`` and may
+#              ROTATE that refresh family itself
+#   copilot  — the Copilot proxy env (no Anthropic credential at all)
+LAUNCH_SLOT = "slot"
+LAUNCH_SETUP = "setup"
+LAUNCH_ENVELOPE = "envelope"
+LAUNCH_CFG = "cfg"
+LAUNCH_COPILOT = "copilot"
+#: Launches that never touch the slot's refresh family, so the refresh authority may
+#: refresh the slot under them. Anything else — ``cfg``, ``copilot`` (kept as before) or an
+#: unknown/unrecorded launch — counts as owning it (fail closed).
+NON_OWNING_LAUNCHES = frozenset({LAUNCH_SLOT, LAUNCH_SETUP, LAUNCH_ENVELOPE})
+
+
+def oauth_launch_env(account: str) -> tuple[dict[str, str], str]:
+    """``(oauth_env_for(account), launch kind)`` — the kind being ``envelope``, ``setup``
+    or ``cfg`` (no env token), as ``SessionRecord.launch_credential`` records it."""
+    if _accounts.runner_uses_envelope(account):
+        # Broker runner (#2629): only the primary's envelope authenticates here. A lapsed lease or
+        # a near-expiry access token yields {} (fail closed) rather than falling back to the mount.
+        tok = credential_envelope.runner_store().launch_token(
+            account, skew_s=load_config().expiry_skew_sec)
+        kind = LAUNCH_ENVELOPE
+    else:
+        tok = crypto.read_oauth_token(account)
+        kind = LAUNCH_SETUP
+    return ({TOKEN_ENV: tok}, kind) if tok else ({}, LAUNCH_CFG)
+
+
 def oauth_env_for(account: str) -> dict[str, str]:
     """Return ``{"CLAUDE_CODE_OAUTH_TOKEN": tok}`` for *account*'s setup-token, or ``{}``.
 
     Standard (non-Copilot) accounts only — Copilot accounts use a separate proxy-env path
     (``CopilotProxyManager.env_for``) that is out of scope here.
     """
-    if _accounts.runner_uses_envelope(account):
-        # Broker runner (#2629): only the primary's envelope authenticates here. A lapsed lease or
-        # a near-expiry access token yields {} (fail closed) rather than falling back to the mount.
-        tok = credential_envelope.runner_store().launch_token(
-            account, skew_s=load_config().expiry_skew_sec)
-    else:
-        tok = crypto.read_oauth_token(account)
-    return {"CLAUDE_CODE_OAUTH_TOKEN": tok} if tok else {}
+    return oauth_launch_env(account)[0]
+
+
+# ---------------------------------------------------------------------------
+# Remote Control launch credential (plan 2026-11-24 Task B). Verified recipe (spike
+# docs/superpowers/specs/spikes/2026-11-24-remote-control-auth-spike.md): the CLI opens a
+# bridge only with the account's FULL-scope claude.ai access token in
+# CLAUDE_CODE_OAUTH_TOKEN plus CLAUDE_CODE_ORGANIZATION_UUID. The token is the browser-login
+# slot's short-lived ACCESS token only — the refresh token never leaves the authority
+# (Principle II) — and the authority pushes each refreshed one to the running CLI.
+# ---------------------------------------------------------------------------
+
+def organization_uuid(account: str) -> str | None:
+    """*account*'s claude.ai organization UUID (``oauthAccount.organizationUuid`` in the
+    store's captured ``.claude.json``), or None. Not a secret."""
+    try:
+        data = read_json(_paths.store_claude_json_path(account))
+    except (OSError, ValueError):
+        return None
+    oauth_account = data.get("oauthAccount") if isinstance(data, dict) else None
+    org = oauth_account.get("organizationUuid") if isinstance(oauth_account, dict) else None
+    return org if isinstance(org, str) and org else None
+
+
+def remote_control_slot_ready(account: str) -> bool:
+    """Could *account* launch a Remote Control session right now? Metadata only — never
+    reads a token value: this host is the refresh authority, the account is a Claude
+    account, its browser-login slot is ``ok`` (full scope, live refresh grant) and its
+    org UUID is known. A broker runner, a worker or a Copilot account answers False."""
+    if not _accounts.is_refresh_authority() or _accounts.runner_uses_envelope(account):
+        return False
+    if _accounts.provider_or_none(account) != account_registry.PROVIDER_ANTHROPIC:
+        return False
+    return (_accounts.slot_status(account) == _accounts.SLOT_OK
+            and organization_uuid(account) is not None)
+
+
+def _usable_access_token(blob: dict, *, skew_s: float) -> str | None:
+    """The blob's access token when it carries the Remote Control scope and outlives
+    *skew_s*, else None."""
+    tok = blob.get("accessToken")
+    if not isinstance(tok, str) or not tok:
+        return None
+    if _accounts.REMOTE_CONTROL_SCOPE not in (blob.get("scopes") or []):
+        return None
+    expires = blob.get("expiresAt")
+    if not isinstance(expires, (int, float)) or expires - time.time() * 1000 <= skew_s * 1000:
+        return None
+    return tok
+
+
+def slot_access_token(account: str) -> str | None:
+    """*account*'s current slot access token when it is full-scope and not about to
+    expire — the value pushed to a live Remote Control CLI. Reads only; never refreshes
+    (the authority's sweep does) and never touches the refresh token. A secret: never
+    log it."""
+    try:
+        blob = read_json(_paths.slot_path(account))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(blob, dict):
+        return None
+    return _usable_access_token(blob, skew_s=0)
+
+
+def remote_control_env_for(account: str, *, allow_refresh: bool = True) -> dict[str, str] | None:
+    """``{CLAUDE_CODE_OAUTH_TOKEN: <slot access token>, CLAUDE_CODE_ORGANIZATION_UUID: org}``
+    for a Remote Control launch on *account*, or None (the caller falls back to
+    ``oauth_env_for``, the setup-token — fail closed).
+
+    Primary refresh authority only, never a broker runner or a Copilot account
+    (``remote_control_slot_ready``). The slot is refreshed through
+    ``accounts.ensure_valid_token`` — the authority's own refresh path — unless
+    *allow_refresh* is False (a live session owns the slot's token family), when only an
+    already-fresh token is used. Blocking IO, and possibly a network refresh: async
+    callers wrap it in ``account_store_io``. Never logs or returns the refresh token."""
+    if not remote_control_slot_ready(account):
+        return None
+    org = organization_uuid(account)
+    skew = load_config().expiry_skew_sec
+    try:
+        if allow_refresh:
+            blob = _accounts.ensure_valid_token(account)
+        else:
+            blob = read_json(_paths.slot_path(account))
+    except Exception as exc:  # noqa: BLE001 — any failure means "no slot launch"
+        log.info("remote control: slot unusable for %s (%s); using the setup-token",
+                 account, type(exc).__name__)
+        return None
+    tok = _usable_access_token(blob, skew_s=skew) if isinstance(blob, dict) else None
+    if tok is None or org is None:
+        return None
+    return {TOKEN_ENV: tok, ORG_ENV: org}
+
+
+def token_fingerprint(token: str) -> str:
+    """A short, non-reversible tag for *token*, to tell one access token from the next
+    without keeping or logging the value."""
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
 
 
 def helper_env(
