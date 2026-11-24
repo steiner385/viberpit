@@ -363,6 +363,12 @@ class Session(Base):
     # cleared when the session moves to a model without fast mode. Nullable so
     # init_db's reconcile adds it on both dialects.
     fast_mode: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    # Remote Control: the session's override (NULL = follow
+    # ``AppSettings.remote_control_default``), and the claude.ai URL the last enable
+    # returned (cleared on disable; each spawn opens a fresh bridge and overwrites it).
+    # Nullable so init_db's reconcile adds them on both dialects.
+    remote_control: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    remote_control_url: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Output style (D-16a): the session's chosen CLI output style, applied at spawn
     # through the ``--settings`` JSON and live through ``apply_flag_settings``. NULL =
     # use ``AppSettings.default_output_style``. Nullable so reconcile adds it.
@@ -613,6 +619,11 @@ class AppSettings(Base):
     # Whether new Claude sessions spawn in the sandbox (D-23). NULL = off. Recorded on
     # each session at its first spawn, so changing it never changes a running session.
     sandbox_default: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    # Whether Claude sessions also appear in the Claude web / desktop / mobile apps
+    # (Remote Control). NULL = on. A session's own override (``Session.remote_control``)
+    # wins. Nullable for backfill.
+    remote_control_default: Mapped[bool | None] = mapped_column(Boolean, nullable=True,
+                                                                default=None)
     # The owner's confirmed plugin marketplaces (D-16c, D1): a JSON object {name:
     # normalized source} (server/library/curated.py). NULL = none confirmed. Nullable
     # for backfill.

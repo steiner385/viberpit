@@ -220,6 +220,15 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
           sandbox: caps?.sandbox === true || sessionRecord?.sandbox?.enabled === true
             ? { sessionId: rt.sessionId, busy, state: sessionRecord?.sandbox ?? null, held: !!sandboxHold }
             : undefined,
+          // Strictly true: absent is an older server with no endpoint.
+          remoteControl: sessionRecord?.remoteControlAvailable === true
+            ? {
+              sessionId: rt.sessionId,
+              enabled: sessionRecord.remoteControl === true,
+              override: sessionRecord.remoteControlOverride ?? null,
+              url: sessionRecord.remoteControlUrl ?? null,
+            }
+            : undefined,
           prs: sessionRecord?.prs,
           prAutofix: {
             enabled: sessionRecord?.prAutofixPaused !== true,

@@ -17,6 +17,7 @@ from server.hostname import self_host_name
 from server.library import scan
 from server.sessions.engine import AgentEngine, declared_capabilities
 from server.sessions.global_cap import GlobalCap, drain_if_raised, read_global_cap
+from server.sessions import remote_control
 from server.sessions.sandbox import sandbox_supported
 from server.sessions.types import VALID_SESSION_MODES
 from server.version import running_git_sha
@@ -139,6 +140,9 @@ class SettingsBody(BaseModel):
     # true/false sets it. Recorded on each session at its first spawn. Changing it needs
     # a person (403 SESSION_CONTROL_HUMAN_ONLY), as the per-session toggle does.
     sandboxDefault: bool | None = None
+    # Whether Claude sessions also appear in the Claude web / desktop / mobile apps
+    # (Remote Control) unless a session overrides it. Omitted → unchanged.
+    remoteControlDefault: bool | None = None
 
 
 async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | None) -> tuple[int, int, int]:
@@ -190,6 +194,10 @@ def _to_dict(s: AppSettings, cap: GlobalCap) -> dict:
         # one engine with a sandbox): the Settings toggle shows only while it is true.
         "sandboxDefault": s.sandbox_default is True,
         "sandboxCapability": sandbox_supported(declared_capabilities(AgentEngine.CLAUDE_CODE)),
+        # Remote Control: NULL surfaces as on. The capability is the kill switch: the
+        # Settings toggle shows only while it is true.
+        "remoteControlDefault": remote_control.stored_default(s.remote_control_default),
+        "remoteControlCapability": remote_control.remote_control_enabled(),
         **_server_blocks(cap),
     }
 
@@ -242,6 +250,7 @@ async def read_output_style(path: str, _identity: str = Depends(current_identity
 @router.get("")
 async def get_settings_row(_identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
     row = await get_or_create_app_settings(db)
+    remote_control.remember_default(remote_control.stored_default(row.remote_control_default))
     return _to_dict(row, await read_global_cap(db))
 
 
@@ -324,6 +333,23 @@ async def put_settings_row(
                 "code": "SANDBOX_DISABLED",
                 "message": "The sandbox is turned off on this server, so it can't be the default."})
         row.sandbox_default = body.sandboxDefault
+    if (body.remoteControlDefault is not None
+            and body.remoteControlDefault != remote_control.stored_default(
+                row.remote_control_default)):
+        if body.remoteControlDefault:
+            # Turning the default ON exposes every session that follows it to the Claude
+            # apps, outside ViberPit's auth — person-only, as the per-session enable is.
+            from server.auth.identity import human_gate_via
+            from server.sessions.session_actions import (SESSION_CONTROL_HUMAN_ONLY_CODE,
+                                                         ActionError, require_human)
+            try:
+                require_human(_identity, human_gate_via(request),
+                              action="show new sessions in the Claude apps (Remote Control)",
+                              code=SESSION_CONTROL_HUMAN_ONLY_CODE, trust_local_host=False)
+            except ActionError as exc:
+                raise HTTPException(status_code=exc.http,
+                                    detail={"code": exc.code, "message": exc.message}) from exc
+        row.remote_control_default = body.remoteControlDefault
     if "branchPrefix" in body.model_fields_set:
         from server.sessions import branch_prefix as bp
         # Unchanged → nothing to validate (D-22): re-running the clash scan on every
@@ -351,4 +377,6 @@ async def put_settings_row(
         # The EFFECTIVE cap rose (not merely the typed number): fill the new slots.
         drain_if_raised(getattr(request.app.state, "sessions", None), before, await read_global_cap(db))
     await db.flush()
+    # This edge's session payloads read the cached default (refreshed on a TTL).
+    remote_control.remember_default(remote_control.stored_default(row.remote_control_default))
     return _to_dict(row, await read_global_cap(db))

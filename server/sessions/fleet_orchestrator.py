@@ -234,6 +234,8 @@ _PER_SESSION: frozenset[str] = frozenset({
     "rewind_session", "undo_rewind",
     # So is fast mode (D-14): the live client it is written to, and the record's model list.
     "set_fast_mode",
+    # So is Remote Control: the live client the request goes to, and the account it runs on.
+    "set_remote_control",
     # And so is an output style (D-16a): the live client, and the CLI's style list.
     "set_output_style",
     # And an MCP per-tool toggle (D-16b): the live client and the server's tool list.
@@ -272,8 +274,8 @@ _PER_SESSION: frozenset[str] = frozenset({
 _MOVE_BLOCKED: frozenset[str] = frozenset({
     "send_prompt", "ensure_driver", "start_queued_now", "archive_session",
     "permanent_delete", "set_autopilot_paused", "mcp_reconnect", "mcp_toggle", "fork_session", "rewind_session", "undo_rewind",
-    "set_fast_mode", "set_output_style", "set_mcp_tool", "set_permission_mode",
-    "set_model_for_session", "resolve_permission", "answer_question", "run_command",
+    "set_fast_mode", "set_remote_control", "set_output_style", "set_mcp_tool",
+    "set_permission_mode", "set_model_for_session", "resolve_permission", "answer_question", "run_command",
     "request_pr_fix", "unarchive", "x11_open_browser", "open_dev_server",
     "resolve_model_approval",
     "resume_interrupted", "certify_harvested_complete", "reload_session",

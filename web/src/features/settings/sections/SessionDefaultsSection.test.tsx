@@ -21,6 +21,7 @@ import { queryResult, idleQueryResult, loadingQueryResult, mutationResult } from
 import { ApiRequestError } from '@/api/client'
 import { BRANCH_PREFIX_COPY, SessionDefaultsSection } from './SessionDefaultsSection'
 import { SANDBOX_DEFAULT_COPY, SANDBOX_HUMAN_ONLY } from '@/features/sessions/sandboxCopy'
+import { REMOTE_CONTROL_DEFAULT_COPY } from '@/features/sessions/remoteControlCopy'
 
 expect.extend(toHaveNoViolations)
 
@@ -305,6 +306,44 @@ describe('SessionDefaultsSection', () => {
       await userEvent.click(screen.getByRole('radio', { name: 'Expand all' }))
       await userEvent.click(screen.getByRole('button', { name: 'Save' }))
       expect(mutateAsync.mock.calls[0][0]).not.toHaveProperty('sandboxDefault')
+    })
+  })
+  describe('Remote Control default', () => {
+    const LABEL = 'Show sessions in the Claude apps (Remote Control)'
+
+    it('is hidden without the capability (the kill switch, or an older server)', () => {
+      mount()
+      expect(screen.queryByRole('checkbox', { name: LABEL })).toBeNull()
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ remoteControlCapability: false })))
+      mount()
+      expect(screen.queryByRole('checkbox', { name: LABEL })).toBeNull()
+    })
+
+    it('reads an unset default as on, says who can drive a session, and saves only a change', async () => {
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ remoteControlCapability: true })))
+      const { container } = mount()
+      const box = screen.getByRole('checkbox', { name: LABEL })
+      expect(box).toBeChecked()
+      expect(screen.getByText(REMOTE_CONTROL_DEFAULT_COPY)).toBeInTheDocument()
+      expect(REMOTE_CONTROL_DEFAULT_COPY).toMatch(/Anyone signed in to that Claude account can drive the session/)
+      await userEvent.click(box)
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ remoteControlDefault: false }))
+      expect(await axe(container)).toHaveNoViolations()
+    })
+
+    it('shows a stored off as off', () => {
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ remoteControlCapability: true, remoteControlDefault: false })))
+      mount()
+      expect(screen.getByRole('checkbox', { name: LABEL })).not.toBeChecked()
+    })
+
+    it('an unrelated save never sends the Remote Control default', async () => {
+      vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ remoteControlCapability: true })))
+      mount()
+      await userEvent.click(screen.getByRole('radio', { name: 'Expand all' }))
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(mutateAsync.mock.calls[0][0]).not.toHaveProperty('remoteControlDefault')
     })
   })
 })

@@ -295,6 +295,13 @@ os.environ["VIBERPIT_SANDBOX_TMP_PARENT"] = os.path.join(
 os.environ["VIBERPIT_TAILNET_ALLOWLIST"] = ""
 os.environ["VIBERPIT_DEV"] = "1"
 
+# Remote Control is on by default in production: every Claude spawn sends the CLI a
+# `remote_control` control request, which on a real binary registers an environment
+# with claude.ai. No test may do that by accident, and the extra request would also
+# consume replies a test scripted on a fake control channel. Off for the suite;
+# test_remote_control.py turns it on where it is the thing under test.
+os.environ["VIBERPIT_REMOTE_CONTROL_ENABLED"] = "false"
+
 
 # --------------------------------------------------------------------------- #
 # TestClient peers must look like the deployed topology.                       #
