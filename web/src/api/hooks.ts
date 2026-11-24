@@ -478,6 +478,11 @@ export interface AppSettings {
   sandboxDefault?: boolean
   /** The sandbox kill switch, on Claude (D-23). The toggle above shows only when true. */
   sandboxCapability?: boolean
+  /** Remote Control for new and running sessions that follow the default: they also show
+   *  in the Claude apps. The server's NULL reads as true (on). */
+  remoteControlDefault?: boolean
+  /** The Remote Control kill switch. The Settings toggle above shows only when true. */
+  remoteControlCapability?: boolean
   /** The modes PUT accepts, in display order. The client's PERMISSION_MODES must equal this set. */
   acceptedPermissionModes: string[]
   effectiveDefaults: EffectiveDefaults
@@ -672,7 +677,7 @@ export function useSetAutopilotPaused() {
 
 /** Write one session-record flag into the cached list (the routes below answer
  *  `{enabled}`, not the record), then refetch so the server's copy wins. */
-function patchSessionInCache(qc: QueryClient, id: string, patch: Partial<Session>) {
+export function patchSessionInCache(qc: QueryClient, id: string, patch: Partial<Session>) {
   qc.setQueryData<Session[]>(QK.sessions, (prev) =>
     prev?.map((s) => (s.id === id ? { ...s, ...patch } : s)))
   qc.invalidateQueries({ queryKey: QK.sessions })

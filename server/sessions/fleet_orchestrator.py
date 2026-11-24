@@ -234,6 +234,8 @@ _PER_SESSION: frozenset[str] = frozenset({
     "rewind_session", "undo_rewind",
     # So is fast mode (D-14): the live client it is written to, and the record's model list.
     "set_fast_mode",
+    # So is Remote Control: the live client the request goes to, and the account it runs on.
+    "set_remote_control",
     # And so is an output style (D-16a): the live client, and the CLI's style list.
     "set_output_style",
     # And an MCP per-tool toggle (D-16b): the live client and the server's tool list.
@@ -272,8 +274,8 @@ _PER_SESSION: frozenset[str] = frozenset({
 _MOVE_BLOCKED: frozenset[str] = frozenset({
     "send_prompt", "ensure_driver", "start_queued_now", "archive_session",
     "permanent_delete", "set_autopilot_paused", "mcp_reconnect", "mcp_toggle", "fork_session", "rewind_session", "undo_rewind",
-    "set_fast_mode", "set_output_style", "set_mcp_tool", "set_permission_mode",
-    "set_model_for_session", "resolve_permission", "answer_question", "run_command",
+    "set_fast_mode", "set_remote_control", "set_output_style", "set_mcp_tool",
+    "set_permission_mode", "set_model_for_session", "resolve_permission", "answer_question", "run_command",
     "request_pr_fix", "unarchive", "x11_open_browser", "open_dev_server",
     "resolve_model_approval",
     "resume_interrupted", "certify_harvested_complete", "reload_session",
@@ -1139,6 +1141,31 @@ class FleetOrchestrator:
                           "FAILED — the account may still be usable there",
                           name, account, exc_info=exc)
         return {"invalidated": invalidated, "failed": failed}
+
+    async def apply_remote_control_default(self, enabled: bool) -> dict:
+        """The Remote Control app default changed: apply it on EVERY reachable host, each
+        for the sessions it owns that follow the default. Turning it off is a revocation,
+        so a host that failed is named (``failedHosts``) and logged, never raised — one
+        dead worker must not fail the Settings save for the rest."""
+        async def _one(name: str):
+            try:
+                return name, await self._router.get(name).apply_remote_control_default(
+                    enabled), None
+            except Exception as e:  # noqa: BLE001 — one host must not block the rest
+                return name, None, e
+
+        sessions = failed = 0
+        failed_hosts: list[str] = []
+        for name, res, exc in await asyncio.gather(
+                *(_one(n) for n in await self._fanout_names())):
+            if exc is not None:
+                failed_hosts.append(name)
+                log.info("fleet.remote_control_default host=%s enabled=%s failed: %s",
+                         name, enabled, exc)
+                continue
+            sessions += int((res or {}).get("sessions") or 0)
+            failed += int((res or {}).get("failed") or 0)
+        return {"sessions": sessions, "failed": failed, "failedHosts": failed_hosts}
 
     async def plugin_op_everywhere(self, op: str, args: dict) -> list[dict]:
         """Run one plugin op on EVERY registered host and name each outcome (D-16c, D2).

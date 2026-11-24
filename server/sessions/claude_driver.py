@@ -2634,6 +2634,49 @@ class ClaudeAgentDriver:
                  sorted(patch))
         return resp if isinstance(resp, dict) else {}
 
+    async def set_remote_control(self, enabled: bool) -> dict:
+        """Turn the CLI's Remote Control bridge on or off and return its reply: on
+        answers ``{session_url, connect_url, environment_id}``, off answers ``{}``.
+        Refusals raise ``RemoteControlError`` logged at INFO.
+
+        Sent raw on the SDK's control channel (the ``apply_flag_settings`` seam): the SDK
+        has no method for it, and the settings.json ``remoteControlAtStartup`` key is
+        read only by the interactive REPL. Gated on ``VIBERPIT_REMOTE_CONTROL_ENABLED``
+        for enabling; turning it off is always sent."""
+        from server.sessions import remote_control as rc
+        if enabled and not rc.remote_control_enabled():
+            raise self._remote_control_refused(rc.RemoteControlError(
+                rc.REMOTE_CONTROL_UNAVAILABLE,
+                "remote control is off (VIBERPIT_REMOTE_CONTROL_ENABLED)"))
+        if self._client is None or self._stream_ended:
+            raise self._remote_control_refused(rc.RemoteControlError(
+                rc.REMOTE_CONTROL_NOT_LIVE, "session not live"))
+        send = getattr(getattr(self._client, "_query", None), "_send_control_request", None)
+        if send is None:
+            raise self._remote_control_refused(rc.RemoteControlError(
+                rc.REMOTE_CONTROL_NOT_LIVE, "SDK client has no control channel"))
+        try:
+            resp = await send(rc.control_request(enabled),
+                              timeout=rc.REMOTE_CONTROL_TIMEOUT_S)
+        except Exception as exc:
+            if _is_control_error_reply(exc):
+                raise self._remote_control_refused(rc.RemoteControlError(
+                    rc.REMOTE_CONTROL_REFUSED, str(exc))) from exc
+            code = (rc.REMOTE_CONTROL_NOT_LIVE if isinstance(exc, CLIConnectionError)
+                    else rc.REMOTE_CONTROL_FAILED)
+            raise self._remote_control_refused(rc.RemoteControlError(
+                code, f"no reply to remote_control: {exc}")) from exc
+        log.info("driver.remote_control session=%s enabled=%s", self.session_id,
+                 bool(enabled))
+        return resp if isinstance(resp, dict) else {}
+
+    def _remote_control_refused(self, err: Exception) -> Exception:
+        """Log an expected Remote Control refusal (INFO: a WARNING would auto-file an
+        issue)."""
+        log.info("driver.remote_control refused session=%s error_data=%s message=%s",
+                 self.session_id, getattr(err, "error_data", None), err)
+        return err
+
     async def reload_plugins(self, *, hold_on_cache_impact: bool = True) -> dict:
         """Ask the running CLI to reload its plugins (D-16c) and return the reduced
         ``plugin_reload.outcome`` dict. Refusals raise ``ReloadError`` logged at INFO.

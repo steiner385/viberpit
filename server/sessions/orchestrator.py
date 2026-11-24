@@ -77,7 +77,7 @@ from viberpit.paths import account_cfg_dir, shared_base
 from viberpit.quota import QuotaSnapshot
 from viberpit.selector import at_ceiling, exhausted, usage_known
 from server.aio import (
-    bounded_wait, caused_by_cancellation, current_task_cancelling,
+    bounded_wait, cancel_and_reap, caused_by_cancellation, current_task_cancelling,
     ended_by_wrapped_cancellation, iter_exception_chain, run_to_completion,
 )
 from server.assistant.context import PromptContext
@@ -103,6 +103,7 @@ from server.sessions import deploy_snapshot as _deploy_snapshot
 from server.sessions.archive_move import mountpoint, restore_from_archive
 from server.sessions import attachments as _attachments
 from server.sessions import read_state as _read_state
+from server.sessions import remote_control as _remote_control
 from server.sessions import dispatch
 from server.sessions import events as ev
 from server.sessions import host_heartbeat
@@ -2196,6 +2197,8 @@ class SessionOrchestrator:
         # call time — so a late fire writes into whatever DB is *currently* installed,
         # i.e. the NEXT test's, corrupting it (the CI-only batch-test flake).
         self._bg_tasks: set[asyncio.Task] = set()
+        # Remote Control: the spawn-time enable in flight per session (a toggle reaps it).
+        self._remote_control_tasks: dict[str, asyncio.Task] = {}
         # Background tasks
         self._rotation_task: asyncio.Task | None = None
         self._titling_task: asyncio.Task | None = None
@@ -6668,6 +6671,7 @@ class SessionOrchestrator:
             log_event(log, logging.INFO, "session.start",
                       session_id=session_id, **{"from": None, "to": "idle", "reason": "create"})
             log.info("session.create id=%s account=%s", session_id, account)
+            self._schedule_remote_control(session_id)
             # Kick off turn one now — after the DB row + record exist, so status and
             # engine-session-id callbacks land on a persisted row. No attach required.
             if not defer_for_bridge and (initial_prompt or attachment_ids):
@@ -9391,6 +9395,201 @@ class SessionOrchestrator:
             return
         if driver is not None:
             await self._assert_fast_mode(driver, bool(rec.fast_mode))
+
+    # ------------------------------------------------------------------
+    # Remote Control (server/sessions/remote_control.py)
+    # ------------------------------------------------------------------
+
+    def remote_control_available(self, session_id: str) -> bool:
+        """Can this session use Remote Control at all? THE gate: Claude engine, not a
+        Copilot account, not the Assistant drawer, kill switch on. Also stamped on the
+        record (``remote_control_available``) so the edge can serve it."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            return False
+        return _remote_control.eligible(
+            engine=rec.engine, kind=getattr(rec, "kind", None),
+            provider=_provider_of(rec.account) if rec.account else None)
+
+    def _stamp_remote_control_available(self, session_id: str) -> bool:
+        rec = self._records.get(session_id)
+        if rec is None:
+            return False
+        rec.remote_control_available = self.remote_control_available(session_id)
+        return rec.remote_control_available
+
+    def _remote_control_driver(self, session_id: str) -> Any:
+        """This session's live driver when it speaks the Remote Control request, else
+        None (Codex has no such channel)."""
+        driver = self._drivers.get(session_id)
+        return driver if hasattr(driver, "set_remote_control") else None
+
+    async def _persist_remote_control(self, session_id: str, **values: Any) -> None:
+        """Write the ``remote_control`` / ``remote_control_url`` columns given and mirror
+        them onto the live record."""
+        rec = self._records.get(session_id)
+        if rec is not None:
+            for key, value in values.items():
+                setattr(rec, key, value)
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(**values))
+
+    async def set_remote_control(self, session_id: str, enabled: bool, *,
+                                 identity: str = SYSTEM_IDENTITY) -> dict:
+        """Set the session's Remote Control override and apply it live. Returns
+        ``{enabled, url}``.
+
+        Turning it on needs ``remote_control_available`` — else ``RemoteControlError
+        REMOTE_CONTROL_UNAVAILABLE``. Turning it off is always allowed. The override is
+        persisted first, so whatever the CLI does the next spawn follows it. A session
+        with no live CLI just persists (and, turned off, drops its URL). A live request
+        the CLI refused or never answered re-raises its code; an enable that failed
+        leaves no URL behind."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            raise KeyError(session_id)
+        enabled = bool(enabled)
+        if enabled and not self._stamp_remote_control_available(session_id):
+            err = _remote_control.RemoteControlError(
+                _remote_control.REMOTE_CONTROL_UNAVAILABLE,
+                "Remote Control is not available for this session")
+            log.info("session.remote_control refused id=%s error_data=%s",
+                     session_id, err.error_data)
+            raise err
+        # A spawn-time enable still in flight would race this choice.
+        pending = self._remote_control_task_map().pop(session_id, None)
+        if pending is not None:
+            await cancel_and_reap(pending, phase="remote_control.spawn_enable")
+        await self._persist_remote_control(session_id, remote_control=enabled)
+        driver = self._remote_control_driver(session_id)
+        url: str | None = None
+        live = False
+        if driver is not None:
+            try:
+                reply = await driver.set_remote_control(enabled)
+                live = True
+                url = _remote_control.session_url(reply) if enabled else None
+            except _remote_control.RemoteControlError as exc:
+                if exc.code != _remote_control.REMOTE_CONTROL_NOT_LIVE:
+                    if enabled:
+                        await self._persist_remote_control(session_id,
+                                                           remote_control_url=None)
+                    raise
+                # No live client: the persisted override applies at the next spawn.
+        if live or not enabled:
+            await self._persist_remote_control(session_id, remote_control_url=url)
+        log.info("session.remote_control id=%s enabled=%s by=%s live=%s", session_id,
+                 enabled, identity, live)
+        return {"enabled": enabled, "url": rec.remote_control_url}
+
+    async def apply_remote_control_default(self, enabled: bool) -> dict:
+        """The app default changed: make every live session on THIS host that FOLLOWS it
+        (``remote_control`` is None) match, without writing an override. Off is a
+        revocation — each follower's CLI is told ``enabled: false`` (sent even with the
+        kill switch off) and its URL cleared; on opens bridges for eligible followers,
+        best-effort. An in-flight spawn-time enable is reaped first so it cannot reopen
+        a bridge after the teardown. Per-session failures are logged at INFO and counted,
+        never raised. Returns ``{sessions, failed}``."""
+        enabled = bool(enabled)
+        targets: list[tuple[str, Any]] = []
+        for session_id, driver in list(self._drivers.items()):
+            rec = self._records.get(session_id)
+            if (rec is None or rec.remote_control is not None
+                    or not hasattr(driver, "set_remote_control")):
+                continue
+            if enabled and not self._stamp_remote_control_available(session_id):
+                continue
+            targets.append((session_id, driver))
+
+        async def _one(session_id: str, driver: Any) -> bool | None:
+            pending = self._remote_control_task_map().pop(session_id, None)
+            if pending is not None:
+                await cancel_and_reap(pending, phase="remote_control.default_change")
+            try:
+                reply = await driver.set_remote_control(enabled)
+            except Exception as exc:
+                if getattr(exc, "code", None) == _remote_control.REMOTE_CONTROL_NOT_LIVE:
+                    # No live CLI, so no bridge: nothing to revoke, the URL is stale.
+                    if not enabled:
+                        await self._persist_remote_control(session_id,
+                                                           remote_control_url=None)
+                    return None
+                log_event(log, logging.INFO, "session.remote_control_default_failed",
+                          session_id=session_id, enabled=enabled,
+                          code=getattr(exc, "code", None), error=str(exc))
+                return False
+            url = _remote_control.session_url(reply) if enabled else None
+            await self._persist_remote_control(session_id, remote_control_url=url)
+            return True
+
+        results = await asyncio.gather(*(_one(sid, d) for sid, d in targets))
+        out = {"sessions": sum(1 for r in results if r is True),
+               "failed": sum(1 for r in results if r is False)}
+        log.info("session.remote_control_default enabled=%s sessions=%s failed=%s",
+                 enabled, out["sessions"], out["failed"])
+        return out
+
+    def _remote_control_task_map(self) -> dict[str, asyncio.Task]:
+        # Lazy: some tests build the orchestrator with ``__new__`` (as for _bg_tasks).
+        tasks = getattr(self, "_remote_control_tasks", None)
+        if tasks is None:
+            tasks = self._remote_control_tasks = {}
+        return tasks
+
+    def _schedule_remote_control(self, session_id: str) -> None:
+        """After a Claude spawn / resume / rotation installed a fresh driver: turn Remote
+        Control on when it is effectively on for this session. Each CLI start opens no
+        bridge of its own (``remoteControlAtStartup`` is REPL-only), so every install
+        site calls this. Non-blocking and best-effort: a tracked background task whose
+        failure is logged and never fails the spawn or a turn."""
+        driver = self._remote_control_driver(session_id)
+        if driver is None:
+            return
+        if not self._stamp_remote_control_available(session_id):
+            rec = self._records.get(session_id)
+            if rec is not None and rec.remote_control_url is not None:
+                # e.g. rotated onto a Copilot account: the old bridge died with its CLI.
+                self._spawn(self._persist_remote_control(session_id,
+                                                         remote_control_url=None),
+                            name=f"remote-control-clear-{session_id}")
+            return
+        tasks = self._remote_control_task_map()
+        previous = tasks.get(session_id)
+        if previous is not None and not previous.done():
+            previous.cancel()   # superseded by this driver; it reaps itself via _bg_tasks
+        task = self._spawn(self._apply_remote_control_at_spawn(session_id, driver),
+                           name=f"remote-control-{session_id}")
+        tasks[session_id] = task
+
+        def _forget(t: asyncio.Task, sid: str = session_id) -> None:
+            if tasks.get(sid) is t:
+                del tasks[sid]
+        task.add_done_callback(_forget)
+
+    async def _apply_remote_control_at_spawn(self, session_id: str, driver: Any) -> None:
+        rec = self._records.get(session_id)
+        if rec is None:
+            return
+        default = await _remote_control.read_default()
+        if not _remote_control.effective(rec.remote_control, default):
+            if rec.remote_control_url is not None:
+                # Off: a URL from an earlier CLI points at a bridge that is gone.
+                await self._persist_remote_control(session_id, remote_control_url=None)
+            return
+        try:
+            reply = await driver.set_remote_control(True)
+        except Exception as exc:
+            log_event(log, logging.INFO, "session.remote_control_failed",
+                      session_id=session_id, code=getattr(exc, "code", None),
+                      error=str(exc))
+            return
+        if self._drivers.get(session_id) is not driver:
+            return   # replaced meanwhile: the new driver's own enable owns the URL
+        url = _remote_control.session_url(reply)
+        await self._persist_remote_control(session_id, remote_control_url=url)
+        log.info("session.remote_control_on id=%s url=%s", session_id, url)
 
     async def _persist_mcp_status(self, session_id: str, states: list) -> None:
         """Driver ``on_mcp_status`` callback: record the latest per-server status for this
@@ -21014,6 +21213,8 @@ class SessionOrchestrator:
             sandbox=getattr(row, "sandbox", None),
             sandbox_state=getattr(row, "sandbox_state", None),
             sandbox_reason=getattr(row, "sandbox_reason", None),
+            remote_control=getattr(row, "remote_control", None),
+            remote_control_url=getattr(row, "remote_control_url", None),
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
             pr_resolution_note=getattr(row, "pr_resolution_note", None),
@@ -21126,6 +21327,7 @@ class SessionOrchestrator:
                 row, status=status, branch=branch,
                 interrupted_by_restart=was_interrupted,
                 interrupted_from_status=(row.status if was_interrupted else None))
+            self._stamp_remote_control_available(row.id)
             added += 1
             log_event(log, logging.INFO, "session.reattach",
                       session_id=row.id,
@@ -25430,6 +25632,7 @@ class SessionOrchestrator:
         # detach → attach lost it to the account default). Placed after the
         # final driver assignment so the fresh-start fallback gets it too.
         await self._reapply_model(driver, rec, site="session.resume")
+        self._schedule_remote_control(session_id)
         # INVARIANT: a session holding a live driver is not capacity-exempt.
         # `complete` is exempt (see CAPACITY_EXEMPT_STATUSES) precisely because
         # its process was released; resuming it makes that false again. Without
@@ -25795,6 +25998,7 @@ class SessionOrchestrator:
         self._records[session_id] = rec
         log.info("session.adopt id=%s sid=%s resumed=%s killed=%s",
                  session_id, claude_session_id, resumed, terminated_pid)
+        self._schedule_remote_control(session_id)
         return rec, {"resumed": resumed, "terminatedPid": terminated_pid}
 
     def _rule_facts(self, session_id: str) -> tuple[str | None, str | None] | None:
@@ -29712,6 +29916,7 @@ class SessionOrchestrator:
                 _lap("start")
                 self._install_driver(record.id, new_driver)
             await self._reapply_model(new_driver, record, site="reassign")
+            self._schedule_remote_control(record.id)
             # A parked session (needs_attention / limited) has no turn in flight, so
             # nothing will move its status once the swap succeeds — a replayed prompt
             # flips it to in_progress, but a session with no prompt to replay (the

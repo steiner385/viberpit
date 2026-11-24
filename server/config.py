@@ -501,6 +501,12 @@ try:
         # helper; proxy sockets under home), which the preflight now reports.
         # see #3367
         sandbox_enabled: bool = Field(default=False, alias="VIBERPIT_SANDBOX_ENABLED")
+        # Remote Control kill switch: off = no session is ever bridged to the Claude
+        # web / desktop / mobile apps, the settings capability reads false and the UI
+        # hides the controls. Gates the internal CLI control request ``remote_control``
+        # (an undocumented vendor surface), per constitution I.
+        remote_control_enabled: bool = Field(default=True,
+                                             alias="VIBERPIT_REMOTE_CONTROL_ENABLED")
         # Parent of every sandboxed session's private temp root (#3367, plan §2.2):
         # ``<parent>/<sha256(session_id)[:12]>/{t,s}``. Outside home, so the proxy
         # sockets in ``s/`` survive the home read-deny; on disk, not the /tmp tmpfs; and
@@ -897,6 +903,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         sandbox_enabled: bool = dataclasses.field(  # default OFF (shipped dark); see #3367
             default_factory=lambda: os.environ.get("VIBERPIT_SANDBOX_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+        )
+        remote_control_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_REMOTE_CONTROL_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         sandbox_tmp_parent: str = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_SANDBOX_TMP_PARENT") or "/var/tmp/vpsbx"

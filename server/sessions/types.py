@@ -257,6 +257,14 @@ class SessionRecord:
     sandbox: bool | None = None
     sandbox_state: str | None = None
     sandbox_reason: str | None = None
+    # Remote Control (``server/sessions/remote_control.py``): the session's override
+    # (persisted; None = follow ``AppSettings.remote_control_default``), the claude.ai URL
+    # the last enable returned (persisted; cleared on disable), and whether this session
+    # can use it at all — engine, account provider, kind and kill switch, decided on the
+    # daemon that owns it (it knows the account's provider). All ride to_dict.
+    remote_control: bool | None = None
+    remote_control_url: str | None = None
+    remote_control_available: bool = False
     # The CLI's last ``initialize`` model rows (``flag_settings.model_options``), so a
     # detached session can still check an effort against its model's levels. Daemon-
     # local ONLY — not in to_dict, never a column: ``set_model_for_session`` runs on the
@@ -421,6 +429,9 @@ class SessionRecord:
             "sandbox": self.sandbox,
             "sandboxState": self.sandbox_state,
             "sandboxReason": self.sandbox_reason,
+            "remoteControlOverride": self.remote_control,
+            "remoteControlUrl": self.remote_control_url,
+            "remoteControlAvailable": self.remote_control_available,
             "supportedEffortLevels": self.effort_levels_now(),
             # Carried over RPC so a fleet mirror of an assistant session is still
             # recognised by is_assistant() on the edge (list filtering, sweeps).
@@ -506,6 +517,9 @@ class SessionRecord:
             sandbox=d.get("sandbox"),
             sandbox_state=d.get("sandboxState"),
             sandbox_reason=d.get("sandboxReason"),
+            remote_control=d.get("remoteControlOverride"),
+            remote_control_url=d.get("remoteControlUrl"),
+            remote_control_available=bool(d.get("remoteControlAvailable", False)),
             supported_effort_levels=d.get("supportedEffortLevels"),
             kind=d.get("kind"),
             owner_identity=d.get("ownerIdentity"),

@@ -61,7 +61,8 @@ from server.sessions import worktree_files
 from server.sessions import flag_settings
 from server.sessions import memory_files
 from server.sessions import dev_servers as dev_server_routes
-from server.sessions.session_actions import ActionError
+from server.sessions.session_actions import (SESSION_CONTROL_HUMAN_ONLY_CODE, ActionError,
+                                             require_human)
 from server.ipc.client import DaemonError, DaemonTimeout, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
 from server.sessions.commands.catalog import (APP_COMMAND, APP_COMMAND_REFUSED,
@@ -70,6 +71,7 @@ from server.sessions.commands.catalog import (APP_COMMAND, APP_COMMAND_REFUSED,
 from server.sessions.engine import (
     EFFORT_UNCHANGED, AgentEngine, AgentEngineUnavailable, declared_capabilities,
     parse_agent_engine)
+from server.sessions import remote_control as remote_control_mod
 from server.sessions import sandbox as sandbox_mod
 from server.sessions.model_policy import quota_model
 from server.sessions.permissions import resolve_permission_mode
@@ -369,6 +371,11 @@ def _record_to_dict(
         # columns ride SessionRecord.to_dict; this is the browser's derived view.
         "sandbox": sandbox_mod.session_view(
             record, declared_capabilities(getattr(record, "engine", AgentEngine.CLAUDE_CODE))),
+        # Remote Control: whether the session also shows in the Claude apps (effective:
+        # its override, else the app default — off whenever it is unavailable), the
+        # override itself (null = follows the default), the claude.ai URL of the last
+        # enable, and whether this session can use it at all (decided on its daemon).
+        **_remote_control_view(record),
         # The effort levels the current model accepts (CLI `supportedEffortLevels`): the
         # picker offers exactly these; [] hides it, null = not reported yet.
         "supportedEffortLevels": (record.effort_levels_now()
@@ -839,6 +846,19 @@ async def _unread_ids_or_none(identity: str, route: str) -> set[str]:
         return set()
 
 
+def _remote_control_view(record: Any) -> dict[str, Any]:
+    available = (remote_control_mod.remote_control_enabled()
+                 and bool(getattr(record, "remote_control_available", False)))
+    override = getattr(record, "remote_control", None)
+    return {
+        "remoteControl": available and remote_control_mod.effective(
+            override, remote_control_mod.cached_default()),
+        "remoteControlOverride": override,
+        "remoteControlUrl": getattr(record, "remote_control_url", None),
+        "remoteControlAvailable": available,
+    }
+
+
 @router.get("")
 async def list_sessions(
     request: Request,
@@ -854,6 +874,7 @@ async def list_sessions(
     (in-process, remote, fleet) and for test doubles.
     """
     orch = _get_orchestrator(request)
+    await remote_control_mod.refresh_default()   # the sync serializer reads the cache
     want_assistant = request.query_params.get("kind") == ASSISTANT_KIND
     records = await orch.list_sessions(**({"include_assistant": True} if want_assistant else {}))
     if want_assistant:
@@ -1562,6 +1583,7 @@ async def get_session(
     read that 404 as "the session vanished".
     """
     orch = _get_orchestrator(request)
+    await remote_control_mod.refresh_default()   # the sync serializer reads the cache
     record = await orch.get_session(session_id)
     if record is None:
         stored = await _stored_session_dict(session_id)
@@ -3007,6 +3029,51 @@ async def set_session_fast_mode(
     except DaemonError as exc:
         _raise_daemon_outdated_or_reraise(exc, "toggle fast mode")
     await record_audit(db=db, type="session.fast_mode", identity=identity,
+                       detail={"session_id": session_id, "enabled": body.enabled})
+    return result
+
+
+class RemoteControlRequest(BaseModel):
+    enabled: bool
+
+
+@router.post("/{session_id}/remote-control")
+async def set_session_remote_control(
+    session_id: str,
+    body: RemoteControlRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> Any:
+    """Set the session's Remote Control override (show it in the Claude web / desktop /
+    mobile apps), applied live on the daemon that owns it and persisted for every later
+    spawn. 200 ``{enabled, url}`` — ``url`` is the claude.ai session link once a live CLI
+    opened the bridge, else null. Unknown session 404; 409 ``REMOTE_CONTROL_UNAVAILABLE``
+    (kill switch, engine, Copilot account or Assistant session), another
+    ``REMOTE_CONTROL_CODES`` code when the CLI refused or never answered, or
+    ``daemon_outdated`` from an old daemon. Audited ``session.remote_control``.
+
+    Enabling is person-only (403 ``SESSION_CONTROL_HUMAN_ONLY``): it opens a way to drive
+    the session from the Claude apps that bypasses ViberPit's own auth, so an agent may
+    not open it. Disabling is open to any caller — closing the exposure is always safe."""
+    if body.enabled:
+        try:
+            require_human(identity, human_gate_via(request),
+                          action="show a session in the Claude apps (Remote Control)",
+                          code=SESSION_CONTROL_HUMAN_ONLY_CODE, trust_local_host=False)
+        except ActionError as exc:
+            return _action_error_response(exc)
+    try:
+        result = await _get_orchestrator(request).set_remote_control(
+            session_id, body.enabled, identity=identity)
+    except remote_control_mod.RemoteControlError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail={"code": exc.code, "message": str(exc)}) from exc
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "toggle Remote Control")
+    await record_audit(db=db, type="session.remote_control", identity=identity,
                        detail={"session_id": session_id, "enabled": body.enabled})
     return result
 

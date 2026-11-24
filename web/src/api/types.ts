@@ -432,6 +432,18 @@ export interface Session {
    *  held (`needs_attention`, `pausedReason: "sandbox_failed"`). Absent from an older
    *  server: treated as off. */
   sandbox?: SessionSandbox | null
+  /** Remote Control: whether this session also shows in the Claude apps (claude.ai web,
+   *  desktop, mobile) — the EFFECTIVE value, the override else the Settings default. */
+  remoteControl?: boolean
+  /** The session's own choice; null = following the Settings default
+   *  (`remoteControlDefault`). `POST /sessions/{id}/remote-control {enabled}` sets it. */
+  remoteControlOverride?: boolean | null
+  /** The Claude-app link the last enable answered; null while off or not yet connected. */
+  remoteControlUrl?: string | null
+  /** Whether Remote Control applies at all: Claude engine, a claude.ai account (not
+   *  Copilot), not the assistant drawer, and the server's kill switch on. The rail's
+   *  controls show only when true; absent (an older server) reads as false. */
+  remoteControlAvailable?: boolean
   /** Fast mode (D-14): the session's stored choice. Off unless set. */
   fastMode?: boolean
   /** Whether fast mode can be on right now — the CLI listed the session's current
@@ -1402,6 +1414,13 @@ export interface SandboxFacts {
   preflight: { ok: boolean; reason: string | null; checks: SandboxCheck[]; cliVersion: string | null } | null
   canToggle: boolean
   allowedDomains: string[]
+}
+
+/** `POST /sessions/{id}/remote-control {enabled}`: applied live, no respawn. `url` is the
+ *  Claude-app link while on (null when off, or when the bridge did not answer one). */
+export interface RemoteControlResult {
+  enabled: boolean
+  url: string | null
 }
 
 /** `POST /sessions/{id}/sandbox`: both directions respawn. A respawn whose sandbox failed

@@ -26,7 +26,8 @@ from server.sessions.orchestrator import (DRIVER_RELEASE_WAIT_S, DRIVER_SWAP_TIM
 from server.sessions.rewind import REWIND_CODES, REWIND_CONTROL_TIMEOUT_S, RewindError
 from server.sessions.flag_settings import SETTINGS_CODES, SettingsError
 from server.sessions import worktree_files
-from server.sessions import dev_servers, memory_files, sandbox, worktree_controls
+from server.sessions import (dev_servers, memory_files, remote_control, sandbox,
+                             worktree_controls)
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
@@ -80,6 +81,10 @@ WORKTREE_CONTROL_RPC_TIMEOUT = DRIVER_SWAP_TIMEOUT_S + DRIVER_RELEASE_WAIT_S + 8
 # plus a margin. The toggle runs to completion on the daemon either way.
 SANDBOX_FACTS_RPC_TIMEOUT = 4 * sandbox.PROBE_TIMEOUT_S + 15.0
 SANDBOX_TOGGLE_RPC_TIMEOUT = 2 * DRIVER_SWAP_TIMEOUT_S + 4 * sandbox.PROBE_TIMEOUT_S + 30.0
+
+# Remote Control: the CLI registers a claude.ai environment before it answers (bounded
+# on the daemon at remote_control.REMOTE_CONTROL_TIMEOUT_S), plus a margin.
+REMOTE_CONTROL_RPC_TIMEOUT = remote_control.REMOTE_CONTROL_TIMEOUT_S + 15.0
 
 # PR mutations on the owning daemon (D-15): ``merge_pr`` = a 15s live label read + a 60s
 # ``gh pr merge``; ``ready_merge`` = that read + two 60s ``gh`` calls. Over the 30s client
@@ -149,6 +154,18 @@ def _settings_error(exc: DaemonError) -> Exception:
     code = (exc.data or {}).get("code")
     if exc.err_type == "SettingsError" and code in SETTINGS_CODES:
         return SettingsError(code, exc.message)
+    return exc
+
+
+def _remote_control_error(exc: DaemonError) -> Exception:
+    """The exception a Remote Control RPC's error envelope stands for: KeyError for an
+    unknown session, RemoteControlError for a known code, else the DaemonError itself
+    (an old daemon's UnknownMethod included — the route maps it to ``daemon_outdated``)."""
+    if exc.err_type == "KeyError":
+        return KeyError(exc.message)
+    code = (exc.data or {}).get("code")
+    if exc.err_type == "RemoteControlError" and code in remote_control.REMOTE_CONTROL_CODES:
+        return remote_control.RemoteControlError(code, exc.message)
     return exc
 
 
@@ -1453,6 +1470,24 @@ class RemoteOrchestrator:
                                            enabled=enabled, identity=identity)
         except DaemonError as exc:
             raise _settings_error(exc) from exc
+
+    async def set_remote_control(self, session_id, enabled: bool, *,
+                                 identity: str = SYSTEM_IDENTITY) -> dict:
+        """Proxy set_remote_control to the daemon that owns the session. An unknown
+        session is re-raised as KeyError and a refusal as RemoteControlError with the
+        envelope's code — only known codes; anything else stays a DaemonError."""
+        try:
+            return await self._client.call("set_remote_control", session_id=session_id,
+                                           enabled=enabled, identity=identity,
+                                           timeout=REMOTE_CONTROL_RPC_TIMEOUT)
+        except DaemonError as exc:
+            raise _remote_control_error(exc) from exc
+
+    async def apply_remote_control_default(self, enabled: bool) -> dict:
+        """Proxy apply_remote_control_default to this daemon: ``{sessions, failed}``.
+        Each session's request is bounded on the daemon; they run concurrently."""
+        return await self._client.call("apply_remote_control_default", enabled=enabled,
+                                       timeout=REMOTE_CONTROL_RPC_TIMEOUT)
 
     async def set_output_style(self, session_id, style: str | None, *,
                                identity: str = SYSTEM_IDENTITY) -> dict:

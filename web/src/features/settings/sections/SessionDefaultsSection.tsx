@@ -17,6 +17,7 @@ import { PathControl } from '../chassis/PathControl'
 import { branchPrefixReason, useSettingsForm } from '../useSettingsForm'
 import { SANDBOX_DEFAULT_COPY, sandboxError } from '@/features/sessions/sandboxCopy'
 import { apiErrorCode } from '@/api/client'
+import { REMOTE_CONTROL_DEFAULT_COPY } from '@/features/sessions/remoteControlCopy'
 
 /** '' is the draft's "server default" — the payload turns it back into null. */
 type ApprovalAction = '' | 'require_approval' | 'block' | 'allow'
@@ -34,6 +35,8 @@ interface DefaultsDraft {
   branchPrefix: string
   /** Sandbox new sessions (D-23); the server's null reads as false. */
   sandboxDefault: boolean
+  /** Remote Control for sessions following the default; the server's null reads as true. */
+  remoteControlDefault: boolean
 }
 
 /** D-14 copy: one root for clones AND worktrees, and what a change does not do. */
@@ -73,6 +76,7 @@ function toDraft(s: AppSettings): DefaultsDraft {
     repoRoot: s.repoRoot ?? '',
     branchPrefix: s.branchPrefix ?? '',
     sandboxDefault: s.sandboxDefault === true,
+    remoteControlDefault: s.remoteControlDefault !== false,
   }
 }
 
@@ -99,6 +103,9 @@ function toPayload(d: DefaultsDraft, saved: DefaultsDraft): Partial<AppSettings>
     // Sent ONLY when it changed (D-23): changing it needs a person, so an unrelated
     // save must never carry it — nor reach a server whose kill switch hides it.
     ...(d.sandboxDefault !== saved.sandboxDefault ? { sandboxDefault: d.sandboxDefault } : {}),
+    // Sent ONLY when it changed, for the same reason: an unrelated save must never reach a
+    // server whose kill switch hides it.
+    ...(d.remoteControlDefault !== saved.remoteControlDefault ? { remoteControlDefault: d.remoteControlDefault } : {}),
   }
 }
 
@@ -228,6 +235,17 @@ export function SessionDefaultsSection() {
               label="Sandbox new sessions"
               checked={draft.sandboxDefault}
               onChange={(v) => set('sandboxDefault', v)}
+            />
+          </SettingRow>
+        )}
+        {/* Only where the server's Remote Control kill switch is on. */}
+        {settings.remoteControlCapability === true && (
+          <SettingRow label="Claude apps" htmlFor="defaults-remote-control" description={REMOTE_CONTROL_DEFAULT_COPY} selfLabelled>
+            <Checkbox
+              id="defaults-remote-control"
+              label="Show sessions in the Claude apps (Remote Control)"
+              checked={draft.remoteControlDefault}
+              onChange={(v) => set('remoteControlDefault', v)}
             />
           </SettingRow>
         )}

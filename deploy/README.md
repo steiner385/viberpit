@@ -720,6 +720,30 @@ toolchains, non-Bash tools confined, and edits serialised against running Bash. 
   - User-level MCP servers still start, but their tools are denied.
   - Automations a sandboxed session triggers through GitHub follow "Sandbox new sessions".
 
+## Remote Control: sessions in the Claude apps (on by default)
+
+Every Claude coding session also opens a Claude Code **Remote Control** bridge, so it shows up
+in the Claude web, desktop and mobile apps (claude.ai/code) of the account running it. The
+rail's "Open in Claude app" link goes to it. The **daemon** sends the CLI's SDK control
+request `{"subtype": "remote_control", "enabled": true}` after every spawn, resume, adopt
+and rotation. The CLI's `remoteControlAtStartup` setting is read only by the interactive
+REPL, so it does nothing here.
+
+- **Kill switch:** `VIBERPIT_REMOTE_CONTROL_ENABLED=false` (edge **and** daemons) stops
+  every request and hides the controls. Default `true`.
+- **Default:** Settings → Session defaults → "Show sessions in the Claude apps". A stored
+  NULL reads as on. Each session can override it from the rail.
+- **Who can turn it on:** only a person in the UI (403 `SESSION_CONTROL_HUMAN_ONLY`), for
+  both the per-session switch and the default. Anyone can turn it off.
+- **Not eligible:** Codex sessions, Copilot accounts (no claude.ai login) and the
+  Assistant drawer.
+- **Security:** anyone signed in to that claude.ai account can drive the session and its
+  tools from the Claude apps, outside ViberPit's Tailscale-identity auth.
+- **Accounts:** a session appears under the account that runs it. A rotation respawns it
+  on the new account with a new bridge and link.
+- **Failures:** a failed enable logs `session.remote_control_failed` and never fails the
+  spawn.
+
 ## Deploy controller (`viberpit-deploy-controller.service`)
 
 Long-lived service that polls `origin/master` (notify-only) and runs user-triggered deploys.
