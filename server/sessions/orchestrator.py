@@ -18897,13 +18897,24 @@ class SessionOrchestrator:
             if key not in seen:
                 seen.add(key)
                 why = {"not_mirrored": "not mirrored yet", "untrusted_author": "author not trusted"}
+                gap = (await self._pr_doctor_trust_gap(repo)
+                       if "untrusted_author" in refused.values() else None)
                 await self._pr_doctor_ctx.emit(
                     "warn", f"not fixing {target}: "
-                            + ", ".join(f"{repo}#{n} {why[r]}" for n, r in refused.items()),
+                            + ", ".join(f"{repo}#{n} {why[r]}" for n, r in refused.items())
+                            + (f" ({gap})" if gap else ""),
                     kind="untrusted_author", target=target,
                     detail={"reason_codes": ["untrusted_author"], "prs": bad,
-                            "not_mirrored": [n for n in bad if n in unmirrored]})
+                            "not_mirrored": [n for n in bad if n in unmirrored],
+                            "trust_gap": gap})
         return refused
+
+    async def _pr_doctor_trust_gap(self, repo: str) -> str:
+        """``dispatch_trust.trust_gap`` for *repo*: which product's trust list refused
+        the author and where to edit it (#3449)."""
+        from server.pm.dispatch_trust import trust_gap
+        async with db_session() as db:
+            return await trust_gap(db, repo)
 
     @staticmethod
     def _pr_doctor_refusal_status(refused: dict[int, str]) -> str:
@@ -18921,7 +18932,10 @@ class SessionOrchestrator:
         # re-judges (the mirror may simply not have synced a fresh PR yet).
         if refused := await self._pr_doctor_untrusted_prs(repo, [info.number], target=target,
                                                           head=info.head_sha):
-            return self._pr_doctor_refusal_status(refused), None, None
+            status = self._pr_doctor_refusal_status(refused)
+            # The job toast names the product whose trust list refused it (#3449).
+            return status, None, (await self._pr_doctor_trust_gap(repo)
+                                  if status == "untrusted_author" else None)
         try:
             expected = await self._pr_doctor_claim(repo, [info.number], target,
                                                   source="manual" if on_phase else "automatic",

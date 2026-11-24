@@ -22,8 +22,10 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.automations.product_policy import (
     PRODUCT_POLICY_SCHEMA, PolicyEditConflict, PolicyExpectationMismatch, effective_policy,
-    load_policies, patch_project_policy, policy_changes, rank_kwargs)
+    fleet_default_trusted_authors, load_policies, merge_policy_patch, patch_project_policy,
+    policy_changes, rank_kwargs)
 from server.time_iso import iso_utc
+from server.db.clock import naive_utc_now
 from server.automations.product_admission import (
     ProductMissing, gather_implementation_snapshot, gather_product_coverage,
 )
@@ -241,11 +243,19 @@ async def create_project(
         raise HTTPException(status_code=409, detail={
             "error": "ownership_conflict", "ownershipState": exc.state, "message": str(exc),
         }) from exc
+    # A new product starts trusting the authors every configured product trusts, so
+    # its PRs and issues are not refused wholesale by the trust gates (#3449).
+    # Everything else stays unset: dispatch is off until a person turns it on.
+    trusted = await fleet_default_trusted_authors(db)
     project = Project(
         slug=slug,
         name=body.name,
         description=body.description,
         portfolio_tags=body.portfolioTags,
+        automation_policy=(merge_policy_patch(None, {"trusted_authors": trusted})
+                           if trusted else None),
+        automation_policy_updated_at=(naive_utc_now().replace(tzinfo=timezone.utc)
+                                      if trusted else None),
     )
     db.add(project)
     await db.flush()
@@ -272,7 +282,7 @@ async def create_project(
         select(ProjectRepo).where(ProjectRepo.project_id == project.id)
     )).scalars().all()
     await record_audit(db=db, type="pm.project.create", identity=identity,
-                       detail={"slug": slug, "name": body.name})
+                       detail={"slug": slug, "name": body.name, "trustedAuthors": trusted})
     d = _project_to_dict(project)
     d["repos"] = [_repo_to_dict(r) for r in repos_created]
     d["edges"] = []

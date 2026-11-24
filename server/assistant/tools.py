@@ -571,15 +571,35 @@ def _card_value(v: Any) -> str:
     return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
 
 
+def _trust_key(entry: Any) -> str:
+    # `alice` and its bound form `alice#123` are one author (the endpoint binds on save).
+    return str(entry).strip().lower().partition("#")[0]
+
+
+def _trust_delta(old: Any, new: Any) -> str:
+    """` (adds a, b; removes c)` between two trusted_authors lists: each added entry is
+    a trust GRANT, so it leads the card row rather than risk being cut off the end."""
+    if not isinstance(new, list):
+        return ""
+    old = old if isinstance(old, list) else []
+    had, has = {_trust_key(e) for e in old}, {_trust_key(e) for e in new}
+    parts = [f"{verb} {', '.join(str(e) for e in es)}" for verb, es in (
+        ("adds", [e for e in new if _trust_key(e) not in had]),
+        ("removes", [e for e in old if _trust_key(e) not in has])) if es]
+    return f" ({'; '.join(parts)})" if parts else ""
+
+
 def _policy_diff_items(tool_input: dict[str, Any]) -> list[str]:
     """`"field: before → after"` per field update_product_policy changes. `before` is
     what the endpoint checks the live policy against, so the row a person confirms is
-    the value actually being replaced, not just what the model believes it is."""
+    the value actually being replaced, not just what the model believes it is.
+    `trusted_authors` names the authors it adds and removes first (#3449)."""
     changes, before = tool_input.get("changes"), tool_input.get("before")
     if not isinstance(changes, dict):
         return []
     before = before if isinstance(before, dict) else {}
-    return [(f"{k}: {_card_value(before[k]) if k in before else '(not given)'} → "
+    return [(f"{k}{_trust_delta(before.get(k), v) if k == 'trusted_authors' else ''}: "
+             f"{_card_value(before[k]) if k in before else '(not given)'} → "
              f"{_card_value(v)}")[:_CARD_ITEM_MAX]
             for k, v in list(changes.items())[:_BATCH_MAX]]
 
@@ -1040,10 +1060,11 @@ def _chunk_lines(text: str, limit: int = _MAX_STR - 100) -> list[str]:
 # The product-policy knobs update_product_policy may turn — a deliberate subset of
 # PRODUCT_POLICY_SCHEMA (server/automations/product_policy.py), which owns their types
 # and choices; test_update_product_policy_fields_are_real_policy_schema_keys pins that
-# every name here is a real key. Dispatch on/off, trusted authors and the model knobs
-# stay a person's call in the product's settings.
+# every name here is a real key. Dispatch on/off and the model knobs stay a person's
+# call in the product's settings. trusted_authors is here (#3449) because a product
+# whose list is empty has every PR and issue refused; the card leads with each grant.
 _POLICY_TOOL_FIELDS = ("skip_labels", "queue_min_status", "max_in_flight",
-                       "triage_auto_accept", "risk_tolerance")
+                       "triage_auto_accept", "risk_tolerance", "trusted_authors")
 
 
 def _policy_field_hints() -> str:
@@ -2796,8 +2817,10 @@ def build_tools(api: AssistantApi, *, operator: bool = False,
                "off get_product's effectivePolicy just before calling. The confirmation "
                "card shows each field as before → after, and the change is refused if "
                "the live policy no longer matches before — re-read it and ask again, "
-               f"never guess. Fields: {_policy_field_hints()}. Only change what the "
-               "operator asked for.",
+               f"never guess. Fields: {_policy_field_hints()}. trusted_authors entries "
+               "are a GitHub user's login (stored bound to its id as login#id — copy "
+               "before exactly as get_product shows it) or a GitHub App as app/<slug>; "
+               "send the whole new list. Only change what the operator asked for.",
                _schema(("product", "changes", "before"), product=str,
                        changes={"type": "object"}, before={"type": "object"}))
     @guarded

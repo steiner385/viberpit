@@ -112,7 +112,8 @@ assistant mutation does not make subsequent harness cleanup safe.
   env-then-Settings precedence as the kill switch above) registers seven administration tools
   (`start_deploy`, `upgrade_host`, `refresh_account`, `set_account_enabled`, `start_reauth`,
   `update_product_policy` for a product's `skip_labels`, `queue_min_status`, `max_in_flight`,
-  `triage_auto_accept` and `risk_tolerance`, and `apply_owner_digest` for the owner digest's
+  `triage_auto_accept`, `risk_tolerance` and `trusted_authors` (its card leads with the authors
+  added and removed), and `apply_owner_digest` for the owner digest's
   recommended actions) and appends `OPERATOR_TOOLS_ENABLED_LINE` to the system prompt instead of the
   disabled variant (`server/assistant/prompt.py`, Task 9.3). Off deployments get neither the tools
   nor the prompt text naming them, so a model on a non-operator deployment has no way to know the

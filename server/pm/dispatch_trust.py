@@ -126,6 +126,21 @@ def author_trusted(by_repo: Mapping[str, frozenset[str]], repo: str | None,
                              author_id=author_id)
 
 
+async def trust_gap(db: AsyncSession, repo: str) -> str:
+    """Why an author is not trusted on *repo*, naming the product whose list decided it
+    and where to edit that list — the actionable half of an ``untrusted_author``
+    refusal (#3449). A product whose list trusts nobody (never set, or only unbound
+    logins) is called out as such, since then no author at all can pass."""
+    from server.pm.repo_project import owning_projects_by_repo
+    owner = (await owning_projects_by_repo(db, [repo])).get(repo)
+    if owner is None:
+        return f"no single product owns {repo}, so no author is trusted there"
+    where = f"Trusted issue authors in its automation settings (/roadmap/{owner.slug})"
+    if not trusted_authors((await load_policies(db)).get(owner.slug)):
+        return f"product {owner.slug} trusts no authors yet; add them under {where}"
+    return f"the author is not on product {owner.slug}'s list; edit {where}"
+
+
 async def unmirrored_prs(db: AsyncSession, repo: str, numbers: Iterable[int]) -> list[int]:
     """The PR numbers among *numbers* the mirror does not hold yet, in the order given —
     the part of an ``untrusted_prs`` verdict a later sync can lift, so a refusal can

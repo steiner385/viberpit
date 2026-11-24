@@ -107,6 +107,13 @@ describe('AutomationPolicyCard', () => {
     expect(labels[0]).toHaveTextContent('Dispatch')
   })
 
+  it('keeps the not-opted-in note for a product seeded with trusted authors only (#3449)', () => {
+    renderCard(<AutomationPolicyCard product={product} project={makeProject({
+      automationPolicy: { trusted_authors: ['app/viberpit'] },
+    })} />)
+    expect(screen.getByText(/Issue dispatch is off until you explicitly change Dispatch from off/)).toBeInTheDocument()
+  })
+
   it('adding a skip label sends the full list, additive to whatever is already there', () => {
     renderCard(<AutomationPolicyCard product={product} project={makeProject({
       automationPolicy: { skip_labels: ['renovate'] },

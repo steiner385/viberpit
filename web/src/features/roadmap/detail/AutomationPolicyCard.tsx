@@ -198,7 +198,9 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
           title={extractMutationErrorMessage(update.error, 'Could not save the automation settings')}
         />
       )}
-      {live && project.automationPolicy === null && (
+      {/* Keyed on dispatch, not a null policy: a new product's policy is seeded with
+          the fleet's trusted authors (#3449) and still has dispatch unset. */}
+      {live && project.automationPolicy?.dispatch === undefined && (
         <p className="text-sm text-ink-muted">
           Issue dispatch is off until you explicitly change Dispatch from off.
         </p>

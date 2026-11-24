@@ -2105,6 +2105,46 @@ def test_update_product_policy_card_lists_each_field_before_and_after():
     assert len(long[0]) <= 80
 
 
+def test_update_product_policy_card_leads_trusted_authors_with_each_grant():
+    """#3449: an added trusted author is a grant; it must survive the row's cut."""
+    before = ["steiner385#9727664", "app/viberpit", "someone-long#123456"]
+    items = batch_items(MCP_PREFIX + "update_product_policy", {
+        "changes": {"trusted_authors": ["Steiner385", "app/viberpit", "alice"]},
+        "before": {"trusted_authors": before}})
+    # A bare login and its bound form are one author: steiner385 is neither added
+    # nor removed.
+    assert items[0].startswith(
+        "trusted_authors (adds alice; removes someone-long#123456): [")
+    assert len(items[0]) <= 80
+    assert batch_items(MCP_PREFIX + "update_product_policy", {
+        "changes": {"trusted_authors": ["app/viberpit"]}}) == [
+        'trusted_authors (adds app/viberpit): (not given) → ["app/viberpit"]']
+    # Unchanged membership: plain before → after.
+    assert batch_items(MCP_PREFIX + "update_product_policy", {
+        "changes": {"trusted_authors": ["app/x"]},
+        "before": {"trusted_authors": ["app/x"]}}) == [
+        'trusted_authors: ["app/x"] → ["app/x"]']
+
+
+@pytest.mark.asyncio
+async def test_update_product_policy_changes_trusted_authors():
+    seen: dict = {}
+
+    def handler(req: httpx.Request):
+        seen["call"] = json.loads(req.content)
+        return httpx.Response(200, json={"effectivePolicy": {
+            "trusted_authors": ["steiner385#9727664", "app/viberpit"]}})
+    out = await _tool(_policy_tools(handler), "update_product_policy").handler(
+        {"product": "keel", "changes": {"trusted_authors": ["steiner385", "app/viberpit"]},
+         "before": {"trusted_authors": []}})
+    assert out.get("is_error") is not True
+    assert seen["call"] == {"policy": {"trusted_authors": ["steiner385", "app/viberpit"]},
+                            "expected": {"trusted_authors": []}}
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data["changed"]["trusted_authors"] == {
+        "before": [], "after": ["steiner385#9727664", "app/viberpit"]}
+
+
 # --------------------------------------------------------------------------- #
 # Pack G writes (Task 7.6): comment_on_pr / create_issue                        #
 # --------------------------------------------------------------------------- #
