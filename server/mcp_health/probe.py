@@ -104,14 +104,15 @@ async def _default_client(account: str, cfg_dir: Path):
 
 
 async def probe_account(account: str, *, client_factory=None, settle_s: float = 25.0,
-                        interval_s: float = 2.0, budget_s: float | None = None) -> list[McpServerState]:
-    """Probe one account. Concurrent callers share ONE bounded task; a cancelled caller
-    leaves it running for the others."""
+                        interval_s: float = 2.0, deadline: float | None = None) -> list[McpServerState]:
+    """Probe one account by *deadline* (absolute ``loop.time()``; default settle + startup margin
+    from now). Concurrent callers share ONE bounded task; a cancelled caller leaves it running."""
     task = _inflight.get(account)
     if task is None:
-        budget = budget_s if budget_s is not None else settle_s + _STARTUP_MARGIN_S
+        if deadline is None:
+            deadline = asyncio.get_running_loop().time() + settle_s + _STARTUP_MARGIN_S
         task = asyncio.ensure_future(
-            _bounded(account, client_factory or _default_client, settle_s, interval_s, budget))
+            _bounded(account, client_factory or _default_client, settle_s, interval_s, deadline))
         _inflight[account] = task
 
         def _done(t: asyncio.Task, account: str = account) -> None:
@@ -124,7 +125,7 @@ async def probe_account(account: str, *, client_factory=None, settle_s: float = 
     return await asyncio.shield(task)
 
 
-async def _bounded(account, factory, settle_s, interval_s, budget_s) -> list[McpServerState]:
+async def _bounded(account, factory, settle_s, interval_s, deadline) -> list[McpServerState]:
     slot = False
 
     async def run() -> list[McpServerState]:
@@ -136,8 +137,11 @@ async def _bounded(account, factory, settle_s, interval_s, budget_s) -> list[Mcp
             slot = True
             return await _run(account, cfg, factory, settle_s, interval_s)
 
+    # An ABSOLUTE deadline, never a budget re-anchored when this task starts: the accounts of one
+    # probe() then expire in the same loop pass, so the slot holder's expiry cannot hand its slot
+    # to a waiter whose own (later-anchored) timer has not fired yet (#3444).
     try:
-        async with asyncio.timeout(max(budget_s, 0.0)):
+        async with asyncio.timeout_at(deadline):
             return await run()
     except TimeoutError:
         raise ProbeSkipped("timed out" if slot else "budget exhausted") from None
@@ -177,7 +181,7 @@ async def probe(accounts: list[str], *, deadline_s: float = 33.0, **kw) -> dict:
 
     async def one(account: str) -> None:
         try:
-            states = await probe_account(account, budget_s=deadline - loop.time(), **kw)
+            states = await probe_account(account, deadline=deadline, **kw)
             await store.upsert_states(account, host, states, source="probe", session_id=None)
         except (LookupError, ProbeSkipped) as exc:
             skipped.append({"account": account, "reason": str(exc.args[0]) if exc.args else type(exc).__name__})

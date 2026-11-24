@@ -162,6 +162,33 @@ async def test_account_without_a_slot_before_deadline_is_budget_exhausted(monkey
 
 
 @pytest.mark.asyncio
+async def test_a_late_starting_waiter_shares_the_holders_deadline(monkeypatch, tmp_path, isolated_db):
+    """#3444: each account's timeout was re-anchored to loop.time() when ITS task started, so a
+    waiter scheduled late outlived the holder by that lag; the holder's expiry released the slot
+    and the waiter took it past the overall deadline. All accounts share one absolute deadline."""
+    monkeypatch.setattr(probe, "_cfg_dir_for", lambda a: tmp_path)
+    monkeypatch.setattr(probe, "_MAX_CONCURRENT", 1)
+    monkeypatch.setattr(probe, "_sems", weakref.WeakKeyDictionary())
+    opened = []
+
+    def hang(account, cfg_dir):
+        opened.append(account)
+        return _HangOnEnter([], mcp_status=[{"name": "a", "status": "connected"}], startup_frames=[])
+
+    real_bounded = probe._bounded
+
+    async def lagging(account, *a, **k):
+        if account == "a2":              # a loaded worker schedules a2's task late; a1 takes the slot
+            await asyncio.sleep(0.1)
+        return await real_bounded(account, *a, **k)
+
+    monkeypatch.setattr(probe, "_bounded", lagging)
+    out = await probe.probe(["a1", "a2"], client_factory=hang, deadline_s=0.3)
+    assert opened == ["a1"]
+    assert {s["account"]: s["reason"] for s in out["skipped"]} == {"a1": "timed out", "a2": "budget exhausted"}
+
+
+@pytest.mark.asyncio
 async def test_store_failure_for_one_account_is_contained(monkeypatch, tmp_path, isolated_db):
     from server.mcp_health import store
     monkeypatch.setattr(probe, "_cfg_dir_for", lambda a: tmp_path)
