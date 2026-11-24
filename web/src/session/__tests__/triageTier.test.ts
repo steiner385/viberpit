@@ -92,3 +92,58 @@ describe('sessionTriage (pill + group share one computation)', () => {
     expect(triageTier(sess)).toBe('needs-you')
   })
 })
+
+// #3459: a session whose owning automation lost ownership (the fence refuses every
+// driver for it) is "detached". With a merged or armed PR its work was delivered —
+// it must never sit under "Turn failed" in the Failed group.
+describe('detached sessions (automation_ownership_stale)', () => {
+  const pr = (over: Partial<PullRequestInfo>): PullRequestInfo =>
+    ({ number: 21353, url: 'u', state: 'open', checks: 'passing', title: 't', deployed: false, ...over } as PullRequestInfo)
+  const detached = (status: string, prs: PullRequestInfo[]): Session =>
+    ({ id: 'x', name: 'n', status, prs, pausedReason: 'automation_ownership_stale' } as Session)
+
+  it.each([
+    ['merged', pr({ state: 'merged' })],
+    ['armed for auto-merge', pr({ auto_merge_enabled: true })],
+    ['in the merge queue', pr({ in_merge_queue: true })],
+  ])('reads "work delivered" when its PR is %s — even from needs_attention', (_name, p) => {
+    for (const status of ['needs_attention', 'idle', 'done']) {
+      const out = sessionTriage(detached(status, [p]))
+      expect(out.label).toBe('Detached — work delivered (PR #21353)')
+      expect(out.tier).toBe('complete')
+    }
+  })
+
+  it('a merged PR wins over a red armed sibling and a failing-checks lift', () => {
+    const out = sessionTriage(detached('done', [pr({ number: 7, checks: 'failing' }), pr({ number: 8, state: 'merged' })]))
+    expect(out.label).toBe('Detached — work delivered (PR #8)')
+  })
+
+  it('an armed DRAFT is not delivered', () => {
+    expect(sessionTriage(detached('idle', [pr({ is_draft: true, state: 'draft', auto_merge_enabled: true })])).label)
+      .toBe('Detached — PR #21353 open')
+  })
+
+  it('a finished turn with an open, unarmed PR names the PR, calm', () => {
+    const out = sessionTriage(detached('done', [pr({})]))
+    expect(out.label).toBe('Detached — PR #21353 open')
+    expect(out.tier).toBe('your-turn')
+  })
+
+  it('a finished turn with no PR reads plain "Detached"', () => {
+    expect(sessionTriage(detached('idle', [])).label).toBe('Detached')
+  })
+
+  it('a red open PR still lifts the card into Failed', () => {
+    expect(sessionTriage(detached('done', [pr({ checks: 'failing' })])).label).toBe('Checks failing')
+  })
+
+  it('keeps "Turn failed" for needs_attention with nothing delivered', () => {
+    expect(sessionTriage(detached('needs_attention', [pr({})])).label).toBe('Turn failed')
+  })
+
+  it('a session that is not detached is untouched by a merged PR', () => {
+    const s0 = { id: 'x', name: 'n', status: 'needs_attention', prs: [pr({ state: 'merged' })] } as Session
+    expect(sessionTriage(s0).label).toBe('Turn failed')
+  })
+})

@@ -40,3 +40,16 @@ export function inFlightPrCount(prs?: PullRequestInfo[] | null): number {
 export function anyChecksFailing(prs?: PullRequestInfo[] | null): boolean {
   return !!prs?.some((pr) => pr.checks === 'failing' && isActionablePrState(pr.state))
 }
+
+/**
+ * The PR proving a session's work has left it: merged, or open (not draft) with
+ * auto-merge armed or in the merge queue. Nothing more is owed by the session, so
+ * a session whose owning automation lost ownership is "detached — work delivered",
+ * not failed (#3459). Mirrors the server's `PrFacts.delivered_pr`
+ * (server/automations/completion_bar.py); merged wins over armed there too.
+ */
+export function deliveredPr(prs?: PullRequestInfo[] | null): PullRequestInfo | undefined {
+  return prs?.find((pr) => pr.state === 'merged')
+    ?? prs?.find((pr) => pr.state === 'open' && !pr.is_draft
+      && (!!pr.auto_merge_enabled || !!pr.in_merge_queue))
+}

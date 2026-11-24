@@ -465,6 +465,101 @@ async def execution_refused(session_id: str) -> bool:
     return any(holders.get(key) != snapshot.token for key in operation.targets)
 
 
+# Provenance key a reattached operation carries: the reason it had been released for.
+# ``release_reattached_if_stopped`` is the only reader, and only releases what it marks.
+REATTACHED_PROVENANCE_KEY = "reattached_from"
+
+
+async def reattach_session(session_id: str, *, owners: "frozenset[str] | set[str]",
+                           reason: str) -> str | None:
+    """Re-acquire the targets of the RELEASED operation that still fences a live
+    *session_id*, so the session can run again (#3459). Returns the owner on success.
+
+    Releasing an operation (e.g. the runner settling a claim once some of its sessions
+    are archived) leaves every OTHER session it names fenced forever:
+    ``lineage_unowned`` keeps a named session owned in any phase, so it can never
+    start again. This is the one way back, and it is narrow on purpose:
+
+    * the operation is ``released`` — a ``transferred`` one handed the work to a
+      successor, which owns it;
+    * its owner is in *owners* (the caller passes enabled automations only: a paused
+      automation's sessions wait for it to be turned back on);
+    * the session's row is live (not archived/ended);
+    * every target is unheld. A target another operation has claimed since means
+      the work moved on, and the session stays fenced.
+
+    The operation returns to ``active`` with its prior reason under
+    ``REATTACHED_PROVENANCE_KEY``; ``release_reattached_if_stopped`` releases it again
+    once every session it names is torn down, so a revived claim cannot hold its
+    issue forever."""
+    if not reason.strip():
+        raise ValueError("reattach needs an observed reason")
+    snapshot = await execution_snapshot(session_id)
+    if snapshot is None or await lineage_unowned(session_id):
+        return None
+    async with db_session() as db:
+        operation = await db.get(AutomationOperation, snapshot.token)
+        if (operation is None or operation.phase != "released" or not operation.targets
+                or operation.owner not in owners):
+            return None
+        row = await db.get(DbSession, session_id)
+        if row is None or row.status in INACTIVE_SESSION_STATUSES:
+            return None
+        rows = await _lock_targets(db, operation.targets)
+        if any(target.operation_token is not None for target in rows):
+            return None
+        for target in rows:
+            target.operation_token = operation.token
+        operation.provenance = {**(operation.provenance or {}),
+                                REATTACHED_PROVENANCE_KEY: operation.reason or "released"}
+        operation.phase = "active"
+        operation.reason = reason
+        return operation.owner
+
+
+def _named_sessions(operation: AutomationOperation) -> set[str]:
+    """Every session *operation* names: root, reservation and registered executions."""
+    named = set(operation.execution_sessions or {})
+    named.update(sid for sid in (operation.session_id, operation.reserved_session_id) if sid)
+    return named
+
+
+async def release_reattached_if_stopped() -> list[str]:
+    """Release every reattached operation whose named sessions are all torn down.
+
+    The other half of ``reattach_session``: the owner's own bookkeeping settled this
+    claim before the reattach, so nothing else will ever release it. Once each
+    session it names is archived, ended or gone, their executions are attested
+    stopped (``attest_terminal_session_stopped``) and the operation is released
+    with the same ``WORK_STOPPED`` proof as any other. Returns the released tokens."""
+    async with db_session() as db:
+        candidates = [op for op in (await db.scalars(select(AutomationOperation).where(
+            AutomationOperation.phase == "active"))).all()
+            if REATTACHED_PROVENANCE_KEY in (op.provenance or {})]
+        settled: list[tuple[str, set[str]]] = []
+        for op in candidates:
+            named = _named_sessions(op)
+            live = (await db.scalars(select(DbSession.id).where(
+                DbSession.id.in_(named),
+                DbSession.status.not_in(INACTIVE_SESSION_STATUSES)))).all() if named else []
+            if not live:
+                settled.append((op.token, named))
+    released: list[str] = []
+    for token, named in settled:
+        for sid in sorted(named):
+            await attest_terminal_session_stopped(sid)
+        try:
+            async with owned(token) as tx:
+                if not stopped_work_attested(tx.operation):
+                    continue
+                tx.release(ReleaseProof.WORK_STOPPED,
+                           "reattached sessions all archived or ended")
+        except StaleOwnership:
+            continue
+        released.append(token)
+    return released
+
+
 async def session_execution(session_id: str) -> tuple[str, int | None, int | None] | None:
     snapshot = await execution_snapshot(session_id)
     if snapshot is None:

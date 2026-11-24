@@ -178,6 +178,14 @@ class PrFacts:
         return next((p for p in self.prs if p.is_armed), None)
 
     @property
+    def delivered_pr(self) -> "PrFact | None":
+        """The PR proving the session's work has left it: merged, or armed to merge
+        (auto-merge or the merge queue). Nothing more is owed by the session, so one
+        whose owning automation went stale is detached, not failed (#3459). The web
+        mirror is ``deliveredPr`` in ``web/src/session/prStatus.ts``."""
+        return self.merged_pr or self.armed_pr
+
+    @property
     def open_unarmed_pr(self) -> "PrFact | None":
         return next((p for p in self.prs
                      if p.state in ("open", "draft") and not p.is_armed),
