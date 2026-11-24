@@ -1,86 +1,103 @@
-# Spike: which credential can open Remote Control for ViberPit sessions
+# Spike: making Remote Control work for ViberPit sessions
 
-**Status:** open, with one decisive experiment pending (§4). **Date:** 2026-11-24.
-**Context:** PR #3457 shipped Remote Control (sessions in the Claude web/desktop apps). In
-production, every enable is refused.
+**Status:** answered. A working recipe has been verified end to end against claude 2.1.331.
+**Date:** 2026-11-24.
+**Goal:** drive the same session from ViberPit and from the Claude web/desktop apps at once, like
+Claude Code Remote Control.
 
-## 1. Finding: setup-tokens cannot open Remote Control (verified in prod)
+## 1. Why production is refused
 
-After the 2026-11-24 08:44 EST deploy, the dobby daemon logged this for every session:
+PR #3457 shipped the `remote_control` SDK request. Every production enable was refused:
 
 ```
-driver.remote_control refused ... code REMOTE_CONTROL_REFUSED
-message=Claude.ai login was rejected — run /login, then /remote-control
+REMOTE_CONTROL_REFUSED  Claude.ai login was rejected — run /login, then /remote-control
 ```
 
-Every session launches with the account's **setup-token** in `CLAUDE_CODE_OAUTH_TOKEN`
-(`server/sessions/account_auth.py:oauth_env_for`). Its scope is `user:inference` only, and
-`2026-spike-setup-token.md` already records that it "cannot establish Remote Control sessions".
+- Sessions launch with the account's **setup-token** in `CLAUDE_CODE_OAUTH_TOKEN`. Its scope is
+  `user:inference` only.
+- The CLI raises that message (`Mi()` → `v2_session_create_oauth_rejected`) when the **claude.ai
+  server** rejects the token on session creation. It is a scope check on the server, not a
+  client-side "must be an interactive login" rule.
+- The first spike passed only because it ran under the operator's interactive `~/.claude` login.
+  Principle III: test a vendor surface through the credential path production actually uses.
 
-The earlier spike passed only because it ran under the operator's interactive `~/.claude` login.
-That login's scopes are `user:inference user:profile user:sessions:claude_code user:mcp_servers
-user:plugins user:file_upload user:privacy_consents:write`. Lesson (Principle III): verify a vendor
-surface with the **same credential path** production uses, not the developer's login.
+## 2. Experiments
 
-## 2. Options
+All runs used the system `claude` 2.1.331, which ViberPit runs through
+`claude_bin.resolve_claude_bin()`. The bundled 2.1.183 has none of the host-credential surface.
+Each run had an **empty** temp `CLAUDE_CONFIG_DIR`, so there was no on-disk login and no refresh
+token. The token was the operator's full-scope claude.ai access token, held in memory only.
 
-| # | Option | Remote Control | Principle II | Verdict |
-|---|--------|----------------|--------------|---------|
-| A | Keep setup-tokens; report the refusal honestly | no | ok | **done now** (`fix/remote-control-setup-token`) |
-| B | Let sessions use the account dir's browser login (`.credentials.json`, refresh token on disk) | yes | **violates** it: many concurrent CLIs refreshing one rotating token family race, and the refresh token sits on runner-mounted paths | rejected |
-| C | Launch sessions with the **broker's `oauth_access` envelope**: a short-lived full-scope access token from the single refresh authority, in `CLAUDE_CODE_OAUTH_TOKEN`, with no refresh token | likely, see §4 | **already compliant**: this is the #2629 design | **recommended** |
+| # | Launch environment | Result |
+|---|--------------------|--------|
+| E1 | `CLAUDE_CODE_OAUTH_TOKEN=<full-scope access token>` | refused `remote_control_auth` |
+| E2 | host-refresh mode: `CLAUDE_CODE_ENTRYPOINT=local-agent` + `SDK_HAS_OAUTH_REFRESH` + `SDK_HAS_SESSIONS_OAUTH_REFRESH`, no token | refused: "requires a claude.ai subscription"; the CLI never asked the host |
+| E2b | E2 + `CLAUDE_CODE_OAUTH_TOKEN` | refused `remote_control_auth` |
+| **E3** | E1 + `CLAUDE_CODE_ORGANIZATION_UUID` + `SUBSCRIPTION_TYPE` + `RATE_LIMIT_TIER` | **works**: `session_url` returned |
+| **E3o** | E1 + `CLAUDE_CODE_ORGANIZATION_UUID` only | **works**: this is the minimum |
+| E3s | E1 + `CLAUDE_CODE_SUBSCRIPTION_TYPE` only | refused |
+| **E4** | E3o, then a top-level `{"type":"update_environment_variables","variables":{"CLAUDE_CODE_OAUTH_TOKEN":…}}` message to the running CLI | **accepted**: `applied: ["CLAUDE_CODE_OAUTH_TOKEN"]`, so tokens can be rotated live |
+| **E5** | E3o session; prompt sent from the claude.ai web app | the host stream got `system init` → assistant reply → `result success` |
+| **E6** | E5 + `--permission-prompt-tool stdio --replay-user-messages`; web prompt needing `Write` | the host stream got the web **user prompt**. **`can_use_tool Write` came to the host**; the host allowed it and the file was written |
+| **E7** | E6; prompt sent **from the host** | it appeared in the web app with its reply |
 
-## 3. Option C in detail
+Conclusions:
 
-`src/viberpit/credential_envelope.py` already defines `OAUTH_ACCESS` envelopes:
+- **Minimum recipe:** a full-scope claude.ai access token (needs `user:sessions:claude_code`)
+  plus `CLAUDE_CODE_ORGANIZATION_UUID`.
+- A setup-token can never work.
+- The first-party-entrypoint host-refresh path (E2/E2b) is not needed. That's good, because it
+  would mean claiming to be `local-agent`.
+- Both sides can drive the session. Approvals arrive at the host as `can_use_tool`, which in
+  ViberPit becomes the normal approval card.
 
-- The dobby primary daemon is the refresh authority (`accounts.is_refresh_authority`).
-- It publishes short-lived access tokens, and runners launch `claude` with them. The CLI then
-  "has nothing to rotate" (verified against 2.1.183, per
-  `2026-10-02-claude-credential-broker-design.md`).
-- **Why it should work:** if those access tokens carry the browser login's scopes (including
-  `user:sessions:claude_code`), Remote Control should open.
-- **What changes:**
-  - Launch selection: prefer an `oauth_access` envelope over the setup-token where one exists, on
-    dobby too, not only on broker runners.
-  - Account onboarding: an account needs a browser login held by the authority, not only a
-    setup-token.
+## 3. Credential state today (metadata only)
 
-### Open questions
+`paths.slot_path(<account>)`:
 
-1. **Does the CLI accept Remote Control with an env-passed full-scope access token?** This is the
-   decisive experiment, §4.
-2. **Lifetime.** Access tokens last hours, and the CLI cannot refresh one it was launched with.
-   - What happens to an open bridge, and to inference, when the token expires mid-session?
-   - Does the broker design already respawn or re-key long sessions? Read the broker design doc
-     § expiry.
-   - An expired bridge may need a respawn, or a re-sent `remote_control` request after a token
-     swap.
-3. **Quota and identity.** Is a bridge opened from an access token tied to the same claude.ai
-   account and organization the app shows? Probably yes; check in the app.
-4. **Exposure (Principle IV).** A full-scope token can do more than inference. It already lives
-   only in process memory under the broker rules. Confirm that's still true on dobby's local path.
+| Account | Slot scopes | Access token | Refresh token |
+|---------|-------------|--------------|---------------|
+| ibaset-personal | full, incl. `sessions:claude_code` | expired | **expired 68 days ago** |
+| tony_cairnea.com | full | expired | **expired 53 days ago** |
+| tonystein85_gmail.com | full | expired | **expired 63 days ago** |
 
-## 4. The decisive experiment (not yet run)
+The slots lapsed after sessions moved to setup-tokens: nothing refreshes a slot whose account has
+a setup-token. Each account needs **one fresh browser login** into its slot.
 
-The agent session was **not permitted** to run this: it reads the operator's stored login token.
-Run it yourself, or grant the permission explicitly.
+## 4. Design (Principle II compliant)
 
-1. Read `claudeAiOauth.accessToken` from a full browser login into memory. Never print it.
-2. Start an SDK client with an **empty** temp `CLAUDE_CONFIG_DIR` and
-   `CLAUDE_CODE_OAUTH_TOKEN=<token>`.
-3. Send `{"subtype": "remote_control", "enabled": true}`.
-4. Read the result:
-   - A reply with `session_url` means Option C works; build it.
-   - `"Claude.ai login was rejected"` means Remote Control needs an on-disk refresh-capable login.
-     Option C is dead, and the feature stays dormant until Anthropic lets inference tokens open
-     Remote Control.
+1. **Authority keeps slots fresh.** The dobby primary is the refresh authority
+   (`accounts.is_refresh_authority`, `acquire_valid_token`). It must refresh the browser-login slot
+   of every Remote-Control-enabled account even when a setup-token exists, so the refresh token
+   never lapses. It is the only refresher, so there is no rotation race.
+2. **Launch.** A session that has Remote Control effectively on, and whose account has a valid
+   slot, launches with the slot's **access token** as `CLAUDE_CODE_OAUTH_TOKEN`, plus
+   `CLAUDE_CODE_ORGANIZATION_UUID` from the account profile.
+   - No refresh token reaches the CLI, so the CLI has nothing to rotate. This is the same shape as
+     the #2629 `oauth_access` envelope.
+   - Prefer `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, which the CLI also supports, over the env
+     var. Principle II asks that access material stay out of the environment.
+   - Otherwise launch with the setup-token as today, and Remote Control shows as unavailable
+     (PR #3462).
+3. **Live rotation.** Before the access token expires (about 8 h), the authority pushes the
+   refreshed token to every live session on that account with the top-level
+   `update_environment_variables` message (E4). Runners get it through the existing envelope push.
+4. **Transcript parity.** Add `--replay-user-messages` so prompts typed in the Claude apps appear
+   in ViberPit's transcript.
+   - The driver must not double-render its own prompts, which are echoed back too: dedupe by
+     message `uuid`, or skip echoes of prompts it sent.
+5. **Approvals.** Nothing to build: `can_use_tool` already reaches ViberPit (E6). Open question:
+   does the Claude app also show the request, and who wins when both answer? E6's host answered
+   at once.
 
-Better still: run it with a real broker `oauth_access` envelope on rocky, which is exactly the
-production path.
+### Still unverified
 
-## 5. Interim behaviour (Option A, shipped separately)
+- A bridge across a **token expiry plus rotation**. E4 shows the CLI accepts the new token. That
+  the bridge's worker JWT re-derives from it is inferred from the CLI code, not observed.
+- What the Claude app shows while a ViberPit approval card is pending.
+- A Copilot account stays ineligible: it has no claude.ai login.
 
-- A refused enable records `remoteControlUnavailableReason` on the session and memoizes the refusal
-  per account in the daemon, so later spawns skip the doomed request.
-- The rail shows the switch disabled with the reason, instead of a misleading "On".
+## 5. Operator action required
+
+Log each account into its browser-OAuth slot once, through the account re-auth flow. Without a
+live slot, the design falls back to the setup-token and Remote Control stays unavailable.
