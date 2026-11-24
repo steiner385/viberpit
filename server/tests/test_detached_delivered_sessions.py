@@ -52,7 +52,6 @@ async def ownership_db(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "_session_factory",
                         async_sessionmaker(engine, expire_on_commit=False))
     monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
     try:
         yield
     finally:
