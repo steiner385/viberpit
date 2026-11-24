@@ -521,7 +521,7 @@ async def test_session_detail_matches_actual_endpoint_defaults(monkeypatch, sid)
     monkeypatch.setattr(sessions, '_get_orchestrator', lambda _: SimpleNamespace(get_session=get_record))
     monkeypatch.setattr(sessions, '_resolve_repo', resolve_repo)
     monkeypatch.setattr(sessions.host_heartbeat, 'snapshot', snapshot)
-    expected = await sessions.get_session(sid, SimpleNamespace(), 'eval')
+    expected = await sessions.get_session(sid, SimpleNamespace(query_params={}), 'eval')
     with client(fixture) as c:
         actual = c.get('/api/sessions/' + sid).json()
     assert actual == expected

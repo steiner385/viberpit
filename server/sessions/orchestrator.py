@@ -2169,6 +2169,7 @@ class SessionOrchestrator:
         self._milestones_refresh_task: asyncio.Task | None = None
         # Archive Audit control loop: periodic re-audit of recently-archived sessions.
         from server.automations.archive_audit import ArchiveAuditLoop, _real_gh, _real_gh_num
+        from server.automations.ownership import execution_refused
         from server.automations.archive_audit import (
             list_recent_archived_rows, mark_auto_reopen_failed, mark_awaiting_edge_unarchive,
             persist_findings)
@@ -2184,6 +2185,7 @@ class SessionOrchestrator:
             record_findings_fn=lambda results, mode: persist_findings(db_session, results, mode),
             mark_auto_reopen_failed_fn=lambda sid: mark_auto_reopen_failed(db_session, sid),
             defer_to_edge_fn=lambda sid: mark_awaiting_edge_unarchive(db_session, sid),
+            reopen_refused_fn=execution_refused,
         )
         self._archaudit_task: asyncio.Task | None = None
         # Fire-and-forget task registry (issue #405). Every detached ``create_task``
@@ -17870,7 +17872,8 @@ class SessionOrchestrator:
             # every tick re-nudged the same session into the same dead end forever
             # (2026-09-24, three sessions stuck retrying since a manual unarchive
             # put them back in rotation after their PR had already merged).
-            await self._pause_session(rec, reason="automation_ownership_stale")
+            # A session resting at a finished turn keeps its status (#3452).
+            await self._park_ownership_stale(rec)
             return False
         if ok:
             await self._autopilot_mark_assisted(session_id)
@@ -28414,6 +28417,34 @@ class SessionOrchestrator:
         log_event_throttled(
             log, _PAUSE_LOG, f"{record.id}:{reason}", level,
             "session.paused", session_id=record.id, reason=reason)
+
+    async def _park_ownership_stale(self, record: SessionRecord) -> None:
+        """Park a session the automation fence refused as ``automation_ownership_stale``.
+
+        The reason is what stops every automatic loop re-driving it (it is in
+        _TERMINAL_PAUSE_REASONS). The status is a separate question: only a session
+        that was already parked or mid-turn has a turn to fail. A session resting at
+        a finished turn (idle / done / ready_review / complete / handed_back …) did
+        its work — its PR is open or armed — and the refusal only says no automation
+        may start it again. Flipping that to ``needs_attention`` branded finished
+        runner sessions "Turn failed" fleet-wide when the archive audit reopened them
+        (#3452), so they keep their status and carry the reason alone.
+        """
+        if record.status in _STALLED_STATUSES or record.status in _status_mod.MID_TURN_STATUSES:
+            await self._pause_session(record, reason="automation_ownership_stale")
+            return
+        reason = "automation_ownership_stale"
+        record.paused_reason = reason
+        record.paused_until = None
+        try:
+            async with db_session() as db:
+                from sqlalchemy import update as sa_update
+                await db.execute(sa_update(DbSession).where(DbSession.id == record.id)
+                                 .values(paused_reason=reason, paused_until=None))
+        except Exception:
+            log.warning("ownership_stale.persist_failed session=%s", record.id, exc_info=True)
+        log.info("session.ownership_stale_fenced session=%s status=%s — finished turn kept",
+                 record.id, record.status)
 
     def _mark_needs_reauth(self, account: str) -> None:
         """Propagate a recompose-failed in-session 401 to the ledger so the dashboard

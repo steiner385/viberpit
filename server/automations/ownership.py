@@ -443,6 +443,28 @@ async def lineage_unowned(session_id: str, *, parent_session_id: str | None = No
         return True
 
 
+async def execution_refused(session_id: str) -> bool:
+    """Read-only: would ``begin_session_execution`` refuse *session_id* with
+    StaleOwnership? Same three steps, no locks or writes: an operation names it
+    (``execution_snapshot``), its lineage is still owned (``lineage_unowned``), and
+    that operation no longer holds every target (``owned``'s check; a target with
+    no row is unheld, as ``_lock_targets`` would insert it ownerless).
+
+    True means no driver can ever start for it again — the archive audit asks
+    before reopening one, which would only park it (#3452)."""
+    snapshot = await execution_snapshot(session_id)
+    if snapshot is None or await lineage_unowned(session_id):
+        return False
+    async with db_session() as db:
+        operation = await db.get(AutomationOperation, snapshot.token)
+        if operation is None or not operation.targets:
+            return True
+        holders = dict((await db.execute(
+            select(AutomationOwnedTarget.key, AutomationOwnedTarget.operation_token)
+            .where(AutomationOwnedTarget.key.in_(operation.targets)))).tuples().all())
+    return any(holders.get(key) != snapshot.token for key in operation.targets)
+
+
 async def session_execution(session_id: str) -> tuple[str, int | None, int | None] | None:
     snapshot = await execution_snapshot(session_id)
     if snapshot is None:

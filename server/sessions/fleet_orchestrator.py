@@ -516,6 +516,14 @@ class FleetOrchestrator:
                     # worker source forgets it; the target has not loaded it yet).
                     # The session still exists: serve its row through the one mapper.
                     result = await self._record_from_row_of(session_id)
+                if result is not None and getattr(result, "host", None) is None:
+                    # list_sessions' rule: an unstamped record carries the host that
+                    # served it. Without it the same session read host=dobby in the
+                    # list and host=null by id (#3452).
+                    try:
+                        result.host = self._host_cache.get(session_id) or host or self._primary
+                    except Exception:  # pragma: no cover — frozen record types
+                        pass
                 self._overlay_moving(result)
             return result
         if getattr(getattr(RemoteOrchestrator, name, None), _DEADLINE_ATTR, False):

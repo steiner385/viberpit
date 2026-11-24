@@ -1581,8 +1581,13 @@ async def get_session(
     except Exception:
         log.warning("get_session: heartbeat snapshot failed — liveness degrades to unknown",
                     exc_info=True)
-    return _record_to_dict(record, repo=await _resolve_repo(record),
-                           queue_position=queue_position,
+    # The list's own enrichment, so one session reads the same by id as in the list:
+    # without it `prs` was always [] here while the card showed the linked PR (#3452).
+    viewing = request.query_params.get("viewing") in ("1", "true", "yes")
+    (repo,), (suggestions,), (prs,), (summary,) = await _enrich_batch(
+        orch, [record], viewing, ENRICH_FETCH_TIMEOUT)
+    return _record_to_dict(record, repo=repo, suggestions=suggestions, prs=prs,
+                           summary=summary, queue_position=queue_position,
                            heartbeats=heartbeats, heartbeats_now=hb_now)
 
 
