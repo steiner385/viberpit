@@ -321,6 +321,7 @@ class InProcessOrchestratorAdapter:
     async def pm_board_status(self, *a, **k): return await _maybe_await(self._orch._pm_board_status(*a, **k))
 
     async def pm_remove_dependency(self, *a, **k): return await _maybe_await(self._orch._pm_remove_dependency(*a, **k))
+    async def pm_sync_wake(self): return await _maybe_await(self._orch.pm_sync_wake())
     # --- capability map-changes PRs (roadmap spec §9, #1472) ------------------
     # A SYNC factory, not an RPC seam: it hands back a service the API drives with
     # the request's own DB session, so it must not be awaited or serialized.
