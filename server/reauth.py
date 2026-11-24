@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from server.aio import cancel_and_reap
-from viberpit.auth_login import WrongAccountLogin
 from server.sessions.desktop_session import DesktopUnavailable, resolve_desktop_session
 
 log = logging.getLogger(__name__)
@@ -55,14 +54,14 @@ class ReauthNoDesktop(Exception):
 
 #: ``start(mode=...)``: the browser login of a brand-new account (``/accounts/add``).
 MODE_LOGIN = "login"
-#: The browser login again, for an EXISTING account (``/accounts/{name}/browser-login``):
-#: the captured identity must be the account's own, or nothing is written.
-MODE_BROWSER_LOGIN = "browser_login"
-
-
-def verifies_identity(mode: str) -> bool:
-    """Must a capture in *mode* prove it is the stored account's own claude.ai login?"""
-    return mode == MODE_BROWSER_LOGIN
+#: Code paste: a long-lived setup-token for an EXISTING account (``/accounts/{name}/reauth``).
+MODE_SETUP_TOKEN = "setup_token"
+#: Code paste: the full claude.ai login for an EXISTING account, in the operator's own
+#: browser (``/accounts/{name}/browser-login``, Remote Control). The signed-in identity
+#: must be the account's own, or nothing is written.
+MODE_CLAUDE_LOGIN = "claude_login"
+#: The modes that wait for a pasted code instead of running a login runner.
+CODE_PASTE_MODES = (MODE_SETUP_TOKEN, MODE_CLAUDE_LOGIN)
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +82,7 @@ class ReauthState:
     vnc_session: str | None = None   # reserved key while a virtual display is live; None on host-screen fallback
     auth_url: str | None = None
     # A machine-readable reason for an ``error`` the UI may treat specially, e.g.
-    # ``browser_login_wrong_account`` (the re-login signed in as someone else).
+    # ``browser_login_wrong_account`` (the claude.ai sign-in was someone else).
     code: str | None = None
 
     def to_dict(self) -> dict:
@@ -144,6 +143,9 @@ class ReauthManager:
         self._state = ReauthState()
         self._lock = asyncio.Lock()
         self._setup_challenge: Any = None   # SetupTokenChallenge while awaiting_code
+        # Which code-paste mode the challenge belongs to (``CODE_PASTE_MODES``):
+        # ``submit_code`` dispatches on it.
+        self._code_mode: str = MODE_SETUP_TOKEN
         # True once a broadened-scope exchange has been refused and re-issued at
         # the narrow scope. Latched per reauth run so the fallback can fire at
         # most once — two scopes, one retry, never a loop.
@@ -242,13 +244,8 @@ class ReauthManager:
                         )
                     env_extra.update(desktop.env(prefer_wayland=False))
                     _progress("Opening Chrome on the host screen \u2014 sign in there\u2026")
-                # Only the existing-account re-login checks the identity; the add flow's
-                # call is unchanged.
-                identity_kw = ({"verify_identity": True}
-                               if verifies_identity(getattr(manager, "_mode", MODE_LOGIN))
-                               else {})
                 ok = await asyncio.to_thread(
-                    auth_login.capture_login, name, env_extra=env_extra, **identity_kw
+                    auth_login.capture_login, name, env_extra=env_extra
                 )
                 if ok:
                     # Clear the stale needs-reauth status synchronously so the
@@ -269,14 +266,16 @@ class ReauthManager:
     # Public API
     # ------------------------------------------------------------------
 
-    async def start(self, name: str, identity: str, mode: str = "login") -> ReauthState:
+    async def start(self, name: str, identity: str, mode: str = MODE_LOGIN) -> ReauthState:
         """Start a reauth for *name*.
 
         Args:
             name:     account name.
             identity: identity/email for display.
             mode:     "login" (default) uses the OAuth browser flow (Chrome runner);
-                      "setup_token" uses the in-process PKCE OAuth exchange.
+                      "setup_token" and "claude_login" (``CODE_PASTE_MODES``) publish
+                      a PKCE authorize URL and wait for the pasted code
+                      (``submit_code``) — a setup-token, or the full claude.ai login.
 
         Raises:
             ReauthNoKey:  no encryption key is configured (would store plaintext).
@@ -298,12 +297,14 @@ class ReauthManager:
             except Exception:
                 log.warning("reauth: pre-start sweep failed", exc_info=True)
 
-            if mode == "setup_token":
+            if mode in CODE_PASTE_MODES:
                 # In-process PKCE flow — no PTY/subprocess needed.
                 # begin() is fast (pure crypto), safe to call under the lock.
                 from viberpit import setup_token_oauth
-                challenge = setup_token_oauth.begin()
+                challenge = (setup_token_oauth.begin(setup_token_oauth.FULL_LOGIN_SCOPE)
+                             if mode == MODE_CLAUDE_LOGIN else setup_token_oauth.begin())
                 self._setup_challenge = challenge
+                self._code_mode = mode
                 self._setup_scope_fallback_used = False
                 self._state = ReauthState(
                     state="awaiting_code",
@@ -320,7 +321,6 @@ class ReauthManager:
                     account=name,
                     started_at=time.time(),
                 )
-                self._mode = mode
                 task = asyncio.create_task(self._run(name))
                 self._state._task = task
 
@@ -498,18 +498,6 @@ class ReauthManager:
         except asyncio.CancelledError:
             # cancel() handles both the state transition and the temp-profile cleanup.
             raise
-        except WrongAccountLogin as exc:
-            # An operator signed in as someone else: an expected outcome, not a bug.
-            temp = None
-            async with self._lock:
-                if self._state.state in ("running", "awaiting_code"):
-                    self._state.state = "error"
-                    self._state.code = exc.code
-                    self._state.message = str(exc)
-                    temp = self._state._temp_profile
-                    self._state._temp_profile = None
-            self._cleanup_temp_profile(temp)
-            log.info("reauth for %r refused: wrong claude.ai account", name)
         except Exception as exc:
             temp = None
             async with self._lock:
@@ -522,7 +510,9 @@ class ReauthManager:
             log.exception("reauth error for %r: %s", name, exc)
 
     async def submit_code(self, name: str, code: str) -> ReauthState:
-        """Exchange the pasted OAuth code for a long-lived setup-token and store it.
+        """Exchange the pasted OAuth code and store the result, per the running mode:
+        a long-lived setup-token (``setup_token``) or the full claude.ai login
+        (``claude_login``).
 
         If the manager is not in the ``awaiting_code`` state this is a no-op
         (returns the current state snapshot without raising).
@@ -531,12 +521,17 @@ class ReauthManager:
             if self._state.state != "awaiting_code":
                 return self.status(name)   # nothing waiting; no-op snapshot
             challenge = self._setup_challenge
+            mode = self._code_mode
             # M-A: claim the slot before releasing the lock so a concurrent
             # duplicate submit_code (e.g. mobile double-tap) sees state !=
             # "awaiting_code" and returns the in-progress snapshot instead of
             # firing a second exchange.
             self._state.state = "running"
             self._state.message = None
+
+        if mode == MODE_CLAUDE_LOGIN:
+            await self._submit_login_code(name, code, challenge)
+            return self.status(name)
 
         from viberpit import accounts, crypto, setup_token_oauth
 
@@ -568,6 +563,45 @@ class ReauthManager:
             await self._fail(name, "Token generation failed — try again.")
 
         return self.status(name)
+
+    async def _submit_login_code(self, name: str, code: str, challenge: Any) -> None:
+        """``claude_login``: exchange the pasted code for the full claude.ai login and
+        install it into *name*'s slot (``auth_login.complete_code_login``), which
+        refuses another claude.ai identity before writing anything.
+
+        Every failure ends ``error`` with a message safe to show (never the code or a
+        token); the wrong-account refusal also carries its machine-readable ``code``.
+        """
+        from viberpit import auth_login, setup_token_oauth as sto
+
+        try:
+            resp = await asyncio.to_thread(sto.exchange_login, code, challenge)
+            await asyncio.to_thread(auth_login.complete_code_login, name, resp)
+            async with self._lock:
+                self._state.state = "success"
+                self._state.message = None
+        except sto.SetupTokenStateMismatch:
+            await self._fail(name, "Code didn't match this request — start the sign-in again.")
+        except sto.SetupTokenInvalidCode:
+            await self._fail(name, "Code invalid or expired — start the sign-in again.")
+        except sto.SetupTokenTransient:
+            await self._fail(name, "Couldn't reach claude.ai — try again.")
+        except sto.SetupTokenNoRefreshToken:
+            await self._fail(name, "claude.ai did not return a refresh token. Nothing was saved.")
+        except sto.SetupTokenError as exc:
+            log.warning("claude.ai sign-in exchange failed for %r: %s", name, exc)
+            await self._fail(name, "claude.ai returned no login. Nothing was saved.")
+        except auth_login.WrongAccountLogin as exc:
+            # The operator signed in as someone else: an expected outcome, not a bug.
+            # str(exc) names both e-mail addresses: show it, but log only the code.
+            await self._fail(name, str(exc), code=exc.code, log_msg=exc.code)
+        except auth_login.LoginIdentityUnavailable as exc:
+            await self._fail(name, str(exc))
+        except Exception as exc:
+            # Never log the token or the pasted code — only the exception type.
+            log.warning("claude.ai sign-in unexpected error for %r: %s", name,
+                        type(exc).__name__)
+            await self._fail(name, "Sign-in failed — try again.")
 
     @staticmethod
     def _usage_scope_note(name: str, token: str, requested_scope: str | None) -> str | None:
@@ -637,11 +671,18 @@ class ReauthManager:
             )
         return True
 
-    async def _fail(self, name: str, msg: str) -> None:
-        """Set error state with a user-facing message; log at WARNING (no token/code)."""
-        log.warning("reauth setup-token error for %r: %s", name, msg)
+    async def _fail(self, name: str, msg: str, *, code: str | None = None,
+                    log_msg: str | None = None) -> None:
+        """Set error state with a user-facing message; log at WARNING (no token/code).
+
+        ``log_msg`` replaces ``msg`` in the log when the user-facing text carries PII
+        (e.g. the two e-mail addresses of a wrong-account sign-in): the UI gets the
+        full message, the log only the static reason."""
+        log.warning("reauth %s error for %r: %s", self._code_mode, name,
+                    log_msg if log_msg is not None else msg)
         async with self._lock:
             self._state.state = "error"
+            self._state.code = code
             self._state.message = msg
 
     def _cleanup_temp_profile(self, temp: str | None) -> None:

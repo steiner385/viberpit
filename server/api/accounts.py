@@ -50,7 +50,7 @@ from server.auth.middleware import current_identity
 from server.db import get_db
 from server.ipc.client import DaemonTimeout, DaemonUnavailable
 from server.obs.logdedupe import LogThrottle, log_event_throttled
-from server.reauth import ReauthBusy, ReauthNoKey
+from server.reauth import MODE_CLAUDE_LOGIN, MODE_SETUP_TOKEN, ReauthBusy, ReauthNoKey
 from server.sessions.engine import AgentEngine
 from server.sessions.facade import call_with_deadline
 from server.time_iso import iso_utc
@@ -1606,9 +1606,9 @@ async def reauth_start(
     exists, so this only needs to mint a fresh long-lived setup-token; the
     browser/VNC login (mode="login" on ReauthManager) is reserved for
     /accounts/add, which still needs it to bootstrap a brand-new slot's full
-    OAuth credential, and for /{name}/browser-login, which re-runs it for
-    Remote Control — setup_token_oauth.exchange() yields a bare access token,
-    with no refresh_token, so it cannot create a new account by itself.
+    OAuth credential — setup_token_oauth.exchange() yields a bare access token,
+    with no refresh_token, so it cannot create a new account by itself. The full
+    claude.ai login of an EXISTING account is /{name}/browser-login.
 
     Returns 202 + state dict on success.
     Returns 409 if another reauth is already running.
@@ -1642,7 +1642,7 @@ async def reauth_start(
 
     reauth = _get_reauth(request)
     try:
-        state = await reauth.start(name, identity, mode="setup_token")
+        state = await reauth.start(name, identity, mode=MODE_SETUP_TOKEN)
     except ReauthBusy as exc:
         raise HTTPException(
             status_code=409,
@@ -1675,19 +1675,22 @@ async def browser_login_start(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
-    """Re-run the full claude.ai browser login into an EXISTING Claude account's slot.
+    """Sign an EXISTING Claude account's slot in to claude.ai, in the operator's own browser.
 
     Remote Control needs the slot's full-scope login (``user:sessions:claude_code``); the
-    setup-token that ``/reauth`` mints never carries it. Same ``ReauthManager`` and
-    in-page browser as ``/accounts/add``, but in ``mode="browser_login"``:
-    ``capture_login(verify_identity=True)`` refuses a login as any other claude.ai
-    identity and writes nothing (the run ends ``error`` with code
-    ``browser_login_wrong_account`` and "You signed in as X, expected Y"). Allowed when
-    the slot exists. Its progress is read and cancelled through ``GET /{name}/reauth``
-    and ``POST /{name}/reauth/cancel``: one manager, one login at a time.
+    setup-token that ``/reauth`` mints never carries it. A code paste, like ``/reauth``
+    (``ReauthManager`` ``mode="claude_login"``): the returned state is ``awaiting_code``
+    with an ``authUrl`` the operator opens in their own browser — already signed in to
+    claude.ai — approves, and pastes the code back to ``POST /{name}/reauth/code``. No
+    virtual display or login browser on the host. The exchange is refused, writing
+    nothing, unless it signed in as this account's own claude.ai identity (``error``
+    with code ``browser_login_wrong_account`` and "You signed in as X, expected Y").
+    Allowed when the slot exists. Its progress is read and cancelled through
+    ``GET /{name}/reauth`` and ``POST /{name}/reauth/cancel``: one manager, one login at
+    a time.
 
-    Person-only (``require_human``, the local-host opt-in not honoured): it writes the
-    credential that lets the Claude apps drive this account's sessions.
+    Person-only (``require_human``, honouring the operator's local-host opt-in): it
+    starts the sign-in that lets the Claude apps drive this account's sessions.
 
     Returns 202 + state dict on success.
     Returns 403 ``SESSION_CONTROL_HUMAN_ONLY`` for a non-person caller.
@@ -1717,7 +1720,7 @@ async def browser_login_start(
 
     reauth = _get_reauth(request)
     try:
-        state = await reauth.start(name, identity, mode="browser_login")
+        state = await reauth.start(name, identity, mode=MODE_CLAUDE_LOGIN)
     except ReauthBusy as exc:
         raise HTTPException(
             status_code=409,
@@ -1830,9 +1833,11 @@ async def reauth_submit_code(
     request: Request,
     _identity: str = Depends(current_identity),
 ) -> dict:
-    """Submit the OAuth code for the setup-token flow.
+    """Submit the pasted OAuth code for the running code-paste flow.
 
-    Called when the user pastes the authorization code from the oauth URL.
+    Called when the user pastes the authorization code from the oauth URL. The
+    manager dispatches on the flow that published it: a setup-token (``/reauth``)
+    or the full claude.ai sign-in (``/browser-login``).
     If the manager is not in ``awaiting_code`` state this is a no-op.
 
     Returns 404 if the account name is invalid or the slot does not exist.

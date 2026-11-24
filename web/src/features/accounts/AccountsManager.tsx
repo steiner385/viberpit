@@ -32,7 +32,6 @@ import {
 import type { AccountUpdate } from '@/api/hooks'
 import { AddAccountDialog } from './AddAccountDialog'
 import { DeviceCodePanel } from './DeviceCodePanel'
-import { ReauthBrowserPanel } from './ReauthBrowserPanel'
 import { useBrowserLoginAccount } from './useBrowserLogin'
 import type { Account, LiveSessionCounts, Session } from '@/api/types'
 import { reserveWindow, usageUnavailableReason, usageWindows } from '@/lib/usageWindows'
@@ -284,8 +283,9 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
   const qc = useQueryClient()
   const reauthAccount = useReauthAccount()
   const browserLogin = useBrowserLoginAccount()
-  // Which login the shared reauth state machine is running for this row: the
-  // setup-token code paste (`/reauth`) or the full claude.ai browser login.
+  // Which code paste the shared reauth state machine is running for this row: the
+  // setup-token (`/reauth`) or the full claude.ai sign-in (`/browser-login`). Both
+  // use the same link + paste-code UI; only the instructions differ.
   const [browserLoginStarted, setBrowserLoginStarted] = useState(false)
   const cancelReauth = useCancelReauth()
   const submitCode = useSubmitReauthCode()
@@ -771,17 +771,15 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
       {/* Reauth status line */}
       {!editing && isReauthRunning && (
         <p className="text-xs text-warning">
-          {reauthStatus?.message
-            ?? (browserLoginStarted ? 'Opening the claude.ai login…' : 'Verifying the pasted code…')}
+          {reauthStatus?.message ?? 'Verifying the pasted code…'}
         </p>
-      )}
-      {!editing && isReauthRunning && browserLoginStarted && reauthStatus?.vncSession && (
-        <ReauthBrowserPanel vncSession={reauthStatus.vncSession} />
       )}
       {!editing && isAwaitingCode && reauthStatus?.authUrl && (
         <div className="flex flex-col gap-2 mt-1">
           <p className="text-xs text-warning">
-            Open this URL, approve, then paste the code below.
+            {browserLoginStarted
+              ? "Open this link in your browser, where you're signed in to claude.ai as this account, approve, then paste the code below."
+              : 'Open this URL, approve, then paste the code below.'}
           </p>
           <div className="flex items-center gap-2 min-w-0">
             <a

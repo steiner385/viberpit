@@ -174,7 +174,7 @@ describe('AccountRow — Sign in to claude.ai (Remote Control)', () => {
     expect(screen.queryByRole('button', { name: SIGN_IN })).not.toBeInTheDocument()
   })
 
-  it('starts the browser login, not the setup-token reauth', async () => {
+  it('starts the claude.ai sign-in, not the setup-token reauth', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([
       makeAccount({ status: 'ok', provider: 'anthropic', remoteControlLogin: 'login_needed' })]))
@@ -184,7 +184,33 @@ describe('AccountRow — Sign in to claude.ai (Remote Control)', () => {
     expect(reauthMutate).not.toHaveBeenCalled()
   })
 
-  it('shows the in-page login browser while the login runs, and hides the action', async () => {
+  it('shows the authorize link and code box, never the in-page login browser', async () => {
+    const user = userEvent.setup()
+    const submitMutate = vi.fn()
+    vi.mocked(hooks.useSubmitReauthCode).mockReturnValue({
+      ...NOOP_MUTATION, mutate: submitMutate,
+    } as unknown as ReturnType<typeof hooks.useSubmitReauthCode>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([
+      makeAccount({ status: 'ok', provider: 'anthropic', remoteControlLogin: 'login_needed' })]))
+    render(<AccountsManager />, { wrapper })
+    const authUrl = 'https://claude.com/cai/oauth/authorize?code=true&scope=user%3Asessions%3Aclaude_code'
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({
+      state: 'awaiting_code', account: 'kindash', authUrl, vncSession: 'reauth' })))
+    await user.click(screen.getByRole('button', { name: SIGN_IN }))
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: authUrl })).toHaveAttribute('href', authUrl))
+    expect(screen.getByText(/open this link in your browser, where you're signed in to claude\.ai/i))
+      .toBeInTheDocument()
+    expect(screen.queryByTestId('reauth-browser-panel')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: SIGN_IN })).not.toBeInTheDocument()
+
+    await user.type(screen.getByLabelText('Authorization code for kindash'), 'CODE#STATE')
+    await user.click(screen.getByRole('button', { name: 'Submit code' }))
+    expect(submitMutate).toHaveBeenCalledWith(
+      { name: 'kindash', code: 'CODE#STATE' }, expect.anything())
+  })
+
+  it('says the pasted code is being verified while the sign-in completes', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([
       makeAccount({ status: 'ok', provider: 'anthropic', remoteControlLogin: 'login_needed' })]))
@@ -192,10 +218,8 @@ describe('AccountRow — Sign in to claude.ai (Remote Control)', () => {
     vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({
       state: 'running', account: 'kindash', vncSession: 'reauth' })))
     await user.click(screen.getByRole('button', { name: SIGN_IN }))
-    await waitFor(() =>
-      expect(screen.getByTestId('reauth-browser-panel')).toHaveTextContent('reauth'))
-    expect(screen.queryByRole('button', { name: SIGN_IN })).not.toBeInTheDocument()
-    expect(screen.getByText('Opening the claude.ai login…')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('Verifying the pasted code…')).toBeInTheDocument())
+    expect(screen.queryByTestId('reauth-browser-panel')).not.toBeInTheDocument()
   })
 
   it('says who signed in when the login was for another claude.ai account', () => {

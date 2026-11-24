@@ -157,3 +157,70 @@ def test_invalid_code_distinguishes_a_scope_refusal_from_an_expired_code(monkeyp
         sto.exchange(code, c)
     # An ordinary expired code must NOT trigger the scope fallback.
     assert ei.value.is_scope_rejection is False
+
+
+# --- full claude.ai login (Remote Control sign-in) ----------------------------
+
+LOGIN_RESPONSE = {
+    "access_token": "sk-ant-oat01-ACCESS", "refresh_token": "sk-ant-ort01-REFRESH",
+    "expires_in": 28800, "scope": sto.FULL_LOGIN_SCOPE,
+    "account": {"uuid": "uuid-A", "email_address": "a@example.com"},
+    "organization": {"uuid": "org-A", "name": "A's org"},
+}
+
+
+def test_full_login_scope_is_the_cli_logins_five_scopes():
+    assert set(sto.FULL_LOGIN_SCOPE.split()) == {
+        "user:profile", "user:inference", "user:sessions:claude_code",
+        "user:mcp_servers", "user:file_upload"}
+    c = sto.begin(sto.FULL_LOGIN_SCOPE)
+    q = parse_qs(urlparse(c.authorize_url).query)
+    assert q["scope"] == [sto.FULL_LOGIN_SCOPE]
+    assert q["code"] == ["true"] and q["redirect_uri"] == [sto.REDIRECT_URI]
+
+
+def test_exchange_login_returns_the_token_response_without_asking_for_a_lifetime(monkeypatch):
+    def handler(url, **kw):
+        return httpx.Response(200, json=LOGIN_RESPONSE)
+    monkeypatch.setattr(sto.httpx, "post", lambda url, **kw: (captured.update(kw), handler(url))[1])
+    captured: dict = {}
+    c = sto.begin(sto.FULL_LOGIN_SCOPE)
+    assert sto.exchange_login(f"AUTHCODE#{c.state}", c) == LOGIN_RESPONSE
+    body = captured["json"]
+    # claude's own login omits expires_in (verified in the 2.1.331 binary): asking for
+    # one is what turns the grant into a refresh-less setup-token.
+    assert "expires_in" not in body
+    assert body["grant_type"] == "authorization_code" and body["code"] == "AUTHCODE"
+    assert body["code_verifier"] == c.verifier and body["state"] == c.state
+
+
+def test_exchange_login_without_a_refresh_token_fails_clearly(monkeypatch):
+    no_refresh = {k: v for k, v in LOGIN_RESPONSE.items() if k != "refresh_token"}
+    c, code, _ = _exchange_with_handler(
+        monkeypatch, lambda url, **kw: httpx.Response(200, json=no_refresh), None)
+    with pytest.raises(sto.SetupTokenNoRefreshToken) as ei:
+        sto.exchange_login(code, c)
+    assert str(ei.value) == "claude.ai did not return a refresh token"
+
+
+def test_exchange_login_without_an_access_token_or_json_fails(monkeypatch):
+    for resp in (httpx.Response(200, json={"refresh_token": "r"}),
+                 httpx.Response(200, text="not json"), httpx.Response(200, json=[1])):
+        c, code, _ = _exchange_with_handler(monkeypatch, lambda url, _r=resp, **kw: _r, None)
+        with pytest.raises(sto.SetupTokenNoToken):
+            sto.exchange_login(code, c)
+
+
+def test_exchange_login_shares_the_error_mapping(monkeypatch):
+    c, _, _ = _exchange_with_handler(
+        monkeypatch, lambda url, **kw: httpx.Response(200, json=LOGIN_RESPONSE), None)
+    with pytest.raises(sto.SetupTokenStateMismatch):
+        sto.exchange_login("AUTHCODE#WRONG", c)
+    c, code, _ = _exchange_with_handler(
+        monkeypatch, lambda url, **kw: httpx.Response(400, json={"error": "invalid_grant"}), None)
+    with pytest.raises(sto.SetupTokenInvalidCode):
+        sto.exchange_login(code, c)
+    c, code, _ = _exchange_with_handler(
+        monkeypatch, lambda url, **kw: httpx.Response(502, text="bad gateway"), None)
+    with pytest.raises(sto.SetupTokenTransient):
+        sto.exchange_login(code, c)

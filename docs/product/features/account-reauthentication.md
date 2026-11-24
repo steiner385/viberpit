@@ -77,9 +77,20 @@ Running re-auth on a worker — it must run on the master and stream the display
   reported on the reauth panel immediately (the log names the scope that was requested) rather than
   as a blank quota badge later. Tokens minted before #1387 was deployed — the reauth ran against the
   edge's *deployed* build, not the merged one — are narrow-scope and must simply be re-minted.
-- Browser re-auth alternative (#331): the reauth browser runs on a virtual X display viewable via
-  web VNC; `auth_login.py` prepares a temp Chrome profile with Claude cookies stripped and cleans it
-  up on cancel/timeout/error (#745).
+- Browser login on the host (#331), now only for **adding** an account (`/accounts/add`, mode
+  `login`): the login browser runs on a virtual X display viewable via web VNC; `auth_login.py`
+  prepares a temp Chrome profile with Claude cookies stripped and cleans it up on
+  cancel/timeout/error (#745).
+- claude.ai sign-in for Remote Control (`/accounts/{name}/browser-login`, mode `claude_login`): the
+  same code paste as the setup-token re-auth, in the operator's own browser, so their existing
+  claude.ai session and password manager apply. `setup_token_oauth.begin(FULL_LOGIN_SCOPE)`
+  requests the CLI login's five scopes and `exchange_login()` omits `expires_in`, returning the
+  access + refresh token pair (a missing refresh token saves nothing).
+  `auth_login.complete_code_login` reads the identity from the token response's `account` /
+  `organization` or `GET /api/oauth/profile`, refuses any other claude.ai identity before writing
+  (`browser_login_wrong_account`), then stores the slot through `install_claude_login`, the
+  add-account capture's own write path. The code goes to the shared `POST
+  /accounts/{name}/reauth/code`, which dispatches on the running mode.
 - Failure detection: a `set_auth_failure_sink` hook emits `AuthFailure` on each needs-reauth flip;
   `server/usage/auth_failure_audit.py` records these. A 400 refresh response is treated as a dead
   grant and short-circuits future usage calls until `mark_reauthenticated` clears it (#680); a
@@ -89,8 +100,9 @@ Running re-auth on a worker — it must run on the master and stream the display
   per-account caches — the same headless paste-back shape, across accounts.
 
 **Evidence** — State machine in `server/reauth.py`; RPC projection in `server/reauth_remote.py` and
-`server/ipc/reauth_rpc.py`; PKCE setup-token flow in `src/viberpit/setup_token_oauth.py`; browser
-profile prep/cleanup in `src/viberpit/auth_login.py`; token→env in
+`server/ipc/reauth_rpc.py`; PKCE setup-token and claude.ai sign-in exchanges in
+`src/viberpit/setup_token_oauth.py`; browser profile prep/cleanup and the shared slot install in
+`src/viberpit/auth_login.py`; token→env in
 `server/sessions/account_auth.py`; MCP paste-back in `server/mcp_auth.py`; failure audit in
 `server/usage/auth_failure_audit.py`. PRs: #354/#357/#355/#358 (setup-token reauth phases), #366
 (in-process PKCE), #387 (reauth button on all accounts), #877 (MCP auth across accounts, headless

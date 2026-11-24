@@ -441,11 +441,24 @@ def refresh_access_token(refresh_token: str, prior: dict, *,
         # accounts to needs-reauth in one sweep. Surface as transient → status
         # left unchanged. (Sibling of the 429/5xx carve-out above.)
         raise TransientError(f"token refresh got unexpected status {status} (treated as transient)")
-    resp = json.loads(body)
+    return slot_blob_from_token_response(json.loads(body), prior,
+                                         prior_refresh_token=refresh_token)
+
+
+def slot_blob_from_token_response(resp: dict, prior: dict | None = None, *,
+                                  prior_refresh_token: str | None = None) -> dict:
+    """The slot's ``claudeAiOauth`` blob for a token-endpoint response.
+
+    The one place a token response becomes the CLI's credential shape — used by a
+    refresh (``refresh_access_token``) and by the code-paste claude.ai login.
+    ``prior`` carries keys the response does not restate (``subscriptionType``,
+    ``rateLimitTier``). ``prior_refresh_token`` is the grant being refreshed: kept
+    when the response does not rotate it. NEVER log the result.
+    """
     now_ms = int(time.time() * 1000)
-    blob = dict(prior)  # carry subscriptionType / rateLimitTier
+    blob = dict(prior or {})
     blob["accessToken"] = resp["access_token"]
-    blob["refreshToken"] = resp.get("refresh_token", refresh_token)
+    blob["refreshToken"] = resp.get("refresh_token", prior_refresh_token)
     blob["expiresAt"] = now_ms + int(resp.get("expires_in", 0)) * 1000
     # `refreshTokenExpiresAt` (written by the CLI's own login) describes ONE refresh
     # token. Restate it when the endpoint reports the new grant's lifetime; on a
@@ -453,9 +466,52 @@ def refresh_access_token(refresh_token: str, prior: dict, *,
     # accounts.slot_status call a live grant lapsed.
     if "refresh_token_expires_in" in resp:
         blob["refreshTokenExpiresAt"] = now_ms + int(resp["refresh_token_expires_in"]) * 1000
-    elif blob["refreshToken"] != refresh_token:
+    elif blob["refreshToken"] != prior_refresh_token:
         blob.pop("refreshTokenExpiresAt", None)
     if "scope" in resp:
         blob["scopes"] = resp["scope"].split()
     blob.setdefault("scopes", [])
     return blob
+
+
+# claude's own organization_type → subscriptionType map (verified against the
+# claude 2.1.331 binary). Anything else is "unknown", never guessed.
+_SUBSCRIPTION_BY_ORG_TYPE = {
+    "claude_max": "max", "claude_pro": "pro",
+    "claude_enterprise": "enterprise", "claude_team": "team",
+}
+
+
+def subscription_type_for(organization_type: object) -> str | None:
+    """The slot's ``subscriptionType`` for a profile's ``organization_type``, or None."""
+    return _SUBSCRIPTION_BY_ORG_TYPE.get(organization_type) if isinstance(
+        organization_type, str) else None
+
+
+def fetch_profile(access_token: str, *, max_retries: int = _DEFAULT_MAX_RETRIES,
+                  max_total_sec: float = _DEFAULT_MAX_TOTAL_SEC) -> dict:
+    """``GET /api/oauth/profile`` for *access_token* (needs ``user:profile``).
+
+    The shape claude itself reads: ``account`` {``uuid``, ``email``,
+    ``display_name``…} and ``organization`` {``uuid``, ``name``,
+    ``organization_type``, ``rate_limit_tier``…}. A 401 raises ``AuthError``;
+    anything else that is not a 200 JSON object raises ``TransientError``.
+    NEVER logs the token.
+    """
+    status, body = http_request(
+        "GET", PROFILE_URL,
+        headers={"Authorization": f"Bearer {access_token}", "anthropic-beta": BETA_HEADER},
+        max_retries=max_retries, max_total_sec=max_total_sec,
+    )
+    if status == 401:
+        raise AuthError("profile endpoint returned 401", status=status,
+                        body=_truncate_body(body))
+    if status != 200:
+        raise TransientError(f"profile endpoint returned {status}")
+    try:
+        data = json.loads(body)
+    except ValueError as exc:
+        raise TransientError("profile endpoint returned non-JSON") from exc
+    if not isinstance(data, dict):
+        raise TransientError("profile endpoint returned a non-object")
+    return data

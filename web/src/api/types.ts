@@ -3,8 +3,8 @@ export type AccountStatus = 'ok' | 'limited' | 'needs-relogin' | 'needs-reauth' 
 export interface ReauthState {
   state: 'idle' | 'running' | 'cancelling' | 'success' | 'error' | 'timeout' | 'awaiting_code'
   /** A machine-readable reason for an `error`, e.g. `browser_login_wrong_account` (the
-   *  Remote Control re-login signed in as another claude.ai account; nothing was saved
-   *  and `message` names both e-mails). */
+   *  Remote Control claude.ai sign-in came back as another claude.ai account; nothing
+   *  was saved and `message` names both e-mails). */
   code?: string | null
   message?: string | null
   account?: string | null   // the account/slot this operation targets (scopes per-account status)
