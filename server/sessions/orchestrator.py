@@ -8585,6 +8585,57 @@ class SessionOrchestrator:
                 continue
             await self.recheck_stuck_complete_session(session_id)
 
+    async def _archive_delivered_detached_once(self) -> int:
+        """Archive every detached session whose work was delivered (#3459).
+
+        A session parked ``automation_ownership_stale`` can never run again: the
+        automation fence refuses every driver for it, so no turn will ever signal
+        ``complete`` and route it through ``_auto_archive_completed``. When its PR is
+        merged, or open with auto-merge armed or in the merge queue
+        (``PrFacts.delivered_pr``), nothing is owed by it either — left alone it sits
+        in the dashboard's Failed group for a person to sort out (2026-11-24, twelve
+        KinDash sessions). The same opt-outs as a completion archive apply: the
+        app-wide toggle, a human's sticky unarchive, a snooze and the assistant.
+        Archived as ``completion`` provenance, so the retro audit and reversal
+        learning still see it. Returns how many were archived."""
+        if getattr(self, "_draining", False) or getattr(self, "_hb_fenced", False):
+            return 0
+        if not await self._read_auto_archive_enabled():
+            return 0
+        from server.automations.completion_bar import PrFacts
+        enabled_hosts = await self._enabled_host_names()
+        archived = 0
+        for session_id, rec in list(self._records.items()):
+            if (rec.paused_reason != "automation_ownership_stale"
+                    or rec.status in INACTIVE_SESSION_STATUSES
+                    or rec.status in _status_mod.MID_TURN_STATUSES
+                    or session_id in self._auto_archiving
+                    or getattr(rec, "auto_archive_opt_out_reason", None)
+                    or getattr(rec, "snooze", None)
+                    or is_assistant(rec)
+                    or not self._owns_record(rec, enabled_hosts)):
+                continue
+            delivered = self._autopilot_pr_facts(rec).delivered_pr
+            if delivered is None:
+                continue
+            how = "merged" if delivered.state == "merged" else "armed to merge"
+            self._auto_archiving.add(session_id)
+            try:
+                await self.archive_session(session_id, archived_by="completion", context={
+                    "repo": rec.repo, "goal": None, "goal_source": "detached",
+                    "pr_state": PrFacts(has_repo=bool(rec.repo), prs=(delivered,)).to_prompt(),
+                    "reason": f"detached: work delivered (PR #{delivered.number} {how})",
+                })
+            except Exception:
+                log.warning("detached.autoarchive_failed sid=%s", session_id, exc_info=True)
+                continue
+            finally:
+                self._auto_archiving.discard(session_id)
+            archived += 1
+            log.info("detached.autoarchived sid=%s pr=%s state=%s",
+                     session_id, delivered.number, how)
+        return archived
+
     async def _auto_archive_completed(self, session_id: str) -> None:
         """Archive a completed session (any origin) once the completion bar confirms the
         goal is met; otherwise nudge it toward the remaining work. A failure clears the
@@ -18745,6 +18796,20 @@ class SessionOrchestrator:
                     await self._recheck_stuck_complete_sessions_once()
             except Exception:  # pragma: no cover — recheck must never stall the loop
                 log.warning("completion.recheck_loop_error", exc_info=True)
+            try:
+                # Always-on and, unlike the recheck above, on every role: a detached
+                # session has no turn left to reach the completion gate, every daemon
+                # runs its own PR poller, and each archives only the rows it owns
+                # (#3459).
+                await self._archive_delivered_detached_once()
+            except Exception:  # pragma: no cover — must never stall the loop
+                log.warning("detached.autoarchive_loop_error", exc_info=True)
+            try:
+                # Boot (the first pass) and automation re-enable: give a stranded
+                # sibling its ownership back while its targets are still free (#3459).
+                await self._reattach_stale_ownership_once()
+            except Exception:  # pragma: no cover — must never stall the loop
+                log.warning("ownership.reattach_loop_error", exc_info=True)
             try:
                 # The primary resyncs moved queued records from its mirror loop, which a
                 # worker never starts — so a worker's copy of an entry another host
@@ -29209,6 +29274,87 @@ class SessionOrchestrator:
             log.warning("ownership_stale.persist_failed session=%s", record.id, exc_info=True)
         log.info("session.ownership_stale_fenced session=%s status=%s — finished turn kept",
                  record.id, record.status)
+
+    async def _enabled_automation_ids(self) -> frozenset[str]:
+        """Ids of every enabled automation row; an operation's ``owner`` is one."""
+        from sqlalchemy import select
+        from server.db.models import Automation
+        async with db_session() as db:
+            return frozenset((await db.scalars(
+                select(Automation.id).where(Automation.enabled.is_(True)))).all())
+
+    async def _reattach_stale_ownership_once(self) -> int:
+        """Re-acquire ownership for sessions fenced ``automation_ownership_stale`` whose
+        owner automation is enabled — on daemon boot (the first pass) and whenever an
+        automation is turned back on (#3459).
+
+        An owner settling its claim when SOME of an operation's sessions are archived,
+        or an automation paused mid-flight, used to strand the rest: their fence had
+        nothing that could ever lift it. ``ownership.reattach_session`` lifts it only
+        when the released operation's targets are still unheld, so a session whose
+        work genuinely moved on stays fenced (and honestly labelled detached). Only a
+        resting finished turn is reattached: a ``needs_attention`` row would be
+        re-driven by the stuck-session sweep the moment its reason cleared, and a
+        mid-turn one has nothing to rejoin. Returns how many were reattached.
+
+        Edge-triggered on purpose: while an owner stays enabled, a release it makes
+        itself — a give-up, so the runner can dispatch the issue afresh — is its own
+        decision, and a level-triggered pass would take the claim straight back.
+
+        Every role reattaches the records it owns (``_owns_record``) — a worker's
+        in-memory record is the one its own loops read — and the store's target locks
+        make two daemons racing one operation safe. The release half
+        (``release_reattached_if_stopped``) is fleet-global, so only the primary runs it."""
+        if getattr(self, "_draining", False) or getattr(self, "_hb_fenced", False):
+            return 0
+        from server.automations.ownership import (
+            reattach_session, release_reattached_if_stopped)
+        enabled = await self._enabled_automation_ids()
+        seen: frozenset[str] | None = getattr(self, "_reattach_owners_seen", None)
+        self._reattach_owners_seen = enabled
+        newly = enabled if seen is None else enabled - seen
+        reattached = 0
+        if newly:
+            enabled_hosts = await self._enabled_host_names()
+            for session_id, rec in list(self._records.items()):
+                if (rec.paused_reason != "automation_ownership_stale"
+                        or rec.status in INACTIVE_SESSION_STATUSES
+                        or rec.status in _STALLED_STATUSES
+                        or rec.status in _status_mod.MID_TURN_STATUSES
+                        or not self._owns_record(rec, enabled_hosts)):
+                    continue
+                try:
+                    owner = await reattach_session(
+                        session_id, owners=newly,
+                        reason="reattached: " + ("daemon boot" if seen is None
+                                                 else "automation re-enabled"))
+                except Exception:
+                    log.warning("ownership.reattach_failed sid=%s", session_id, exc_info=True)
+                    continue
+                if owner is None:
+                    continue
+                await self._clear_ownership_stale(rec)
+                reattached += 1
+                log.info("ownership.reattached sid=%s owner=%s trigger=%s", session_id,
+                         owner, "boot" if seen is None else "re-enabled")
+        if daemon_role() != "primary":
+            return reattached
+        try:
+            for token in await release_reattached_if_stopped():
+                log.info("ownership.reattach_released token=%s", token)
+        except Exception:
+            log.warning("ownership.reattach_release_failed", exc_info=True)
+        return reattached
+
+    async def _clear_ownership_stale(self, record: SessionRecord) -> None:
+        """Lift the ``automation_ownership_stale`` reason once ownership is back; the
+        finished turn's status was never changed (``_park_ownership_stale``)."""
+        record.paused_reason = None
+        record.paused_until = None
+        from sqlalchemy import update as sa_update
+        async with db_session() as db:
+            await db.execute(sa_update(DbSession).where(DbSession.id == record.id)
+                             .values(paused_reason=None, paused_until=None))
 
     def _mark_needs_reauth(self, account: str) -> None:
         """Propagate a recompose-failed in-session 401 to the ledger so the dashboard

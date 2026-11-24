@@ -124,6 +124,29 @@ export const PR_CHECKS_FAILING: StatusPresentation = {
   tier: 'error', label: 'Checks failing', Icon: AlertTriangle, textClass: ERROR,
 }
 
+// A session whose owning automation lost ownership (server pausedReason
+// `automation_ownership_stale`): the execution fence refuses every driver for it, so
+// it will never run again on its own (#3459). Applied by sessionTriage() in
+// triageTier.ts, which has the PRs. With a merged or armed PR the work was
+// delivered: that is a finished claim, not "Turn failed", and the server
+// auto-archives it. Without one it rests calm, naming the PR a person still owns.
+export const OWNERSHIP_STALE_REASON = 'automation_ownership_stale'
+
+export function detachedDeliveredPresentation(prNumber: number): StatusPresentation {
+  return {
+    tier: 'complete', label: `Detached — work delivered (PR #${prNumber})`,
+    Icon: CheckCircle2, textClass: CALM,
+  }
+}
+
+export function detachedPresentation(openPrNumber?: number): StatusPresentation {
+  return {
+    tier: 'your-turn',
+    label: openPrNumber === undefined ? 'Detached' : `Detached — PR #${openPrNumber} open`,
+    Icon: Clock, textClass: CALM,
+  }
+}
+
 // A prompt the user has sent whose turn has not started yet (lib/promptFlight). The
 // resting statuses below are truthful about the SESSION — it genuinely is not working
 // yet — but they are the wrong thing to show someone who just hit Enter: "Ready" over

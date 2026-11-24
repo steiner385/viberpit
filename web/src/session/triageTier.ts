@@ -1,9 +1,10 @@
 import { isSnoozed, type Session } from '@/api/types'
 import {
-  statusPresentation, TIER_RANK, PR_CHECKS_FAILING,
+  statusPresentation, TIER_RANK, PR_CHECKS_FAILING, OWNERSHIP_STALE_REASON,
+  detachedDeliveredPresentation, detachedPresentation,
   type StatusTier, type StatusPresentation,
 } from './statusTier'
-import { anyChecksFailing } from './prStatus'
+import { anyChecksFailing, deliveredPr, isActionablePrState } from './prStatus'
 import type { PromptStage } from './promptStage'
 
 /** Tiers at which nothing is already watching the session's PR: it has no live
@@ -26,6 +27,10 @@ const AT_REST = new Set<StatusTier>(['your-turn', 'complete'])
  * still-actionable PR's checks are red. A `waiting`/`busy`/`needs-you` session is
  * never overridden — either an agent is already on the PR, or the session is
  * already more urgent than a failing PR.
+ *
+ * A detached session (its automation lost ownership, #3459) reads "Detached — work
+ * delivered" over ANY status once its PR is merged or armed, and plain "Detached"
+ * at rest; a `needs_attention` one with nothing delivered keeps "Turn failed".
  */
 export function sessionTriage(session: Session, promptStage?: PromptStage): StatusPresentation {
   const base = statusPresentation(session.status, {
@@ -35,12 +40,22 @@ export function sessionTriage(session: Session, promptStage?: PromptStage): Stat
     pausedUntil: session.pausedUntil,
     promptStage,
   })
+  const detached = session.pausedReason === OWNERSHIP_STALE_REASON
+  // Detached with a merged or armed PR: the work left the session, whatever status
+  // the fence caught it in — including a pre-#3456 `needs_attention` (#3459).
+  const delivered = detached ? deliveredPr(session.prs) : undefined
+  if (delivered) return detachedDeliveredPresentation(delivered.number)
   if (
     AT_REST.has(base.tier)
     && anyChecksFailing(session.prs)
     && TIER_RANK.error < TIER_RANK[base.tier]
   ) {
     return PR_CHECKS_FAILING
+  }
+  // Detached at a finished turn with nothing delivered yet. A `needs_attention`
+  // row keeps "Turn failed": that turn may really have errored.
+  if (detached && AT_REST.has(base.tier)) {
+    return detachedPresentation(session.prs?.find((pr) => isActionablePrState(pr.state))?.number)
   }
   return base
 }
