@@ -2320,8 +2320,8 @@ class SessionOrchestrator:
                                       default=_remote_control.REASON_LOGIN_NEEDED)
 
     def _rc_spawn_enable_held(self) -> set[str]:
-        """Sessions a Remote Control toggle is respawning: their spawn-time enable is
-        skipped, the toggle sends its own (and reports its outcome)."""
+        """Sessions a Remote Control toggle or revocation is respawning: their spawn-time
+        enable is skipped, the caller sends its own (and reports its outcome)."""
         held: set[str] | None = getattr(self, "_rc_spawn_enable_hold", None)
         if held is None:
             held = self._rc_spawn_enable_hold = set()
@@ -10015,6 +10015,10 @@ class SessionOrchestrator:
                 or self._remote_control_driver(session_id) is None):
             pending.discard(session_id)
             return True
+        # The respawn's own spawn-time enable would only clear the URL, from a background
+        # task that outlives this call: held, and the revocation finishes inline below.
+        held = self._rc_spawn_enable_held()
+        held.add(session_id)
         try:
             await self._respawn_for_remote_control(session_id)
         except Exception as exc:  # noqa: BLE001 — retried by the sweep
@@ -10022,9 +10026,14 @@ class SessionOrchestrator:
             log.info("session.remote_control_revoke_deferred id=%s code=%s", session_id,
                      getattr(exc, "code", None) or type(exc).__name__)
             return False
+        finally:
+            held.discard(session_id)
         if rec.launch_credential == _account_auth.LAUNCH_SLOT:
             pending.add(session_id)     # still on the login (e.g. turned back on meanwhile)
+            self._schedule_remote_control(session_id)   # ...so its new CLI wants a bridge
             return False
+        # The bridge died with the old CLI.
+        await self._persist_remote_control(session_id, remote_control_url=None)
         pending.discard(session_id)
         self._rc_token_fps().pop(session_id, None)
         log.info("session.remote_control_revoked id=%s launch=%s", session_id,
