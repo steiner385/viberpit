@@ -13,7 +13,9 @@ import { useAutomationTrigger } from '@/api/hooks'
 import { fetchPrDoctorJob, type ActionableItem, type ActionSpec } from '@/api/automations'
 import { outcomeToast } from './outcomeToast'
 
-export type Outcome = { level: string; message: string }
+/** `link`: where the operator fixes a refusal (#3449). An outcome carrying one
+ *  stays on its row until the next run instead of expiring, so it can be clicked. */
+export type Outcome = { level: string; message: string; link?: { href: string; label: string } }
 
 export interface ItemJob {
   busy: boolean
@@ -50,7 +52,12 @@ async function pollJob(
       return LOST
     }
     if (job.job_id !== jobId || job.target !== itemId) return LOST
-    if (JOB_TERMINAL.has(job.status)) return { level: job.level, message: job.message }
+    if (JOB_TERMINAL.has(job.status)) {
+      return job.link
+        ? { level: job.level, message: job.message,
+            link: { href: job.link, label: job.link_label || 'Fix this' } }
+        : { level: job.level, message: job.message }
+    }
     onPhase(job.phase)
     await new Promise((res) => setTimeout(res, JOB_POLL_MS))
   }
@@ -85,6 +92,7 @@ export function useActionJobs(automationId: string) {
     patch(item.id, { busy: false, phase: null, outcome })
     outcomeToast({ level: outcome.level, message: `${itemLabel(item)}: ${outcome.message}` })
     clearTimeout(expiry.current.get(item.id))
+    if (outcome.link) return
     expiry.current.set(item.id, setTimeout(() => {
       expiry.current.delete(item.id)
       patch(item.id, { outcome: null })

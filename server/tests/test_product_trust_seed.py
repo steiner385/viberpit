@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
+from sqlalchemy import select
+
 from server.tests._trust_ids import STEINER_ENTRY, STEINER_ID, TONY_ENTRY
 from server.tests.test_pm_api import IDENTITY_HEADERS, _client
 from server.tests.test_pm_api import canonical_mutation_repositories  # noqa: F401 — autouse
@@ -92,15 +94,23 @@ def test_the_first_product_starts_with_a_null_policy():
 
 def test_trust_gap_names_the_product_and_where_to_edit(isolated_db):
     from server.db import db_session
+    from server.db.models import Project
     from server.pm.dispatch_trust import trust_gap
     asyncio.run(_products({"trusted_authors": [TONY_ENTRY]}, None, {"trusted_authors": ["tony"]}))
 
     async def run():
         async with db_session() as db:
+            for p in (await db.execute(select(Project))).scalars():
+                p.onboarding_state = "registered" if p.slug == "p1" else "live"
+            await db.flush()
             return [await trust_gap(db, r) for r in ("o/r0", "o/r1", "o/r2", "x/unowned")]
     listed, empty, unbound, unowned = asyncio.run(run())
-    assert "product p0's list" in listed and "/roadmap/p0" in listed
-    assert "product p1 trusts no authors" in empty and "/roadmap/p1" in empty
+    assert listed.text == "the author is not on product p0's trusted authors list"
+    assert (listed.product, listed.edit_path) == ("p0", "/roadmap/p0?tab=automation")
+    assert empty.text.startswith(
+        "product p1 has no automation policy yet (still onboarding: registered), so no author")
+    assert empty.edit_path == "/roadmap/p1?tab=automation"
     # Only an unbound login: it trusts no one, so it reads as an empty list.
-    assert "product p2 trusts no authors" in unbound
-    assert "no single product owns x/unowned" in unowned
+    assert unbound.text.startswith("product p2 trusts no authors yet, so no author is trusted")
+    assert unowned.text == "no single product owns x/unowned, so no author is trusted there"
+    assert unowned.product is None and unowned.edit_path is None

@@ -142,6 +142,7 @@ async def test_untrusted_refusal_settles_the_job_for_its_own_target_without_repe
     assert job["message"] == ("Not fixing: the PR's author is not a trusted author — no "
                               "single product owns cairnea/KinDash, so no author is "
                               "trusted there")
+    assert job["link"] is None  # no owning product, so no list to link to
 
 
 @pytest.mark.asyncio

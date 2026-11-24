@@ -22,12 +22,13 @@ in front of an agent (PM Triage classification, epic adoption's spec seed, PR Do
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.automations.product_policy import load_policies, policy_for_repo, trusted_authors
-from server.db.models import WorkItem
+from server.db.models import Project, WorkItem
 from server.pm.fleet_platforms import fleet_platform_state
 from server.pm.queue import IGNORE_LABEL, gated_platform, is_trusted_author
 from server.pm.refs import split_ref
@@ -126,19 +127,36 @@ def author_trusted(by_repo: Mapping[str, frozenset[str]], repo: str | None,
                              author_id=author_id)
 
 
-async def trust_gap(db: AsyncSession, repo: str) -> str:
-    """Why an author is not trusted on *repo*, naming the product whose list decided it
-    and where to edit that list — the actionable half of an ``untrusted_author``
-    refusal (#3449). A product whose list trusts nobody (never set, or only unbound
-    logins) is called out as such, since then no author at all can pass."""
+@dataclass(frozen=True)
+class TrustGap:
+    """Why an author is not trusted on a repo (#3449): ``text`` for a person, plus the
+    product whose list decided it and the page where that list is edited (both
+    ``None`` when no single product owns the repo — there is no list to edit)."""
+    text: str
+    product: str | None = None
+    edit_path: str | None = None
+
+
+async def trust_gap(db: AsyncSession, repo: str) -> TrustGap:
+    """The actionable half of an ``untrusted_author`` refusal: names the product whose
+    trust list refused the author and where to edit it. A list that trusts nobody —
+    never set (a product still onboarding has no policy) or only unbound logins — is
+    called out as such, since then no author at all can pass."""
     from server.pm.repo_project import owning_projects_by_repo
     owner = (await owning_projects_by_repo(db, [repo])).get(repo)
     if owner is None:
-        return f"no single product owns {repo}, so no author is trusted there"
-    where = f"Trusted issue authors in its automation settings (/roadmap/{owner.slug})"
-    if not trusted_authors((await load_policies(db)).get(owner.slug)):
-        return f"product {owner.slug} trusts no authors yet; add them under {where}"
-    return f"the author is not on product {owner.slug}'s list; edit {where}"
+        return TrustGap(f"no single product owns {repo}, so no author is trusted there")
+    state, policy = (await db.execute(select(Project.onboarding_state, Project.automation_policy)
+                                      .where(Project.id == owner.project_id))).one()
+    path = f"/roadmap/{owner.slug}?tab=automation"
+    if trusted_authors(policy):
+        return TrustGap(f"the author is not on product {owner.slug}'s trusted authors list",
+                        owner.slug, path)
+    why = "has no automation policy yet" if policy is None else "trusts no authors yet"
+    onboarding = f" (still onboarding: {state})" if state and state != "live" else ""
+    return TrustGap(f"product {owner.slug} {why}{onboarding}, so no author is trusted; add "
+                    "them under Trusted issue authors in its Automation settings",
+                    owner.slug, path)
 
 
 async def unmirrored_prs(db: AsyncSession, repo: str, numbers: Iterable[int]) -> list[int]:

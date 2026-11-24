@@ -65,10 +65,18 @@ function ActionButton(
 function OutcomeBadge({ job }: { job: ItemJob | undefined }) {
   const outcome = job?.outcome
   if (!outcome) return null
-  return (
+  const badge = (
     <Badge tone={outcome.level === 'ok' ? 'success' : outcome.level === 'warn' ? 'warning' : 'danger'}>
       {outcome.message}
     </Badge>
+  )
+  if (!outcome.link) return badge
+  // A plain anchor, not a router Link: this list also renders outside a Router.
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      {badge}
+      <a href={outcome.link.href} className="text-sm text-accent underline">{outcome.link.label}</a>
+    </span>
   )
 }
 

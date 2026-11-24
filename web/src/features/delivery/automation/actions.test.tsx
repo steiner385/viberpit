@@ -242,5 +242,24 @@ describe('AutomationActions', () => {
       await act(async () => { vi.advanceTimersByTime(OUTCOME_TTL_MS + 1) })
       expect(screen.queryByText('Could not file')).toBeNull()
     })
+
+    it('an untrusted-author refusal links to the product trust list and stays on its row (#3449)', async () => {
+      items = [conflictRow(KEEL)]
+      mutateAsync.mockResolvedValue({
+        status: 'queued', level: 'ok', message: 'Queued', phase: 'queued', job_id: 'prd-keel' })
+      fetchPrDoctorJob.mockResolvedValue(job('prd-keel', KEEL, {
+        status: 'error', level: 'warn',
+        message: "Not fixing: the PR's author is not a trusted author — product keel has no automation policy yet (still onboarding: registered)",
+        link: '/roadmap/keel?tab=automation', link_label: "Edit keel's trusted authors" }))
+      render(<AutomationActions automationId="pr-doctor" enabled variant="full" />)
+      fire(KEEL)
+      const link = await within(rowOf(KEEL)).findByRole('link', { name: "Edit keel's trusted authors" })
+      expect(link).toHaveAttribute('href', '/roadmap/keel?tab=automation')
+      expect(within(rowOf(KEEL)).getByText(/still onboarding: registered/)).toBeInTheDocument()
+      // Unlike a plain outcome it does not expire: the operator has to be able to click it.
+      vi.useFakeTimers()
+      await act(async () => { vi.advanceTimersByTime(OUTCOME_TTL_MS + 1) })
+      expect(within(rowOf(KEEL)).getByRole('link', { name: "Edit keel's trusted authors" })).toBeInTheDocument()
+    })
   })
 })

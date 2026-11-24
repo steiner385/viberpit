@@ -311,9 +311,9 @@ describe('ProductDetail', () => {
   it('Automation: the policy card lives on its own tab, not on the Overview', () => {
     // The card's own "Automation" heading is not a stable target here: it is
     // the same text the Automation TAB wears, so a real field's label is what
-    // this test can tell apart from the tab strip. "Dispatch" now names both
-    // the one editable field in this fixture AND its fieldset legend (spec
-    // 2026-09-20 D5), so both must appear once the tab is open.
+    // this test can tell apart from the tab strip. "Dispatch" names only the
+    // field: its fieldset legend is "Queue", since "Dispatch / Dispatch" read as a
+    // duplicate (#3449).
     Object.assign(policySchemaQuery, {
       data: [{ key: 'dispatch', label: 'Dispatch', type: 'enum', default: 'off', help: '', choices: ['off', 'on'] }],
       isLoading: false,
@@ -321,7 +321,8 @@ describe('ProductDetail', () => {
     mount()
     expect(screen.queryByText('Dispatch')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('tab', { name: 'Automation' }))
-    expect(screen.getAllByText('Dispatch')).toHaveLength(2)
+    expect(screen.getAllByText('Dispatch')).toHaveLength(1)
+    expect(screen.getByText('Queue')).toBeInTheDocument()
   })
 
   it('Ranked: only this product', () => {
