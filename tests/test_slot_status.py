@@ -153,16 +153,31 @@ def test_transient_refresh_failure_does_not_mark_login_needed():
         assert accounts.slot_status("throttled") == "ok"
 
 
-def test_mark_reauthenticated_clears_a_recorded_rejection():
+def _reject(name: str) -> None:
+    from viberpit import accounts, oauth
+    _write_slot(name, expiresAt=_now_ms() - 60_000)
+    with mock.patch.object(oauth, "refresh_access_token",
+                           side_effect=oauth.AuthError("invalid_grant", status=400)):
+        with pytest.raises(oauth.AuthError):
+            accounts.ensure_valid_token(name)
+
+
+def test_a_setup_token_reauth_does_not_clear_a_recorded_rejection():
+    """``mark_reauthenticated`` also runs after a setup-token re-auth, which never
+    touches the slot: a dead slot must stay ``login_needed``."""
     with temp_env():
-        from viberpit import accounts, oauth
-        _write_slot("relogin", expiresAt=_now_ms() - 60_000)
-        with mock.patch.object(oauth, "refresh_access_token",
-                               side_effect=oauth.AuthError("invalid_grant", status=400)):
-            with pytest.raises(oauth.AuthError):
-                accounts.ensure_valid_token("relogin")
-        _write_slot("relogin")  # the fresh browser login rewrote the slot
+        from viberpit import accounts
+        _reject("relogin")
         accounts.mark_reauthenticated("relogin")
+        assert accounts.slot_status("relogin") == "login_needed"
+
+
+def test_a_captured_browser_login_clears_a_recorded_rejection():
+    with temp_env():
+        from viberpit import accounts
+        _reject("relogin")
+        _write_slot("relogin")  # the fresh browser login rewrote the slot...
+        accounts.clear_slot_refresh_rejection("relogin")   # ...as capture_login does
         assert accounts.slot_status("relogin") == "ok"
 
 

@@ -2,6 +2,10 @@ export type AccountStatus = 'ok' | 'limited' | 'needs-relogin' | 'needs-reauth' 
 
 export interface ReauthState {
   state: 'idle' | 'running' | 'cancelling' | 'success' | 'error' | 'timeout' | 'awaiting_code'
+  /** A machine-readable reason for an `error`, e.g. `browser_login_wrong_account` (the
+   *  Remote Control re-login signed in as another claude.ai account; nothing was saved
+   *  and `message` names both e-mails). */
+  code?: string | null
   message?: string | null
   account?: string | null   // the account/slot this operation targets (scopes per-account status)
   startedAt?: number | null
@@ -452,7 +456,8 @@ export interface Session {
   remoteControlAvailable?: boolean
   /** Why an available session still can't open a bridge: `login_needed` (the account has
    *  no usable claude.ai login, so the session runs on its inference-only setup-token),
-   *  `runner` (a session runner), or the CLI's own refusal (`login_rejected`: claude.ai
+   *  `login_busy` (the login is pinned by another live session), `runner` (a session
+   *  runner), or the CLI's own refusal (`login_rejected`: claude.ai
    *  rejected the login; `refused`: anything else). `remoteControl` is false while set.
    *  Null/absent = nothing known. */
   remoteControlUnavailableReason?: string | null

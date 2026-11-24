@@ -1,6 +1,7 @@
 from __future__ import annotations
 import dataclasses as _dc
 import logging
+import re
 from collections import deque
 from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, UserMessage,
                               ResultMessage, ToolUseBlock, ToolResultBlock, TextBlock,
@@ -14,6 +15,9 @@ from .completion import (has_completion_marker, parse_hand_back_marker, parse_tu
 from .model_request import parse_model_request
 from .tools.registry import TURN_SIGNAL_NAMES
 from .transcript_entries import is_cli_plumbing_text
+
+# A leading `<tag>` / `<tag attr=...>`: the envelope the CLI wraps its own prompts in.
+_TAG_ENVELOPE = re.compile(r"<[a-z][a-z0-9_-]*[ >]")
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +41,24 @@ def _usage_dict(u):
     if hasattr(u, "__dict__"):
         return dict(vars(u))
     return None
+
+
+def _not_typed_in_an_app(msg, text: str) -> bool:
+    """Is this echoed user message one no person typed — the CLI's own synthetic or meta
+    prompt (``/compact`` and other slash commands, a scheduled wakeup, a note)?
+
+    The CLI marks those on its stream echo: ``isSynthetic: true`` (from the entry's
+    ``isMeta``; checked in claude 2.1.331, whose replay builder spreads
+    ``...isMeta && {isSynthetic: true}``). The SDK's parser drops the flag, so the
+    driver re-attaches the raw keys as ``cli_flags`` (``_with_cli_flags``). No positive
+    "typed over the bridge" marker reaches the stream (the bridge origin only feeds the
+    CLI's hooks), so the text shape is the backstop: a slash command, or a leading
+    ``<tag>`` envelope as the CLI's wakeup / notice prompts use."""
+    flags = getattr(msg, "cli_flags", None) or {}
+    if flags.get("isSynthetic") or flags.get("isMeta"):
+        return True
+    head = text.lstrip()
+    return head.startswith("/") or bool(_TAG_ENVELOPE.match(head))
 
 
 class Translator:
@@ -76,6 +98,11 @@ class Translator:
         # the last `_SENT_CAP` ViberPit sent runs but shows no bubble until a reload.
         self._sent_texts: deque[str] = deque(maxlen=_SENT_CAP)
         self._seen_prompt_uuids: deque[str] = deque(maxlen=_SENT_CAP)
+        # Is this CLI's Remote Control bridge open? Set by the driver from the CLI's
+        # own answer to an enable / disable. Only then can an echo be a prompt typed in
+        # the Claude apps: without a bridge no one else can type into this CLI, so a
+        # foreign echo is the CLI's own synthetic prompt and must never render.
+        self.remote_bridge_open: bool = False
         # Task sub-agents: CLI task id -> the spawning Task tool-use id. Lives for the
         # translator's lifetime, NOT the turn: a background sub-agent's notices arrive
         # after the turn that spawned it ended (through the driver's idle listener).
@@ -162,6 +189,8 @@ class Translator:
             return [ev.UserPromptUuid(pending[0], uuid)]
         if (first.strip() in self._sent_texts or not joined.strip()
                 or is_cli_plumbing_text(joined)):
+            return []
+        if not self.remote_bridge_open or _not_typed_in_an_app(msg, joined):
             return []
         self._seen_prompt_uuids.append(uuid)
         return [ev.UserMessage(turn_id=uuid, text=joined, src_uuid=uuid, remote=True)]

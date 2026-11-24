@@ -57,11 +57,17 @@ REASON_LOGIN_NEEDED = "login_needed"
 #: Known before any request: the session runs on a session runner, which holds no
 #: claude.ai login of its own (follow-up: vend one through the credential envelope).
 REASON_RUNNER = "runner"
+#: Known before any request: the login is fine but its access token is stale and a
+#: live session on the account owns the login's token family, so it may not be
+#: refreshed now. Lifts on its own once that session is gone or the token is fresh.
+REASON_LOGIN_BUSY = "login_busy"
 LOGIN_REJECTED_MESSAGE = ("claude.ai rejected this account's login for Remote Control. "
                           "Sign in to claude.ai again (Accounts → Sign in to claude.ai).")
 REFUSED_MESSAGE = "The Claude CLI refused Remote Control for this account."
 LOGIN_NEEDED_MESSAGE = ("Sign in to claude.ai for this account (Accounts → Sign in to "
                         "claude.ai) to use Remote Control")
+LOGIN_BUSY_MESSAGE = ("This account's login is in use by another session; try again "
+                      "when it's idle.")
 RUNNER_MESSAGE = "Remote Control is not available yet for sessions on a session runner."
 BUSY_MESSAGE = ("Remote Control restarts this session on the account's claude.ai login; "
                 "try again once the current turn finishes.")
@@ -76,6 +82,7 @@ REMOTE_CONTROL_CODES = frozenset({REMOTE_CONTROL_UNAVAILABLE, REMOTE_CONTROL_NOT
 
 _REASON_MESSAGES = {REASON_LOGIN_REJECTED: LOGIN_REJECTED_MESSAGE,
                     REASON_LOGIN_NEEDED: LOGIN_NEEDED_MESSAGE,
+                    REASON_LOGIN_BUSY: LOGIN_BUSY_MESSAGE,
                     REASON_RUNNER: RUNNER_MESSAGE}
 
 #: How long the edge's cached copy of the app default may be served before a request

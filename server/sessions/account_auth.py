@@ -175,7 +175,8 @@ def remote_control_env_for(account: str, *, allow_refresh: bool = True) -> dict[
 
     Primary refresh authority only, never a broker runner or a Copilot account
     (``remote_control_slot_ready``). The slot is refreshed through
-    ``accounts.ensure_valid_token`` — the authority's own refresh path — unless
+    ``accounts.acquire_valid_token`` — the authority's own refresh path, with its
+    ``sync_back`` recovery of a rotation a cfg-dir CLI already made — unless
     *allow_refresh* is False (a live session owns the slot's token family), when only an
     already-fresh token is used. Blocking IO, and possibly a network refresh: async
     callers wrap it in ``account_store_io``. Never logs or returns the refresh token."""
@@ -185,7 +186,7 @@ def remote_control_env_for(account: str, *, allow_refresh: bool = True) -> dict[
     skew = load_config().expiry_skew_sec
     try:
         if allow_refresh:
-            blob = _accounts.ensure_valid_token(account)
+            blob = _accounts.acquire_valid_token(account)
         else:
             blob = read_json(_paths.slot_path(account))
     except Exception as exc:  # noqa: BLE001 — any failure means "no slot launch"
@@ -196,6 +197,25 @@ def remote_control_env_for(account: str, *, allow_refresh: bool = True) -> dict[
     if tok is None or org is None:
         return None
     return {TOKEN_ENV: tok, ORG_ENV: org}
+
+
+def remote_control_readiness(account: str, *, allow_refresh: bool) -> str | None:
+    """Would ``remote_control_env_for(account, allow_refresh=...)`` find a usable login,
+    judged without refreshing? None when it would; ``login_needed`` when the account has
+    no usable claude.ai login (``remote_control_slot_ready``); ``login_busy`` when the
+    login is fine but its access token is stale and may not be refreshed now (a live
+    session owns the slot's family). Reads the slot's expiry, never returns a token."""
+    if not remote_control_slot_ready(account):
+        return "login_needed"
+    if allow_refresh:
+        return None
+    try:
+        blob = read_json(_paths.slot_path(account))
+    except (OSError, ValueError):
+        return "login_needed"
+    fresh = isinstance(blob, dict) and _usable_access_token(
+        blob, skew_s=load_config().expiry_skew_sec) is not None
+    return None if fresh else "login_busy"
 
 
 def token_fingerprint(token: str) -> str:

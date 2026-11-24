@@ -70,7 +70,7 @@ def store(tmp_path, monkeypatch):
     acc = account_auth._accounts
     monkeypatch.setattr(acc, "provider_or_none", lambda n: "anthropic")
     monkeypatch.setattr(acc, "slot_status", lambda n: "ok")
-    monkeypatch.setattr(acc, "ensure_valid_token", lambda n: dict(slot))
+    monkeypatch.setattr(acc, "acquire_valid_token", lambda n: dict(slot))
     return slot
 
 
@@ -86,12 +86,30 @@ def test_remote_control_env_is_the_slot_access_token_and_the_org(store):
     assert account_auth.remote_control_slot_ready("acct") is True
 
 
-def test_remote_control_env_refreshes_through_the_authority(store, monkeypatch):
+def test_remote_control_env_refreshes_through_the_recovering_entry_point(store, monkeypatch):
+    """``acquire_valid_token``, not ``ensure_valid_token``: only the former recovers a
+    rotation a cfg-dir CLI already made (sync_back) before calling the grant dead."""
     calls = []
-    monkeypatch.setattr(account_auth._accounts, "ensure_valid_token",
+    monkeypatch.setattr(account_auth._accounts, "acquire_valid_token",
                         lambda n: calls.append(n) or dict(store))
-    account_auth.remote_control_env_for("acct")
+    monkeypatch.setattr(account_auth._accounts, "ensure_valid_token",
+                        mock.Mock(side_effect=AssertionError("no sync_back recovery")))
+    assert account_auth.remote_control_env_for("acct") is not None
     assert calls == ["acct"]
+
+
+def test_readiness_matches_the_launch_rule(store, monkeypatch):
+    assert account_auth.remote_control_readiness("acct", allow_refresh=True) is None
+    assert account_auth.remote_control_readiness("acct", allow_refresh=False) is None
+    from viberpit import paths
+    paths.slot_path("acct").write_text(
+        json.dumps({**store, "expiresAt": int(time.time() * 1000) + 10}))
+    # Stale token: fine when the authority may refresh; busy when a family owner pins it.
+    assert account_auth.remote_control_readiness("acct", allow_refresh=True) is None
+    assert account_auth.remote_control_readiness("acct", allow_refresh=False) == "login_busy"
+    assert account_auth.remote_control_env_for("acct", allow_refresh=False) is None
+    monkeypatch.setattr(account_auth._accounts, "slot_status", lambda n: "login_needed")
+    assert account_auth.remote_control_readiness("acct", allow_refresh=True) == "login_needed"
 
 
 @pytest.mark.parametrize("patch_attr,value", [
@@ -114,7 +132,7 @@ def test_remote_control_env_needs_the_org(store):
 
 
 def test_remote_control_env_needs_the_sessions_scope(store, monkeypatch):
-    monkeypatch.setattr(account_auth._accounts, "ensure_valid_token",
+    monkeypatch.setattr(account_auth._accounts, "acquire_valid_token",
                         lambda n: {**store, "scopes": ["user:inference"]})
     assert account_auth.remote_control_env_for("acct") is None
 
@@ -124,7 +142,7 @@ def test_a_failed_refresh_falls_back_without_logging_a_token(store, monkeypatch,
 
     def _dead(n):
         raise oauth.AuthError(f"rejected {ACCESS}")
-    monkeypatch.setattr(account_auth._accounts, "ensure_valid_token", _dead)
+    monkeypatch.setattr(account_auth._accounts, "acquire_valid_token", _dead)
     with caplog.at_level("DEBUG"):
         assert account_auth.remote_control_env_for("acct") is None
     assert ACCESS not in caplog.text and "REFRESH-secret" not in caplog.text
@@ -132,7 +150,7 @@ def test_a_failed_refresh_falls_back_without_logging_a_token(store, monkeypatch,
 
 def test_without_refresh_only_an_already_fresh_token_is_used(store, monkeypatch):
     refresh = mock.Mock()
-    monkeypatch.setattr(account_auth._accounts, "ensure_valid_token", refresh)
+    monkeypatch.setattr(account_auth._accounts, "acquire_valid_token", refresh)
     assert account_auth.remote_control_env_for("acct", allow_refresh=False) is not None
     from viberpit import paths
     paths.slot_path("acct").write_text(
@@ -143,7 +161,7 @@ def test_without_refresh_only_an_already_fresh_token_is_used(store, monkeypatch)
 
 def test_slot_access_token_reads_without_refreshing(store, monkeypatch):
     refresh = mock.Mock()
-    monkeypatch.setattr(account_auth._accounts, "ensure_valid_token", refresh)
+    monkeypatch.setattr(account_auth._accounts, "acquire_valid_token", refresh)
     assert account_auth.slot_access_token("acct") == ACCESS
     assert account_auth.slot_access_token("nobody") is None
     refresh.assert_not_called()

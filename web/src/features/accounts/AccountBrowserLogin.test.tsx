@@ -198,6 +198,17 @@ describe('AccountRow — Sign in to claude.ai (Remote Control)', () => {
     expect(screen.getByText('Opening the claude.ai login…')).toBeInTheDocument()
   })
 
+  it('says who signed in when the login was for another claude.ai account', () => {
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([
+      makeAccount({ status: 'ok', provider: 'anthropic', remoteControlLogin: 'login_needed' })]))
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({
+      state: 'error', account: 'kindash', code: 'browser_login_wrong_account',
+      message: 'You signed in as b@example.com, expected a@example.com. Nothing was saved.' })))
+    render(<AccountsManager />, { wrapper })
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'You signed in as b@example.com, expected a@example.com')
+  })
+
   it('never shows the login browser for a setup-token reauth', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([

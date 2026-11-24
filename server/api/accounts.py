@@ -1679,10 +1679,12 @@ async def browser_login_start(
 
     Remote Control needs the slot's full-scope login (``user:sessions:claude_code``); the
     setup-token that ``/reauth`` mints never carries it. Same ``ReauthManager`` and
-    in-page browser as ``/accounts/add`` (``mode="login"`` → ``capture_login``, which
-    calls ``mark_reauthenticated`` on success), but allowed when the slot exists. Its
-    progress is read and cancelled through ``GET /{name}/reauth`` and
-    ``POST /{name}/reauth/cancel``: one manager, one login at a time.
+    in-page browser as ``/accounts/add``, but in ``mode="browser_login"``:
+    ``capture_login(verify_identity=True)`` refuses a login as any other claude.ai
+    identity and writes nothing (the run ends ``error`` with code
+    ``browser_login_wrong_account`` and "You signed in as X, expected Y"). Allowed when
+    the slot exists. Its progress is read and cancelled through ``GET /{name}/reauth``
+    and ``POST /{name}/reauth/cancel``: one manager, one login at a time.
 
     Person-only (``require_human``, the local-host opt-in not honoured): it writes the
     credential that lets the Claude apps drive this account's sessions.
@@ -1715,7 +1717,7 @@ async def browser_login_start(
 
     reauth = _get_reauth(request)
     try:
-        state = await reauth.start(name, identity, mode="login")
+        state = await reauth.start(name, identity, mode="browser_login")
     except ReauthBusy as exc:
         raise HTTPException(
             status_code=409,

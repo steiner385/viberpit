@@ -44,7 +44,7 @@ def _client(fake_rm: FakeReauthManager | None = None):
         return _make_client(fake_rm or FakeReauthManager())
 
 
-def test_browser_login_starts_the_login_mode_for_an_existing_account():
+def test_browser_login_starts_the_identity_checked_login_for_an_existing_account():
     fake_rm = FakeReauthManager()
     with temp_env():
         _write_slot("primary")
@@ -52,7 +52,7 @@ def test_browser_login_starts_the_login_mode_for_an_existing_account():
             resp = client.post("/api/accounts/primary/browser-login", headers=IDENTITY_HEADERS)
     assert resp.status_code == 202
     assert resp.json()["state"] == "running"
-    assert fake_rm.last_start_mode == "login"
+    assert fake_rm.last_start_mode == "browser_login"   # identity-checked capture
 
 
 def test_browser_login_404_for_unknown_account():
@@ -151,3 +151,33 @@ def test_accounts_list_reports_remote_control_login_per_slot():
     body = resp.text
     for secret in ("good-tok", "good-ref", "lapsed-tok", "lapsed-ref"):
         assert secret not in body
+
+
+# ── the re-login must be the same claude.ai identity ────────────────────────────────
+
+
+def test_only_the_existing_account_relogin_checks_identity():
+    from server.reauth import MODE_BROWSER_LOGIN, MODE_LOGIN, verifies_identity
+    assert verifies_identity(MODE_BROWSER_LOGIN) is True
+    assert verifies_identity(MODE_LOGIN) is False        # /accounts/add is unchanged
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_account_login_ends_in_a_coded_error():
+    import asyncio
+    from viberpit.auth_login import WrongAccountLogin
+    from server.reauth import ReauthManager
+
+    async def _runner(name: str) -> bool:
+        raise WrongAccountLogin("a@example.com", "b@example.com")
+
+    m = ReauthManager(runner=_runner, key_available=lambda: True, timeout_s=5)
+    await m.start("primary", "tester@example.com", mode="browser_login")
+    for _ in range(100):
+        if m.status("primary").state != "running":
+            break
+        await asyncio.sleep(0.01)
+    state = m.status("primary").to_dict()
+    assert state["state"] == "error"
+    assert state["code"] == "browser_login_wrong_account"
+    assert state["message"].startswith("You signed in as b@example.com, expected a@example.com")

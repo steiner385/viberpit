@@ -291,6 +291,12 @@ def _note_slot_refresh(name: str, *, rejected: bool) -> None:
         log.warning("slot refresh outcome not recorded for %s", name, exc_info=True)
 
 
+def clear_slot_refresh_rejection(name: str) -> None:
+    """A fresh browser login was just captured into *name*'s slot: drop any recorded
+    refresh rejection. Called by ``auth_login.capture_login`` only."""
+    _note_slot_refresh(name, rejected=False)
+
+
 def _slot_status_from(name: str, ledger_acct: dict) -> str:
     """``slot_status`` against an already-read ledger row (``list_accounts`` holds the
     ledger lock, so it cannot take it again)."""
@@ -1110,7 +1116,8 @@ def mark_reauthenticated(name: str) -> None:
     with ledger.locked_ledger() as led:
         ledger.set_status(led, name, "ok")
         ledger.clear_cached_usage(led, name)
-        led["accounts"].setdefault(name, {}).pop(_SLOT_REFRESH_REJECTED, None)
+        # NOT ``slotRefreshRejected``: a setup-token re-auth leaves a dead slot dead.
+        # Only a fresh browser login into the slot clears it (``capture_login``).
     # A successful re-auth replaces the credential behind this account, so the
     # non-secret generation counter advances alongside the health record.
     _record_health(name, "ok")

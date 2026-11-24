@@ -210,7 +210,7 @@ async def env(tmp_path: Path, monkeypatch):
         # (Task B), the only credential a bridge opens on. Login-less cases patch these.
         patch("server.sessions.orchestrator.remote_control_env_for",
               side_effect=lambda account, **kw: dict(SLOT_ENV)),
-        patch("server.sessions.orchestrator.remote_control_slot_ready", return_value=True),
+        patch("server.sessions.orchestrator.remote_control_readiness", return_value=None),
     ]
     for p in patches:
         p.start()
@@ -749,14 +749,24 @@ async def test_default_off_tears_down_even_with_the_kill_switch_off(env, monkeyp
 
 @pytest.mark.asyncio
 async def test_default_on_opens_bridges_for_followers(env) -> None:
-    env.control.replies = [ON_REPLY]
-    rec = await env.make()                    # launched on the claude.ai login
-    env.control.replies = [{}]
-    await env.orch.apply_remote_control_default(False)
-    assert rec.remote_control_url is None
+    env.control.replies = [_timeout_error()]
+    rec = await env.make()                    # on the claude.ai login, but no bridge yet
+    assert rec.launch_credential == "slot" and rec.remote_control_url is None
     env.control.replies = [ON_REPLY]
     assert (await env.orch.apply_remote_control_default(True))["sessions"] == 1
     assert rec.remote_control_url == URL and rec.remote_control is None
+
+
+@pytest.mark.asyncio
+async def test_default_off_revokes_followers_onto_the_setup_token(env) -> None:
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()                    # launched on the claude.ai login
+    first = env.orch._drivers[rec.id]
+    env.control.replies = [{}]
+    await env.orch.apply_remote_control_default(False)
+    assert rec.remote_control_url is None
+    assert env.orch._drivers[rec.id] is not first          # respawned...
+    assert rec.launch_credential != "slot"                  # ...off the login
 
 
 @pytest.mark.asyncio
@@ -785,7 +795,9 @@ async def test_a_failed_teardown_is_counted_and_logged_not_raised(env, caplog) -
     env.control.replies = [_control_error("busy")]
     assert await env.orch.apply_remote_control_default(False) == {"sessions": 0,
                                                                    "failed": 1}
-    assert rec.remote_control_url == URL              # the bridge may still be up
+    # The teardown request failed, but the revocation still moved the session off the
+    # login, and its bridge died with the old CLI.
+    assert rec.launch_credential != "slot" and rec.remote_control_url is None
     assert any("remote_control_default_failed" in r.getMessage() for r in caplog.records)
     assert _no_warnings(caplog) == []
 
@@ -1019,7 +1031,7 @@ async def test_with_remote_control_off_the_spawn_stays_on_the_setup_token(env) -
 @pytest.mark.asyncio
 async def test_no_usable_login_launches_on_the_setup_token_as_login_needed(env) -> None:
     with patch(f"{_ORCH}.remote_control_env_for", return_value=None), \
-            patch(f"{_ORCH}.remote_control_slot_ready", return_value=False):
+            patch(f"{_ORCH}.remote_control_readiness", return_value="login_needed"):
         rec = await env.make()
         assert rec.launch_credential != "slot"
         assert rec.remote_control_unavailable_reason == rc.REASON_LOGIN_NEEDED
@@ -1038,7 +1050,7 @@ async def test_no_usable_login_launches_on_the_setup_token_as_login_needed(env) 
 @pytest.mark.asyncio
 async def test_login_needed_lifts_once_the_account_signs_in_again(env) -> None:
     with patch(f"{_ORCH}.remote_control_env_for", return_value=None), \
-            patch(f"{_ORCH}.remote_control_slot_ready", return_value=False):
+            patch(f"{_ORCH}.remote_control_readiness", return_value="login_needed"):
         rec = await env.make()
         await env.orch._recheck_remote_control_logins()
     assert rec.remote_control_unavailable_reason == rc.REASON_LOGIN_NEEDED
@@ -1074,6 +1086,144 @@ async def test_toggle_on_mid_turn_is_busy_and_does_not_respawn(env) -> None:
     assert ei.value.code == rc.REMOTE_CONTROL_BUSY
     assert env.orch._drivers[rec.id] is first
     assert _rc_sent(env.control) == []
+    # Nothing was persisted: the choice applies only once the session runs on the login.
+    assert rec.remote_control is None
+    assert (await _row(rec.id)).remote_control is None
+
+
+@pytest.mark.asyncio
+async def test_toggle_on_while_the_login_is_pinned_is_login_busy_without_a_respawn(env) -> None:
+    """The login is fine but its token is stale and a live session owns its family: the
+    launch could not use it, so the toggle refuses up front instead of respawning the
+    session onto the setup-token and then saying "Sign in"."""
+    await _set_default(False)
+    rec = await env.make()
+    first = env.orch._drivers[rec.id]
+    with patch(f"{_ORCH}.remote_control_readiness", return_value="login_busy"):
+        with pytest.raises(rc.RemoteControlError) as ei:
+            await env.orch.set_remote_control(rec.id, True)
+    assert ei.value.code == rc.REMOTE_CONTROL_REFUSED
+    assert str(ei.value) == rc.LOGIN_BUSY_MESSAGE
+    assert env.orch._drivers[rec.id] is first
+    assert rec.remote_control_unavailable_reason == rc.REASON_LOGIN_BUSY
+    assert (await _row(rec.id)).remote_control is None
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_pinned_out_of_the_login_reports_login_busy(env) -> None:
+    with patch(f"{_ORCH}.remote_control_env_for", return_value=None), \
+            patch(f"{_ORCH}.remote_control_readiness", return_value="login_busy"):
+        rec = await env.make()
+    assert rec.launch_credential != "slot"
+    assert rec.remote_control_unavailable_reason == rc.REASON_LOGIN_BUSY
+    await env.orch._recheck_remote_control_logins()       # the owner went away
+    assert rec.remote_control_unavailable_reason is None
+
+
+def _plant_cfg_owner(orch, account: str = "alpha") -> None:
+    owner = SessionRecord(id="owner", name="owner", account=account,
+                          engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80,
+                          rows=24, cwd="/tmp")
+    owner.launch_credential = "cfg"
+    orch._records["owner"] = owner
+    orch._drivers["owner"] = SimpleNamespace(account=account)
+
+
+@pytest.mark.asyncio
+async def test_401_recovery_never_refreshes_a_family_a_live_session_owns(env) -> None:
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+    refreshed: list[str] = []
+
+    async def _refresh(account: str) -> None:
+        refreshed.append(account)
+    env.orch._refresh_stored_token = _refresh
+
+    async def _no_reassign(*a, **k):
+        return "ok"
+    env.orch._reassign = _no_reassign
+    _plant_cfg_owner(env.orch)
+    try:
+        with patch(f"{_ORCH}.crypto") as crypto:
+            crypto.read_oauth_token.return_value = "sk-ant-oat01-SETUP"
+            assert await env.orch._stored_credentials_valid(rec) is True
+        await env.orch._recompose_same_account(rec)
+        assert refreshed == []                          # the owner's family is untouched
+    finally:
+        env.orch._drivers.pop("owner")
+        env.orch._records.pop("owner")
+    await env.orch._recompose_same_account(rec)
+    assert refreshed == ["alpha"]                       # no owner: the authority refreshes
+
+
+@pytest.mark.asyncio
+async def test_every_slot_launch_echoes_prompts_even_with_rewind_off(env) -> None:
+    env.orch._rewind_spawn = lambda session_id: False
+    base = env.orch._sdk_factory
+    seen: list[dict] = []
+
+    def spy(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
+            on_pre_compact=None, options_overlay=None, flag_settings=None, extra_args=None,
+            **kw):
+        seen.append(dict(extra_args or {}))
+        return base(cwd, config_dir, can_use_tool, mode, resume, extra_env,
+                    on_pre_compact=on_pre_compact, options_overlay=options_overlay,
+                    flag_settings=flag_settings, **kw)
+    env.orch._sdk_factory = spy
+    env.control.replies = [ON_REPLY]
+    await env.make()
+    assert "replay-user-messages" in seen[-1]
+    await _set_default(False)
+    await env.make("setup")
+    assert "replay-user-messages" not in seen[-1]
+
+
+# ── revocation: Remote Control off moves a slot session back onto the setup-token ───
+
+
+@pytest.mark.asyncio
+async def test_toggle_off_respawns_an_idle_slot_session_onto_the_setup_token(env) -> None:
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+    first = env.orch._drivers[rec.id]
+    env.control.replies = [{}]
+    await env.orch.set_remote_control(rec.id, False)
+    assert env.orch._drivers[rec.id] is not first
+    assert rec.launch_credential != "slot"
+    assert rec.id not in env.orch._rc_token_fps()
+
+
+@pytest.mark.asyncio
+async def test_toggle_off_mid_turn_revokes_at_the_next_idle_sweep(env) -> None:
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+    first = env.orch._drivers[rec.id]
+    rec.status = "working"
+    env.control.replies = [{}]
+    await env.orch.set_remote_control(rec.id, False)
+    assert env.orch._drivers[rec.id] is first and rec.launch_credential == "slot"
+    pushed: list[str] = []
+
+    async def _push(token: str) -> None:
+        pushed.append(token)
+    first.push_oauth_token = _push
+    with patch(f"{_ORCH}.slot_access_token", return_value="sk-ant-oat01-ROTATED"):
+        await env.orch._maintain_remote_control_logins()
+    assert pushed == []                                 # a revoked CLI is never renewed
+    assert env.orch._drivers[rec.id] is first           # still busy: not yet
+    rec.status = "idle"
+    await env.orch._maintain_remote_control_logins()
+    assert env.orch._drivers[rec.id] is not first
+    assert rec.launch_credential != "slot"
+
+
+@pytest.mark.asyncio
+async def test_the_kill_switch_revokes_slot_sessions_at_the_sweep(env, monkeypatch) -> None:
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+    monkeypatch.setenv("VIBERPIT_REMOTE_CONTROL_ENABLED", "false")
+    await env.orch._maintain_remote_control_logins()
+    assert rec.launch_credential != "slot"
 
 
 @pytest.mark.asyncio

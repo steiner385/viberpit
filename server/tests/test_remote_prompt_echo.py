@@ -24,6 +24,13 @@ def _echo(content, uuid: str, pid: str | None = None) -> UserMessage:
     return UserMessage(content=content, uuid=uuid, parent_tool_use_id=pid)
 
 
+def _bridged() -> Translator:
+    """A translator whose CLI has an open Remote Control bridge."""
+    tr = Translator()
+    tr.remote_bridge_open = True
+    return tr
+
+
 def _feed(tr: Translator, msgs) -> list:
     out: list = []
     for m in msgs:
@@ -43,7 +50,7 @@ def _reply(p: str = "") -> list:
 # ── Translator ───────────────────────────────────────────────────────────────
 
 def test_own_prompt_echo_maps_its_uuid_and_renders_no_second_bubble():
-    tr = Translator()
+    tr = _bridged()
     tr.expect_prompt("p1", "hello")
     out = _feed(tr, [_echo("hello", "U1"), *_reply()])
     assert [(e.turn_id, e.uuid) for e in out if isinstance(e, ev.UserPromptUuid)] == [
@@ -54,7 +61,7 @@ def test_own_prompt_echo_maps_its_uuid_and_renders_no_second_bubble():
 def test_a_queued_second_prompt_echo_is_not_a_bubble():
     """Two prompts announced before either echo lands (the single pending slot holds
     only the newer one): the older echo is still recognized as ours."""
-    tr = Translator()
+    tr = _bridged()
     tr.expect_prompt("p1", "first")
     tr.expect_prompt("p2", "second")
     out = _feed(tr, [_echo("first", "U1"), _echo("second", "U2"), *_reply()])
@@ -64,7 +71,7 @@ def test_a_queued_second_prompt_echo_is_not_a_bubble():
 
 
 def test_a_prompt_from_an_earlier_turn_is_still_ours():
-    tr = Translator()
+    tr = _bridged()
     tr.expect_prompt("p1", "first")
     _feed(tr, _reply("t1-"))                  # the turn ended before the echo arrived
     tr.expect_prompt("p2", "second")
@@ -73,13 +80,13 @@ def test_a_prompt_from_an_earlier_turn_is_still_ours():
 
 
 def test_a_steer_echo_is_not_a_bubble():
-    tr = Translator()
+    tr = _bridged()
     tr.note_sent("Drop the tangent.")
     assert _users(tr.feed(_echo("Drop the tangent.", "S1"))) == []
 
 
 def test_a_foreign_prompt_renders_exactly_one_bubble_keyed_by_its_uuid():
-    tr = Translator()
+    tr = _bridged()
     out = _feed(tr, [_echo("Use the Write tool to create a.txt", "R1"), *_reply()])
     users = _users(out)
     assert len(users) == 1
@@ -93,13 +100,13 @@ def test_a_foreign_prompt_renders_exactly_one_bubble_keyed_by_its_uuid():
 
 
 def test_a_foreign_prompt_in_list_form_renders_its_text_blocks():
-    tr = Translator()
+    tr = _bridged()
     out = tr.feed(_echo([TextBlock(text="look at "), TextBlock(text="this")], "R2"))
     assert [(u.turn_id, u.text) for u in _users(out)] == [("R2", "look at this")]
 
 
 def test_a_foreign_prompt_next_to_a_pending_one_still_renders():
-    tr = Translator()
+    tr = _bridged()
     tr.expect_prompt("p1", "mine")
     out = _feed(tr, [_echo("theirs", "R1"), _echo("mine", "U1")])
     assert [u.turn_id for u in _users(out)] == ["R1"]
@@ -108,7 +115,7 @@ def test_a_foreign_prompt_next_to_a_pending_one_still_renders():
 
 
 def test_tool_results_sub_agents_and_plumbing_are_unchanged():
-    tr = Translator()
+    tr = _bridged()
     out = _feed(tr, [
         f.user_tool_result("toolu_1", "ok", uuid="r1"),
         _echo("sub-agent prompt", "sub-1", pid="toolu_task"),
@@ -122,6 +129,92 @@ def test_tool_results_sub_agents_and_plumbing_are_unchanged():
     ])
     assert _users(out) == []
     assert [e.tool_id for e in out if isinstance(e, ev.ToolResult)] == ["toolu_1"]
+
+
+def test_no_bubble_without_an_open_bridge():
+    """No bridge, no one else can type into this CLI: a foreign echo is the CLI's own."""
+    tr = Translator()
+    assert _users(tr.feed(_echo("Summarize the work so far", "M1"))) == []
+
+
+def _flagged(content, uuid: str, **flags) -> UserMessage:
+    m = _echo(content, uuid)
+    m.cli_flags = flags  # type: ignore[attr-defined]
+    return m
+
+
+def test_synthetic_and_meta_echoes_never_render():
+    tr = _bridged()
+    out = _feed(tr, [
+        _flagged("Continue from where you left off.", "S1", isSynthetic=True, isReplay=True),
+        _flagged("a note", "S2", isMeta=True),
+        _echo("/compact", "C1"),
+        _echo("  /review the diff", "C2"),
+        _echo("<scheduled-wakeup>check CI</scheduled-wakeup>", "W1"),
+        _echo('<system-reminder kind="note">x</system-reminder>', "N1"),
+    ])
+    assert _users(out) == []
+    # A real app prompt that merely mentions a tag or a slash still renders.
+    assert [u.turn_id for u in _users(tr.feed(_echo("why is a/b <slow>?", "R9")))] == ["R9"]
+
+
+def test_an_attachment_only_prompt_echo_is_ours():
+    """The driver sends an empty prompt text plus the attachment's text block; the echo
+    carries the attachment text first."""
+    tr = _bridged()
+    tr.expect_prompt("p1", "contents of notes.txt")
+    out = tr.feed(_echo([TextBlock(text="contents of notes.txt")], "U1"))
+    assert _users(out) == []
+    assert [(e.turn_id, e.uuid) for e in out if isinstance(e, ev.UserPromptUuid)] == [
+        ("p1", "U1")]
+
+
+def test_the_driver_records_every_text_block_it_sends(tmp_path):
+    """An attachment-only prompt: sdk_text is empty, the text file rides as a TextBlock."""
+    note = tmp_path / "notes.txt"
+    note.write_text("contents of notes.txt")
+    client = FakeSDKClient([])
+
+    async def run():
+        d = ClaudeAgentDriver("s-att", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                              sdk_factory=lambda *a, **k: client,
+                              registry=PermissionRegistry(), identity="me")
+        await d.start()
+        d._tr.remote_bridge_open = True
+        client._messages = [*_reply("a-")]
+        await d.send_prompt("", images=[{"path": str(note), "mime": "text/plain", "url": "u",
+                                         "name": "notes.txt"}])
+        await _wait_until(lambda: not d.turn_active)
+        out = d._tr.feed(_echo([TextBlock(text="contents of notes.txt")], "U9"))
+        await d.aclose()
+        return out
+
+    assert _users(asyncio.run(run())) == []
+
+
+def test_raw_cli_flags_survive_the_sdk_parser():
+    from types import SimpleNamespace
+    from claude_agent_sdk import ClaudeSDKClient
+    from server.sessions.claude_driver import _with_cli_flags
+
+    async def raw():
+        yield {"type": "user", "uuid": "S1", "isReplay": True, "isSynthetic": True,
+               "parent_tool_use_id": None, "session_id": "x",
+               "message": {"role": "user", "content": "Continue."}}
+        yield {"type": "user", "uuid": "R1", "isReplay": True, "parent_tool_use_id": None,
+               "session_id": "x", "message": {"role": "user", "content": "hi"}}
+
+    client = ClaudeSDKClient()
+    client._query = SimpleNamespace(receive_messages=raw)  # type: ignore[assignment]
+
+    async def run():
+        return [m async for m in _with_cli_flags(client)]
+
+    msgs = asyncio.run(run())
+    assert [m.uuid for m in msgs] == ["S1", "R1"]
+    assert msgs[0].cli_flags == {"isSynthetic": True, "isReplay": True}
+    tr = _bridged()
+    assert [u.turn_id for u in _users(_feed(tr, msgs))] == ["R1"]
 
 
 def test_user_message_wire_shape_omits_remote_unless_set():
@@ -150,6 +243,7 @@ def test_driver_renders_an_app_typed_prompt_on_its_cli_initiated_turn():
             async for e in d.events():
                 seen.append(e)
         await d.start()
+        d._tr.remote_bridge_open = True   # the CLI answered an enable
         task = asyncio.create_task(collect())
         await asyncio.sleep(0.01)
         client.inject([_echo("from the app", "R1"), *_reply()])

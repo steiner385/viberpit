@@ -41,6 +41,10 @@ token. The token was the operator's full-scope claude.ai access token, held in m
 | **E6** | E5 + `--permission-prompt-tool stdio --replay-user-messages`; web prompt needing `Write` | the host stream got the web **user prompt**. **`can_use_tool Write` came to the host**; the host allowed it and the file was written |
 | **E7** | E6; prompt sent **from the host** | it appeared in the web app with its reply |
 
+| **E8** | a ViberPit session launched on the slot recipe (E3o); a Bash tool runs `printenv \| grep -c '^CLAUDE_CODE_OAUTH_TOKEN='` (no scrub setting configured) | `0`: the CLI **scrubs `CLAUDE_CODE_OAUTH_TOKEN` from tool subprocess env by default**. `CLAUDE_CODE_ORGANIZATION_UUID` stays visible to tools, which is harmless (not a credential) |
+
+E8 was verified live on 2026-11-24 against claude 2.1.331.
+
 Conclusions:
 
 - **Minimum recipe:** a full-scope claude.ai access token (needs `user:sessions:claude_code`)
@@ -77,6 +81,13 @@ a setup-token. Each account needs **one fresh browser login** into its slot.
      the #2629 `oauth_access` envelope.
    - Prefer `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, which the CLI also supports, over the env
      var. Principle II asks that access material stay out of the environment.
+   - **Decision (Task B): env delivery is accepted for now.** Two reasons:
+     - The SDK has no hook to pass the CLI an inherited file descriptor; it would need a
+       custom transport.
+     - E8 shows the CLI scrubs `CLAUDE_CODE_OAUTH_TOKEN` from every tool subprocess by
+       default, so the model's tools never see the token.
+
+     FD delivery remains a follow-up.
    - Otherwise launch with the setup-token as today, and Remote Control shows as unavailable
      (PR #3462).
 3. **Live rotation.** Before the access token expires (about 8 h), the authority pushes the
@@ -89,6 +100,24 @@ a setup-token. Each account needs **one fresh browser login** into its slot.
 5. **Approvals.** Nothing to build: `can_use_tool` already reaches ViberPit (E6). Open question:
    does the Claude app also show the request, and who wins when both answer? E6's host answered
    at once.
+
+### What a `--replay-user-messages` echo carries (claude 2.1.331, read from the binary)
+
+- The replay builders emit `{type:"user", uuid, isReplay:true, ...}`. They add
+  `isSynthetic: true` for an entry the CLI marked `isMeta` (its own meta and synthetic
+  prompts), `file_attachments`, and the entry's `origin` when it has one.
+- The bridge origin (`bridgeOrigin` / `dispatchedOverBridge`) only feeds the CLI's
+  `session.receive` hook classification (`{kind:"bridge"}`). No positive "typed in the
+  Claude apps" marker was found on the stream echo. What an echo of a bridge prompt
+  carries live is still unverified.
+- `claude_agent_sdk`'s `parse_message` drops every one of these keys. The driver
+  re-reads them from the raw stream (`claude_driver._with_cli_flags` → `cli_flags`).
+- The translator renders a foreign echo as an app-typed prompt only when all of these
+  hold:
+  - the bridge is open (the CLI answered an enable);
+  - the echo is not `isSynthetic`/`isMeta`;
+  - it is not a slash command;
+  - it is not a leading `<tag>` envelope.
 
 ### Still unverified
 

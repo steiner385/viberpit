@@ -249,6 +249,40 @@ def _close_cursor_when_idle(gen, pending: asyncio.Future, phase: str) -> None:
     task.add_done_callback(_ORPHAN_CURSOR_CLOSERS.discard)
 
 
+#: Raw keys of a CLI ``user`` stream message that the SDK's parser drops but the
+#: translator needs: ``isSynthetic`` marks the CLI's own meta prompt on a
+#: ``--replay-user-messages`` echo (claude 2.1.331).
+_CLI_USER_FLAGS = ("isSynthetic", "isMeta", "isReplay", "origin")
+
+
+def _with_cli_flags(client):
+    """``client.receive_messages()``, with each ``UserMessage`` also carrying
+    ``cli_flags`` — the raw ``_CLI_USER_FLAGS`` keys the SDK's ``parse_message`` drops.
+
+    Mirrors the SDK client's own loop (``async for data in query.receive_messages():
+    parse_message(data)``) over the same single raw stream. Only for the real SDK
+    client; anything else (test fakes) is iterated as is."""
+    from claude_agent_sdk import ClaudeSDKClient
+    query = getattr(client, "_query", None)
+    raw = getattr(query, "receive_messages", None)
+    if not isinstance(client, ClaudeSDKClient) or raw is None:
+        return client.receive_messages()
+
+    async def _gen():
+        from claude_agent_sdk import UserMessage
+        from claude_agent_sdk._internal.message_parser import parse_message
+        async for data in raw():
+            message = parse_message(data)
+            if message is None:
+                continue
+            if isinstance(message, UserMessage) and isinstance(data, dict):
+                flags = {k: data[k] for k in _CLI_USER_FLAGS if k in data}
+                if flags:
+                    message.cli_flags = flags  # type: ignore[attr-defined]
+            yield message
+    return _gen()
+
+
 class _MessageSource:
     """The ONE cursor over ``client.receive_messages()``, shared by a prompt's drain and
     the idle listener, and safe to hand over between them by cancellation.
@@ -264,7 +298,7 @@ class _MessageSource:
     """
 
     def __init__(self, client) -> None:
-        self._gen = client.receive_messages()
+        self._gen = _with_cli_flags(client)
         self._pending: asyncio.Future | None = None
 
     async def next(self):
@@ -1632,10 +1666,9 @@ class ClaudeAgentDriver:
         self._emit(ev.UserMessage(
             turn_id=user_turn, text=text, src_uuid=user_turn,
             images=wire_images or None, context=context, origin=origin))
-        # The CLI echoes this prompt with its transcript uuid (--replay-user-messages,
-        # set at spawn while rewind is on): the translator maps it onto `user_turn`.
-        self._tr.expect_prompt(user_turn, sdk_text)
         assert self._client is not None  # _start_turn only runs once the client is connected
+        # Every text block this prompt sends: the CLI echoes them all, so all are ours.
+        sent_texts: list[str] = [sdk_text] if sdk_text else []
         if images:
             content: list[dict] = []
             if sdk_text:
@@ -1657,12 +1690,20 @@ class ClaudeAgentDriver:
                         f"[Attached: {im.get('name', 'file.zip')} (zip archive, {len(raw)} bytes)]"})
                 else:  # text/plain, text/csv, application/json
                     content.append({"type": "text", "text": raw.decode("utf-8", errors="replace")})
+            sent_texts = [b["text"] for b in content if b.get("type") == "text"]
             message = {"type": "user",
                        "message": {"role": "user", "content": content},
                        "parent_tool_use_id": None, "session_id": "default"}
             payload: object = _aiter_one(message)
         else:
             payload = sdk_text
+        # The CLI echoes this prompt with its transcript uuid (--replay-user-messages,
+        # set at every spawn that may receive app prompts): the translator maps it onto
+        # `user_turn`, matching the first text block the echo carries — for an
+        # attachment-only prompt that is the attachment's text, not the empty prompt.
+        self._tr.expect_prompt(user_turn, sent_texts[0] if sent_texts else sdk_text)
+        for extra_text in sent_texts[1:]:
+            self._tr.note_sent(extra_text)
         try:
             await self._client.query(payload)
         except CLIConnectionError:
@@ -2674,6 +2715,9 @@ class ClaudeAgentDriver:
                 code, f"no reply to remote_control: {exc}")) from exc
         log.info("driver.remote_control session=%s enabled=%s", self.session_id,
                  bool(enabled))
+        # The CLI answered: its bridge is open (or closed). Only an open bridge can
+        # carry a prompt typed in the Claude apps (translator._prompt_echo).
+        self._tr.remote_bridge_open = bool(enabled)
         return resp if isinstance(resp, dict) else {}
 
     async def push_oauth_token(self, token: str) -> None:

@@ -17,10 +17,12 @@ export const REMOTE_CONTROL_TOGGLE_FALLBACK = "Couldn't change Remote Control"
 
 /** Why an eligible session still can't use it, keyed by `remoteControlUnavailableReason`:
  *  the CLI's own refusal learned at runtime (`login_rejected`, `refused`), or known before
- *  any request (`login_needed`: no usable claude.ai login; `runner`: a session runner). */
+ *  any request (`login_needed`: no usable claude.ai login; `login_busy`: another live session pins
+ *  the login; `runner`: a session runner). */
 export const REMOTE_CONTROL_UNAVAILABLE_COPY: Record<string, string> = {
   login_needed:
     'Sign in to claude.ai for this account (Accounts → Sign in to claude.ai) to use Remote Control',
+  login_busy: "This account's login is in use by another session; try again when it's idle.",
   login_rejected:
     "claude.ai rejected this account's login for Remote Control. Sign in to claude.ai again (Accounts → Sign in to claude.ai).",
   refused: 'The Claude CLI refused Remote Control for this account.',
