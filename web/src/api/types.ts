@@ -2,6 +2,10 @@ export type AccountStatus = 'ok' | 'limited' | 'needs-relogin' | 'needs-reauth' 
 
 export interface ReauthState {
   state: 'idle' | 'running' | 'cancelling' | 'success' | 'error' | 'timeout' | 'awaiting_code'
+  /** A machine-readable reason for an `error`, e.g. `browser_login_wrong_account` (the
+   *  Remote Control re-login signed in as another claude.ai account; nothing was saved
+   *  and `message` names both e-mails). */
+  code?: string | null
   message?: string | null
   account?: string | null   // the account/slot this operation targets (scopes per-account status)
   startedAt?: number | null
@@ -135,7 +139,13 @@ export interface Account {
   // Absent (older payloads) is treated as enabled. A disabled account is kept
   // intact but blocked everywhere in selection until re-enabled.
   enabled?: boolean
+  /** Can the account's claude.ai browser login back Remote Control? `null`/absent
+   *  for an account with no claude.ai login (Copilot, OpenAI) or an older payload. */
+  remoteControlLogin?: RemoteControlLogin | null
 }
+
+/** `accounts.slot_status` on the server: metadata about the browser-login slot only. */
+export type RemoteControlLogin = 'ok' | 'login_needed' | 'missing'
 
 /**
  * What kind of work a session is, decided server-side from the automation
@@ -444,9 +454,12 @@ export interface Session {
    *  Copilot), not the assistant drawer, and the server's kill switch on. The rail's
    *  controls show only when true; absent (an older server) reads as false. */
   remoteControlAvailable?: boolean
-  /** Why an available session still can't open a bridge — the CLI refused its account
-   *  (`login_rejected`: an inference-only setup-token login; `refused`: anything else).
-   *  `remoteControl` is false while set. Null/absent = no known refusal. */
+  /** Why an available session still can't open a bridge: `login_needed` (the account has
+   *  no usable claude.ai login, so the session runs on its inference-only setup-token),
+   *  `login_busy` (the login is pinned by another live session), `runner` (a session
+   *  runner), or the CLI's own refusal (`login_rejected`: claude.ai
+   *  rejected the login; `refused`: anything else). `remoteControl` is false while set.
+   *  Null/absent = nothing known. */
   remoteControlUnavailableReason?: string | null
   /** Fast mode (D-14): the session's stored choice. Off unless set. */
   fastMode?: boolean

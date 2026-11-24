@@ -269,6 +269,12 @@ class SessionRecord:
     # (``remote_control.REASON_*``), e.g. an inference-only setup-token login. In memory
     # only: the daemon re-learns it (per account) from the next refusal after a restart.
     remote_control_unavailable_reason: str | None = None
+    # The credential the session's CURRENT CLI actually launched with
+    # (``account_auth.LAUNCH_*``: slot | setup | envelope | cfg | copilot), stamped by the
+    # orchestrator's factory at every spawn. None = not recorded (rehydrated, adopted, Codex,
+    # or a mirror from an older daemon) — read as "may own the slot's token family". Rides
+    # to_dict so the refresh authority can judge a remote host's sessions too.
+    launch_credential: str | None = None
     # The CLI's last ``initialize`` model rows (``flag_settings.model_options``), so a
     # detached session can still check an effort against its model's levels. Daemon-
     # local ONLY — not in to_dict, never a column: ``set_model_for_session`` runs on the
@@ -437,6 +443,7 @@ class SessionRecord:
             "remoteControlUrl": self.remote_control_url,
             "remoteControlAvailable": self.remote_control_available,
             "remoteControlUnavailableReason": self.remote_control_unavailable_reason,
+            "launchCredential": self.launch_credential,
             "supportedEffortLevels": self.effort_levels_now(),
             # Carried over RPC so a fleet mirror of an assistant session is still
             # recognised by is_assistant() on the edge (list filtering, sweeps).
@@ -526,6 +533,7 @@ class SessionRecord:
             remote_control_url=d.get("remoteControlUrl"),
             remote_control_available=bool(d.get("remoteControlAvailable", False)),
             remote_control_unavailable_reason=d.get("remoteControlUnavailableReason"),
+            launch_credential=d.get("launchCredential"),
             supported_effort_levels=d.get("supportedEffortLevels"),
             kind=d.get("kind"),
             owner_identity=d.get("ownerIdentity"),

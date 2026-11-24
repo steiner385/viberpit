@@ -32,6 +32,8 @@ import {
 import type { AccountUpdate } from '@/api/hooks'
 import { AddAccountDialog } from './AddAccountDialog'
 import { DeviceCodePanel } from './DeviceCodePanel'
+import { ReauthBrowserPanel } from './ReauthBrowserPanel'
+import { useBrowserLoginAccount } from './useBrowserLogin'
 import type { Account, LiveSessionCounts, Session } from '@/api/types'
 import { reserveWindow, usageUnavailableReason, usageWindows } from '@/lib/usageWindows'
 
@@ -281,6 +283,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
 
   const qc = useQueryClient()
   const reauthAccount = useReauthAccount()
+  const browserLogin = useBrowserLoginAccount()
+  // Which login the shared reauth state machine is running for this row: the
+  // setup-token code paste (`/reauth`) or the full claude.ai browser login.
+  const [browserLoginStarted, setBrowserLoginStarted] = useState(false)
   const cancelReauth = useCancelReauth()
   const submitCode = useSubmitReauthCode()
   const setEnabled = useSetAccountEnabled()
@@ -339,9 +345,22 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
     cancelOpenAIReauth.mutate(account.name)
   }
 
+  function handleBrowserLogin() {
+    setReauthOptimisticIdle(false)
+    setReauthStarted(true)
+    setBrowserLoginStarted(true)
+    browserLogin.mutate(account.name, {
+      onError: () => {
+        setReauthStarted(false)
+        setBrowserLoginStarted(false)
+      },
+    })
+  }
+
   function handleReauth() {
     setReauthOptimisticIdle(false)
     setReauthStarted(true)
+    setBrowserLoginStarted(false)
     reauthAccount.mutate(account.name, {
       onError: () => {
         // If start itself fails, stop polling
@@ -418,6 +437,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
   const isAwaitingCode = reauthStatus?.state === 'awaiting_code'
   const isReauthSuccess = reauthStatus?.state === 'success'
   const isReauthError = reauthStatus?.state === 'error' || reauthStatus?.state === 'timeout'
+  // The claude.ai login Remote Control needs is missing or lapsed. The server only
+  // reports it for a Claude account (null otherwise); hidden while any login runs.
+  const offerBrowserLogin = account.remoteControlLogin != null
+    && account.remoteControlLogin !== 'ok' && !isReauthRunning && !isAwaitingCode
 
   return (
     <div
@@ -694,6 +717,24 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               </button>
             )
           )}
+          {offerBrowserLogin && (
+            <button
+              type="button"
+              className={cn(
+                'rounded px-2 py-1 text-xs font-medium min-h-target',
+                'border border-edge-strong text-ink hover:bg-surface-raised',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+              )}
+              aria-label={`Sign in to claude.ai for ${account.name} (Remote Control)`}
+              title={account.remoteControlLogin === 'missing'
+                ? 'This account has no claude.ai login, so its sessions cannot be shown in the Claude apps.'
+                : "This account's claude.ai login has lapsed, so its sessions cannot be shown in the Claude apps."}
+              onClick={handleBrowserLogin}
+              disabled={browserLogin.isPending}
+            >
+              Sign in to claude.ai (Remote Control)
+            </button>
+          )}
           {(isReauthRunning || isAwaitingCode || deviceReauthStarted
             || deviceReauthStarting) && (
             <button
@@ -730,8 +771,12 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
       {/* Reauth status line */}
       {!editing && isReauthRunning && (
         <p className="text-xs text-warning">
-          {reauthStatus?.message ?? 'Verifying the pasted code…'}
+          {reauthStatus?.message
+            ?? (browserLoginStarted ? 'Opening the claude.ai login…' : 'Verifying the pasted code…')}
         </p>
+      )}
+      {!editing && isReauthRunning && browserLoginStarted && reauthStatus?.vncSession && (
+        <ReauthBrowserPanel vncSession={reauthStatus.vncSession} />
       )}
       {!editing && isAwaitingCode && reauthStatus?.authUrl && (
         <div className="flex flex-col gap-2 mt-1">

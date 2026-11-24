@@ -743,17 +743,58 @@ REPL, so it does nothing here.
   on the new account with a new bridge and link.
 - **Failures:** a failed enable logs `session.remote_control_failed` and never fails the
   spawn.
-- **Setup-token accounts are refused.** Sessions authenticate with the account's
-  inference-only setup-token (`CLAUDE_CODE_OAUTH_TOKEN`, `server/sessions/account_auth.py`),
-  and claude.ai rejects it for Remote Control: the CLI answers `Claude.ai login was rejected —
-  run /login, then /remote-control`. ViberPit learns this from the first refusal, not by
-  guessing from the token. The session shows `remoteControlUnavailableReason:
-  "login_rejected"`, its switch is disabled with the reason, and `remoteControl` reads false.
-  The daemon remembers the refusal per account in memory, so later spawns on that account
-  send nothing, and a toggle-on answers 409 `REMOTE_CONTROL_REFUSED` without asking the CLI.
-  Nothing tells the daemon that an account's credentials changed, so **restart the daemon
-  after re-logging an account in** to make it try again. Design for real support:
-  `docs/superpowers/specs/spikes/2026-11-24-remote-control-auth-spike.md`.
+- **It needs the account's full claude.ai login — sign in once.** claude.ai refuses the
+  inference-only setup-token for Remote Control. A session with Remote Control effectively on
+  launches instead with the account's **browser-login slot**: its short-lived **access token**
+  in `CLAUDE_CODE_OAUTH_TOKEN` plus `CLAUDE_CODE_ORGANIZATION_UUID` from the account profile
+  (`account_auth.remote_control_env_for`). The refresh token never leaves the primary, which
+  is the only refresher (Principle II). An account set up with a setup-token needs
+  **Accounts → "Sign in to claude.ai (Remote Control)"** once; the Accounts list shows the
+  slot as `remoteControlLogin: ok | login_needed | missing`. That re-login must be the
+  account's own claude.ai identity (`oauthAccount.accountUuid`, else e-mail). Signing in as
+  anyone else ends with `browser_login_wrong_account` ("You signed in as X, expected Y") and
+  writes nothing. A setup-token re-auth does not mark a dead login as fixed.
+- **The token in the environment.** The CLI scrubs `CLAUDE_CODE_OAUTH_TOKEN` from every tool
+  subprocess by default. This was verified live on 2.1.331: a Bash tool's `printenv` shows no
+  token. `CLAUDE_CODE_ORGANIZATION_UUID` is visible to tools, which is harmless. That scrub,
+  plus the SDK having no file-descriptor hook, is why env delivery is accepted for now over
+  `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` (follow-up).
+- **The login is pinned → `login_busy`.** When the login's token is stale and a live session
+  that launched from the cfg-dir login owns its token family, nothing refreshes it. That
+  covers launch, the toggle and 401 recovery. The session runs on the setup-token, and the
+  toggle answers 409 `REMOTE_CONTROL_REFUSED` "This account's login is in use by another
+  session; try again when it's idle" without respawning. The reason lifts at the next sweep
+  after that owner is gone.
+- **No usable login → `login_needed`.** With no valid full-scope slot (or no org UUID) the
+  session launches on the setup-token as before, inference unchanged, and shows
+  `remoteControlUnavailableReason: "login_needed"` with no enable sent. Within one sweep
+  (`poll_interval`, 60 s) of a successful sign-in the reason lifts. Turning the switch on then
+  **respawns the session** in place onto the login: idle only, conversation resumed, nothing
+  replayed. Mid-turn it answers 409 `REMOTE_CONTROL_BUSY` and the choice is not saved. A
+  default change to **on** never respawns; following sessions pick the login up at their next
+  spawn.
+- **Turning it off revokes the login.** That covers a per-session toggle off, the default
+  turned off for followers, and the kill switch. The session's rotated tokens stop being
+  pushed, and the session is respawned onto the setup-token: at once if idle, otherwise by
+  the next sweep after it goes idle.
+- **App-typed prompts.** Every Remote Control launch passes `--replay-user-messages`, whatever
+  the rewind flag says. A prompt typed in the Claude apps renders in the transcript only
+  while the bridge is open. The CLI's own synthetic or meta prompts (`isSynthetic`, slash
+  commands, `<tag>` envelopes) never render.
+- **Live token rotation.** The primary's token sweep refreshes each slot within
+  `expiry_skew_sec` of expiry, even while sessions run on it, and then pushes the new access
+  token to every live slot-launched CLI. The push is a top-level
+  `update_environment_variables` stdin message, which the CLI confirms. A failed push is
+  logged as `session.remote_control_token_push_failed` and retried on the next sweep; it never
+  kills the session. Neither path logs a token.
+- **Refusals with the login.** If claude.ai still refuses (`Claude.ai login was rejected`),
+  the session shows `login_rejected` and the daemon remembers it for that account. The memo
+  lifts by itself, with **no daemon restart**, once the slot holds a different token: the next
+  refresh, or a fresh sign-in.
+- **Runners are out of scope.** Sessions on a session runner (worker role, broker envelope)
+  keep their current auth and show `remoteControlUnavailableReason: "runner"`.
+- Design and verification: `docs/superpowers/specs/spikes/2026-11-24-remote-control-auth-spike.md`
+  and `docs/superpowers/plans/2026-11-24-remote-control-full-login.md`.
 
 ## Deploy controller (`viberpit-deploy-controller.service`)
 

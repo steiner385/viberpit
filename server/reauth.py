@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from server.aio import cancel_and_reap
+from viberpit.auth_login import WrongAccountLogin
 from server.sessions.desktop_session import DesktopUnavailable, resolve_desktop_session
 
 log = logging.getLogger(__name__)
@@ -52,6 +53,18 @@ class ReauthNoDesktop(Exception):
     """The host-screen fallback found no live desktop to open the login browser on."""
 
 
+#: ``start(mode=...)``: the browser login of a brand-new account (``/accounts/add``).
+MODE_LOGIN = "login"
+#: The browser login again, for an EXISTING account (``/accounts/{name}/browser-login``):
+#: the captured identity must be the account's own, or nothing is written.
+MODE_BROWSER_LOGIN = "browser_login"
+
+
+def verifies_identity(mode: str) -> bool:
+    """Must a capture in *mode* prove it is the stored account's own claude.ai login?"""
+    return mode == MODE_BROWSER_LOGIN
+
+
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
@@ -69,11 +82,15 @@ class ReauthState:
     _temp_profile: str | None = field(default=None, repr=False, compare=False)
     vnc_session: str | None = None   # reserved key while a virtual display is live; None on host-screen fallback
     auth_url: str | None = None
+    # A machine-readable reason for an ``error`` the UI may treat specially, e.g.
+    # ``browser_login_wrong_account`` (the re-login signed in as someone else).
+    code: str | None = None
 
     def to_dict(self) -> dict:
         """Return a camelCase dict safe for JSON serialisation."""
         return {
             "state": self.state,
+            "code": self.code,
             "message": self.message,
             "identity": self.identity,
             "account": self.account,
@@ -86,6 +103,7 @@ class ReauthState:
     def from_dict(d: dict) -> "ReauthState":
         return ReauthState(
             state=d.get("state", "idle"),
+            code=d.get("code"),
             message=d.get("message"),
             identity=d.get("identity"),
             account=d.get("account"),
@@ -224,8 +242,13 @@ class ReauthManager:
                         )
                     env_extra.update(desktop.env(prefer_wayland=False))
                     _progress("Opening Chrome on the host screen \u2014 sign in there\u2026")
+                # Only the existing-account re-login checks the identity; the add flow's
+                # call is unchanged.
+                identity_kw = ({"verify_identity": True}
+                               if verifies_identity(getattr(manager, "_mode", MODE_LOGIN))
+                               else {})
                 ok = await asyncio.to_thread(
-                    auth_login.capture_login, name, env_extra=env_extra
+                    auth_login.capture_login, name, env_extra=env_extra, **identity_kw
                 )
                 if ok:
                     # Clear the stale needs-reauth status synchronously so the
@@ -328,6 +351,7 @@ class ReauthManager:
             return ReauthState()
         return ReauthState(
             state=s.state,
+            code=s.code,
             message=s.message,
             identity=s.identity,
             account=s.account,
@@ -474,6 +498,18 @@ class ReauthManager:
         except asyncio.CancelledError:
             # cancel() handles both the state transition and the temp-profile cleanup.
             raise
+        except WrongAccountLogin as exc:
+            # An operator signed in as someone else: an expected outcome, not a bug.
+            temp = None
+            async with self._lock:
+                if self._state.state in ("running", "awaiting_code"):
+                    self._state.state = "error"
+                    self._state.code = exc.code
+                    self._state.message = str(exc)
+                    temp = self._state._temp_profile
+                    self._state._temp_profile = None
+            self._cleanup_temp_profile(temp)
+            log.info("reauth for %r refused: wrong claude.ai account", name)
         except Exception as exc:
             temp = None
             async with self._lock:

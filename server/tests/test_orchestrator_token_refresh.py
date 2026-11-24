@@ -4,6 +4,7 @@ daemon restart) even when the usage endpoint is throttled.
 """
 import asyncio
 import threading
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -65,23 +66,6 @@ async def test_refresh_idle_tokens_handles_account_enumeration_failure():
         ca.list_accounts.side_effect = OSError("ledger unavailable")
         await orch._refresh_idle_tokens_once()
     ca.acquire_valid_token.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_refresh_idle_tokens_skips_needs_reauth_and_live_sessions():
-    orch = _orch()
-    accts = [
-        {"name": "idle_ok", "status": "ok"},
-        {"name": "disabled", "status": "ok", "enabled": False},
-        {"name": "dead", "status": "needs-reauth"},   # dead token — don't hammer
-        {"name": "live_ok", "status": "ok"},           # SDK owns the token family
-    ]
-    orch.has_live_session = lambda name: name == "live_ok"
-    with mock.patch(_ACCOUNTS_TARGET) as ca:
-        ca.list_accounts.return_value = accts
-        await orch._refresh_idle_tokens_once()
-    refreshed = [c.args[0] for c in ca.acquire_valid_token.call_args_list]
-    assert refreshed == ["idle_ok"], f"only the idle healthy account should refresh: {refreshed}"
 
 
 @pytest.mark.asyncio
@@ -209,3 +193,174 @@ def test_session_factory_no_token_leaves_env_unchanged(monkeypatch):
     factory("/tmp/x", "/cfg", None, "default", None)
     # no token + no x11 → base called with extra_env=None (unchanged old path)
     assert captured["extra_env"] is None
+
+
+# ---------------------------------------------------------------------------
+# Remote Control (plan 2026-11-24 Tasks A1/B): a live session only blocks the sweep when
+# it may own the slot's token family. That is decided from what each live session
+# ACTUALLY launched with (``SessionRecord.launch_credential``, stamped at spawn), never
+# from the current store: a cfg-dir launch (the CLI rotates the family itself) or an
+# unrecorded one owns it; a slot / setup / envelope env-token launch does not.
+# ---------------------------------------------------------------------------
+
+
+def _live(orch, account: str, launch: str | None, sid: str | None = None) -> SessionRecord:
+    """Plant a live local session on *account* that launched with *launch*."""
+    sid = sid or f"{account}-{launch}-{len(orch._records)}"
+    rec = SessionRecord(id=sid, name=sid, account=account, engine=AgentEngine.CLAUDE_CODE,
+                        engine_session_id="", cols=80, rows=24, cwd="/tmp/x")
+    rec.launch_credential = launch
+    orch._records[sid] = rec
+    orch._drivers[sid] = SimpleNamespace(account=account)
+    return rec
+
+
+@pytest.mark.asyncio
+async def test_refresh_idle_tokens_skips_needs_reauth_and_owned_families():
+    orch = _orch()
+    accts = [
+        {"name": "idle_ok", "status": "ok"},
+        {"name": "disabled", "status": "ok", "enabled": False},
+        {"name": "dead", "status": "needs-reauth"},   # dead token — don't hammer
+        {"name": "live_ok", "status": "ok"},           # the CLI owns the token family
+    ]
+    _live(orch, "live_ok", "cfg")
+    with mock.patch(_ACCOUNTS_TARGET) as ca:
+        ca.list_accounts.return_value = accts
+        await orch._refresh_idle_tokens_once()
+    refreshed = [c.args[0] for c in ca.acquire_valid_token.call_args_list]
+    assert refreshed == ["idle_ok"], f"only the idle healthy account should refresh: {refreshed}"
+
+
+def test_env_token_launches_do_not_own_the_slot_family():
+    orch = _orch()
+    for kind in ("slot", "setup", "envelope"):
+        _live(orch, "acct", kind)
+    assert orch.has_live_session("acct") is True
+    assert orch.live_session_owns_slot_family("acct") is False
+    assert orch.live_session_owns_slot_family("idle") is False
+
+
+def test_a_cfg_launch_owns_the_family_even_after_a_setup_token_is_added():
+    """The TOCTOU the store-derived check had: a session launched from the cfg-dir
+    claudeAiOauth BEFORE a setup-token was added still rotates that family. Adding the
+    token must not make the authority refresh it out from under the running CLI."""
+    orch = _orch()
+    _live(orch, "acct", "cfg")
+    _live(orch, "acct", "setup")
+    with mock.patch("server.sessions.account_auth.crypto") as crypto:
+        crypto.read_oauth_token.return_value = "sk-ant-oat01-NEW"   # added after launch
+        assert orch.live_session_owns_slot_family("acct") is True
+
+
+def test_an_unrecorded_launch_owns_the_family():
+    """Fail closed: a rehydrated or adopted session whose launch was never stamped."""
+    orch = _orch()
+    _live(orch, "acct", None)
+    assert orch.live_session_owns_slot_family("acct") is True
+
+
+def test_a_copilot_launch_keeps_counting_as_owner():
+    orch = _orch()
+    _live(orch, "acct", "copilot")
+    assert orch.live_session_owns_slot_family("acct") is True
+
+
+def test_a_remote_fleet_session_is_judged_by_its_recorded_launch():
+    orch = _orch()
+    remote = SessionRecord(id="r1", name="r1", account="acct", engine=AgentEngine.CLAUDE_CODE,
+                           engine_session_id="", cols=80, rows=24, cwd="/tmp", status="idle",
+                           host="some-other-host")
+    orch._records["r1"] = remote
+    assert orch.live_session_owns_slot_family("acct") is True      # unknown → owned
+    remote.launch_credential = "envelope"
+    assert orch.live_session_owns_slot_family("acct") is False
+
+
+def test_ownership_never_reads_the_store():
+    orch = _orch()
+    _live(orch, "acct", "setup")
+    with mock.patch(_ENV_TARGET, side_effect=AssertionError("store read")), \
+            mock.patch("server.sessions.account_auth.crypto") as crypto:
+        crypto.read_oauth_token.side_effect = AssertionError("store read")
+        assert orch.live_session_owns_slot_family("acct") is False
+
+
+_ENV_TARGET = "server.sessions.orchestrator.oauth_env_for"
+
+
+@pytest.mark.asyncio
+async def test_refresh_sweep_refreshes_a_live_account_whose_sessions_use_an_env_token():
+    orch = _orch()
+    accts = [{"name": "live_env", "status": "ok"}, {"name": "live_cfg", "status": "ok"}]
+    _live(orch, "live_env", "setup")
+    _live(orch, "live_cfg", "cfg")
+    with mock.patch(_ACCOUNTS_TARGET) as ca:
+        ca.list_accounts.return_value = accts
+        await orch._refresh_idle_tokens_once()
+    assert [c.args[0] for c in ca.acquire_valid_token.call_args_list] == ["live_env"]
+
+
+def test_poller_refreshes_a_live_account_whose_sessions_use_an_env_token():
+    """The usage poller asks the same ownership question as the sweep."""
+    orch = SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0)
+    _live(orch, "env", "setup")
+    _live(orch, "cfg", "cfg")
+    calls = []
+    with mock.patch(_ACCOUNTS_TARGET) as ca:
+        ca.usage_for.side_effect = lambda n, **kw: calls.append((n, kw["allow_refresh"]))
+        orch._poller._usage_fn("env")
+        orch._poller._usage_fn("cfg")
+    assert calls == [("env", True), ("cfg", False)]
+
+
+# ---------------------------------------------------------------------------
+# The launch credential is stamped by the factory at every spawn.
+# ---------------------------------------------------------------------------
+
+
+def _factory_orch(base):
+    orch = SessionOrchestrator(sdk_factory=base, poll_interval=9999.0, usage_fn=lambda n: None)
+    orch._x11 = None
+    orch._records["s1"] = SessionRecord(id="s1", name="n", account="primary",
+                                        engine=AgentEngine.CLAUDE_CODE,
+                                        engine_session_id="", cols=80, rows=24, cwd="/tmp/x")
+    return orch
+
+
+@pytest.mark.parametrize("token,kind", [("sk-ant-oat01-TOK", "setup"), (None, "cfg")])
+def test_the_factory_stamps_the_launch_credential(monkeypatch, token, kind):
+    orch = _factory_orch(lambda *a, **k: object())
+    from server.sessions import account_auth
+    monkeypatch.setattr(account_auth, "crypto", mock.MagicMock())
+    account_auth.crypto.read_oauth_token = lambda acct: token
+    orch._session_factory("s1")("/tmp/x", "/cfg", None, "default", None)
+    assert orch._records["s1"].launch_credential == kind
+
+
+def test_an_envelope_launch_is_stamped_envelope(monkeypatch):
+    orch = _factory_orch(lambda *a, **k: object())
+    with mock.patch("server.sessions.account_auth._accounts.runner_uses_envelope",
+                    return_value=True), \
+            mock.patch("server.sessions.account_auth.credential_envelope") as ce:
+        ce.runner_store.return_value.launch_token.return_value = "ENV-TOKEN"
+        orch._session_factory("s1")("/tmp/x", "/cfg", None, "default", None)
+    assert orch._records["s1"].launch_credential == "envelope"
+
+
+def test_a_failed_store_read_leaves_the_launch_unrecorded(monkeypatch):
+    orch = _factory_orch(lambda *a, **k: object())
+    orch._records["s1"].launch_credential = "setup"
+    from server.sessions import account_auth
+    monkeypatch.setattr(account_auth, "crypto", mock.MagicMock())
+    account_auth.crypto.read_oauth_token.side_effect = OSError("sshfs")
+    with pytest.raises(OSError):
+        orch._session_factory("s1")("/tmp/x", "/cfg", None, "default", None)
+    assert orch._records["s1"].launch_credential is None
+
+
+def test_launch_credential_rides_the_record_wire_format():
+    rec = SessionRecord(id="s", name="s", account="a", engine=AgentEngine.CLAUDE_CODE,
+                        engine_session_id="", cols=80, rows=24, cwd="/tmp")
+    rec.launch_credential = "envelope"
+    assert SessionRecord.from_dict(rec.to_dict()).launch_credential == "envelope"

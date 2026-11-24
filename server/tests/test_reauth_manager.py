@@ -958,6 +958,31 @@ async def test_start_mode_login_uses_login_runner(monkeypatch):
     assert m.status("acct3").state == "success"
 
 
+@pytest.mark.asyncio
+async def test_browser_login_mode_checks_the_captured_identity(monkeypatch):
+    """mode='browser_login' (re-login of an EXISTING account for Remote Control) asks
+    capture_login to verify the identity; mode='login' (add) does not."""
+    from viberpit import auth_login
+    from server.reauth import ReauthManager
+
+    seen: list[dict] = []
+    monkeypatch.setattr(auth_login, "capture_login",
+                        lambda name, env_extra=None, **kw: seen.append(kw) or True)
+    monkeypatch.setattr(auth_login, "prepare_reauth_profile", lambda p, **kw: "/tmp/reauth-tmp-mode")
+    monkeypatch.setattr(auth_login, "cleanup_reauth_profile", lambda t: None)
+    monkeypatch.setattr("viberpit.accounts.mark_reauthenticated", lambda n: None)
+
+    for mode in ("browser_login", "login"):
+        m = ReauthManager(key_available=lambda: True, timeout_s=5)
+        await m.start("acct3", "me@x", mode=mode)
+        for _ in range(50):
+            if m.status("acct3").state in ("success", "error", "timeout"):
+                break
+            await asyncio.sleep(0.02)
+        assert m.status("acct3").state == "success"
+    assert seen == [{"verify_identity": True}, {}]
+
+
 # ---------------------------------------------------------------------------
 # Fix M-A + M-C: double-submit guard and unexpected-exception handler
 # ---------------------------------------------------------------------------

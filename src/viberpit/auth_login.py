@@ -288,12 +288,73 @@ def cleanup_reauth_profile(path: str) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
+WRONG_ACCOUNT_CODE = "browser_login_wrong_account"
+
+
+class WrongAccountLogin(Exception):
+    """A browser login for an EXISTING account signed in as a different claude.ai
+    identity (or one that cannot be checked). Nothing was written.
+
+    ``code`` is ``browser_login_wrong_account``; the message names both e-mails and is
+    safe to show the operator (no token)."""
+
+    code = WRONG_ACCOUNT_CODE
+
+    def __init__(self, expected: str | None, got: str | None) -> None:
+        self.expected = expected
+        self.got = got
+        if expected is None:
+            msg = ("This account's claude.ai identity is unknown, so the login can't be "
+                   "checked; nothing was saved.")
+        else:
+            msg = (f"You signed in as {got or 'an unknown account'}, expected {expected}. "
+                   "Nothing was saved.")
+        super().__init__(msg)
+
+
+def _identity(claude_json: object) -> tuple[str | None, str | None]:
+    """``(accountUuid, emailAddress)`` from a ``.claude.json`` blob's ``oauthAccount``."""
+    acct = claude_json.get("oauthAccount") if isinstance(claude_json, dict) else None
+    if not isinstance(acct, dict):
+        return None, None
+    uuid = acct.get("accountUuid")
+    email = acct.get("emailAddress")
+    return (uuid if isinstance(uuid, str) and uuid else None,
+            email if isinstance(email, str) and email else None)
+
+
+def _check_same_identity(name: str, captured_claude_json: str) -> None:
+    """Refuse (``WrongAccountLogin``) unless the captured login is *name*'s own
+    claude.ai identity: same ``accountUuid``, or — when either side lacks one — the
+    same e-mail (case-insensitive). An identity that cannot be compared fails closed."""
+    try:
+        stored = read_json(paths.store_claude_json_path(name))
+    except (OSError, ValueError):
+        stored = {}
+    want_uuid, want_email = _identity(stored)
+    try:
+        captured = (read_json(Path(captured_claude_json))
+                    if os.path.exists(captured_claude_json) else {})
+    except (OSError, ValueError):
+        captured = {}
+    got_uuid, got_email = _identity(captured)
+    if want_uuid is None and want_email is None:
+        raise WrongAccountLogin(None, got_email)
+    if want_uuid and got_uuid:
+        same = want_uuid == got_uuid
+    else:
+        same = bool(want_email and got_email and want_email.lower() == got_email.lower())
+    if not same:
+        raise WrongAccountLogin(want_email or want_uuid, got_email or got_uuid)
+
+
 def capture_login(
     name: str,
     *,
     env_extra: dict | None = None,
     claude_bin: Sequence[str] | None = None,
     extra_login_args: Sequence[str] | None = None,
+    verify_identity: bool = False,
 ) -> bool:
     """Run `claude auth login --claudeai` in a capture dir under reauth-tmp and store creds.
 
@@ -307,6 +368,15 @@ def capture_login(
         env_extra: Additional environment variables to merge (e.g. BROWSER, DISPLAY).
             Applied last, so they override the injected session-bus variables.
         claude_bin: Override the claude command argv list (default: ["claude"]).
+        verify_identity: re-login of an EXISTING account (the Remote Control browser
+            login): before anything is written, the captured ``oauthAccount`` must be
+            the stored account's own (``accountUuid``, else e-mail), or
+            ``WrongAccountLogin`` is raised and the slot, the stored ``.claude.json``
+            and the composed dir are left untouched. The add flow leaves it off.
+
+    On success the slot holds a fresh login, so a recorded slot-refresh rejection
+    (``slotRefreshRejected``) is cleared here — and only here, never by a setup-token
+    re-auth, which leaves the slot as dead as it was.
 
     Returns:
         True if credentials were captured and stored; False otherwise.
@@ -348,12 +418,20 @@ def capture_login(
         if not os.path.exists(cred_path):
             return False
 
+        captured_claude_json = os.path.join(capture_dir, ".claude.json")
+        if verify_identity:
+            # Before ANY write: a login as someone else must not replace this account.
+            _check_same_identity(name, captured_claude_json)
+
         # Extract and store credentials — blob is never logged
         full_blob = read_json(Path(cred_path))
         claude_oauth, mcp = split_credentials(full_blob)
 
         paths.store_dir().mkdir(parents=True, exist_ok=True)
         write_credentials(paths.slot_path(name), claude_oauth)
+        from .accounts import clear_slot_refresh_rejection
+
+        clear_slot_refresh_rejection(name)
 
         # Warn if not a Max subscription
         sub_type = claude_oauth.get("subscriptionType")
@@ -364,7 +442,6 @@ def capture_login(
             capture_cfg_mcp(mcp)
 
         # Capture per-account .claude.json (identity + caches)
-        captured_claude_json = os.path.join(capture_dir, ".claude.json")
         if os.path.exists(captured_claude_json):
             claude_json_data = read_json(Path(captured_claude_json))
             write_json_secure(paths.store_claude_json_path(name), claude_json_data)

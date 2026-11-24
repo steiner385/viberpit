@@ -3057,6 +3057,11 @@ async def set_session_remote_control(
     ``REMOTE_CONTROL_CODES`` code when the CLI refused or never answered, or
     ``daemon_outdated`` from an old daemon. Audited ``session.remote_control``.
 
+    Turning it on for a live session still running on the account's setup-token respawns
+    it in place onto the account's claude.ai login first (idle only: 409
+    ``REMOTE_CONTROL_BUSY`` mid-turn); with no usable login it is 409
+    ``REMOTE_CONTROL_REFUSED`` with the ``login_needed`` message.
+
     Enabling is person-only (403 ``SESSION_CONTROL_HUMAN_ONLY``): it opens a way to drive
     the session from the Claude apps that bypasses ViberPit's own auth, so an agent may
     not open it. Disabling is open to any caller — closing the exposure is always safe."""

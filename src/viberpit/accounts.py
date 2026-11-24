@@ -263,6 +263,74 @@ def _slot_expires_at(name: str) -> int | None:
         return None
 
 
+# The claude.ai scope Remote Control's session bridge checks on the server. A
+# setup-token never carries it; only the browser login's slot does (spike
+# docs/superpowers/specs/spikes/2026-11-24-remote-control-auth-spike.md).
+REMOTE_CONTROL_SCOPE = "user:sessions:claude_code"
+
+SLOT_OK = "ok"
+SLOT_LOGIN_NEEDED = "login_needed"
+SLOT_MISSING = "missing"
+
+# Ledger key: the authority's last refresh of this slot was REJECTED (400/401).
+# Persisted, not process-local, because the daemon refreshes while the edge
+# renders the accounts list.
+_SLOT_REFRESH_REJECTED = "slotRefreshRejected"
+
+
+def _note_slot_refresh(name: str, *, rejected: bool) -> None:
+    """Record (or clear) a rejected slot refresh. Best-effort bookkeeping: a ledger
+    fault must never change the outcome of the refresh it describes."""
+    try:
+        with ledger.locked_ledger() as led:
+            if rejected:
+                led["accounts"].setdefault(name, {})[_SLOT_REFRESH_REJECTED] = True
+            elif name in led["accounts"]:
+                led["accounts"][name].pop(_SLOT_REFRESH_REJECTED, None)
+    except Exception:  # noqa: BLE001 — never let bookkeeping break the auth path
+        log.warning("slot refresh outcome not recorded for %s", name, exc_info=True)
+
+
+def clear_slot_refresh_rejection(name: str) -> None:
+    """A fresh browser login was just captured into *name*'s slot: drop any recorded
+    refresh rejection. Called by ``auth_login.capture_login`` only."""
+    _note_slot_refresh(name, rejected=False)
+
+
+def _slot_status_from(name: str, ledger_acct: dict) -> str:
+    """``slot_status`` against an already-read ledger row (``list_accounts`` holds the
+    ledger lock, so it cannot take it again)."""
+    try:
+        blob = read_json(paths.slot_path(name))
+    except (OSError, ValueError):
+        return SLOT_MISSING
+    if not isinstance(blob, dict) or not blob.get("accessToken"):
+        return SLOT_MISSING
+    if not blob.get("refreshToken"):
+        return SLOT_LOGIN_NEEDED
+    if REMOTE_CONTROL_SCOPE not in (blob.get("scopes") or []):
+        return SLOT_LOGIN_NEEDED
+    rt_expires = blob.get("refreshTokenExpiresAt")
+    if isinstance(rt_expires, (int, float)) and rt_expires <= time.time() * 1000:
+        return SLOT_LOGIN_NEEDED
+    if ledger_acct.get(_SLOT_REFRESH_REJECTED):
+        return SLOT_LOGIN_NEEDED
+    return SLOT_OK
+
+
+def slot_status(name: str) -> str:
+    """Can *name*'s browser-login slot back Remote Control? ``ok`` | ``login_needed`` | ``missing``.
+
+    Metadata only — presence of the tokens, ``scopes``, ``refreshTokenExpiresAt`` and a
+    recorded refresh rejection — so it never decrypts, logs or returns a token. An
+    expired ACCESS token is still ``ok``: the refresh authority renews it on demand.
+    Independent of inference health: ``_setup_token_usage_fallback`` keeps an account
+    with a dead slot ``ok`` for launches, and this is where that dead slot shows.
+    """
+    led = ledger.read_ledger()
+    return _slot_status_from(name, led["accounts"].get(name, {}))
+
+
 def ensure_valid_token(name: str) -> dict:
     """Return a non-expired claudeAiOauth blob, refreshing + persisting if needed.
 
@@ -288,11 +356,21 @@ def ensure_valid_token(name: str) -> dict:
             raise oauth.AuthError("credential slot has no refreshToken")
         if not is_refresh_authority():
             raise RefreshDeferred(name)
-        new_blob = oauth.refresh_access_token(
-            blob["refreshToken"], blob,
-            max_retries=cfg.retry_max_retries, max_total_sec=cfg.retry_max_total_sec)
-        write_credentials(paths.slot_path(name), new_blob)
-        return new_blob
+        rejection: oauth.AuthError | None = None
+        try:
+            new_blob = oauth.refresh_access_token(
+                blob["refreshToken"], blob,
+                max_retries=cfg.retry_max_retries, max_total_sec=cfg.retry_max_total_sec)
+        except oauth.AuthError as e:
+            rejection = e
+        else:
+            write_credentials(paths.slot_path(name), new_blob)
+    # Recorded after the guard is released: the ledger has its own flock, and
+    # nesting it inside the refresh flock would order the two locks for the first time.
+    _note_slot_refresh(name, rejected=rejection is not None)
+    if rejection is not None:
+        raise rejection
+    return new_blob
 
 
 def acquire_valid_token(name: str) -> dict:
@@ -315,6 +393,9 @@ def acquire_valid_token(name: str) -> dict:
         cfg = load_config()
         blob = read_credentials(paths.slot_path(name))
         if _is_fresh(blob, cfg):
+            # The recovered rotation is a live grant: drop any rejection the
+            # failed attempt just recorded against the slot.
+            _note_slot_refresh(name, rejected=False)
             return blob
         raise
 
@@ -577,6 +658,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         # 401 that survives the refresh (creds genuinely rejected on usage).
         _refresh_auth_err: oauth.AuthError | None = None
         slot = blob  # fallback; overwritten below if the guard runs
+        refreshed = False
         try:
             with _refresh_guard(name):
                 # Re-read under the guard: a sibling thread OR process may have just
@@ -589,10 +671,12 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
                 if slot.get("accessToken") == blob.get("accessToken"):
                     slot = oauth.refresh_access_token(slot["refreshToken"], slot, **retry_kw)
                     write_credentials(paths.slot_path(name), slot)
+                    refreshed = True
         except oauth.AuthError as _re:
             # 400 (or 401) from the token endpoint itself — the refresh grant is dead.
             # Do NOT proceed to a usage fetch with the now-dead token.
             _refresh_auth_err = _re
+            _note_slot_refresh(name, rejected=True)
         except (oauth.UsageError, oauth.TransientError) as e:
             log.info("usage_for(%s): transient error after refresh, leaving status unchanged: %s", name, e)
             _note_usage_fetch_failure(name)
@@ -618,6 +702,8 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
                 ledger.note_usage_fetch_failure(led, name, time.time())
             _record_health(name, "needs-reauth", detail="usage credentials rejected")
             return None
+        if refreshed:
+            _note_slot_refresh(name, rejected=False)
 
         try:
             u = oauth.fetch_usage(slot["accessToken"], **retry_kw)
@@ -930,12 +1016,17 @@ def list_accounts() -> list[dict]:
     with ledger.locked_ledger() as led:
         for name in _account_names():
             acct = led["accounts"].get(name, {})
+            provider = provider_of(name)
             out.append({
                 "name": name,
                 "status": acct.get("status", "unknown"),
                 "usage": _normalized_usage_blob(name, acct),
                 "nickname": acct.get("nickname"),
-                "provider": provider_of(name),
+                "provider": provider,
+                # Only a Claude (anthropic) account has a browser-login slot.
+                "remoteControlLogin": (
+                    _slot_status_from(name, acct)
+                    if provider == account_registry.PROVIDER_ANTHROPIC else None),
                 "weeklyReservePct": ledger.get_weekly_reserve(led, name),
                 "allowExtraUsage": ledger.get_allow_extra_usage(led, name),
                 "accountDefaults": ledger.get_account_defaults(led, name),
@@ -1025,6 +1116,8 @@ def mark_reauthenticated(name: str) -> None:
     with ledger.locked_ledger() as led:
         ledger.set_status(led, name, "ok")
         ledger.clear_cached_usage(led, name)
+        # NOT ``slotRefreshRejected``: a setup-token re-auth leaves a dead slot dead.
+        # Only a fresh browser login into the slot clears it (``capture_login``).
     # A successful re-auth replaces the credential behind this account, so the
     # non-secret generation counter advances alongside the health record.
     _record_health(name, "ok")

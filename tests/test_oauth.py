@@ -1,6 +1,7 @@
 import email.message
 import io
 import json
+import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -173,6 +174,28 @@ class TestOAuth(unittest.TestCase):
             self.assertEqual(blob["subscriptionType"], "max")  # carried from prior
             self.assertGreater(blob["expiresAt"], 0)
             self.assertEqual(blob["scopes"], ["user:inference", "user:profile"])
+
+    def test_refresh_records_the_new_refresh_grant_expiry_when_reported(self):
+        resp = {"access_token": "newA", "refresh_token": "newR", "expires_in": 3600,
+                "refresh_token_expires_in": 86400}
+        with mock.patch.object(oauth, "http_request", return_value=(200, json.dumps(resp).encode())):
+            before = int(time.time() * 1000)
+            blob = oauth.refresh_access_token("oldR", {"refreshTokenExpiresAt": 1})
+            self.assertGreaterEqual(blob["refreshTokenExpiresAt"], before + 86_400_000)
+
+    def test_refresh_drops_a_rotated_grants_stale_expiry(self):
+        """The prior expiry describes the OLD refresh token; carrying it onto the rotated one
+        would make slot_status report a live grant as lapsed."""
+        resp = {"access_token": "newA", "refresh_token": "newR", "expires_in": 3600}
+        with mock.patch.object(oauth, "http_request", return_value=(200, json.dumps(resp).encode())):
+            blob = oauth.refresh_access_token("oldR", {"refreshTokenExpiresAt": 1})
+            self.assertNotIn("refreshTokenExpiresAt", blob)
+
+    def test_refresh_keeps_the_expiry_when_the_grant_did_not_rotate(self):
+        resp = {"access_token": "newA", "expires_in": 3600}
+        with mock.patch.object(oauth, "http_request", return_value=(200, json.dumps(resp).encode())):
+            blob = oauth.refresh_access_token("oldR", {"refreshTokenExpiresAt": 123})
+            self.assertEqual(blob["refreshTokenExpiresAt"], 123)
 
     def test_refresh_429_raises_transient_not_autherror(self):
         """A 429 on the token endpoint is rate-limiting, not a dead token.
