@@ -865,6 +865,19 @@ async def test_a_rejected_account_is_not_retried_on_later_spawns(env) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_generic_refusal_does_not_block_the_account(env) -> None:
+    # Only a rejected login is a property of the credential; anything else may be
+    # transient, so the next spawn on the same account tries again.
+    env.control.replies = [_control_error("bridge busy, try later"), {"session_url": URL}]
+    first = await env.make("first")
+    second = await env.make("second")
+    assert first.remote_control_unavailable_reason == rc.REASON_REFUSED
+    assert len(_rc_sent(env.control)) == 2
+    assert second.remote_control_unavailable_reason is None
+    assert second.remote_control_url == URL
+
+
+@pytest.mark.asyncio
 async def test_a_toggle_on_for_a_rejected_account_is_refused_without_sending(env) -> None:
     env.control.replies = [_control_error(LOGIN_REJECTED)]
     rec = await env.make()

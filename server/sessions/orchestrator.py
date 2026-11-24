@@ -9577,7 +9577,9 @@ class SessionOrchestrator:
         rec = self._records.get(session_id)
         if rec is not None:
             rec.remote_control_unavailable_reason = reason
-            if rec.account:
+            # Only a rejected LOGIN is a property of the account's credential; a generic
+            # refusal may be transient, so it must not block the account until a restart.
+            if rec.account and reason == _remote_control.REASON_LOGIN_REJECTED:
                 self._remote_control_refused_accounts()[rec.account] = reason
         await self._persist_remote_control(session_id, remote_control_url=None)
         log.info("session.remote_control_unavailable id=%s account=%s reason=%s",
