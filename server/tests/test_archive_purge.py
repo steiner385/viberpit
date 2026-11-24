@@ -620,3 +620,100 @@ def test_purge_success_clears_prior_strikes(tmp_path):
     reclaimed, strikes = asyncio.run(run())
     assert reclaimed == ["arch0"]
     assert strikes.get("arch0", 0) == 0   # cleared on success
+
+
+# ---------------------------------------------------------------------------
+# Concurrency (#3458): a batch archive spawns one _enforce_archive_limit per
+# archive; they must not purge — and permanent_delete — the same ids in parallel.
+# ---------------------------------------------------------------------------
+
+
+def _count_deletes(orch: SessionOrchestrator) -> list[str]:
+    """Wrap the real per-id delete so it yields mid-flight (letting concurrent
+    callers interleave, as the to_thread snapshot/rmtree do in production) and
+    records every id it actually ran for."""
+    calls: list[str] = []
+    real = orch._permanent_delete_once
+
+    async def slow_once(sid: str) -> bool:
+        calls.append(sid)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        return await real(sid)
+
+    setattr(orch, "_permanent_delete_once", slow_once)
+    return calls
+
+
+def test_concurrent_enforce_archive_limit_deletes_each_id_once(tmp_path):
+    """Three concurrent passes over max=2 / 5 archived purge the 3 oldest exactly
+    once between them — not 3x each (#3458)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
+
+    async def run():
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
+            await init_db(db_url=db_url)
+            await _set_max(2)
+            await _seed([
+                _archived(i, archived_at=_BASE + timedelta(hours=i)) for i in range(5)
+            ])
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            calls = _count_deletes(orch)
+            counts = await asyncio.gather(*(orch._enforce_archive_limit() for _ in range(3)))
+            return counts, calls, await _archived_ids()
+
+    counts, calls, remaining = asyncio.run(run())
+    assert sorted(calls) == ["arch0", "arch1", "arch2"]
+    assert sum(counts) == 3
+    assert remaining == ["arch3", "arch4"]
+
+
+def test_concurrent_permanent_delete_of_one_id_runs_once(tmp_path):
+    """Two concurrent permanent_delete(sid) calls share one delete and both see
+    its outcome (#3458)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
+
+    async def run():
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
+            await init_db(db_url=db_url)
+            await _seed([_archived(0, archived_at=_BASE)])
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            calls = _count_deletes(orch)
+            results = await asyncio.gather(
+                orch.permanent_delete("arch0"), orch.permanent_delete("arch0"))
+            return results, calls, orch._permanent_delete_inflight, await _archived_ids()
+
+    results, calls, inflight, remaining = asyncio.run(run())
+    assert results == [True, True]
+    assert calls == ["arch0"]
+    assert inflight == {}
+    assert remaining == []
+
+
+def test_concurrent_permanent_delete_shares_the_failure(tmp_path):
+    """A failing delete raises to every coalesced caller, and a later call
+    retries instead of reusing the stale outcome (#3458)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'viberpit.db'}"
+
+    async def run():
+        with patch.dict(os.environ, {"VIBERPIT_HOME": str(tmp_path)}):
+            await init_db(db_url=db_url)
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            calls: list[str] = []
+
+            async def boom(sid: str) -> bool:
+                calls.append(sid)
+                await asyncio.sleep(0)
+                raise OSError("rmtree failed")
+
+            setattr(orch, "_permanent_delete_once", boom)
+            results = await asyncio.gather(
+                orch.permanent_delete("x"), orch.permanent_delete("x"),
+                return_exceptions=True)
+            again = await asyncio.gather(orch.permanent_delete("x"), return_exceptions=True)
+            return results, again, calls
+
+    results, again, calls = asyncio.run(run())
+    assert all(isinstance(r, OSError) for r in results)
+    assert isinstance(again[0], OSError)
+    assert calls == ["x", "x"]  # one shared run, then one fresh retry
