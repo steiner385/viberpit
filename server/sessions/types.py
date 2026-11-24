@@ -265,6 +265,10 @@ class SessionRecord:
     remote_control: bool | None = None
     remote_control_url: str | None = None
     remote_control_available: bool = False
+    # Why this session cannot open a bridge although it is eligible — the CLI refused
+    # (``remote_control.REASON_*``), e.g. an inference-only setup-token login. In memory
+    # only: the daemon re-learns it (per account) from the next refusal after a restart.
+    remote_control_unavailable_reason: str | None = None
     # The CLI's last ``initialize`` model rows (``flag_settings.model_options``), so a
     # detached session can still check an effort against its model's levels. Daemon-
     # local ONLY — not in to_dict, never a column: ``set_model_for_session`` runs on the
@@ -432,6 +436,7 @@ class SessionRecord:
             "remoteControlOverride": self.remote_control,
             "remoteControlUrl": self.remote_control_url,
             "remoteControlAvailable": self.remote_control_available,
+            "remoteControlUnavailableReason": self.remote_control_unavailable_reason,
             "supportedEffortLevels": self.effort_levels_now(),
             # Carried over RPC so a fleet mirror of an assistant session is still
             # recognised by is_assistant() on the edge (list filtering, sweeps).
@@ -520,6 +525,7 @@ class SessionRecord:
             remote_control=d.get("remoteControlOverride"),
             remote_control_url=d.get("remoteControlUrl"),
             remote_control_available=bool(d.get("remoteControlAvailable", False)),
+            remote_control_unavailable_reason=d.get("remoteControlUnavailableReason"),
             supported_effort_levels=d.get("supportedEffortLevels"),
             kind=d.get("kind"),
             owner_identity=d.get("ownerIdentity"),

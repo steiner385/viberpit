@@ -829,3 +829,114 @@ def test_settings_put_applies_a_changed_default_to_live_sessions() -> None:
         c.put("/api/settings", json={"remoteControlDefault": True}, headers=_H)
     assert calls == [False, True]
     rc._cache = None
+
+
+# ── Runtime truth: an account whose login the CLI rejects (inference-only setup-token) ──
+
+# What the real CLI answered in production for a setup-token session (2026-11-24).
+LOGIN_REJECTED = "Claude.ai login was rejected — run /login, then /remote-control"
+
+
+def test_refusal_reason_reads_the_cli_message() -> None:
+    assert rc.refusal_reason(LOGIN_REJECTED) == rc.REASON_LOGIN_REJECTED
+    assert rc.refusal_reason("something else") == rc.REASON_REFUSED
+    assert rc.LOGIN_REJECTED_MESSAGE.startswith("This account signs in with an inference-only")
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_login_at_spawn_is_recorded_and_not_live(env) -> None:
+    env.control.replies = [_control_error(LOGIN_REJECTED)]
+    rec = await env.make()
+    assert rec.remote_control_unavailable_reason == rc.REASON_LOGIN_REJECTED
+    assert rec.remote_control_url is None
+    p = _payload(rec)
+    assert p["remoteControlUnavailableReason"] == rc.REASON_LOGIN_REJECTED
+    assert p["remoteControlAvailable"] is True        # static eligibility is unchanged
+    assert p["remoteControl"] is False                 # but it is not live
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_account_is_not_retried_on_later_spawns(env) -> None:
+    env.control.replies = [_control_error(LOGIN_REJECTED)]
+    await env.make("first")
+    second = await env.make("second")
+    assert len(_rc_sent(env.control)) == 1             # the second spawn sent nothing
+    assert second.remote_control_unavailable_reason == rc.REASON_LOGIN_REJECTED
+
+
+@pytest.mark.asyncio
+async def test_a_generic_refusal_does_not_block_the_account(env) -> None:
+    # Only a rejected login is a property of the credential; anything else may be
+    # transient, so the next spawn on the same account tries again.
+    env.control.replies = [_control_error("bridge busy, try later"), {"session_url": URL}]
+    first = await env.make("first")
+    second = await env.make("second")
+    assert first.remote_control_unavailable_reason == rc.REASON_REFUSED
+    assert len(_rc_sent(env.control)) == 2
+    assert second.remote_control_unavailable_reason is None
+    assert second.remote_control_url == URL
+
+
+@pytest.mark.asyncio
+async def test_a_toggle_on_for_a_rejected_account_is_refused_without_sending(env) -> None:
+    env.control.replies = [_control_error(LOGIN_REJECTED)]
+    rec = await env.make()
+    with pytest.raises(rc.RemoteControlError) as ei:
+        await env.orch.set_remote_control(rec.id, True)
+    assert ei.value.code == rc.REMOTE_CONTROL_REFUSED
+    assert str(ei.value) == rc.LOGIN_REJECTED_MESSAGE
+    assert len(_rc_sent(env.control)) == 1
+    assert (await _row(rec.id)).remote_control is None   # nothing was changed
+    # Turning it off is always allowed.
+    env.control.replies = [{}]
+    assert (await env.orch.set_remote_control(rec.id, False))["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_live_toggle_refusal_records_the_reason_and_the_account(env) -> None:
+    await _set_default(False)
+    rec = await env.make()
+    env.control.replies = [_control_error(LOGIN_REJECTED)]
+    with pytest.raises(rc.RemoteControlError) as ei:
+        await env.orch.set_remote_control(rec.id, True)
+    assert ei.value.code == rc.REMOTE_CONTROL_REFUSED
+    assert str(ei.value) == rc.LOGIN_REJECTED_MESSAGE
+    assert rec.remote_control_unavailable_reason == rc.REASON_LOGIN_REJECTED
+    other = await env.make("other")
+    with pytest.raises(rc.RemoteControlError):
+        await env.orch.set_remote_control(other.id, True)
+    assert len(_rc_sent(env.control)) == 1
+
+
+@pytest.mark.asyncio
+async def test_default_on_skips_a_rejected_account(env) -> None:
+    env.control.replies = [_control_error(LOGIN_REJECTED)]
+    await env.make()
+    assert await env.orch.apply_remote_control_default(True) == {"sessions": 0, "failed": 0}
+    assert len(_rc_sent(env.control)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_on_another_account_clears_a_stale_reason(env) -> None:
+    env.control.replies = [_control_error(LOGIN_REJECTED)]
+    rec = await env.make()
+    env.orch._remote_control_refused_accounts().pop("alpha")   # e.g. a daemon restart
+    env.control.replies = [ON_REPLY]
+    env.orch._schedule_remote_control(rec.id)
+    await env.settle(rec.id)
+    assert rec.remote_control_unavailable_reason is None
+    assert rec.remote_control_url == URL
+
+
+def test_the_reason_rides_the_daemon_to_edge_copy_and_forces_off() -> None:
+    rec: Any = SessionRecord(id=SID, name="n", account="a", engine=AgentEngine.CLAUDE_CODE,
+                             engine_session_id="c", cols=80, rows=24, cwd="/tmp")
+    rec.remote_control_available = True
+    rec.remote_control = True
+    rec.remote_control_unavailable_reason = rc.REASON_LOGIN_REJECTED
+    back = SessionRecord.from_dict(rec.to_dict())
+    assert back.remote_control_unavailable_reason == rc.REASON_LOGIN_REJECTED
+    with patch.dict(os.environ, _ENV):
+        p = _payload(rec)
+    assert p["remoteControl"] is False
+    assert p["remoteControlUnavailableReason"] == rc.REASON_LOGIN_REJECTED

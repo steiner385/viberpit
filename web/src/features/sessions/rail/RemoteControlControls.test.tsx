@@ -12,7 +12,10 @@ import { QK } from '@/api/hooks'
 import type { Session } from '@/api/types'
 import { RemoteControlControls, type RemoteControlControlsProps } from './RemoteControlControls'
 import { EnvironmentCard } from './EnvironmentCard'
-import { REMOTE_CONTROL_ACCESS_NOTE, REMOTE_CONTROL_TOGGLE_FALLBACK } from '../remoteControlCopy'
+import {
+  REMOTE_CONTROL_ACCESS_NOTE, REMOTE_CONTROL_TOGGLE_FALLBACK, REMOTE_CONTROL_UNAVAILABLE_COPY,
+  remoteControlUnavailableText,
+} from '../remoteControlCopy'
 
 const URL = 'https://claude.ai/code/session_abc'
 
@@ -106,6 +109,24 @@ describe('RemoteControlControls', () => {
     mount()
     await userEvent.click(toggle())
     expect(await screen.findByRole('alert')).toHaveTextContent('The bridge did not answer')
+  })
+
+  it('shows the switch off and disabled, with the reason, when the account was refused', async () => {
+    mount({ enabled: false, override: true, url: URL, unavailableReason: 'login_rejected' })
+    expect(toggle()).toHaveAttribute('aria-checked', 'false')
+    expect(toggle()).toBeDisabled()
+    expect(screen.getByTestId('remote-control-state')).toHaveTextContent('Unavailable')
+    expect(screen.getByTestId('remote-control-unavailable')).toHaveTextContent(
+      REMOTE_CONTROL_UNAVAILABLE_COPY.login_rejected)
+    expect(screen.queryByRole('link', { name: /Open in Claude app/ })).toBeNull()
+    await userEvent.click(toggle())
+    expect(posts).toEqual([])
+  })
+
+  it('explains any other refusal in plain words', () => {
+    mount({ unavailableReason: 'something_new' })
+    expect(screen.getByTestId('remote-control-unavailable')).toHaveTextContent(
+      remoteControlUnavailableText('something_new'))
   })
 
   it('falls back to a plain line when the server says nothing', async () => {

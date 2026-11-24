@@ -743,6 +743,17 @@ REPL, so it does nothing here.
   on the new account with a new bridge and link.
 - **Failures:** a failed enable logs `session.remote_control_failed` and never fails the
   spawn.
+- **Setup-token accounts are refused.** Sessions authenticate with the account's
+  inference-only setup-token (`CLAUDE_CODE_OAUTH_TOKEN`, `server/sessions/account_auth.py`),
+  and claude.ai rejects it for Remote Control: the CLI answers `Claude.ai login was rejected —
+  run /login, then /remote-control`. ViberPit learns this from the first refusal, not by
+  guessing from the token. The session shows `remoteControlUnavailableReason:
+  "login_rejected"`, its switch is disabled with the reason, and `remoteControl` reads false.
+  The daemon remembers the refusal per account in memory, so later spawns on that account
+  send nothing, and a toggle-on answers 409 `REMOTE_CONTROL_REFUSED` without asking the CLI.
+  Nothing tells the daemon that an account's credentials changed, so **restart the daemon
+  after re-logging an account in** to make it try again. Design for real support:
+  `docs/superpowers/specs/spikes/2026-11-24-remote-control-auth-spike.md`.
 
 ## Deploy controller (`viberpit-deploy-controller.service`)
 

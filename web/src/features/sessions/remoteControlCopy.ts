@@ -15,6 +15,19 @@ export const REMOTE_CONTROL_DEFAULT_COPY =
 
 export const REMOTE_CONTROL_TOGGLE_FALLBACK = "Couldn't change Remote Control"
 
+/** Why an eligible session still can't use it, keyed by `remoteControlUnavailableReason`
+ *  (the CLI's own refusal, learned at runtime). */
+export const REMOTE_CONTROL_UNAVAILABLE_COPY: Record<string, string> = {
+  login_rejected:
+    'This account signs in with an inference-only token; Remote Control needs a full claude.ai login.',
+  refused: 'The Claude CLI refused Remote Control for this account.',
+}
+
+/** The explanation for *reason*, or a plain line for one this build does not know. */
+export function remoteControlUnavailableText(reason: string): string {
+  return REMOTE_CONTROL_UNAVAILABLE_COPY[reason] ?? 'Remote Control is unavailable for this account.'
+}
+
 /** Whether the row's value is the session's own choice or the Settings default's. */
 export function remoteControlSourceLabel(override: boolean | null | undefined): string {
   return typeof override === 'boolean' ? 'Set for this session' : 'Following the default'
