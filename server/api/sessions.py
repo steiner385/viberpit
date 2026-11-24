@@ -3069,7 +3069,7 @@ async def set_session_remote_control(
         try:
             require_human(identity, human_gate_via(request),
                           action="show a session in the Claude apps (Remote Control)",
-                          code=SESSION_CONTROL_HUMAN_ONLY_CODE, trust_local_host=False)
+                          code=SESSION_CONTROL_HUMAN_ONLY_CODE, trust_local_host=True)
         except ActionError as exc:
             return _action_error_response(exc)
     try:
