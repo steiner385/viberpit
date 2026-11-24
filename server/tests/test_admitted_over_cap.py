@@ -42,19 +42,19 @@ def _rec(status="done", kind="coding"):
 
 
 def test_counts_resumed_sessions_that_still_hold_a_slot():
-    orch = _Orch({"a": _rec(), "b": _rec("running")}, {"a", "b"})
+    orch = _Orch({"a": _rec(), "b": _rec("running")}, {"a", "b"}, owned=7, local_cap=5)
     assert asyncio.run(orch.admitted_over_cap_count()) == 2
 
 
 def test_an_ended_session_stops_being_excused():
-    orch = _Orch({"a": _rec(), "b": _rec("complete")}, {"a", "b"})
+    orch = _Orch({"a": _rec(), "b": _rec("complete")}, {"a", "b"}, owned=7, local_cap=5)
     assert asyncio.run(orch.admitted_over_cap_count()) == 1
     # Pruned for good: a session that stopped holding a slot does not come back.
     assert orch._admitted_over_cap == {"a"}
 
 
 def test_a_session_no_longer_on_this_daemon_is_dropped():
-    orch = _Orch({"a": _rec()}, {"a", "gone"})
+    orch = _Orch({"a": _rec()}, {"a", "gone"}, owned=7, local_cap=5)
     assert asyncio.run(orch.admitted_over_cap_count()) == 1
 
 
@@ -68,21 +68,25 @@ def test_admitted_over_cap_count_degrades_to_zero_on_failure():
     assert asyncio.run(daemon._admitted_over_cap_count(None)) == 0
 
 
-def test_an_override_past_the_host_cap_is_recorded_below_the_fleet_cap():
-    """dobby 6/5 inside a fleet cap of 11 (#3358): the HOST cap is what the alarm
-    compares against, so that is the one an override is measured by."""
-    orch = _Orch({"a": _rec()}, set(), owned=6, local_cap=5, fleet_cap=11)
+def test_an_override_is_recorded_even_when_the_count_is_not_yet_over():
+    """#3453: a resumed record not yet slot-consuming reads 6/6 at note time. Recording must
+    not depend on that instant; the excuse follows once the count passes the cap."""
+    rec = _rec("complete")
+    orch = _Orch({"a": rec}, set(), owned=6, local_cap=6)
     asyncio.run(orch._note_admitted_over_cap("a"))
     assert orch._admitted_over_cap == {"a"}
+    rec.status = "running"
+    orch._owned = 7
+    assert asyncio.run(orch.admitted_over_cap_count()) == 1
 
 
-def test_an_override_within_the_host_cap_is_not_recorded():
-    orch = _Orch({"a": _rec()}, set(), owned=5, local_cap=5)
-    asyncio.run(orch._note_admitted_over_cap("a"))
-    assert orch._admitted_over_cap == set()
+def test_excuse_is_capped_at_the_real_overage():
+    orch = _Orch({"a": _rec(), "b": _rec()}, {"a", "b"}, owned=6, local_cap=5)
+    assert asyncio.run(orch.admitted_over_cap_count()) == 1
+    orch._owned = 5
+    assert asyncio.run(orch.admitted_over_cap_count()) == 0
 
 
-def test_an_uncapped_host_records_nothing():
-    orch = _Orch({"a": _rec()}, set(), owned=50, local_cap=None)
-    asyncio.run(orch._note_admitted_over_cap("a"))
-    assert orch._admitted_over_cap == set()
+def test_an_uncapped_host_excuses_nothing():
+    orch = _Orch({"a": _rec()}, {"a"}, owned=50, local_cap=None)
+    assert asyncio.run(orch.admitted_over_cap_count()) == 0

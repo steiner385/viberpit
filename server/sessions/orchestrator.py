@@ -26245,30 +26245,32 @@ class SessionOrchestrator:
         return driver
 
     async def _note_admitted_over_cap(self, session_id: str) -> None:
-        """Record an override that left this daemon over its own cap (#3255, #3358).
+        """Record a session admitted by an override that skips the launch gate (#3255, #3358, #3453).
 
-        Two paths skip the launch gate on purpose: a resume (it revives an existing
-        session) and "Start now" on a queued entry (a person's override). Recording them
-        here, rather than gating them, keeps both unchanged; the alarm then treats
-        exactly this much overage as expected.
-
-        Measured against THIS host's ``Host.max_sessions`` (``_local_host_cap``), the cap
-        the alarm compares against — not the fleet-wide ``_max_active_sessions``, which
-        a single host's count never reaches, so nothing was ever recorded (#3358).
+        Two paths skip the gate on purpose: a resume (it revives an existing session) and
+        "Start now" on a queued entry (a person's override). Recorded unconditionally: whether
+        the host is over its cap is decided on READ (``admitted_over_cap_count``), from the same
+        count the alarm sees. Deciding here raced the record's status — a resumed record not yet
+        in a slot-consuming status read 6/6, nothing was recorded, and it turned active a moment
+        later as an unexplained 7/6 (#3453).
         """
-        local_cap = await self._local_host_cap()
-        if local_cap is not None and await self.owned_active_session_count() > local_cap:
-            self._admitted_over_cap.add(session_id)
+        self._admitted_over_cap.add(session_id)
 
     async def admitted_over_cap_count(self) -> int:
         """Live sessions an override admitted past this host's cap, for /info.
 
-        Pruned on every read: a session that ended, archived, or went back to a
-        non-slot status no longer holds the overage, so it stops being excused."""
+        Pruned on every read to sessions that still hold a slot, then capped at the actual
+        overage (``owned count - this host's cap``), so only overage that exists is excused."""
         self._admitted_over_cap = {
             sid for sid in self._admitted_over_cap
             if (r := self._records.get(sid)) is not None and self._consumes_capacity_slot(r)}
-        return len(self._admitted_over_cap)
+        if not self._admitted_over_cap:
+            return 0
+        local_cap = await self._local_host_cap()
+        if local_cap is None:
+            return 0
+        over = max(0, await self.owned_active_session_count() - local_cap)
+        return min(len(self._admitted_over_cap), over)
 
     async def _exit_complete_on_resume(self, session_id: str, rec) -> None:
         """Move a just-resumed `complete` session back to `done` (in-memory + DB).
