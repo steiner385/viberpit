@@ -209,3 +209,78 @@ def test_session_factory_no_token_leaves_env_unchanged(monkeypatch):
     factory("/tmp/x", "/cfg", None, "default", None)
     # no token + no x11 → base called with extra_env=None (unchanged old path)
     assert captured["extra_env"] is None
+
+
+# ---------------------------------------------------------------------------
+# Remote Control (plan 2026-11-24 Task A1): a live session only blocks the sweep when
+# it really launched from the cfg-dir claudeAiOauth. A session launched with an env
+# token (the setup-token today, the slot's access token later) never rotates the slot's
+# family, so the refresh authority must keep refreshing that slot, or its refresh grant
+# lapses and the account can never be driven from the Claude apps.
+# ---------------------------------------------------------------------------
+
+_ENV_TARGET = "server.sessions.orchestrator.oauth_env_for"
+
+
+def test_live_session_owns_slot_family_only_without_an_env_token():
+    orch = _orch()
+    orch.has_live_session = lambda name: name in {"live_env", "live_cfg"}
+    env = {"live_env": {"CLAUDE_CODE_OAUTH_TOKEN": "x"}, "idle_env": {"CLAUDE_CODE_OAUTH_TOKEN": "x"}}
+    with mock.patch(_ENV_TARGET, side_effect=lambda n: env.get(n, {})):
+        assert orch.live_session_owns_slot_family("live_cfg") is True
+        assert orch.live_session_owns_slot_family("live_env") is False
+        assert orch.live_session_owns_slot_family("idle_env") is False
+        assert orch.live_session_owns_slot_family("idle_cfg") is False
+
+
+def test_live_session_owns_slot_family_errs_toward_owned_when_env_unreadable():
+    """A false 'not owned' rotates a running process's token family, so fail closed."""
+    orch = _orch()
+    orch.has_live_session = lambda name: True
+    with mock.patch(_ENV_TARGET, side_effect=OSError("store unreadable")):
+        assert orch.live_session_owns_slot_family("acct") is True
+
+
+@pytest.mark.asyncio
+async def test_refresh_sweep_refreshes_a_live_account_whose_sessions_use_an_env_token():
+    orch = _orch()
+    accts = [{"name": "live_env", "status": "ok"}, {"name": "live_cfg", "status": "ok"}]
+    orch.has_live_session = lambda name: True
+    with mock.patch(_ENV_TARGET,
+                    side_effect=lambda n: {"CLAUDE_CODE_OAUTH_TOKEN": "x"} if n == "live_env" else {}), \
+            mock.patch(_ACCOUNTS_TARGET) as ca:
+        ca.list_accounts.return_value = accts
+        await orch._refresh_idle_tokens_once()
+    assert [c.args[0] for c in ca.acquire_valid_token.call_args_list] == ["live_env"]
+
+
+@pytest.mark.asyncio
+async def test_refresh_sweep_checks_ownership_off_the_event_loop():
+    """oauth_env_for reads the account store (an sshfs mount on a runner): never on the loop."""
+    orch = _orch()
+    loop_thread = threading.get_ident()
+    seen = []
+    orch.has_live_session = lambda name: True
+
+    def _env(name):
+        seen.append(threading.get_ident())
+        return {"CLAUDE_CODE_OAUTH_TOKEN": "x"}
+
+    with mock.patch(_ENV_TARGET, side_effect=_env), mock.patch(_ACCOUNTS_TARGET) as ca:
+        ca.list_accounts.return_value = [{"name": "a", "status": "ok"}]
+        await orch._refresh_idle_tokens_once()
+    assert seen and loop_thread not in seen
+
+
+def test_poller_refreshes_a_live_account_whose_sessions_use_an_env_token():
+    """The usage poller asks the same ownership question as the sweep."""
+    orch = SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0)
+    orch.has_live_session = lambda name: True
+    calls = []
+    with mock.patch(_ENV_TARGET,
+                    side_effect=lambda n: {"CLAUDE_CODE_OAUTH_TOKEN": "x"} if n == "env" else {}), \
+            mock.patch(_ACCOUNTS_TARGET) as ca:
+        ca.usage_for.side_effect = lambda n, **kw: calls.append((n, kw["allow_refresh"]))
+        orch._poller._usage_fn("env")
+        orch._poller._usage_fn("cfg")
+    assert calls == [("env", True), ("cfg", False)]

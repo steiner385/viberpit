@@ -135,7 +135,13 @@ export interface Account {
   // Absent (older payloads) is treated as enabled. A disabled account is kept
   // intact but blocked everywhere in selection until re-enabled.
   enabled?: boolean
+  /** Can the account's claude.ai browser login back Remote Control? `null`/absent
+   *  for an account with no claude.ai login (Copilot, OpenAI) or an older payload. */
+  remoteControlLogin?: RemoteControlLogin | null
 }
+
+/** `accounts.slot_status` on the server: metadata about the browser-login slot only. */
+export type RemoteControlLogin = 'ok' | 'login_needed' | 'missing'
 
 /**
  * What kind of work a session is, decided server-side from the automation

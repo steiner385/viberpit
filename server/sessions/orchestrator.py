@@ -1529,7 +1529,7 @@ class SessionOrchestrator:
             def _poller_usage_fn(name: str):
                 return ccswitch_accounts.usage_for(
                     name,
-                    allow_refresh=not self.has_live_session(name),
+                    allow_refresh=not self.live_session_owns_slot_family(name),
                     path="poller-idle",
                 )
 
@@ -4116,8 +4116,11 @@ class SessionOrchestrator:
         Decoupled from the usage poller's backoff so a throttled *usage* endpoint
         can't starve *token* refresh. Skips accounts that are already needs-reauth
         (a dead single-use token can't be refreshed — don't hammer the endpoint)
-        and accounts with a live session (the SDK owns that token family and
-        ViberPit must not refresh it out from under the running process).
+        and accounts where a live session owns the slot's token family
+        (``live_session_owns_slot_family``: the SDK rotates that family and ViberPit
+        must not refresh it out from under the running process). A live session
+        launched with an env token does not own it, so its account's slot is still
+        kept fresh — Remote Control needs that slot's refresh grant alive.
 
         Refreshes via ``acquire_valid_token``, NOT ``ensure_valid_token``: only the
         former recovers a rotation the SDK already performed (on AuthError it runs
@@ -4148,7 +4151,9 @@ class SessionOrchestrator:
             name = acct["name"]
             if not acct.get("enabled", True):
                 continue
-            if acct.get("status") == "needs-reauth" or self.has_live_session(name):
+            if acct.get("status") == "needs-reauth":
+                continue
+            if await asyncio.to_thread(self.live_session_owns_slot_family, name):
                 continue
             try:
                 await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, name)
@@ -23430,10 +23435,35 @@ class SessionOrchestrator:
         ``call_with_deadline`` expects (#2033)."""
         return await self._poller.get(name)
 
+    def live_session_owns_slot_family(self, account: str) -> bool:
+        """True when a live session on *account* owns its store slot's token family, so
+        only that session's SDK may refresh it.
+
+        A session owns the family only when it launched from the composed cfg-dir
+        ``claudeAiOauth`` — the CLI then rotates that refresh token itself. A session
+        launched with an env token (``CLAUDE_CODE_OAUTH_TOKEN``: the account's
+        setup-token, or a broker envelope's access token) never touches the cfg-dir
+        blob, so the refresh authority may refresh the slot under it with no rotation
+        race. Every launch goes through ``oauth_env_for`` (``_oat_env``), so whether the
+        account yields an env token answers this for all of its sessions fleet-wide.
+
+        Errs toward "owned", like ``has_live_session``: an unreadable store answers
+        True, which only delays a proactive refresh. Blocking IO (the store read) —
+        call it from a thread, never on the event loop.
+        """
+        if not self.has_live_session(account):
+            return False
+        try:
+            return not oauth_env_for(account)
+        except Exception:  # noqa: BLE001 — unreadable store: assume the session owns it
+            log.debug("token-ownership: launch env unreadable for %s", account, exc_info=True)
+            return True
+
     def has_live_session(self, account: str) -> bool:
         """Return True if a live AgentDriver anywhere IN THE FLEET is running on *account*.
 
-        Used by the poller's usage_fn and the idle-token sweep to decide whether it is
+        Used (through ``live_session_owns_slot_family``) by the poller's usage_fn and
+        the idle-token sweep to decide whether it is
         safe to call oauth.refresh_access_token: while the SDK subprocess owns the
         token family (live session), only the SDK must refresh so we avoid
         single-use-token reuse-detection.

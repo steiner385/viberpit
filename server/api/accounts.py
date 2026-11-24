@@ -441,6 +441,7 @@ def _account_response(
     allow_extra_usage: bool = False,
     codex: dict | None = None,
     stale_as_of: datetime | None = None,
+    remote_control_login: str | None = None,
 ) -> dict[str, Any]:
     """Build the account wire format — never includes tokens."""
     entry = None
@@ -492,6 +493,11 @@ def _account_response(
         "allowExtraUsage": allow_extra_usage,
         "accountDefaults": account_defaults or {"defaultModel": None, "defaultPermissionMode": None, "modelApprovalAction": None, "envOverrides": None},
         "enabled": enabled,
+        # Can this account's browser-login slot back Remote Control? "ok" |
+        # "login_needed" | "missing" (``accounts.slot_status``, metadata only), or
+        # null for an account with no claude.ai login (Copilot, OpenAI) or a route
+        # that echoes one account without reading it.
+        "remoteControlLogin": remote_control_login,
     }
 
 
@@ -527,6 +533,7 @@ def _account_response_from_info(
         account_defaults=acct.get("accountDefaults"),
         enabled=acct.get("enabled", True),
         allow_extra_usage=bool(acct.get("allowExtraUsage")),
+        remote_control_login=acct.get("remoteControlLogin"),
         **kw,
     )
 
@@ -1599,7 +1606,8 @@ async def reauth_start(
     exists, so this only needs to mint a fresh long-lived setup-token; the
     browser/VNC login (mode="login" on ReauthManager) is reserved for
     /accounts/add, which still needs it to bootstrap a brand-new slot's full
-    OAuth credential — setup_token_oauth.exchange() yields a bare access token,
+    OAuth credential, and for /{name}/browser-login, which re-runs it for
+    Remote Control — setup_token_oauth.exchange() yields a bare access token,
     with no refresh_token, so it cannot create a new account by itself.
 
     Returns 202 + state dict on success.
@@ -1653,6 +1661,79 @@ async def reauth_start(
     await record_audit(
         db=db,
         type="account.reauth.start",
+        identity=identity,
+        detail={"account": name},
+    )
+
+    return state.to_dict()
+
+
+@router.post("/{name}/browser-login", status_code=status.HTTP_202_ACCEPTED)
+async def browser_login_start(
+    name: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Re-run the full claude.ai browser login into an EXISTING Claude account's slot.
+
+    Remote Control needs the slot's full-scope login (``user:sessions:claude_code``); the
+    setup-token that ``/reauth`` mints never carries it. Same ``ReauthManager`` and
+    in-page browser as ``/accounts/add`` (``mode="login"`` → ``capture_login``, which
+    calls ``mark_reauthenticated`` on success), but allowed when the slot exists. Its
+    progress is read and cancelled through ``GET /{name}/reauth`` and
+    ``POST /{name}/reauth/cancel``: one manager, one login at a time.
+
+    Person-only (``require_human``, the local-host opt-in not honoured): it writes the
+    credential that lets the Claude apps drive this account's sessions.
+
+    Returns 202 + state dict on success.
+    Returns 403 ``SESSION_CONTROL_HUMAN_ONLY`` for a non-person caller.
+    Returns 404 if the account name is invalid or the account does not exist.
+    Returns 409 ``browser_login_unsupported`` for a non-Claude account, or
+        ``reauth_busy`` if another login is running.
+    Returns 503 if no encryption key is configured.
+    """
+    from server.auth.identity import human_gate_via
+    from server.sessions.session_actions import (SESSION_CONTROL_HUMAN_ONLY_CODE,
+                                                 ActionError, require_human)
+    try:
+        require_human(identity, human_gate_via(request),
+                      action="sign an account in to claude.ai",
+                      code=SESSION_CONTROL_HUMAN_ONLY_CODE, trust_local_host=False)
+    except ActionError as exc:
+        raise HTTPException(status_code=exc.http,
+                            detail={"code": exc.code, "message": exc.message}) from exc
+
+    _check_name_and_slot(name)
+    if _provider_or_none(name) != account_registry.PROVIDER_ANTHROPIC:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "browser_login_unsupported", "name": name,
+                    "message": "Only a Claude account has a claude.ai login."},
+        )
+
+    reauth = _get_reauth(request)
+    try:
+        state = await reauth.start(name, identity, mode="login")
+    except ReauthBusy as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "reauth_busy",
+                "holdingIdentity": exc.holding_identity,
+                "startedAt": exc.started_at,
+            },
+        )
+    except ReauthNoKey:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "no_encryption_key"},
+        )
+
+    await record_audit(
+        db=db,
+        type="account.browser_login.start",
         identity=identity,
         detail={"account": name},
     )

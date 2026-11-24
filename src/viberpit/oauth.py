@@ -447,6 +447,14 @@ def refresh_access_token(refresh_token: str, prior: dict, *,
     blob["accessToken"] = resp["access_token"]
     blob["refreshToken"] = resp.get("refresh_token", refresh_token)
     blob["expiresAt"] = now_ms + int(resp.get("expires_in", 0)) * 1000
+    # `refreshTokenExpiresAt` (written by the CLI's own login) describes ONE refresh
+    # token. Restate it when the endpoint reports the new grant's lifetime; on a
+    # rotation that does not, drop it — the stale value would make
+    # accounts.slot_status call a live grant lapsed.
+    if "refresh_token_expires_in" in resp:
+        blob["refreshTokenExpiresAt"] = now_ms + int(resp["refresh_token_expires_in"]) * 1000
+    elif blob["refreshToken"] != refresh_token:
+        blob.pop("refreshTokenExpiresAt", None)
     if "scope" in resp:
         blob["scopes"] = resp["scope"].split()
     blob.setdefault("scopes", [])
