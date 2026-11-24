@@ -40,6 +40,16 @@ REMOTE_CONTROL_NOT_LIVE = "REMOTE_CONTROL_NOT_LIVE"
 REMOTE_CONTROL_REFUSED = "REMOTE_CONTROL_REFUSED"
 #: The request got no reply (timeout, transport): it may or may not have landed.
 REMOTE_CONTROL_FAILED = "REMOTE_CONTROL_FAILED"
+#: Why a session that is eligible on paper still cannot open a bridge — learned from the
+#: CLI's own refusal at runtime (Principle III), never predicted. ``login_rejected``: the
+#: account signs in with an inference-only setup-token (``CLAUDE_CODE_OAUTH_TOKEN``),
+#: which claude.ai refuses for Remote Control. ``refused``: any other CLI refusal.
+REASON_LOGIN_REJECTED = "login_rejected"
+REASON_REFUSED = "refused"
+LOGIN_REJECTED_MESSAGE = ("This account signs in with an inference-only token; Remote "
+                          "Control needs a full claude.ai login.")
+REFUSED_MESSAGE = "The Claude CLI refused Remote Control for this account."
+
 REMOTE_CONTROL_CODES = frozenset({REMOTE_CONTROL_UNAVAILABLE, REMOTE_CONTROL_NOT_LIVE,
                                   REMOTE_CONTROL_REFUSED, REMOTE_CONTROL_FAILED})
 
@@ -82,6 +92,16 @@ def effective(override: bool | None, default: bool | None) -> bool:
     (None: never read on this process) is off — fail closed; a stored NULL is not
     unknown, it reads as on (``stored_default``)."""
     return default is True if override is None else bool(override)
+
+
+def refusal_reason(message: str | None) -> str:
+    """The unavailability reason a CLI refusal's *message* stands for."""
+    return REASON_LOGIN_REJECTED if "login" in (message or "").lower() else REASON_REFUSED
+
+
+def refusal_message(reason: str) -> str:
+    """The plain-words message a toggle refused for *reason* carries."""
+    return LOGIN_REJECTED_MESSAGE if reason == REASON_LOGIN_REJECTED else REFUSED_MESSAGE
 
 
 def session_url(reply: Mapping[str, Any] | None) -> str | None:

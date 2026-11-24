@@ -9458,6 +9458,15 @@ class SessionOrchestrator:
             log.info("session.remote_control refused id=%s error_data=%s",
                      session_id, err.error_data)
             raise err
+        known = self._known_remote_control_refusal(session_id) if enabled else None
+        if known is not None:
+            # The CLI already refused this account: refuse without a doomed request.
+            err = _remote_control.RemoteControlError(
+                _remote_control.REMOTE_CONTROL_REFUSED,
+                _remote_control.refusal_message(known))
+            log.info("session.remote_control refused id=%s reason=%s (account memo)",
+                     session_id, known)
+            raise err
         # A spawn-time enable still in flight would race this choice.
         pending = self._remote_control_task_map().pop(session_id, None)
         if pending is not None:
@@ -9476,6 +9485,10 @@ class SessionOrchestrator:
                     if enabled:
                         await self._persist_remote_control(session_id,
                                                            remote_control_url=None)
+                    if enabled and exc.code == _remote_control.REMOTE_CONTROL_REFUSED:
+                        reason = await self._note_remote_control_refused(session_id, exc)
+                        raise _remote_control.RemoteControlError(
+                            exc.code, _remote_control.refusal_message(reason)) from exc
                     raise
                 # No live client: the persisted override applies at the next spawn.
         if live or not enabled:
@@ -9499,7 +9512,8 @@ class SessionOrchestrator:
             if (rec is None or rec.remote_control is not None
                     or not hasattr(driver, "set_remote_control")):
                 continue
-            if enabled and not self._stamp_remote_control_available(session_id):
+            if enabled and (not self._stamp_remote_control_available(session_id)
+                            or self._known_remote_control_refusal(session_id)):
                 continue
             targets.append((session_id, driver))
 
@@ -9516,6 +9530,9 @@ class SessionOrchestrator:
                         await self._persist_remote_control(session_id,
                                                            remote_control_url=None)
                     return None
+                if enabled and getattr(exc, "code", None) == \
+                        _remote_control.REMOTE_CONTROL_REFUSED:
+                    await self._note_remote_control_refused(session_id, exc)
                 log_event(log, logging.INFO, "session.remote_control_default_failed",
                           session_id=session_id, enabled=enabled,
                           code=getattr(exc, "code", None), error=str(exc))
@@ -9530,6 +9547,42 @@ class SessionOrchestrator:
         log.info("session.remote_control_default enabled=%s sessions=%s failed=%s",
                  enabled, out["sessions"], out["failed"])
         return out
+
+    def _remote_control_refused_accounts(self) -> dict[str, str]:
+        """Account -> why the CLI refused Remote Control for it (``REASON_*``). Learned
+        from a real refusal, so later spawns on the account skip the doomed request.
+        In memory, per daemon: nothing signals an account's credential change to the
+        orchestrator, so a re-login is picked up after a daemon restart."""
+        memo: dict[str, str] | None = getattr(self, "_remote_control_refusals", None)
+        if memo is None:
+            memo = {}
+            self._remote_control_refusals: dict[str, str] = memo
+        return memo
+
+    def _known_remote_control_refusal(self, session_id: str) -> str | None:
+        """Stamp the session with its account's remembered refusal (or clear it) and
+        return it."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            return None
+        reason = (self._remote_control_refused_accounts().get(rec.account)
+                  if rec.account else None)
+        rec.remote_control_unavailable_reason = reason
+        return reason
+
+    async def _note_remote_control_refused(self, session_id: str, exc: Exception) -> str:
+        """The CLI refused an enable: record why on the session and its account, and drop
+        any URL (no bridge is open). Returns the reason."""
+        reason = _remote_control.refusal_reason(str(exc))
+        rec = self._records.get(session_id)
+        if rec is not None:
+            rec.remote_control_unavailable_reason = reason
+            if rec.account:
+                self._remote_control_refused_accounts()[rec.account] = reason
+        await self._persist_remote_control(session_id, remote_control_url=None)
+        log.info("session.remote_control_unavailable id=%s account=%s reason=%s",
+                 session_id, rec.account if rec is not None else None, reason)
+        return reason
 
     def _remote_control_task_map(self) -> dict[str, asyncio.Task]:
         # Lazy: some tests build the orchestrator with ``__new__`` (as for _bg_tasks).
@@ -9555,6 +9608,8 @@ class SessionOrchestrator:
                                                          remote_control_url=None),
                             name=f"remote-control-clear-{session_id}")
             return
+        # The session takes its account's memo (or loses a reason from another account).
+        self._known_remote_control_refusal(session_id)
         tasks = self._remote_control_task_map()
         previous = tasks.get(session_id)
         if previous is not None and not previous.done():
@@ -9578,12 +9633,21 @@ class SessionOrchestrator:
                 # Off: a URL from an earlier CLI points at a bridge that is gone.
                 await self._persist_remote_control(session_id, remote_control_url=None)
             return
+        if rec.remote_control_unavailable_reason is not None:
+            # This account's login was already refused: skip the doomed request.
+            log.info("session.remote_control skipped id=%s reason=%s (account memo)",
+                     session_id, rec.remote_control_unavailable_reason)
+            if rec.remote_control_url is not None:
+                await self._persist_remote_control(session_id, remote_control_url=None)
+            return
         try:
             reply = await driver.set_remote_control(True)
         except Exception as exc:
             log_event(log, logging.INFO, "session.remote_control_failed",
                       session_id=session_id, code=getattr(exc, "code", None),
                       error=str(exc))
+            if getattr(exc, "code", None) == _remote_control.REMOTE_CONTROL_REFUSED:
+                await self._note_remote_control_refused(session_id, exc)
             return
         if self._drivers.get(session_id) is not driver:
             return   # replaced meanwhile: the new driver's own enable owns the URL

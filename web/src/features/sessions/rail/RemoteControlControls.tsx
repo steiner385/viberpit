@@ -7,13 +7,17 @@
  *   (Claude, a claude.ai account, not the assistant drawer, kill switch on).
  * - The switch sets the session's override and applies live — no respawn, so no confirm.
  * - A refusal is shown inline under the row, never as a bare toast.
+ * - When the CLI refused the session's account (`unavailableReason`, e.g. an
+ *   inference-only login) the switch is off and disabled, with the reason.
  */
 import { useId, useState } from 'react'
 import { ExternalLink } from 'lucide-react'
 import { useSetRemoteControl } from '@/api/remoteControlHooks'
 import { isSafeHttpUrl } from '@/lib/safeUrl'
 import { Switch } from '@/ui/Switch'
-import { REMOTE_CONTROL_ACCESS_NOTE, remoteControlError, remoteControlSourceLabel } from '../remoteControlCopy'
+import {
+  REMOTE_CONTROL_ACCESS_NOTE, remoteControlError, remoteControlSourceLabel, remoteControlUnavailableText,
+} from '../remoteControlCopy'
 
 export interface RemoteControlControlsProps {
   sessionId: string
@@ -23,9 +27,15 @@ export interface RemoteControlControlsProps {
   override?: boolean | null
   /** `session.remoteControlUrl` — the Claude-app link, or null. */
   url?: string | null
+  /** `session.remoteControlUnavailableReason` — set when the CLI refused this account. */
+  unavailableReason?: string | null
 }
 
-export function RemoteControlControls({ sessionId, enabled, override = null, url = null }: RemoteControlControlsProps) {
+export function RemoteControlControls({
+  sessionId, enabled: enabledProp, override = null, url = null, unavailableReason = null,
+}: RemoteControlControlsProps) {
+  const unavailable = !!unavailableReason
+  const enabled = enabledProp && !unavailable
   const labelId = useId()
   const describeId = useId()
   const toggle = useSetRemoteControl()
@@ -44,17 +54,22 @@ export function RemoteControlControls({ sessionId, enabled, override = null, url
         <div className="min-w-0">
           <div id={labelId} className="text-ink">Remote Control</div>
           <p id={describeId} className="text-ink-muted" data-testid="remote-control-state">
-            {enabled ? 'On' : 'Off'} · {remoteControlSourceLabel(override)}
+            {unavailable ? 'Unavailable' : `${enabled ? 'On' : 'Off'} · ${remoteControlSourceLabel(override)}`}
           </p>
         </div>
         <Switch
           checked={enabled}
           onChange={apply}
-          disabled={toggle.isPending}
+          disabled={toggle.isPending || unavailable}
           aria-labelledby={labelId}
           aria-describedby={describeId}
         />
       </div>
+      {unavailableReason && (
+        <p className="text-xs text-ink-muted" data-testid="remote-control-unavailable">
+          {remoteControlUnavailableText(unavailableReason)}
+        </p>
+      )}
       {enabled && <p className="text-xs text-ink-muted" data-testid="remote-control-note">{REMOTE_CONTROL_ACCESS_NOTE}</p>}
       {enabled && isSafeHttpUrl(url) && (
         <a

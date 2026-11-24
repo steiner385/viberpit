@@ -850,12 +850,16 @@ def _remote_control_view(record: Any) -> dict[str, Any]:
     available = (remote_control_mod.remote_control_enabled()
                  and bool(getattr(record, "remote_control_available", False)))
     override = getattr(record, "remote_control", None)
+    # The CLI refused this session's account (e.g. an inference-only login): not live,
+    # whatever the override or default say.
+    reason = getattr(record, "remote_control_unavailable_reason", None)
     return {
-        "remoteControl": available and remote_control_mod.effective(
+        "remoteControl": available and reason is None and remote_control_mod.effective(
             override, remote_control_mod.cached_default()),
         "remoteControlOverride": override,
         "remoteControlUrl": getattr(record, "remote_control_url", None),
         "remoteControlAvailable": available,
+        "remoteControlUnavailableReason": reason,
     }
 
 
