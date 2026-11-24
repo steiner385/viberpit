@@ -312,7 +312,7 @@ def read_start_time(pid: int, proc_root: str = "/proc") -> int | None:
         return None
 
 
-def terminate_process_tree(pid: int, killer=os.kill, alive=_pid_alive, grace: float = 1.5,
+def terminate_process_tree(pid: int, killer=os.kill, alive=None, grace: float = 1.5,
                            *, start_time: int | None = None,
                            read_start=read_start_time) -> bool:
     """SIGTERM, wait a grace period for a clean flush, then SIGKILL if still alive.
@@ -323,6 +323,12 @@ def terminate_process_tree(pid: int, killer=os.kill, alive=_pid_alive, grace: fl
     longer matches — it exited and the pid was reused — is never signalled; the check
     is repeated before the SIGKILL.
     """
+    # Resolved per call, not bound as a default at def time: a patched module-level
+    # ``_pid_alive`` must reach callers that omit ``alive`` (a frozen default let a
+    # "dead" test pid be probed — and signalled — for real whenever it was live).
+    if alive is None:
+        alive = _pid_alive
+
     def same() -> bool:
         return start_time is None or read_start(pid) == start_time
 

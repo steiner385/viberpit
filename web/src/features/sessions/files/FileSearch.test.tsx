@@ -105,6 +105,9 @@ describe('FileSearch', () => {
     const { user, box } = await openContents()
     await user.type(box, 'needle')
     expect(await screen.findByText('Searching…')).toBeInTheDocument()
+    // "Searching…" renders as soon as the debounced query is set, which can be a tick
+    // before react-query's queryFn reaches fetch: `release` exists only once it has.
+    await waitFor(() => expect(release).toBeTypeOf('function'))
     release()
     expect(await screen.findByRole('listbox', { name: 'Search results' })).toBeInTheDocument()
   })
