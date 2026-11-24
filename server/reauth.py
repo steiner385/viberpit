@@ -593,7 +593,8 @@ class ReauthManager:
             await self._fail(name, "claude.ai returned no login. Nothing was saved.")
         except auth_login.WrongAccountLogin as exc:
             # The operator signed in as someone else: an expected outcome, not a bug.
-            await self._fail(name, str(exc), code=exc.code)
+            # str(exc) names both e-mail addresses: show it, but log only the code.
+            await self._fail(name, str(exc), code=exc.code, log_msg=exc.code)
         except auth_login.LoginIdentityUnavailable as exc:
             await self._fail(name, str(exc))
         except Exception as exc:
@@ -670,9 +671,15 @@ class ReauthManager:
             )
         return True
 
-    async def _fail(self, name: str, msg: str, *, code: str | None = None) -> None:
-        """Set error state with a user-facing message; log at WARNING (no token/code)."""
-        log.warning("reauth %s error for %r: %s", self._code_mode, name, msg)
+    async def _fail(self, name: str, msg: str, *, code: str | None = None,
+                    log_msg: str | None = None) -> None:
+        """Set error state with a user-facing message; log at WARNING (no token/code).
+
+        ``log_msg`` replaces ``msg`` in the log when the user-facing text carries PII
+        (e.g. the two e-mail addresses of a wrong-account sign-in): the UI gets the
+        full message, the log only the static reason."""
+        log.warning("reauth %s error for %r: %s", self._code_mode, name,
+                    log_msg if log_msg is not None else msg)
         async with self._lock:
             self._state.state = "error"
             self._state.code = code

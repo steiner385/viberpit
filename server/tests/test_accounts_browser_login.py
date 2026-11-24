@@ -243,7 +243,7 @@ async def test_a_setup_token_code_never_takes_the_claude_login_path(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_a_wrong_account_sign_in_ends_in_a_coded_error(monkeypatch):
+async def test_a_wrong_account_sign_in_ends_in_a_coded_error(monkeypatch, caplog):
     from viberpit import auth_login, setup_token_oauth as sto
 
     def _wrong(name, resp):
@@ -253,11 +253,15 @@ async def test_a_wrong_account_sign_in_ends_in_a_coded_error(monkeypatch):
     monkeypatch.setattr(auth_login, "complete_code_login", _wrong)
     m = _manager()
     await m.start("primary", "tester@example.com", mode="claude_login")
-    state = (await m.submit_code("primary", "AUTHCODE#STATE")).to_dict()
+    with caplog.at_level("DEBUG"):
+        state = (await m.submit_code("primary", "AUTHCODE#STATE")).to_dict()
     assert state["state"] == "error"
     assert state["code"] == "browser_login_wrong_account"
     assert state["message"] == ("You signed in as b@example.com, expected a@example.com. "
                                 "Nothing was saved.")
+    # The UI gets both addresses; the log gets only the static reason (no PII).
+    assert "a@example.com" not in caplog.text and "b@example.com" not in caplog.text
+    assert "browser_login_wrong_account" in caplog.text
 
 
 @pytest.mark.parametrize("exc_name, message", [
