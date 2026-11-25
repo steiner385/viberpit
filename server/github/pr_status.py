@@ -757,7 +757,9 @@ def _to_info(pr: dict, active_dates: dict[str, str]) -> PullRequestInfo:
     if merged_at:
         stage = derive_merged_stage(merged_at, datetime.now(timezone.utc)) or ""
     else:
-        stage = derive_open_stage(checks, pr.get("mergeStateStatus"), bool(pr.get("isDraft")))
+        stage = derive_open_stage(
+            checks, pr.get("mergeStateStatus"), bool(pr.get("isDraft")),
+            pr.get("mergeQueueEntry") is not None)
     deployed_envs = _is_deployed_envs(pr, state, active_dates)
     return PullRequestInfo(
         number=pr["number"],

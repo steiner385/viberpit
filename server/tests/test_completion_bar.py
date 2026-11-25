@@ -177,11 +177,18 @@ def test_from_info_carries_the_merge_state():
     assert fact.merge_state_status == "UNSTABLE" and not fact.ci_is_red
 
 
-def test_queued_pr_with_failing_ci_is_not_met_high():
-    """Merge-queue enrollment does not rescue a red PR — a failing rollup still
-    blocks the merge."""
+def test_queued_pr_with_failing_rollup_is_met_high():
+    """GitHub only enqueues a PR once its required checks pass, so a red rollup on a
+    queued PR is an advisory check (#3494) — it must not read as a broken PR."""
     v = met_bar("fix ci", "explicit",
                 _facts([_pr(state="open", in_merge_queue=True, checks="failing")]))
+    assert v.met and v.confidence == "high"
+
+
+def test_auto_merge_armed_pr_with_failing_ci_is_not_met_high():
+    """Auto-merge alone does not vouch for required checks — only the queue does."""
+    v = met_bar("fix ci", "explicit",
+                _facts([_pr(state="open", auto_merge=True, checks="failing")]))
     assert not v.met and v.confidence == "high" and v.remedy
 
 

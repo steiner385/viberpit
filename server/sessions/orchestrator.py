@@ -19529,7 +19529,8 @@ class SessionOrchestrator:
         # "PR broke" push and paged the operator over an advisory check.
         unproven = info is not None and (
             engine.ci_red_is_unproven(info)
-            or not is_required_ci_red(info.checks, info.merge_state_status))
+            or not is_required_ci_red(
+                info.checks, info.merge_state_status, info.in_merge_queue))
 
         # Surface the failure on the activity feed once, on the transition INTO
         # failing (not on every failing→failing re-poll).

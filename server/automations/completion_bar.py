@@ -157,7 +157,8 @@ class PrFact:
         Python 3.14 run) held sessions at "fix the failing CI" on PRs auto-merge was
         about to land (#3039). 'pending' is NOT red: auto-merge will still land the PR
         once running checks pass, so it must not flip the goal-met verdict."""
-        return is_required_ci_red(self.checks, self.merge_state_status)
+        return is_required_ci_red(
+            self.checks, self.merge_state_status, self.in_merge_queue)
 
 
 @dataclass(frozen=True)

@@ -222,7 +222,7 @@ def classify(info: PullRequestInfo, now: datetime | None = None) -> str | None:
     # red on a mergeable branch → not actionable. (merge_state_status is the
     # required-ness discriminator the poller always has; the rule itself is
     # stage.is_required_ci_red, shared with the completion bar and the board.)
-    if is_required_ci_red(info.checks, info.merge_state_status):
+    if is_required_ci_red(info.checks, info.merge_state_status, info.in_merge_queue):
         if ci_red_is_unproven(info) and checks_are_stuck(info, now):
             return "stuck_checks"
         return None if ci_red_is_unproven(info) else "failing_ci"

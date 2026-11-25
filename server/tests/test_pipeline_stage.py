@@ -134,3 +134,14 @@ def test_is_required_ci_red_reads_the_merge_state_and_fails_safe():
     assert not is_required_ci_red("failing", "UNSTABLE")
     for checks in ("passing", "pending", "none"):
         assert not is_required_ci_red(checks, "BLOCKED"), checks
+
+
+def test_queued_pr_with_advisory_red_is_not_parked():
+    # #3494: queued PRs report mergeStateStatus UNKNOWN (no UNSTABLE), yet GitHub only
+    # enqueues once required checks pass — a red rollup there is advisory.
+    assert derive_open_stage("failing", "UNKNOWN", False, in_merge_queue=True) == "ready"
+    assert derive_open_stage("failing", "UNKNOWN", False) == "parked"
+
+
+def test_queue_does_not_excuse_a_draft():
+    assert derive_open_stage("failing", "UNKNOWN", True, in_merge_queue=True) == "parked"
