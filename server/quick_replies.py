@@ -151,8 +151,50 @@ async def _curate(samples: list[str]) -> str | None:
                    if isinstance(getattr(block, 'text', None), str))
 
 
+async def _refresh(identity: str, samples: list[str], leased_at: float) -> None:
+    """Curate off the request path; a failure keeps the last good replies."""
+    try:
+        async with asyncio.timeout(50):
+            raw = await _curate(samples)
+        replies = _rank_clusters(raw, len(samples)) if raw is not None else None
+        if replies is None:
+            return
+        await run_to_completion(_store_curated(identity, replies, leased_at),
+                                name='quick_replies.store_curated')
+    except Exception:
+        # Neither model output nor DB bind values may be logged.
+        return
+
+
+async def _store_curated(identity: str, replies: list[str], leased_at: float) -> None:
+    async with db_session() as db:
+        row = await _locked_profile(db, identity)
+        if row.attempted_at == leased_at:
+            row.replies = replies
+            row.curated_at = leased_at
+
+
+# Strong references: the loop holds tasks only weakly, so an unreferenced refresh
+# could be collected mid-flight. Keyed by identity so tests can await one.
+_refreshes: dict[str, asyncio.Task[None]] = {}
+
+
+def _start_refresh(identity: str, samples: list[str], leased_at: float) -> None:
+    if identity in _refreshes:
+        return
+    task = asyncio.create_task(_refresh(identity, samples, leased_at),
+                               name=f'quick_replies.refresh:{identity}')
+    _refreshes[identity] = task
+    task.add_done_callback(lambda _t: _refreshes.pop(identity, None))
+
+
 async def get_quick_replies(identity: str) -> list[str]:
-    """Read personal cache; lease a periodic refresh without holding a DB lock."""
+    """Read the personal cache; lease a periodic refresh that runs in the background.
+
+    The refresh is a model call that can take the full 50 s budget. Awaiting it
+    here made the composer menu show "Loading your replies…" for that long once
+    an hour, so the GET always answers from the cache instead.
+    """
     if not _personal(identity):
         return []
     cached: list[str] = []
@@ -179,16 +221,9 @@ async def get_quick_replies(identity: str) -> list[str]:
             if not expired and row.curated_at >= max(s['at'] for s in samples):
                 return cached
             row.attempted_at = now  # Persistent lease also covers concurrent GETs.
-        async with asyncio.timeout(50):
-            raw = await _curate([s['text'] for s in samples])
-        replies = _rank_clusters(raw, len(samples)) if raw is not None else None
-        if replies is None:
-            return cached
-        async with db_session() as db:
-            row = await _locked_profile(db, identity)
-            if row.attempted_at == now:
-                row.replies = replies
-                row.curated_at = now
-        return replies
+        # Start only after the lease commits, so the refresh's own write can't
+        # contend with this transaction for the row lock.
+        _start_refresh(identity, [s['text'] for s in samples], now)
+        return cached
     except Exception:
         return cached

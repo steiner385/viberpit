@@ -12,6 +12,13 @@ from server.db.models import QuickReplyProfile
 pytestmark = pytest.mark.usefixtures('isolated_db')
 
 
+async def _settle(identity: str = 'alice') -> None:
+    """Wait for the background refresh a GET leased, if any."""
+    task = qr._refreshes.get(identity)
+    if task is not None:
+        await task
+
+
 @pytest.mark.asyncio
 async def test_personal_grouping_counts_and_no_feedback(monkeypatch):
     curate = AsyncMock(return_value=json.dumps([
@@ -23,6 +30,8 @@ async def test_personal_grouping_counts_and_no_feedback(monkeypatch):
         await qr.observe_reply('alice', text)
     await qr.observe_reply('alice', 'continue', source='suggested')
     await qr.observe_reply('bob', 'try again')
+    assert await qr.get_quick_replies('alice') == []  # nothing curated yet
+    await _settle()
     assert await qr.get_quick_replies('alice') == ['Continue', 'Recommend an approach']
     assert curate.call_args.args[0] == ['continue', 'please continue', 'what do you recommend']
     assert await qr.get_quick_replies('nobody') == []
@@ -66,6 +75,7 @@ async def test_concurrent_writes_bounded_and_failure_keeps_cache(monkeypatch):
         row.replies = ['Continue']
     monkeypatch.setattr(qr, '_curate', AsyncMock(side_effect=RuntimeError('secret payload')))
     assert await qr.get_quick_replies('alice') == ['Continue']
+    await _settle()
     assert await qr.get_quick_replies('alice') == ['Continue']
     assert qr._curate.await_count == 1
 
@@ -84,11 +94,12 @@ async def test_parallel_reads_only_one_helper_and_expiry(monkeypatch):
         return '[{"label":"Continue","members":[0]}]'
 
     monkeypatch.setattr(qr, '_curate', curate)
-    first = asyncio.create_task(qr.get_quick_replies('alice'))
+    assert await qr.get_quick_replies('alice') == []
     await started.wait()
     assert await qr.get_quick_replies('alice') == []
     finish.set()
-    assert await first == ['Continue']
+    await _settle()
+    assert await qr.get_quick_replies('alice') == ['Continue']
     now += qr._RETENTION_S + 1
     assert await qr.get_quick_replies('alice') == []
 
@@ -101,7 +112,31 @@ async def test_task_specific_group_omitted_and_top_five(monkeypatch):
     groups = [{'label': label, 'members': [i]} for i, label in enumerate(
         ['Continue', 'Reconsider', 'Explain', 'Review', 'Simplify', 'Stop'])]
     monkeypatch.setattr(qr, '_curate', AsyncMock(return_value=json.dumps(groups)))
+    await qr.get_quick_replies('alice')
+    await _settle()
     assert await qr.get_quick_replies('alice') == ['Continue', 'Reconsider', 'Explain', 'Review', 'Simplify']
+
+
+@pytest.mark.asyncio
+async def test_read_never_waits_on_curation(monkeypatch):
+    """A slow model call ran inside the GET and held the composer menu on
+    "Loading your replies…" for the full 50 s budget."""
+    await qr.observe_reply('alice', 'continue')
+    async with db_session() as db:
+        (await db.get(QuickReplyProfile, 'alice')).replies = ['Continue']
+    stuck = asyncio.Event()
+
+    async def curate(samples):
+        await stuck.wait()
+
+    monkeypatch.setattr(qr, '_curate', curate)
+    async with asyncio.timeout(5):
+        assert await qr.get_quick_replies('alice') == ['Continue']
+    task = qr._refreshes['alice']
+    assert not task.done()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 def test_api_uses_authenticated_identity(monkeypatch):
@@ -154,6 +189,8 @@ async def test_expired_members_invalidate_cache_during_cooldown(monkeypatch):
     monkeypatch.setattr(qr, '_curate', curate)
     assert await qr.get_quick_replies('alice') == ['Try again']
     now += qr._REFRESH_S
+    assert await qr.get_quick_replies('alice') == ['Try again']
+    await _settle()
     assert await qr.get_quick_replies('alice') == ['Continue']
     curate.assert_awaited_once_with(['continue'])
 
