@@ -233,6 +233,25 @@ class InProcessOrchestratorAdapter:
     async def set_fast_mode(self, *a, **k): return await _maybe_await(self._orch.set_fast_mode(*a, **k))
     async def set_remote_control(self, *a, **k): return await _maybe_await(self._orch.set_remote_control(*a, **k))
     async def apply_remote_control_default(self, *a, **k): return await _maybe_await(self._orch.apply_remote_control_default(*a, **k))
+
+    # Remote sessions (plan 2026-11-25): the process's one service, kept on the
+    # orchestrator (``service_for``) — the same one the daemon's RPCs serve.
+    async def remote_sessions_list(self) -> dict:
+        from server.remote_sessions.service import service_for
+        return await service_for(self._orch).list_sessions()
+
+    async def remote_session_open(self, session_id: str):
+        from server.remote_sessions.service import service_for
+        from server.remote_sessions.view import open_in_process
+        return await open_in_process(service_for(self._orch), session_id)
+
+    async def remote_session_prompt(self, session_id: str, text: str) -> dict:
+        from server.remote_sessions.service import service_for
+        return await service_for(self._orch).send_prompt(session_id, text)
+
+    async def remote_session_answer(self, session_id: str, ask_id: str, **answer) -> dict:
+        from server.remote_sessions.service import service_for
+        return await service_for(self._orch).answer(session_id, ask_id, **answer)
     async def set_output_style(self, *a, **k): return await _maybe_await(self._orch.set_output_style(*a, **k))
     async def set_mcp_tool(self, *a, **k): return await _maybe_await(self._orch.set_mcp_tool(*a, **k))
     async def mcp_reconnect(self, *a, **k): return await _maybe_await(self._orch.mcp_reconnect(*a, **k))

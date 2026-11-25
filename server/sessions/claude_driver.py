@@ -256,6 +256,22 @@ def _close_cursor_when_idle(gen, pending: asyncio.Future, phase: str) -> None:
 _CLI_USER_FLAGS = ("isSynthetic", "isMeta", "isReplay", "origin")
 
 
+def parse_cli_message(data):
+    """One raw CLI stream-json message as the SDK's typed message, or None for a type
+    the SDK skips. A ``UserMessage`` also carries ``cli_flags`` (the ``_CLI_USER_FLAGS``
+    keys the SDK's parser drops). The one parse used by the live driver and by the
+    remote sessions watcher, which reads the same stream-json from claude.ai.
+    Raises the SDK's ``MessageParseError`` on a malformed message."""
+    from claude_agent_sdk import UserMessage
+    from claude_agent_sdk._internal.message_parser import parse_message
+    message = parse_message(data)
+    if isinstance(message, UserMessage) and isinstance(data, dict):
+        flags = {k: data[k] for k in _CLI_USER_FLAGS if k in data}
+        if flags:
+            message.cli_flags = flags  # type: ignore[attr-defined]
+    return message
+
+
 def _with_cli_flags(client):
     """``client.receive_messages()``, with each ``UserMessage`` also carrying
     ``cli_flags`` — the raw ``_CLI_USER_FLAGS`` keys the SDK's ``parse_message`` drops.
@@ -270,16 +286,10 @@ def _with_cli_flags(client):
         return client.receive_messages()
 
     async def _gen():
-        from claude_agent_sdk import UserMessage
-        from claude_agent_sdk._internal.message_parser import parse_message
         async for data in raw():
-            message = parse_message(data)
+            message = parse_cli_message(data)
             if message is None:
                 continue
-            if isinstance(message, UserMessage) and isinstance(data, dict):
-                flags = {k: data[k] for k in _CLI_USER_FLAGS if k in data}
-                if flags:
-                    message.cli_flags = flags  # type: ignore[attr-defined]
             yield message
     return _gen()
 

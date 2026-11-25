@@ -841,6 +841,30 @@ REPL, so it does nothing here.
 - Design and verification: `docs/superpowers/specs/spikes/2026-11-24-remote-control-auth-spike.md`
   and `docs/superpowers/plans/2026-11-24-remote-control-full-login.md`.
 
+## Remote sessions: Remote Control sessions started elsewhere (off by default)
+
+The reverse direction: Remote Control sessions running anywhere on the operator's accounts
+(an interactive `claude` with `/remote-control`, another SDK host, another machine) are
+listed in ViberPit, watched live, and driven from it (send a prompt, answer a permission or
+question). ViberPit does not own them: no rotation, respawn or archive.
+
+- **Kill switch:** `VIBERPIT_REMOTE_SESSIONS_ENABLED=true` on the **primary daemon** turns it
+  on. Default `false`: it reads claude.ai's private sessions API (constitution I). Off, the
+  list answers `{enabled: false}` and nothing calls claude.ai.
+- **Where it runs:** only on the primary daemon (the refresh authority), with each signed-in
+  account's browser-login slot access token and org UUID (`account_auth`, the Remote Control
+  launch credential). An account without that login is skipped (`no_login`). The edge reaches
+  it over daemon RPC; a worker answers `REMOTE_SESSIONS_DISABLED`.
+- **Polling:** each account's list every 15 s, backing off to 5 min on errors; a watched
+  session's events every 2 s, while a viewer is attached (3 min lease). Failures degrade to
+  "unavailable" and are logged once per condition.
+- **Who can act:** sending a prompt or an answer is person-only (403
+  `SESSION_CONTROL_HUMAN_ONLY`, honouring `VIBERPIT_RULES_TRUST_LOCAL_HOST` like the Remote
+  Control enable) and audited (`remote_session.prompt` / `remote_session.answer`).
+- **Excluded:** ViberPit's own Remote Control sessions (matched by their `remote_control_url`),
+  archived ones, claude.ai cloud sessions, and disconnected ones after 15 minutes.
+- Plan and API contract: `docs/superpowers/plans/2026-11-25-remote-sessions-reverse.md`.
+
 ## Deploy controller (`viberpit-deploy-controller.service`)
 
 Long-lived service that polls `origin/master` (notify-only) and runs user-triggered deploys.

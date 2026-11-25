@@ -15,6 +15,7 @@ from server.http_keepalive import SERVER_KEEPALIVE_TIMEOUT_S
 from server.ipc.daemon import create_daemon_app
 from server.ipc.drain_on_signal import install_drain_on_sigterm
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
+from server.ipc.remote_sessions_rpc import register_remote_sessions
 from server.ipc.creds_rpc import register_creds
 from server.ipc.display_bridge_rpc import register_display_bridge
 from server.ipc.reauth_rpc import register_reauth
@@ -57,6 +58,8 @@ QUIET_ACCESS_PATHS = frozenset({"/info", "/healthz"} | {f"/rpc/{m}" for m in (
     "live_session_load", "live_session_counts", "active_session_count", "usage",
     "codex_account_status", "git_credential_alerts", "automation_statuses",
     "automation_overview", "pending_permissions", "pending_questions",
+    # Remote sessions: the list the web polls and each open view's lease touch.
+    "remote_sessions_list", "remote_session_touch",
 )})
 
 
@@ -121,6 +124,10 @@ def build_daemon(orchestrator=None):
     from server.github import app_auth as _app_auth
     _app_auth.register_git_providers()
     register_orchestrator_rpc(app, orchestrator)
+    # Remote sessions (plan 2026-11-25): Remote Control sessions started outside ViberPit.
+    # Registered on every daemon; inert unless VIBERPIT_REMOTE_SESSIONS_ENABLED and this is
+    # the primary (refresh authority). Its poller starts on first use.
+    register_remote_sessions(app, orchestrator)
     # `/info` reads the live orchestrator for its capacity and engine advertisement.
     # Nothing set this before, so `activeSessions` was hard-wired to 0 on every
     # daemon and the ranker's headroom term was dead weight — and there was no
@@ -364,6 +371,12 @@ async def daemon_lifespan(app, orchestrator):
         platform_probe = getattr(app.state, "platform_probe", None)
         if platform_probe is not None:
             await platform_probe.aclose()
+        remote_sessions = getattr(app.state, "remote_sessions", None)
+        if remote_sessions is not None:
+            try:
+                await remote_sessions.aclose()
+            except Exception:
+                log.warning("daemon shutdown: remote sessions close failed", exc_info=True)
         # Drain the Codex app-servers first. By the time this runs, install_drain_on_sigterm
         # has already let in-flight turns settle, so no thread is mid-turn — which is the
         # ordering the plan requires ("after driver turns settle and before daemon shutdown
