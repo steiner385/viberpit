@@ -10,9 +10,26 @@ stdin message.
 **Builds on:** PR #3462: `remote_control_unavailable_reason`, the per-account refusal memo, and the
 `REMOTE_CONTROL_*` codes in `server/sessions/remote_control.py`.
 
-**Scope:** primary-host (dobby) sessions. Sessions on broker runners (`runner_uses_envelope`) keep
-today's behaviour and report the unavailable reason `runner` (follow-up issue: vend an
-`oauth_access` envelope for Remote Control accounts).
+**Scope:** primary-host (dobby) sessions. Sessions on broker runners (`runner_uses_envelope`) at
+first kept their old behaviour and reported the unavailable reason `runner`.
+
+**Follow-up, done (Remote Control on runners):** runners now follow the primary's login. What
+was built:
+
+- **Minting.** `claude_authority.mint_remote_control_envelopes` vends a second, Remote-Control-only
+  `oauth_access` envelope per ready account: the slot's access token plus the org UUID. It has
+  its own generations. It goes on the `creds_sync` push as `rc_envelopes`, beside the inference
+  envelope.
+- **Runner storage.** The runner keeps them in `credential_envelope.rc_runner_store()`: the
+  same lease, and its own 0600 cache.
+- **Launch.** `account_auth.remote_control_env_for` / `remote_control_readiness` /
+  `slot_access_token` read that store on a runner. So the launch, the toggle and `login_needed`
+  all work unchanged. A runner launch is stamped `slot`.
+- **Upkeep.** Each sync runs the authority's upkeep on the runner
+  (`remote_control_credentials_synced` → `_maintain_remote_control_logins`): live token
+  pushes, pending revocations, and lifting `login_needed`.
+- **Ownership.** `sessions.launch_credential` (revision 0114) makes a runner's launch kind
+  visible to the primary's mirror. `runner` now means only a worker outside the broker.
 
 ## Principle II rules this plan must keep
 

@@ -178,3 +178,64 @@ def test_oauth_launch_env_names_its_kind(monkeypatch, token, kind):
     monkeypatch.setattr(account_auth.crypto, "read_oauth_token", lambda a: token)
     env, got = account_auth.oauth_launch_env("acct1")
     assert got == kind and env == ({"CLAUDE_CODE_OAUTH_TOKEN": token} if token else {})
+
+
+# ---------------------------------------------------------------------------
+# Remote Control on a broker runner: the authority's Remote Control envelope (the slot's
+# access token + org UUID) is the runner's claude.ai login. Fail closed without it.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def runner(tmp_path, monkeypatch):
+    from viberpit import credential_envelope as ce
+    monkeypatch.setenv("VIBERPIT_DAEMON_ROLE", "worker")
+    monkeypatch.setenv("VIBERPIT_CLAUDE_CREDS_DIR", str(tmp_path))
+    ce.reset_runner_store()
+    ce.runner_store().sync([ce.Envelope("acct", ce.SETUP_TOKEN, "SETUP", None, 1)], 3600)
+    yield ce
+    ce.reset_runner_store()
+
+
+def _rc_envelope(ce, *, token=ACCESS, ttl=3600.0, gen=1, org="org-9"):
+    return ce.Envelope("acct", ce.OAUTH_ACCESS, token, time.time() + ttl, gen, org_uuid=org)
+
+
+def test_runner_remote_control_env_is_the_rc_envelope(runner):
+    ce = runner
+    assert account_auth.remote_control_env_for("acct") is None          # nothing vended yet
+    assert account_auth.remote_control_readiness("acct", allow_refresh=True) == "login_needed"
+    ce.rc_runner_store().sync([_rc_envelope(ce)], 3600)
+    assert account_auth.remote_control_env_for("acct") == {
+        "CLAUDE_CODE_OAUTH_TOKEN": ACCESS, "CLAUDE_CODE_ORGANIZATION_UUID": "org-9"}
+    assert account_auth.remote_control_readiness("acct", allow_refresh=False) is None
+    assert account_auth.slot_access_token("acct") == ACCESS
+    # The inference launch is untouched: still the inference envelope.
+    assert account_auth.oauth_launch_env("acct") == (
+        {"CLAUDE_CODE_OAUTH_TOKEN": "SETUP"}, "envelope")
+
+
+def test_runner_remote_control_env_fails_closed(runner):
+    ce = runner
+    ce.rc_runner_store().sync([_rc_envelope(ce, ttl=30)], 3600)       # about to expire
+    assert account_auth.remote_control_env_for("acct") is None
+    assert account_auth.remote_control_readiness("acct", allow_refresh=True) == "login_needed"
+    ce.rc_runner_store().sync([_rc_envelope(ce, gen=2)], -1)          # lease lapsed
+    assert account_auth.remote_control_env_for("acct") is None
+    assert account_auth.slot_access_token("acct") is None
+    ce.rc_runner_store().sync([_rc_envelope(ce, gen=3, org="")], 3600)  # no org
+    assert account_auth.remote_control_env_for("acct") is None
+
+
+def test_runner_never_reads_the_mounted_slot(runner, monkeypatch):
+    monkeypatch.setattr(account_auth._accounts, "acquire_valid_token",
+                        mock.Mock(side_effect=AssertionError("a runner never refreshes")))
+    monkeypatch.setattr(account_auth, "read_json",
+                        mock.Mock(side_effect=AssertionError("never the mounted slot")))
+    assert account_auth.remote_control_env_for("acct") is None
+    assert account_auth.slot_access_token("acct") is None
+
+
+def test_slot_remote_control_credential_is_token_and_expiry(store):
+    tok, exp = account_auth.slot_remote_control_credential("acct")
+    assert tok == ACCESS and exp == store["expiresAt"] / 1000
+    assert account_auth.slot_remote_control_credential("nobody") is None

@@ -14,6 +14,13 @@ Two halves live here:
 
 The lease mirrors ``AuthorizationSync``: envelopes expire ``lease_s`` after the last sync, so a
 silent edge fails closed. A lapsed lease stops NEW launches; it never touches a running session.
+
+Remote Control (plan 2026-11-24, runner follow-up): an account whose claude.ai login (the
+browser slot) is Remote-Control-ready also gets a SECOND envelope — the slot's short-lived
+``oauth_access`` token plus its ``org_uuid`` — held by its own store (:func:`rc_runner_store`,
+cache :data:`RC_CACHE_FILE`) with its own generations and the same lease. It rides beside the
+inference envelope, never instead of it, so a session without Remote Control is unchanged.
+No refresh token is ever vended in either.
 """
 from __future__ import annotations
 
@@ -29,6 +36,8 @@ OAUTH_ACCESS = "oauth_access"
 KINDS = (SETUP_TOKEN, OAUTH_ACCESS)
 
 _CACHE_FILE = "envelopes.json"
+#: The Remote Control envelope store's cache (same dir, same ``0600`` rule).
+RC_CACHE_FILE = "rc-envelopes.json"
 
 # Broker cadence: the edge pushes every CREDS_PUSH_INTERVAL_S with a lease of four missed pushes.
 CREDS_PUSH_INTERVAL_S = 30.0
@@ -42,6 +51,9 @@ class Envelope:
     token: str
     expires_at: float | None  # epoch seconds; None for a setup token with no known expiry
     generation: int
+    # The claude.ai organization a Remote Control envelope's token belongs to (the CLI needs
+    # it beside the token to open a bridge). None on an inference envelope. Not a secret.
+    org_uuid: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -57,7 +69,8 @@ class Envelope:
     def from_dict(cls, d: dict) -> "Envelope":
         exp = d.get("expires_at")
         return cls(account=str(d["account"]), kind=str(d["kind"]), token=str(d["token"]),
-                   expires_at=None if exp is None else float(exp), generation=int(d["generation"]))
+                   expires_at=None if exp is None else float(exp), generation=int(d["generation"]),
+                   org_uuid=str(d["org_uuid"]) if d.get("org_uuid") else None)
 
 
 def accepts(held: Envelope | None, incoming: Envelope) -> bool:
@@ -81,8 +94,9 @@ def state_dir() -> Path:
 class EnvelopeStore:
     """Runner-side envelope holder: monotonic generations, a lease, a restart-safe cache."""
 
-    def __init__(self, directory: Path | None = None) -> None:
+    def __init__(self, directory: Path | None = None, *, cache_file: str = _CACHE_FILE) -> None:
         self._dir = directory
+        self._cache_file = cache_file
         self._lock = threading.Lock()
         self._held: dict[str, Envelope] = {}
         self._synced_at: float | None = None
@@ -91,7 +105,7 @@ class EnvelopeStore:
 
     @property
     def _path(self) -> Path:
-        return (self._dir or state_dir()) / _CACHE_FILE
+        return (self._dir or state_dir()) / self._cache_file
 
     def _load(self) -> None:
         try:
@@ -148,9 +162,9 @@ class EnvelopeStore:
             held = bool(self._held)
         return held and not self.lease_valid(now)
 
-    def launch_token(self, account: str, *, skew_s: float = 0.0,
-                     now: float | None = None) -> str | None:
-        """The token a NEW session may launch with, or None (fails closed).
+    def launch_envelope(self, account: str, *, skew_s: float = 0.0,
+                        now: float | None = None) -> Envelope | None:
+        """The envelope a NEW session may launch with, or None (fails closed).
 
         None when nothing is held, the lease has lapsed, or an ``oauth_access`` envelope is within
         *skew_s* of expiry. A running session is unaffected — it already holds its token.
@@ -164,10 +178,17 @@ class EnvelopeStore:
             return None
         if env.kind == OAUTH_ACCESS and (env.expires_at is None or env.expires_at - now <= skew_s):
             return None
-        return env.token
+        return env
+
+    def launch_token(self, account: str, *, skew_s: float = 0.0,
+                     now: float | None = None) -> str | None:
+        """:meth:`launch_envelope`'s token, or None."""
+        env = self.launch_envelope(account, skew_s=skew_s, now=now)
+        return env.token if env is not None else None
 
 
 _STORE: EnvelopeStore | None = None
+_RC_STORE: EnvelopeStore | None = None
 _STORE_LOCK = threading.Lock()
 
 
@@ -180,9 +201,19 @@ def runner_store() -> EnvelopeStore:
         return _STORE
 
 
+def rc_runner_store() -> EnvelopeStore:
+    """The process-wide Remote Control envelope store (lazy, like :func:`runner_store`)."""
+    global _RC_STORE
+    with _STORE_LOCK:
+        if _RC_STORE is None:
+            _RC_STORE = EnvelopeStore(cache_file=RC_CACHE_FILE)
+        return _RC_STORE
+
+
 def reset_runner_store() -> None:
-    """Drop the process-wide store (tests)."""
-    global _STORE
+    """Drop both process-wide stores (tests)."""
+    global _STORE, _RC_STORE
     with _STORE_LOCK:
         _STORE = None
+        _RC_STORE = None
 

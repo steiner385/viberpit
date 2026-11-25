@@ -2355,15 +2355,25 @@ class SessionOrchestrator:
 
     def _rc_slot_launch_candidate(self, session_id: str) -> bool:
         """Could this spawn launch on the account's slot access token? Cheap, sync checks
-        only: the primary refresh authority, a Remote-Control-eligible session, and no
-        per-session override turning it off. The app default and the slot itself are read
-        by ``_remote_control_launch_env``."""
+        only: the primary refresh authority — or a broker runner holding the authority's
+        envelopes for the account (``_rc_login_host``) — a Remote-Control-eligible session,
+        and no per-session override turning it off. The app default and the login itself
+        (the slot, or on a runner the Remote Control envelope) are read by
+        ``_remote_control_launch_env``."""
         rec = self._records.get(session_id)
         if rec is None or rec.remote_control is False or not rec.account:
             return False
-        if not is_refresh_authority():
+        if not self._rc_login_host(rec.account):
             return False
         return self.remote_control_available(session_id)
+
+    @staticmethod
+    def _rc_login_host(account: str | None) -> bool:
+        """Can THIS host hold *account*'s claude.ai login for Remote Control? The refresh
+        authority (it owns the slot), or a broker runner the authority vends envelopes for
+        (``runner_uses_envelope``: its Remote Control envelope, when one is vended). A
+        worker outside the broker cannot (reason ``runner``)."""
+        return is_refresh_authority() or bool(account and _runner_uses_envelope(account))
 
     async def _remote_control_launch_env(self, session_id: str) -> dict[str, str] | None:
         """The slot launch env when Remote Control is effectively on for this session and
@@ -9846,13 +9856,14 @@ class SessionOrchestrator:
 
     def _known_remote_control_refusal(self, session_id: str) -> str | None:
         """Stamp the session with why it cannot open a bridge (or clear it) and return it:
-        ``runner`` on a host that is not the refresh authority (it holds no claude.ai
-        login), ``login_needed`` when it launched on the setup-token for want of a usable
+        ``runner`` on a host that can hold no claude.ai login for the account (a worker
+        outside the credential broker, ``_rc_login_host``), ``login_needed`` when it
+        launched on the setup-token (or a runner's inference envelope) for want of a usable
         login, else its account's remembered refusal."""
         rec = self._records.get(session_id)
         if rec is None:
             return None
-        if not is_refresh_authority():
+        if not self._rc_login_host(rec.account):
             reason: str | None = _remote_control.REASON_RUNNER
         elif session_id in self._rc_login_blocks():
             reason = self._rc_login_blocks()[session_id]
@@ -9901,6 +9912,11 @@ class SessionOrchestrator:
         driver = self._remote_control_driver(session_id)
         if driver is None:
             return
+        # What this CLI launched with, onto the shared row: the primary's mirror of a
+        # runner session reads it (``live_session_owns_slot_family``), so a runner's
+        # Remote Control session never pins the primary off refreshing the slot.
+        self._spawn(self._persist_launch_credential(session_id),
+                    name=f"launch-credential-{session_id}")
         if not self._stamp_remote_control_available(session_id):
             rec = self._records.get(session_id)
             if rec is not None and rec.remote_control_url is not None:
@@ -9925,6 +9941,43 @@ class SessionOrchestrator:
             if tasks.get(sid) is t:
                 del tasks[sid]
         task.add_done_callback(_forget)
+
+    async def _persist_launch_credential(self, session_id: str) -> None:
+        """Write the record's CURRENT ``launch_credential`` to its row (read when this runs,
+        so the last of two quick spawns wins). Best-effort: a failed write only leaves the
+        primary's mirror counting the session as owning the slot's family (fail closed)."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            return
+        try:
+            async with db_session() as db:
+                from sqlalchemy import update as sa_update
+                await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                                 .values(launch_credential=rec.launch_credential))
+        except Exception as exc:  # noqa: BLE001 — never fails a spawn
+            if caused_by_cancellation(exc) and current_task_cancelling():
+                raise asyncio.CancelledError() from exc
+            log.info("session.launch_credential_persist_failed id=%s (%s)", session_id,
+                     type(exc).__name__)
+
+    def remote_control_credentials_synced(self) -> "asyncio.Task | None":
+        """The edge just pushed the credential envelopes (``creds_sync``). On a broker
+        runner, run the Remote Control upkeep the refresh authority runs from its token
+        sweep (``_maintain_remote_control_logins``): push each live Remote Control session
+        a new envelope token (compared by fingerprint, so once per generation; a failed
+        push is retried on the next sync and never touches the session), finish pending
+        revocations once idle, and lift ``login_needed`` once an envelope is vended.
+        Returns the (single-flight) upkeep task; None on the authority, whose own sweep
+        does this."""
+        if is_refresh_authority():
+            return None
+        running: asyncio.Task | None = getattr(self, "_rc_runner_upkeep_task", None)
+        if running is not None and not running.done():
+            return running   # the next sync retries whatever this pass misses
+        task = self._spawn(self._maintain_remote_control_logins(),
+                           name="remote-control-runner-upkeep")
+        self._rc_runner_upkeep_task = task
+        return task
 
     async def _apply_remote_control_at_spawn(self, session_id: str, driver: Any) -> None:
         rec = self._records.get(session_id)
@@ -21826,6 +21879,12 @@ class SessionOrchestrator:
             sandbox_reason=getattr(row, "sandbox_reason", None),
             remote_control=getattr(row, "remote_control", None),
             remote_control_url=getattr(row, "remote_control_url", None),
+            # What the OWNING host's CLI launched with — mapped for a FOREIGN row only:
+            # the primary's mirror of a runner session, which
+            # ``live_session_owns_slot_family`` reads. A row this daemon owns stays
+            # unrecorded (owning — fail closed) until its own spawn stamps it.
+            launch_credential=(None if row_stamped_here(getattr(row, "host", None))
+                               else getattr(row, "launch_credential", None)),
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
             pr_resolution_note=getattr(row, "pr_resolution_note", None),
@@ -32347,6 +32406,11 @@ class SessionOrchestrator:
         _reconcile_mirror_once debounces them differently — hence one query returning
         both rather than a bare "which are alive".
 
+        The same query refreshes each mirror's ``launch_credential`` from its row (the
+        owning host persists it per spawn), so a runner session respawned onto its
+        claude.ai login since this daemon's rehydrate stops counting as owning the slot's
+        token family (``live_session_owns_slot_family``).
+
         Split out as a seam so _reconcile_mirror_once's eviction logic is unit-
         testable without a live DB."""
         if not ids:
@@ -32354,10 +32418,16 @@ class SessionOrchestrator:
         from sqlalchemy import select as sa_select
         async with db_session() as db:
             rows = (await db.execute(
-                sa_select(DbSession.id, DbSession.status).where(DbSession.id.in_(ids))
+                sa_select(DbSession.id, DbSession.status, DbSession.launch_credential)
+                .where(DbSession.id.in_(ids))
             )).all()
-        active = {i for i, status in rows if status not in INACTIVE_SESSION_STATUSES}
-        return active, {i for i, _ in rows} - active
+        for sid, _status, launch in rows:
+            rec = self._records.get(sid)
+            if (rec is not None and sid not in self._drivers
+                    and not row_stamped_here(rec.host)):
+                rec.launch_credential = launch   # a foreign mirror only (_record_from_row)
+        active = {i for i, status, _ in rows if status not in INACTIVE_SESSION_STATUSES}
+        return active, {i for i, _, _ in rows} - active
 
     async def _resync_moved_queued_mirrors(self) -> None:
         """Re-read the row of every driverless 'queued' record whose host moved.

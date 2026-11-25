@@ -811,8 +811,32 @@ REPL, so it does nothing here.
   the session shows `login_rejected` and the daemon remembers it for that account. The memo
   lifts by itself, with **no daemon restart**, once the slot holds a different token: the next
   refresh, or a fresh sign-in.
-- **Runners are out of scope.** Sessions on a session runner (worker role, broker envelope)
-  keep their current auth and show `remoteControlUnavailableReason: "runner"`.
+- **Runners use the primary's login.** A session on a broker runner (worker role holding the
+  primary's credential envelopes, e.g. rocky) follows the same rules with the primary's
+  login. Every 30 s `creds_sync` carries, beside the inference envelope, a **Remote Control
+  envelope** for each account whose slot is ready (`remoteControlLogin: ok`, scope
+  `user:sessions:claude_code`, org known): the slot's access token plus the org UUID, never
+  the refresh token, with its own generation counter
+  (`store/rc-envelope-generations.json`). None are vended with the kill switch off.
+  - **Runner cache.** The runner keeps these envelopes in `rc-envelopes.json` (0600, next to
+    `envelopes.json` in `VIBERPIT_CLAUDE_CREDS_DIR`). They share the inference lease and
+    fail closed the same way.
+  - **Launch.** A runner session with Remote Control effectively on launches on that token,
+    records `launchCredential: "slot"` and sends the spawn-time enable. A launch needs at
+    least `min(expiry_skew_sec, 120 s)` of life left on the token.
+  - **No envelope.** A runner session without one (the login is not ready, the lease
+    lapsed, or the token is about to expire) launches on the inference envelope as before
+    and shows `login_needed`.
+  - **Rotation and revocation.** Each sync pushes a rotated token into the runner's live
+    Remote Control CLIs. A failed push is retried on the next sync. Turning Remote Control
+    off respawns the session onto the inference envelope: at once if idle, otherwise at the
+    first sync after it goes idle.
+  - **Refresh ownership.** Each host writes `sessions.launch_credential` at every spawn. The
+    primary's mirror reads it (refreshed on each mirror reconcile), so a runner's Remote
+    Control session never stops the primary from refreshing the slot.
+  - **Old peers.** An old runner ignores the new `rc_envelopes` field, and an old edge never
+    sends it. Only a worker outside the broker still shows
+    `remoteControlUnavailableReason: "runner"`.
 - Design and verification: `docs/superpowers/specs/spikes/2026-11-24-remote-control-auth-spike.md`
   and `docs/superpowers/plans/2026-11-24-remote-control-full-login.md`.
 

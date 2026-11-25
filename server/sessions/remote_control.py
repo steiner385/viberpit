@@ -54,8 +54,9 @@ REASON_REFUSED = "refused"
 #: setup-token because the account has no usable claude.ai login (``accounts.slot_status``
 #: is not ok, or its org is unknown). Cleared once the login is back.
 REASON_LOGIN_NEEDED = "login_needed"
-#: Known before any request: the session runs on a session runner, which holds no
-#: claude.ai login of its own (follow-up: vend one through the credential envelope).
+#: Known before any request: the session runs on a worker outside the credential broker,
+#: which can hold no claude.ai login. A broker runner gets the account's login as the
+#: authority's Remote Control envelope; without one it reports ``login_needed`` instead.
 REASON_RUNNER = "runner"
 #: Known before any request: the login is fine but its access token is stale and a
 #: live session on the account owns the login's token family, so it may not be

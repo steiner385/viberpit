@@ -87,5 +87,57 @@ class TestStore(unittest.TestCase):
             json.dumps({})
 
 
+class TestRemoteControlEnvelope(unittest.TestCase):
+    """The Remote Control credential (claude.ai access token + org UUID) rides a second,
+    independent store: its own cache file, generations and lease — never the inference one."""
+
+    def _rc(self, gen=1, token="rc-tok", exp=10_000.0, org="org-1"):
+        return Envelope("a", ce.OAUTH_ACCESS, token, exp, gen, org_uuid=org)
+
+    def test_org_uuid_round_trips_and_is_optional(self):
+        env = self._rc()
+        self.assertEqual(Envelope.from_dict(json.loads(json.dumps(env.__dict__))), env)
+        old = {"account": "a", "kind": ce.SETUP_TOKEN, "token": "t", "expires_at": None,
+               "generation": 1}
+        self.assertIsNone(Envelope.from_dict(old).org_uuid)   # an old edge's wire
+
+    def test_launch_envelope_carries_the_org_and_fails_closed(self):
+        with temp_env() as d:
+            s = EnvelopeStore(d / "c", cache_file=ce.RC_CACHE_FILE)
+            s.sync([self._rc()], 60, now=100)
+            got = s.launch_envelope("a", skew_s=120, now=110)
+            self.assertEqual((got.token, got.org_uuid), ("rc-tok", "org-1"))
+            self.assertIsNone(s.launch_envelope("a", skew_s=120, now=161))     # lease lapsed
+            s.sync([self._rc(exp=200)], 60, now=150)
+            self.assertIsNone(s.launch_envelope("a", skew_s=120, now=151))     # near expiry
+
+    def test_its_own_cache_file_0600_and_generations(self):
+        with temp_env() as d:
+            inference = EnvelopeStore(d / "c")
+            rc = EnvelopeStore(d / "c", cache_file=ce.RC_CACHE_FILE)
+            inference.sync([_env(gen=7)], 60, now=100)
+            self.assertEqual(rc.sync([self._rc(gen=2)], 60, now=100), {"a": 2})
+            self.assertEqual(rc.sync([self._rc(gen=1, token="old")], 60, now=101), {"a": 2})
+            path = d / "c" / ce.RC_CACHE_FILE
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+            reloaded = EnvelopeStore(d / "c", cache_file=ce.RC_CACHE_FILE)
+            self.assertEqual(reloaded.launch_envelope("a", now=102).org_uuid, "org-1")
+            self.assertEqual(EnvelopeStore(d / "c").launch_token("a", now=102), "tok")
+
+    def test_process_wide_stores_are_distinct_and_reset_together(self):
+        with temp_env() as d:
+            os.environ["VIBERPIT_CLAUDE_CREDS_DIR"] = str(d)
+            try:
+                ce.reset_runner_store()
+                self.assertIsNot(ce.runner_store(), ce.rc_runner_store())
+                ce.rc_runner_store().sync([self._rc()], 60)
+                self.assertFalse(ce.runner_store().holds("a"))
+                ce.reset_runner_store()
+                self.assertTrue(ce.rc_runner_store().holds("a"))   # reloaded from its cache
+            finally:
+                os.environ.pop("VIBERPIT_CLAUDE_CREDS_DIR", None)
+                ce.reset_runner_store()
+
+
 if __name__ == "__main__":
     unittest.main()
