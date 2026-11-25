@@ -18,7 +18,8 @@ import { useSetRemoteControl } from '@/api/remoteControlHooks'
 import { isSafeHttpUrl } from '@/lib/safeUrl'
 import { Switch } from '@/ui/Switch'
 import {
-  REMOTE_CONTROL_ACCESS_NOTE, remoteControlError, remoteControlSourceLabel, remoteControlUnavailableText,
+  REMOTE_CONTROL_ACCESS_NOTE, REMOTE_CONTROL_CONNECTING, REMOTE_CONTROL_CONNECTING_NOTE,
+  remoteControlError, remoteControlSourceLabel, remoteControlUnavailableText,
 } from '../remoteControlCopy'
 
 export interface RemoteControlControlsProps {
@@ -31,13 +32,18 @@ export interface RemoteControlControlsProps {
   url?: string | null
   /** `session.remoteControlUnavailableReason` — set when the session can't open a bridge. */
   unavailableReason?: string | null
+  /** `session.remoteControlState` — `connecting` while effectively on with no bridge yet
+   *  (never shown as plain "On"). Absent from an older server. */
+  state?: string | null
 }
 
 export function RemoteControlControls({
   sessionId, enabled: enabledProp, override = null, url = null, unavailableReason = null,
+  state = null,
 }: RemoteControlControlsProps) {
   const unavailable = !!unavailableReason
   const enabled = enabledProp && !unavailable
+  const connecting = enabled && state === 'connecting'
   const labelId = useId()
   const describeId = useId()
   const toggle = useSetRemoteControl()
@@ -56,7 +62,9 @@ export function RemoteControlControls({
         <div className="min-w-0">
           <div id={labelId} className="text-ink">Remote Control</div>
           <p id={describeId} className="text-ink-muted" data-testid="remote-control-state">
-            {unavailable ? 'Unavailable' : `${enabled ? 'On' : 'Off'} · ${remoteControlSourceLabel(override)}`}
+            {unavailable
+              ? 'Unavailable'
+              : `${connecting ? REMOTE_CONTROL_CONNECTING : enabled ? 'On' : 'Off'} · ${remoteControlSourceLabel(override)}`}
           </p>
         </div>
         <Switch
@@ -70,6 +78,11 @@ export function RemoteControlControls({
       {unavailableReason && (
         <p className="text-xs text-ink-muted" data-testid="remote-control-unavailable">
           {remoteControlUnavailableText(unavailableReason)}
+        </p>
+      )}
+      {connecting && (
+        <p className="text-xs text-ink-muted" data-testid="remote-control-connecting">
+          {REMOTE_CONTROL_CONNECTING_NOTE}
         </p>
       )}
       {enabled && <p className="text-xs text-ink-muted" data-testid="remote-control-note">{REMOTE_CONTROL_ACCESS_NOTE}</p>}

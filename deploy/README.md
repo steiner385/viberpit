@@ -779,11 +779,20 @@ REPL, so it does nothing here.
 - **No usable login → `login_needed`.** With no valid full-scope slot (or no org UUID) the
   session launches on the setup-token as before, inference unchanged, and shows
   `remoteControlUnavailableReason: "login_needed"` with no enable sent. Within one sweep
-  (`poll_interval`, 60 s) of a successful sign-in the reason lifts. Turning the switch on then
-  **respawns the session** in place onto the login: idle only, conversation resumed, nothing
-  replayed. Mid-turn it answers 409 `REMOTE_CONTROL_BUSY` and the choice is not saved. A
-  default change to **on** never respawns; following sessions pick the login up at their next
-  spawn.
+  (`poll_interval`, 60 s) of a successful sign-in the reason lifts.
+- **Sessions upgrade by themselves.** Each sweep finds every session with Remote Control
+  effectively on that still runs on the setup-token, on an account whose login is now
+  usable. It **respawns** each one in place onto the login: idle only, conversation
+  resumed, nothing replayed. The spawn-time enable then opens the bridge, and the sweep logs
+  `session.remote_control_upgraded`. A busy session is retried on later sweeps until it is
+  idle. A `login_busy` pin, an override of off, a runner, or a `login_rejected` memo keeps
+  the session where it is.
+- **Turning it on by hand.** The toggle does the same respawn right away. Mid-turn it answers
+  409 `REMOTE_CONTROL_BUSY` and the choice is not saved.
+- **What the payload claims.** `remoteControlState` says what is really open: `on` only once
+  a bridge answered with its link; `connecting` while effectively on without one (enable in
+  flight, or an upgrade still pending); `off`; `unavailable`. The rail shows "Connecting…"
+  for `connecting`. The older `remoteControl` field stays as the effective choice.
 - **Turning it off revokes the login.** That covers a per-session toggle off, the default
   turned off for followers, and the kill switch. The session's rotated tokens stop being
   pushed, and the session is respawned onto the setup-token: at once if idle, otherwise by
