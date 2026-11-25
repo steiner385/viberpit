@@ -889,6 +889,13 @@ async def test_sharing_another_sessions_pr_does_not_adopt_it(orch, monkeypatch, 
                          head_ref="feat/3450")
     orch.pr_for = lambda repo, branch: pr if branch == "feat/3450" else None
     assert orch._autopilot_pr_facts(rec).prs == ()
+    # `gh pr checkout 3471` leaves A's head in B's reflog and as B's upstream: neither
+    # the minute-by-minute reflog sweep nor push evidence may bring it back.
+    _worktree_ties(monkeypatch, upstream="feat/3450", checked_out=["feat/3450", "feat/b"])
+    await type(orch).refresh_authored_branches(orch)
+    await type(orch)._link_session_pr_evidence(orch, "s1")
+    assert rec.authored_branches == ["feat/b"]
+    assert orch._autopilot_pr_facts(rec).prs == ()
 
 
 @pytest.mark.asyncio
@@ -906,27 +913,43 @@ async def test_an_archived_sessions_branch_is_not_an_owner(orch, monkeypatch, tm
 
 
 @pytest.mark.asyncio
-async def test_sharing_a_pr_another_session_holds_in_memory_or_by_origin(orch, monkeypatch,
-                                                                         tmp_path):
-    """Ownership is read from every place it lives: a live record's cross-repo
-    foreign_pr_refs (never persisted) and another session's PR Doctor origin PR."""
+async def test_sharing_a_pr_another_live_record_holds_in_memory(orch, monkeypatch, tmp_path):
+    """Ownership is also read from a live record's cross-repo foreign_pr_refs, which
+    are never persisted."""
     from server.sessions.types import SessionRecord
     await _init_db(tmp_path)
-    await _add_owner("D", repo="o/r", origin="pr-doctor", origin_ref="o/r#90")
     orch._records["C"] = SessionRecord(
         id="C", name="c", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
         cols=80, rows=24, cwd="/tmp", status="in_progress", repo="o/a",
         foreign_pr_refs=[("o/other", "fix/c")])
-    heads = {("o/other", 7): "fix/c", ("o/r", 90): "fix/d"}
-    monkeypatch.setattr("server.github.pr_poller.pr_head_ref", lambda repo, n: heads[(repo, n)])
-    _worktree_ties(monkeypatch, upstream="fix/d")
+    monkeypatch.setattr("server.github.pr_poller.pr_head_ref", lambda repo, n: "fix/c")
+    _worktree_ties(monkeypatch)
     _created(orch)
     orch._pr_poller = SimpleNamespace(in_cooldown=True)
+    orch._records["s1"].repo = "o/other"
+    orch._records["s1"].branch = "fix/c"
     await orch._note_shared_pr("s1", "o/other", 7)
-    await orch._note_shared_pr("s1", "o/r", 90)
-    rec = orch._records["s1"]
-    assert rec.foreign_pr_refs == []
-    assert "fix/d" not in (rec.authored_branches or [])
+    assert "fix/c" not in (orch._records["s1"].authored_branches or [])
+
+
+@pytest.mark.asyncio
+async def test_a_pr_doctor_origin_claim_never_blocks_the_prs_author(orch, monkeypatch,
+                                                                    tmp_path):
+    """A live PR Doctor spawned onto PR #90's branch (its origin) holds that branch
+    only by dispatch, not authorship: the author's own #2909 pushed-branch link and
+    a share of its PR still adopt it."""
+    from server.github.pr_status import PullRequestInfo
+    await _init_db(tmp_path)
+    await _add_owner("D", branch="fix/d", authored=["fix/d"], origin="pr-doctor",
+                     origin_ref="o/r#90")
+    orch._pr_population = _FakePopulation({"o/r": [PullRequestInfo(
+        number=90, url="u", state="open", checks="failing", title="t", repo="o/r",
+        head_ref="fix/d")]})
+    monkeypatch.setattr("server.github.pr_poller.pr_head_ref", lambda repo, n: "fix/d")
+    _worktree_ties(monkeypatch, upstream="fix/d")
+    _created(orch)
+    await type(orch)._link_session_pr_evidence(orch, "s1")
+    assert "fix/d" in orch._records["s1"].authored_branches
 
 
 @pytest.mark.asyncio
@@ -1172,29 +1195,54 @@ async def test_recovery_missing_replay_and_unresolved_head_retry(tmp_path, monke
     assert not getattr(orch, "_pr_linkage_cursors", {})
 
 
-@pytest.mark.asyncio
-async def test_foreign_artifact_audit_restores_links_after_restart(tmp_path, monkeypatch):
+async def _foreign_artifact_orch(monkeypatch):
     from server.db import db_session
     from server.db.models import AuditEvent
-    await _init_db(tmp_path)
     async with db_session() as db:
         db.add(AuditEvent(type="session.artifact", identity="owner", detail={
             "session_id": "s1", "kind": "url", "value": "https://github.com/o/other/pull/42"}))
     orch = _make_orch_with_session()
     del orch._recover_session_pr_links
+    monkeypatch.setattr("server.github.pr_poller.pr_head_ref", lambda repo, n: "fix/foreign")
+    _worktree_ties(monkeypatch)
+    return orch
+
+
+@pytest.mark.asyncio
+async def test_foreign_artifact_audit_restores_links_after_restart(tmp_path, monkeypatch):
+    """After a restart the shared cross-repo PR is restored, backed by the session's
+    own paired `gh pr create` in its replayed transcript (#2666, #3485)."""
+    from server.sessions.events import ToolCall, ToolKind, ToolResult
+    from server.sessions.replay import ReplayWindow
+    await _init_db(tmp_path)
+    orch = await _foreign_artifact_orch(monkeypatch)
+
+    async def replay(sid, **kw):
+        return ReplayWindow(events=[
+            ToolCall("t", "c", "Bash", ToolKind.BASH,
+                     {"command": "gh pr create --repo o/other --head fix/foreign"}),
+            ToolResult("c", True, {"content": "https://github.com/o/other/pull/42"})],
+            earliest_turn=0, total_turns=1)
+
+    orch.transcript_window = replay
+    assert await orch._recover_session_pr_links("s1")
+    assert orch._records["s1"].foreign_pr_refs == [("o/other", "fix/foreign")]
+
+
+@pytest.mark.asyncio
+async def test_foreign_artifact_without_a_readable_transcript_is_not_restored(
+        tmp_path, monkeypatch):
+    """With the transcript unreadable there is no authorship evidence: the shared
+    link stays a card, and recovery reports failure so a later pass retries."""
+    await _init_db(tmp_path)
+    orch = await _foreign_artifact_orch(monkeypatch)
 
     async def missing(sid, **kw):
         return None
 
     orch.transcript_window = missing
-    monkeypatch.setattr("server.github.pr_poller.pr_head_ref", lambda repo, n: "fix/foreign")
-    # The artifact is replayed through the authorship check (#3485): here the
-    # session's own creation of the PR (the draft guard's cached replay) backs it.
-    _created(orch, ("o/other", 42))
-    # Old artifacts remain useful links but cannot certify a missing transcript's
-    # newer creation evidence; callers must still defer the facts judgment.
     assert not await orch._recover_session_pr_links("s1")
-    assert orch._records["s1"].foreign_pr_refs == [("o/other", "fix/foreign")]
+    assert orch._records["s1"].foreign_pr_refs == []
 
 
 def test_pr_facts_preserve_same_number_in_different_repositories(orch):
