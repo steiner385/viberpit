@@ -31,7 +31,9 @@ from datetime import datetime, timezone
 _OPEN_STAGES = frozenset({"ci", "ready", "parked"})
 
 
-def is_required_ci_red(checks: str, merge_state_status: str | None) -> bool:
+def is_required_ci_red(
+    checks: str, merge_state_status: str | None, in_merge_queue: bool = False
+) -> bool:
     """True when the PR's CI is red in a way that blocks its merge.
 
     ``checks`` is GitHub's raw statusCheckRollup, which reads FAILURE when ANY check
@@ -41,8 +43,14 @@ def is_required_ci_red(checks: str, merge_state_status: str | None) -> bool:
     land it (#3039). Anything else, including an unknown status, keeps the rollup's
     word: a red the merge state cannot clear is treated as red.
 
+    A PR in the merge queue is the exception to that: GitHub only enqueues once every
+    required check passed, and reports its mergeStateStatus as UNKNOWN while queued,
+    so the UNSTABLE signal is gone. Any red left on its head is advisory (#3494).
+
     THE rule; PR Doctor, the completion bar and the pipeline board all read it.
     """
+    if in_merge_queue:
+        return False
     return checks == "failing" and merge_state_status != "UNSTABLE"
 
 
@@ -50,6 +58,7 @@ def derive_open_stage(
     checks: str,
     merge_state_status: str | None,
     is_draft: bool,
+    in_merge_queue: bool = False,
 ) -> str:
     """Return the open-stage string for a non-merged, non-queue PR.
 
@@ -57,13 +66,14 @@ def derive_open_stage(
         checks: ViberPit rollup — one of 'passing' | 'failing' | 'pending' | 'none'
         merge_state_status: GitHub mergeStateStatus string or None
         is_draft: True when the PR is in draft state
+        in_merge_queue: True when the PR holds a merge-queue entry
 
     Returns:
         'parked' | 'ci' | 'ready'
     """
     if is_draft:
         return "parked"
-    if is_required_ci_red(checks, merge_state_status):
+    if is_required_ci_red(checks, merge_state_status, in_merge_queue):
         return "parked"
     if checks == "pending":
         return "ci"
