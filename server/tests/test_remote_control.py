@@ -1645,6 +1645,21 @@ async def test_an_idle_session_is_upgraded_onto_the_login_once_it_is_ready(env) 
 
 
 @pytest.mark.asyncio
+async def test_a_runner_session_on_the_inference_envelope_is_upgraded_too(env) -> None:
+    # Regression (prod, rocky 2026-11-25): a runner session that started before its first
+    # Remote Control envelope arrived is stamped "envelope", not "setup", and the upgrade
+    # skipped it, so it never reached the Claude apps.
+    rec = await _make_on_setup_token(env)
+    rec.launch_credential = "envelope"
+    first = env.orch._drivers[rec.id]
+    env.control.replies = [ON_REPLY]
+    await env.orch._maintain_remote_control_logins()
+    await env.settle(rec.id)
+    assert env.orch._drivers[rec.id] is not first
+    assert rec.launch_credential == "slot" and rec.remote_control_url == URL
+
+
+@pytest.mark.asyncio
 async def test_a_busy_session_is_upgraded_only_once_idle(env) -> None:
     rec = await _make_on_setup_token(env)
     first = env.orch._drivers[rec.id]
@@ -1690,3 +1705,28 @@ async def test_a_pinned_login_is_not_upgraded(env) -> None:
 def test_display_state_matrix(available, reason, on, url, state) -> None:
     assert rc.display_state(available=available, reason=reason, effective_on=on,
                             url=url) == state
+
+
+@pytest.mark.parametrize("on,url,state", [
+    (True, None, "standby"),     # on, no CLI process: connects when the session runs
+    (True, URL, "standby"),      # a stored URL from the last run is dead once detached
+    (False, None, "off"),
+])
+def test_a_detached_session_is_standby_not_connecting(on, url, state) -> None:
+    assert rc.display_state(available=True, reason=None, effective_on=on, url=url,
+                            live=False) == state
+
+
+def test_payload_reports_standby_for_a_detached_session() -> None:
+    rec: Any = SessionRecord(id=SID, name="n", account="a", engine=AgentEngine.CLAUDE_CODE,
+                             engine_session_id="c", cols=80, rows=24, cwd="/tmp")
+    rec.remote_control_available = True
+    rec.remote_control = True
+    rec.remote_control_url = URL
+    rec.detached = True
+    with patch.dict(os.environ, _ENV):
+        p = _payload(rec)
+    assert p["remoteControlState"] == "standby"
+    rec.detached = False
+    with patch.dict(os.environ, _ENV):
+        assert _payload(rec)["remoteControlState"] == "on"

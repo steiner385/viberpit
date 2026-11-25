@@ -18,6 +18,11 @@ export const REMOTE_CONTROL_CONNECTING = 'Connecting…'
 export const REMOTE_CONTROL_CONNECTING_NOTE =
   "Not in the Claude apps yet. It appears there once the session connects; a busy session connects when it's idle."
 
+/** `remoteControlState: "standby"` — on, but the session has no running CLI right now. */
+export const REMOTE_CONTROL_STANDBY = 'Standby'
+export const REMOTE_CONTROL_STANDBY_NOTE =
+  'Appears in the Claude apps when this session runs again (send it a prompt).'
+
 export const REMOTE_CONTROL_TOGGLE_FALLBACK = "Couldn't change Remote Control"
 
 /** Why an eligible session still can't use it, keyed by `remoteControlUnavailableReason`:

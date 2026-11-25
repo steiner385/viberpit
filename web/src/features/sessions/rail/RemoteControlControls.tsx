@@ -19,6 +19,7 @@ import { isSafeHttpUrl } from '@/lib/safeUrl'
 import { Switch } from '@/ui/Switch'
 import {
   REMOTE_CONTROL_ACCESS_NOTE, REMOTE_CONTROL_CONNECTING, REMOTE_CONTROL_CONNECTING_NOTE,
+  REMOTE_CONTROL_STANDBY, REMOTE_CONTROL_STANDBY_NOTE,
   remoteControlError, remoteControlSourceLabel, remoteControlUnavailableText,
 } from '../remoteControlCopy'
 
@@ -44,6 +45,7 @@ export function RemoteControlControls({
   const unavailable = !!unavailableReason
   const enabled = enabledProp && !unavailable
   const connecting = enabled && state === 'connecting'
+  const standby = enabled && state === 'standby'
   const labelId = useId()
   const describeId = useId()
   const toggle = useSetRemoteControl()
@@ -64,7 +66,7 @@ export function RemoteControlControls({
           <p id={describeId} className="text-ink-muted" data-testid="remote-control-state">
             {unavailable
               ? 'Unavailable'
-              : `${connecting ? REMOTE_CONTROL_CONNECTING : enabled ? 'On' : 'Off'} · ${remoteControlSourceLabel(override)}`}
+              : `${connecting ? REMOTE_CONTROL_CONNECTING : standby ? REMOTE_CONTROL_STANDBY : enabled ? 'On' : 'Off'} · ${remoteControlSourceLabel(override)}`}
           </p>
         </div>
         <Switch
@@ -85,8 +87,13 @@ export function RemoteControlControls({
           {REMOTE_CONTROL_CONNECTING_NOTE}
         </p>
       )}
+      {standby && (
+        <p className="text-xs text-ink-muted" data-testid="remote-control-standby">
+          {REMOTE_CONTROL_STANDBY_NOTE}
+        </p>
+      )}
       {enabled && <p className="text-xs text-ink-muted" data-testid="remote-control-note">{REMOTE_CONTROL_ACCESS_NOTE}</p>}
-      {enabled && isSafeHttpUrl(url) && (
+      {enabled && !standby && isSafeHttpUrl(url) && (
         <a
           href={url}
           target="_blank"

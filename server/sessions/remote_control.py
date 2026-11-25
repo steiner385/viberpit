@@ -142,18 +142,25 @@ STATE_ON = "on"                    # effectively on AND the bridge answered with
 STATE_CONNECTING = "connecting"    # effectively on, no bridge yet: the enable is in
                                    # flight, or the session still runs on the setup-token
                                    # and waits to be respawned onto the login
+STATE_STANDBY = "standby"          # effectively on, but no live CLI (detached): it
+#                                    connects when the session next runs
 STATE_OFF = "off"                  # effectively off
 STATE_UNAVAILABLE = "unavailable"  # not eligible, or a known reason it cannot open one
 
 
 def display_state(*, available: bool, reason: str | None, effective_on: bool,
-                  url: str | None) -> str:
+                  url: str | None, live: bool = True) -> str:
     """The session's Remote Control state as the payload reports it. "on" only with a
-    bridge URL — an effectively-on session without one is "connecting", never "on"."""
+    bridge URL — an effectively-on session without one is "connecting", never "on".
+    A detached session (``live=False``: no CLI process) has no bridge to open until it
+    runs again, so it is "standby", not "connecting"."""
     if not available or reason is not None:
         return STATE_UNAVAILABLE
     if not effective_on:
         return STATE_OFF
+    if not live:
+        # A stored URL from the last run is dead once its CLI has exited.
+        return STATE_STANDBY
     return STATE_ON if url else STATE_CONNECTING
 
 

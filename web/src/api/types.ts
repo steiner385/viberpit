@@ -449,7 +449,7 @@ export interface Session {
    *  `connecting` while effectively on without one (the enable is in flight, or the
    *  session waits to reopen on the account's claude.ai login); `off`; `unavailable`.
    *  Absent from an older server. */
-  remoteControlState?: 'on' | 'connecting' | 'off' | 'unavailable'
+  remoteControlState?: 'on' | 'connecting' | 'standby' | 'off' | 'unavailable'
   /** The session's own choice; null = following the Settings default
    *  (`remoteControlDefault`). `POST /sessions/{id}/remote-control {enabled}` sets it. */
   remoteControlOverride?: boolean | null
