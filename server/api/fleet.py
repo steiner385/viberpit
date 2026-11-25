@@ -272,13 +272,18 @@ async def update_host(name: str, body: HostPatch, request: Request,
                     status_code=422,
                     detail={"code": "invalid_display_target",
                             "message": "a host cannot display on itself; use 'local'"})
-            known = (await db.execute(
-                sa_select(Host.name).where(Host.name == target))).scalar_one_or_none()
-            if known is None:
+            enabled = (await db.execute(
+                sa_select(Host.enabled).where(Host.name == target))).scalar_one_or_none()
+            if enabled is None:
                 raise HTTPException(
                     status_code=422,
                     detail={"code": "invalid_display_target",
                             "message": f"unknown host {target!r}"})
+            if not enabled:   # spec §1: "another enabled Host row"
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "invalid_display_target",
+                            "message": f"host {target!r} is disabled"})
         await db.execute(sa_update(Host).where(Host.name == name).values(**values))
         row = (await db.execute(
             sa_select(Host).where(Host.name == name))).scalars().first()

@@ -17,6 +17,11 @@ from server.sessions.native_display import NativeDisplay
 from server.tests.test_orchestrator_native_display import FakeNative, FakeX11, _orch, _row, _seed
 from server.tests.test_orchestrator_native_display import spawn_env as spawn_env  # noqa: F401 — fixture
 
+# Every remote degrade blanks the display vars: the SDK merges extra_env OVER the
+# daemon's inherited env, so {} would let an inherited DISPLAY put windows on this
+# (source) host's own screen (spec §8).
+BLANK_ENV = {"WAYLAND_DISPLAY": "", "DISPLAY": "", "XAUTHORITY": ""}
+
 LIVE_ENV = {"WAYLAND_DISPLAY": "wayland-viberpit-bridge", "XDG_RUNTIME_DIR": "/run/user/1000",
             "DISPLAY": "/run/user/1000/viberpit-bridge/X11",
             "XAUTHORITY": "/run/user/1000/viberpit-bridge/xauth"}
@@ -196,19 +201,52 @@ async def test_display_env_remote_branch_returns_bridge_env(bridge):
     await client
     assert seen["extra_env"] == LIVE_ENV
     assert orch._display_env("s1") == LIVE_ENV
-    # Bridge gone at the next spawn: nothing injected (a dead socket never is).
+    # Bridge gone at the next spawn: no socket injected (a dead one never is), and the
+    # display vars are blanked rather than left to inheritance.
     bridge.state = "bridge_unavailable"
     seen.clear()
     await orch._session_factory("s1")("/tmp", "/cfg", None, "interactive", None)
-    assert not seen["extra_env"]
-    assert orch._display_env("s1") == {}
+    assert seen["extra_env"] == BLANK_ENV
+    assert orch._display_env("s1") == BLANK_ENV
 
 
-def test_display_env_remote_with_no_probe_yet_is_empty(bridge):
+def test_display_env_remote_with_no_probe_yet_is_blank(bridge):
     from server.sessions.orchestrator import SessionOrchestrator
     orch = SessionOrchestrator(sdk_factory=_recording_factory({}), x11=FakeX11())
     _seed(orch, "s1", display_mode="remote", display_target_host="dobby")
-    assert orch._display_env("s1") == {}
+    assert orch._display_env("s1") == BLANK_ENV
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("degrade", ["dead_legs", "wrong_user", "no_probe", "stale_probe",
+                                     "target_mismatch", "target_cleared"])
+async def test_inherited_display_never_survives_a_remote_degrade(bridge, monkeypatch, degrade):
+    """However the remote env degrades, the env the CLI is spawned with (inherited env
+    overlaid by extra_env, as the SDK merges it) carries no display of this host."""
+    import time as _time
+
+    from server.sessions.orchestrator import SessionOrchestrator
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setenv("XAUTHORITY", "/home/u/.Xauthority")
+    orch = SessionOrchestrator(sdk_factory=_recording_factory({}), x11=FakeX11())
+    _seed(orch, "s1", display_mode="remote", display_target_host="dobby")
+    if degrade == "dead_legs":
+        bridge.state = "bridge_unavailable"
+    elif degrade == "wrong_user":
+        bridge.state = "bridge_wrong_user"
+    elif degrade == "target_mismatch":
+        bridge.current = "zeta"
+    elif degrade == "target_cleared":
+        bridge.current = None
+    if degrade != "no_probe":
+        await orch._refresh_bridge()
+    if degrade == "stale_probe":
+        ts, state, cur = orch._bridge_probe
+        orch._bridge_probe = (_time.monotonic() - 3600, state, cur)
+    spawned = {**os.environ, **orch._display_env("s1")}
+    assert spawned["DISPLAY"] == "" and spawned["WAYLAND_DISPLAY"] == ""
+    assert spawned["XAUTHORITY"] == ""
 
 
 class _Proc:
@@ -218,11 +256,15 @@ class _Proc:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state,platform", [
     (dict(LIVE_ENV), "wayland"),
+    ({"WAYLAND_DISPLAY": "wayland-viberpit-bridge", "XDG_RUNTIME_DIR": "/run/user/1000"},
+     "wayland"),
     ({"WAYLAND_DISPLAY": "", "DISPLAY": "/run/user/1000/viberpit-bridge/X11",
       "XAUTHORITY": "/x"}, "x11"),
 ])
 async def test_open_browser_remote_uses_bridge_env_and_ozone_wayland(
-        spawn_env, bridge, tmp_path, state, platform):
+        spawn_env, bridge, tmp_path, state, platform, monkeypatch):
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("XAUTHORITY", "/home/u/.Xauthority")
     spawned: list[tuple[tuple, dict]] = []
 
     async def _spawn(*argv, **kw):
@@ -245,6 +287,10 @@ async def test_open_browser_remote_uses_bridge_env_and_ozone_wayland(
             assert kw["env"][k] == v
         if platform == "x11":
             assert not kw["env"].get("WAYLAND_DISPLAY")
+        # A leg the state omits is still blanked: nothing inherited (DISPLAY=:0 below)
+        # may put the browser on this host's own screen.
+        assert kw["env"]["DISPLAY"] == state.get("DISPLAY", "")
+        assert kw["env"]["XAUTHORITY"] == state.get("XAUTHORITY", "")
         bridge.state = "bridge_wrong_user"
         assert await orch.open_browser(rec.id, None) == {"ok": False,
                                                           "reason": "bridge_wrong_user"}
@@ -300,12 +346,12 @@ async def test_target_moved_degrades_env_and_browser(spawn_env, bridge, tmp_path
         assert orch._display_env(rec.id) == LIVE_ENV
         bridge.current = "zeta"                       # this host now targets another desktop
         await orch._refresh_bridge()
-        assert orch._display_env(rec.id) == {}
+        assert orch._display_env(rec.id) == BLANK_ENV
         assert await orch.open_browser(rec.id, None) == {"ok": False,
                                                           "reason": "bridge_unavailable"}
         bridge.current = None                         # target cleared (or kill switch)
         await orch._refresh_bridge()
-        assert orch._display_env(rec.id) == {}
+        assert orch._display_env(rec.id) == BLANK_ENV
         assert spawned == []
         # A new session naming a target this host no longer has is not remote either.
         bridge.current = "zeta"

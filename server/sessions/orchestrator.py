@@ -178,6 +178,7 @@ from server.sessions.display_policy import (
     resolve_display_decision,
 )
 from server.sessions.display_bridge_env import (
+    BLANK_DISPLAY_ENV,
     BRIDGE_FALLBACK_REASONS,
     REASON_BRIDGE_NOT_ACCEPTED,
     REASON_BRIDGE_UNAVAILABLE,
@@ -3026,8 +3027,11 @@ class SessionOrchestrator:
         when browsers run Wayland-native); remote records the display bridge's
         forwarded sockets, from the last liveness probe (``_refresh_bridge``, which the
         spawn runs first); everything else the Xvfb lease if one exists. A native record
-        whose desktop is gone, or a remote one whose bridge is down, gets {} — the same
-        degrade an exhausted pool gives."""
+        whose desktop is gone gets {} — the same degrade an exhausted pool gives. A remote
+        record whose bridge is unusable (dead legs, missing/stale probe, this host's target
+        moved) gets the display vars BLANKED instead: the env is merged over the daemon's
+        inherited one, and an inherited DISPLAY would put its windows on this host's own
+        screen (spec §8)."""
         rec = self._records.get(session_id)
         if rec is not None and rec.display_mode == DISPLAY_NATIVE:
             if self._native is not None and self._native.available():
@@ -3035,7 +3039,7 @@ class SessionOrchestrator:
             return {}
         if rec is not None and rec.display_mode == DISPLAY_REMOTE:
             state = self._bridge_state(rec.display_target_host)
-            return dict(state) if isinstance(state, dict) else {}
+            return dict(state) if isinstance(state, dict) else dict(BLANK_DISPLAY_ENV)
         return self._x11.env_for(session_id) if self._x11 else {}
 
     def _session_factory(self, session_id: str):
@@ -7627,8 +7631,10 @@ class SessionOrchestrator:
             # of its own: with VIBERPIT_NATIVE_DISPLAY_ENABLED=false there is none.
             if self._native is None:
                 return {"ok": False, "reason": "no_display"}
+            # Blank first: a leg the state omits must not fall back to an inherited var.
             reason = await self._native.launch_browser_with_env(
-                session_id, url, env=state, wayland=bool(state.get("WAYLAND_DISPLAY")))
+                session_id, url, env={**BLANK_DISPLAY_ENV, **state},
+                wayland=bool(state.get("WAYLAND_DISPLAY")))
             return {"ok": reason is None, "reason": reason}
         if self._x11 is None or self._x11.display_for(session_id) is None:
             return {"ok": False, "reason": "no_display"}

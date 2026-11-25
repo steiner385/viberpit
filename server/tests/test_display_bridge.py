@@ -243,8 +243,10 @@ async def test_ensure_starts_one_ssh_per_source_with_verified_argv(tmp_path):
     rows = await bridge.ensure(["rocky"], {"rocky": "tony@rocky"})
     assert rows == [{"source": "rocky", "state": "up", "legs": ["wayland", "x11"], "since": 1234.5}]
     assert len(spawn.of("bridge")) == 1  # idempotent
+    # The pinned /info.displayBridge shape the web chip (web/src/api/fleet.ts) reads: one
+    # row per known source, the same shape ensure() returns, ``since`` epoch seconds.
     assert bridge.info() == {"accepts": ["rocky"], "active": [
-        {"source": "rocky", "since": 1234.5, "legs": ["wayland", "x11"]}]}
+        {"source": "rocky", "state": "up", "legs": ["wayland", "x11"], "since": 1234.5}]}
     await bridge.stop_all()
 
 
@@ -287,7 +289,9 @@ async def test_desktop_unavailable_never_spawns(tmp_path):
     assert rows == [{"source": "rocky", "state": "desktop_unavailable", "legs": [], "since": None}]
     await asyncio.sleep(0.02)
     assert spawn.procs == []
-    assert bridge.info()["active"] == []
+    # Not-up sources are advertised too, with their state: the chip shows "desktop logged out".
+    assert bridge.info()["active"] == [
+        {"source": "rocky", "state": "desktop_unavailable", "legs": [], "since": None}]
     await bridge.stop_all()
 
 

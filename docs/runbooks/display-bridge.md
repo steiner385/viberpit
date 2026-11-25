@@ -79,7 +79,8 @@ the prep script's exit code:
 | Exit | Meaning |
 |---|---|
 | 4 | The private dir `$XDG_RUNTIME_DIR/viberpit-bridge` on the source is not owned by the SSH user, or is a symlink |
-| 5 | The source login has no usable `$XDG_RUNTIME_DIR` (unset, relative, missing or not its own). Make sure the SSH login gets a systemd user runtime dir (`loginctl enable-linger <user>`) |
+| 5 | The source login has no usable `$XDG_RUNTIME_DIR` (unset, relative, missing or not its own). Make sure the SSH login gets a user runtime dir — for example via pam_systemd/logind, or `loginctl enable-linger <user>` where a lingering user manager is acceptable |
+| any other (e.g. 127) | A command the prep or bridge needs is missing on the source: check `xauth` and `waypipe` are installed there (section 1) |
 
 Source-side layout (fixed, one target per source): Wayland socket `$XDG_RUNTIME_DIR/wayland-viberpit-bridge`;
 X11 socket `$XDG_RUNTIME_DIR/viberpit-bridge/X11` (`DISPLAY` is that path); cookie
@@ -100,3 +101,14 @@ grace period, and fails closed (treats its set as empty) after about 90 s withou
 - After changing a source's SSH destination, the X11 cookie stays at the old login until that source's
   bridge ends (wait out the grace, or end its sessions).
 - Remote browser windows need the source's native display feature enabled.
+- Remote sessions cannot move to another host ("Move to host…" refuses them, like native ones): their
+  windows ride the source host's bridge.
+- The target does not restrict which SSH destination the edge hands it: `ACCEPT_FROM` approves a
+  source host *name*, and the edge supplies that source's `display_ssh_host`/`ssh_host`. Whoever can
+  edit the fleet's Host rows can point an accepted name at another login the target's key reaches.
+- Only edge-brokered spawns wait for the bridge. A session the daemon spawns on its own (not through
+  the edge) stays local.
+- A remote session's dev-server preview opens on the source's own Xvfb/VNC display, exactly as for a
+  native session — not on the target desktop.
+- A target must be an enabled host; disabling the target leaves the source's setting in place (shown
+  as "(disabled)") but no bridge is brought up for it.

@@ -34,6 +34,11 @@ XAUTH_FILE = "xauth"
 # A path DISPLAY carries no display number; libxcb looks its cookie up as display 0.
 X11_AUTH_DISPLAY = 0
 
+# Remote-session display vars with no live leg. A session's env is merged OVER the
+# daemon's inherited one, so a missing key would let an inherited DISPLAY/WAYLAND_DISPLAY
+# put windows on this (source) host's own screen (spec §8): blank, never absent.
+BLANK_DISPLAY_ENV: dict[str, str] = {"WAYLAND_DISPLAY": "", "DISPLAY": "", "XAUTHORITY": ""}
+
 # Fallback reasons (spec Global Constraints; exact strings).
 REASON_BRIDGE_UNAVAILABLE = "bridge_unavailable"
 REASON_BRIDGE_WRONG_USER = "bridge_wrong_user"
@@ -112,7 +117,7 @@ def remote_env(*, runtime_dir: str, x11: bool, uid: int) -> dict[str, str] | str
     ``bridge_unavailable``.
     """
     states = [_socket_state(os.path.join(runtime_dir, SOURCE_WAYLAND_DISPLAY), uid)]
-    env = {"WAYLAND_DISPLAY": "", "DISPLAY": "", "XAUTHORITY": ""}
+    env = dict(BLANK_DISPLAY_ENV)
     live = False
     if states[0] == _LIVE:
         env["WAYLAND_DISPLAY"] = SOURCE_WAYLAND_DISPLAY

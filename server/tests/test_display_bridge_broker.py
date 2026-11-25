@@ -111,6 +111,42 @@ async def test_prepare_swallows_an_unreachable_target(isolated_db):
     assert not (await _prep(_broker({"dobby": dobby}, timeout_s=0.3), "rocky")).up
 
 
+async def test_prepare_matches_the_targets_lowercased_source(isolated_db):
+    # The target lowercases every source it reports; a mixed-case host name still sees up.
+    await _seed(_host("Rocky", target="host:dobby", ssh="tony@rocky"), _host("dobby"))
+
+    class _Lower(_FakeTarget):
+        async def display_bridge_ensure(self, sources, ssh_dests, *, timeout=None):
+            self.calls.append((list(sources), dict(ssh_dests)))
+            return [{"source": s.lower(), "state": "up", "legs": [], "since": 1.0}
+                    for s in sources]
+    t0 = time.monotonic()
+    prep = await _prep(_broker({"dobby": _Lower()}, timeout_s=5.0), "Rocky")
+    assert prep.up and time.monotonic() - t0 < 1.0
+
+
+async def test_target_without_the_ensure_rpc_stops_at_once_and_logs_once(isolated_db, caplog):
+    # An older target daemon answers UnknownMethod: waiting cannot help, so prepare does
+    # not poll for the full start timeout, and the INFO line is not repeated per spawn.
+    import logging
+
+    from server.ipc.client import DaemonError
+    await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"), _host("dobby"))
+    dobby = _FakeTarget(fail=DaemonError("UnknownMethod", "display_bridge_ensure"))
+    broker = _broker({"dobby": dobby}, timeout_s=5.0)
+    caplog.set_level(logging.INFO, logger="server.sessions.display_bridge_broker")
+    t0 = time.monotonic()
+    first = await _prep(broker, "rocky")
+    second = await _prep(broker, "rocky")
+    await broker.reassert()
+    assert time.monotonic() - t0 < 1.5
+    assert not first.up and not second.up and first.target == "dobby"
+    assert len(dobby.calls) == 3
+    outdated = [r for r in caplog.records if "predates" in r.getMessage()]
+    assert len(outdated) == 1 and outdated[0].levelno == logging.INFO
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
 class _Rec:
     def __init__(self, id):
         self.id = id
@@ -218,17 +254,44 @@ async def test_queue_only_create_passes_target_without_waiting(isolated_db, monk
 
 
 async def test_desired_groups_live_remote_sessions_by_target(isolated_db):
-    await _seed(_host("rocky", target="host:dobby", ssh="r"), _host("pi", ssh="p"),
+    await _seed(_host("rocky", target="host:dobby", ssh="r"), _host("pi", target="host:mac", ssh="p"),
                 _host("dobby"), _host("mac"),
                 _remote_session("s1", "rocky", "dobby"),
                 _remote_session("s2", "rocky", "dobby", status="in_progress"),
-                _remote_session("s3", "pi", "dobby"),
-                _remote_session("s4", "pi", "mac"),
-                _remote_session("gone", "pi", "rocky", status="archived"),
-                _remote_session("ended", "pi", "rocky", status="ended"),
+                _remote_session("s3", "pi", "mac"),
+                _remote_session("gone", "pi", "mac", status="archived"),
+                _remote_session("ended", "pi", "mac", status="ended"),
                 DbSession(id="v", name="v", account_name="a", cwd="/tmp", status="idle", host="pi",
                           display_mode="virtual"))
-    assert await _broker({}).desired() == {"dobby": ["pi", "rocky"], "mac": ["pi"]}
+    assert await _broker({}).desired() == {"dobby": ["rocky"], "mac": ["pi"]}
+
+
+async def test_desired_drops_live_rows_once_the_source_target_changes(isolated_db):
+    # rocky's sessions started remote on dobby, then rocky was re-pointed at mac. Both
+    # targets would bridge the SAME source paths, so only the current target is wanted.
+    await _seed(_host("rocky", target="host:mac", ssh="r"), _host("dobby"), _host("mac"),
+                _remote_session("old", "rocky", "dobby"),
+                _remote_session("new", "rocky", "mac"))
+    assert await _broker({}).desired() == {"mac": ["rocky"]}
+    # Back to local: nothing is wanted for rocky at all.
+    async with db_session() as db:
+        (await db.get(Host, "rocky")).display_target = None
+    assert await _broker({}).desired() == {}
+
+
+async def test_desired_matches_the_stored_target_case_insensitively(isolated_db):
+    await _seed(_host("rocky", target="host:dobby", ssh="r"), _host("dobby"),
+                _remote_session("s1", "rocky", "Dobby"))
+    assert await _broker({}).desired() == {"dobby": ["rocky"]}
+
+
+async def test_desired_ignores_a_live_row_moved_or_adopted_to_another_host(isolated_db):
+    # The row was remote from rocky onto dobby, but now lives on pi (adopted/moved), whose
+    # current target is not dobby: no bridge is desired for it.
+    await _seed(_host("rocky", target="host:dobby", ssh="r"), _host("pi", ssh="p"),
+                _host("dobby"),
+                _remote_session("moved", "pi", "dobby"))
+    assert await _broker({}).desired() == {}
 
 
 async def test_desired_includes_in_flight_prepares(isolated_db):

@@ -62,16 +62,18 @@ export interface HostUpgrade {
   target: string | null
 }
 
-/** One source host's bridge to this host, as the TARGET advertises it
- *  (`server/sessions/display_bridge.py` snapshot via `GET /fleet/hosts`). */
+/** One source host's bridge to this host, as the TARGET advertises it: exactly a
+ *  `DisplayBridge.info()` row (`server/sessions/display_bridge.py`, via `GET /fleet/hosts`).
+ *  `source` is lowercased by the target; `since` is epoch seconds while up, else null. */
 export interface DisplayBridgeActive {
   source: string
   state: string
-  legs: unknown[]
-  since: string | null
+  legs: string[]
+  since: number | null
 }
 
-/** A target host's advertised bridge snapshot: who it accepts, who is connected. */
+/** A target host's advertised bridge snapshot: who it accepts, and one row per source
+ *  it knows (any state, not only connected ones). */
 export interface DisplayBridgeSnapshot {
   accepts: string[]
   active: DisplayBridgeActive[]
@@ -179,11 +181,13 @@ export function displayTargetChip(source: FleetHost, hosts: FleetHost[]): string
   const name = displayTargetName(source)
   if (!name) return null
   const bridge = hosts.find((h) => h.name === name)?.displayBridge
+  // The target lowercases every source name it accepts and reports.
+  const src = source.name.toLowerCase()
   let status = 'unavailable'
-  if (bridge && !bridge.accepts.includes(source.name)) {
+  if (bridge && !bridge.accepts.some((a) => a.toLowerCase() === src)) {
     status = 'not accepted'
   } else if (bridge) {
-    const state = bridge.active.find((a) => a.source === source.name)?.state
+    const state = bridge.active.find((a) => a.source.toLowerCase() === src)?.state
     if (state === 'up') status = 'bridge up'
     else if (state === 'desktop_unavailable') status = 'desktop logged out'
   }

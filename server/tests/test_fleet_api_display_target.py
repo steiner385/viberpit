@@ -72,6 +72,24 @@ async def _test_display_target_unknown_host_rejected_422():
     assert exc.value.detail["code"] == "invalid_display_target"
 
 
+def test_display_target_disabled_host_rejected_422():
+    asyncio.run(_test_display_target_disabled_host_rejected_422())
+
+
+async def _test_display_target_disabled_host_rejected_422():
+    # Spec §1: the target is "another enabled Host row".
+    await _mk("rocky", "dobby")
+    await _put("dobby", enabled=False)
+    with pytest.raises(HTTPException) as exc:
+        await _put("rocky", displayTarget="host:dobby")
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "invalid_display_target"
+    assert "disabled" in exc.value.detail["message"]
+    # Re-enabled, it is accepted again.
+    await _put("dobby", enabled=True)
+    assert (await _put("rocky", displayTarget="host:dobby"))["displayTarget"] == "host:dobby"
+
+
 @pytest.mark.parametrize("local", ["local", "", "  local "])
 def test_display_target_local_normalizes_to_null(local):
     asyncio.run(_test_display_target_local_normalizes_to_null(local))

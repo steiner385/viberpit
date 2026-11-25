@@ -289,9 +289,15 @@ export function FleetSection() {
                       }
                     >
                       <option value="">This host (default)</option>
-                      {hosts.filter((o) => o.name !== h.name).map((o) => (
-                        <option key={o.name} value={`host:${o.name}`}>{o.name}'s desktop</option>
-                      ))}
+                      {/* Only enabled hosts are offered (the API refuses a disabled one);
+                          a current target since disabled stays visible so the value shows. */}
+                      {hosts
+                        .filter((o) => o.name !== h.name && (o.enabled || o.name === displayTargetName(h)))
+                        .map((o) => (
+                          <option key={o.name} value={`host:${o.name}`}>
+                            {o.name}'s desktop{o.enabled ? '' : ' (disabled)'}
+                          </option>
+                        ))}
                     </select>
                     {displayTargetChip(h, hosts) && (
                       <div className="text-xs text-ink-muted">{displayTargetChip(h, hosts)}</div>

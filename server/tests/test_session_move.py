@@ -86,6 +86,9 @@ def test_an_idle_claude_session_is_movable():
 @pytest.mark.parametrize("subject_kw,code", [
     ({"kind": "assistant"}, sm.MOVE_ASSISTANT),
     ({"display_mode": "native"}, sm.MOVE_NATIVE_DISPLAY),
+    # A remote session's windows ride its source host's display bridge (fixed paths on
+    # that host): moving it would strand them, same as native.
+    ({"display_mode": "remote"}, sm.MOVE_NATIVE_DISPLAY),
     ({"status": "in_progress"}, sm.MOVE_MID_TURN),
     ({"status": "condensing"}, sm.MOVE_MID_TURN),
     ({"status": "retrying"}, sm.MOVE_MID_TURN),

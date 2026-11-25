@@ -10,7 +10,8 @@ an empty set; an edge restart loses nothing because the set lives in the DB.
 
 The desired set is
 * live ``display_mode == "remote"`` sessions grouped by ``display_target_host`` →
-  their source ``host``;
+  their source ``host``, kept only while that source host's CURRENT target is still
+  that host (case-insensitive) — a re-pointed or moved/adopted row wants no bridge;
 * queued / held sessions that may still go remote at actual spawn (no decision yet,
   or virtual for a bridge reason) under their source host's CURRENT target — the
   source daemon re-resolves their remote leg when they start;
@@ -42,7 +43,7 @@ from sqlalchemy import or_, select as sa_select
 
 from server.db import db_session
 from server.db.models import INACTIVE_SESSION_STATUSES, Host, Session as DbSession
-from server.ipc.client import DaemonUnavailable
+from server.ipc.client import DaemonError, DaemonUnavailable
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.sessions.display_bridge import STATE_UP, TARGET_STATE_HINTS
 from server.sessions.display_bridge_env import BRIDGE_FALLBACK_REASONS
@@ -120,6 +121,9 @@ class DisplayBridgeBroker:
         # []) so their bridges come down even if they stop advertising a bridge.
         self._asserted: set[str] = set()
         self._unreachable_log = LogThrottle()
+        # Targets whose daemon predates ``display_bridge_ensure`` (UnknownMethod): a
+        # terminal state for prepare (no polling), logged once until it answers again.
+        self._outdated: set[str] = set()
         # target -> lock serializing "compute the set, send it" for that target.
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -152,8 +156,13 @@ class DisplayBridgeBroker:
                         & DbSession.display_fallback_reason.in_(
                             sorted(BRIDGE_FALLBACK_REASONS)))))).scalars().all()
         out: dict[str, set[str]] = {}
-        for target, source in live:
-            out.setdefault(target, set()).add(source)
+        for stored, source in live:
+            # Only while the source still targets that host: after a target change (or
+            # a move/adoption onto a host with another target) the row's bridge is not
+            # wanted — two targets must never bridge one source's shared fixed paths.
+            target = current.get(source)
+            if target is not None and target.lower() == stored.lower():
+                out.setdefault(target, set()).add(source)
         for source in waiting:
             if source is not None:          # the query filters NULL hosts out
                 out.setdefault(current[source], set()).add(source)
@@ -203,18 +212,30 @@ class DisplayBridgeBroker:
             try:
                 bridges = await client.display_bridge_ensure(
                     sources, dests, timeout=ENSURE_RPC_TIMEOUT_S)
+            except DaemonError as exc:
+                if exc.err_type != "UnknownMethod":
+                    self._log_unreachable(target, exc)
+                elif target not in self._outdated:
+                    self._outdated.add(target)
+                    log.info("display bridge: target host=%s predates display_bridge_ensure; "
+                             "upgrade its daemon to bridge onto its desktop", target)
+                return None
             except Exception as exc:  # noqa: BLE001 — an unreachable target is a degrade
-                log_event_throttled(
-                    log, self._unreachable_log, target, logging.INFO,
-                    "display_bridge.ensure_failed", target=target,
-                    cause=f"{type(exc).__name__}: {exc}"[:300])
+                self._log_unreachable(target, exc)
                 return None
             self._unreachable_log.forget(target)
+            self._outdated.discard(target)
             if sources:
                 self._asserted.add(target)
             else:
                 self._asserted.discard(target)
             return bridges if isinstance(bridges, list) else []
+
+    def _log_unreachable(self, target: str, exc: BaseException) -> None:
+        log_event_throttled(
+            log, self._unreachable_log, target, logging.INFO,
+            "display_bridge.ensure_failed", target=target,
+            cause=f"{type(exc).__name__}: {exc}"[:300])
 
     # ── spawn ──────────────────────────────────────────────────────────────────────
     @asynccontextmanager
@@ -287,8 +308,12 @@ class DisplayBridgeBroker:
             async with asyncio.timeout(self._timeout_s):
                 while True:
                     bridges = await self._assert(target, client, hosts)
+                    if bridges is None and target in self._outdated:
+                        break      # an older daemon: waiting cannot make it bridge
+                    # The target lowercases sources (display_bridge.DisplayBridge.ensure).
                     state = next((b.get("state") for b in bridges or []
-                                  if isinstance(b, dict) and b.get("source") == source),
+                                  if isinstance(b, dict)
+                                  and str(b.get("source", "")).lower() == source.lower()),
                                  None)
                     if state == STATE_UP:
                         return PreparedBridge(target, up=True)

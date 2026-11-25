@@ -950,7 +950,7 @@ class AutomationContext:
         mode = resolve_permission_mode(create_kwargs)
         create_kwargs["permission_mode"] = mode
         # An automation dispatch has no creating browser, so client_node is always
-        # None — resolve_display_mode's locality proof can never fire for it, and
+        # None — resolve_display_decision's locality proof can never fire for it, and
         # every automation session fell back to a pooled Xvfb display even when
         # dispatched on a runner sitting at an attended desktop (#1899). Unlike a
         # browser session (where None means "locality unknown, possibly remote" —

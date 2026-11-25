@@ -285,9 +285,10 @@ class DisplayBridge:
             self._cleanup_pending = {k for k, ok in zip(order, results) if not ok}
 
     def info(self) -> dict:
-        return {"accepts": sorted(self._accept),
-                "active": [{"source": b.source, "since": b.since, "legs": list(b.legs)}
-                           for b in self._known.values() if b.state == STATE_UP]}
+        """The ``/info.displayBridge`` snapshot: who this target accepts, and one row per
+        known source in the :meth:`_Bridge.row` shape ``ensure`` returns (``state`` included,
+        so a not-up bridge is advertised as such; ``since`` is epoch seconds or None)."""
+        return {"accepts": sorted(self._accept), "active": self._rows()}
 
     # ---- desired-state reconcile ----------------------------------------------------
 
