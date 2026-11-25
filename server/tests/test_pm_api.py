@@ -103,10 +103,13 @@ def test_project_lifecycle():
         assert proj["workItemCount"] == 0
         assert proj["featureCount"] == 0
 
-        # sync-now stamps the request
-        resp = c.post("/api/pm/projects/kindash/sync", headers=IDENTITY_HEADERS)
+        # sync-now stamps the request and wakes the loop. No pm-sync loop runs in this
+        # worker-role test, so the bounded wait ends and the answer says pending.
+        with patch("server.api.pm.SYNC_NOW_WAIT_S", 0.0):
+            resp = c.post("/api/pm/projects/kindash/sync", headers=IDENTITY_HEADERS)
         assert resp.status_code == 202
-        assert resp.json() == {"requested": True}
+        assert resp.json()["requested"] is True
+        assert resp.json()["status"] == "pending"
 
         # detail 404
         resp = c.get("/api/pm/projects/nope", headers=IDENTITY_HEADERS)

@@ -1991,6 +1991,17 @@ class RemoteOrchestrator:
             return {"ok": False, "step": "rpc", "error": "session daemon did not answer"}
         return result
 
+    async def pm_sync_wake(self) -> bool:
+        """Wake the daemon's pm-sync loop so a sync-now request just committed on the
+        edge runs now. Returns False when the daemon is unreachable: the stamp then waits
+        for the loop's next scheduled tick, and the caller must say so rather than wait."""
+        try:
+            await self._client.call("pm_sync_wake")
+        except DaemonUnavailable as exc:
+            log.warning("pm_sync_wake RPC unavailable: %s", exc)
+            return False
+        return True
+
     def pm_map_changes(self):
         """Capability map-changes edits (roadmap spec §9) run EDGE-LOCAL, not over
         the daemon RPC: the service takes the API request's own DB session, and the

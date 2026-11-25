@@ -555,6 +555,12 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     register_rpc(app, "pm_remove_dependency", pm_remove_dependency)
 
+    async def pm_sync_wake(params: dict):
+        await _maybe_await(orch.pm_sync_wake())
+        return {"ok": True}
+
+    register_rpc(app, "pm_sync_wake", pm_sync_wake)
+
     async def permanent_delete(params: dict):
         result = await orch.permanent_delete(params["session_id"])
         app.state.evict(params["session_id"])

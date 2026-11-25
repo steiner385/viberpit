@@ -1838,6 +1838,9 @@ class SessionOrchestrator:
             apply_artifact_frontmatter=self._pm_sync_apply_artifact_frontmatter,
         )
         self._pm_sync_task: asyncio.Task | None = None
+        # Set by ``pm_sync_wake`` (a sync-now request stamped on the edge) to end the
+        # loop's idle sleep early, so the stamped product syncs now, not next tick.
+        self._pm_sync_wake = asyncio.Event()
         # GitHub Reconcile control loop (spec 003 §6): the WRITE half of the mirror —
         # converges Projects v2 fields, board membership and native blocked-by edges
         # toward the decision layer. Same injected-seam mold as pm-sync and it reuses
@@ -13900,10 +13903,28 @@ class SessionOrchestrator:
         await apply_persona_plan(project_id, plan)
 
     async def _pm_sync_tick_loop(self, interval: float) -> None:
-        """Periodic driver for the pm-sync control loop (mirrors _sdlc_intake_tick_loop)."""
+        """Periodic driver for the pm-sync control loop (mirrors _sdlc_intake_tick_loop).
+
+        The idle sleep ends early on ``pm_sync_wake``. The wake is cleared BEFORE the
+        tick, not after: a wake that lands mid-tick must still buy one more pass, since
+        that tick may have read the product's rows before the stamp was written."""
         while True:
+            self._pm_sync_wake.clear()
             await self._pm_sync_tick_once()
-            await asyncio.sleep(interval)
+            try:
+                async with asyncio.timeout(interval):
+                    await self._pm_sync_wake.wait()
+            except TimeoutError:
+                pass
+
+    async def pm_sync_wake(self) -> bool:
+        """Edge seam (``POST /api/pm/projects/{slug}/sync``): end the pm-sync loop's idle
+        sleep. The caller must have committed its ``sync_requested_at`` stamp first —
+        the loop reads it from its own session. Harmless when the loop is mid-tick or
+        disabled: the wake is cleared at the top of the next tick, so it costs nothing.
+        Always True in-process; ``RemoteOrchestrator`` reports an unreachable daemon."""
+        self._pm_sync_wake.set()
+        return True
 
     async def _pm_sync_tick_once(self) -> None:
         """One pm-sync tick + an enabled-only ``last_active_at`` heartbeat.

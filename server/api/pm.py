@@ -24,7 +24,7 @@ from server.automations.product_policy import (
     PRODUCT_POLICY_SCHEMA, PolicyEditConflict, PolicyExpectationMismatch, effective_policy,
     fleet_default_trusted_authors, load_policies, merge_policy_patch, patch_project_policy,
     policy_changes, rank_kwargs)
-from server.time_iso import iso_utc
+from server.time_iso import aware_utc, iso_utc
 from server.db.clock import naive_utc_now
 from server.automations.product_admission import (
     ProductMissing, gather_implementation_snapshot, gather_product_coverage,
@@ -893,18 +893,65 @@ async def update_project_policy(
     return await _project_detail_dict(db, p)
 
 
+# Upper bound on how long a sync-now call waits for its pass. The assistant's HTTP
+# client gives up after 20 s, so this must stay well under that.
+SYNC_NOW_WAIT_S = 15.0
+SYNC_NOW_POLL_S = 0.5
+
+
+async def _sync_now_repo_status(db, project_id: str, stamp: datetime) -> list[dict]:
+    """Per-repo proof of a sync-now pass: ``synced`` means a pass STARTED at or after
+    *stamp* (pm-sync stamps ``last_synced_at`` with its start time), so the issues it
+    read include everything filed before this request. ``populate_existing`` re-reads
+    rows the pass just wrote through the loop's own session."""
+    rows = (await db.execute(select(ProjectRepo).where(
+        ProjectRepo.project_id == project_id, ProjectRepo.retired_at.is_(None))
+        .order_by(ProjectRepo.repo).execution_options(populate_existing=True))).scalars().all()
+    out = []
+    for r in rows:
+        last = aware_utc(r.last_synced_at)
+        out.append({"repo": r.repo, "synced": last is not None and last >= stamp,
+                    "lastSyncedAt": iso_utc(last)})
+    return out
+
+
+async def _await_sync_now(db, project_id: str, stamp: datetime) -> list[dict]:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + SYNC_NOW_WAIT_S
+    while True:
+        repos = await _sync_now_repo_status(db, project_id, stamp)
+        if all(r["synced"] for r in repos) or loop.time() >= deadline:
+            return repos
+        await asyncio.sleep(SYNC_NOW_POLL_S)
+
+
 @router.post("/projects/{slug}/sync", status_code=status.HTTP_202_ACCEPTED)
 async def request_sync(
     slug: str,
+    request: Request,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
+    """Sync-now: stamp every repo, wake the pm-sync loop, and wait (bounded) for the
+    pass so the answer says what was actually synced. ``status`` is ``synced`` (every
+    repo's pass ran after this request), ``pending`` (the pass did not finish in
+    ``SYNC_NOW_WAIT_S``; it still runs), or ``daemon_unavailable`` (the loop was not
+    woken; the next scheduled tick syncs it)."""
     p = await _load_project(db, slug)
-    await request_project_sync(db, p.id, datetime.now(timezone.utc))
-    await db.flush()
+    stamp = datetime.now(timezone.utc)
+    await request_project_sync(db, p.id, stamp)
     await record_audit(db=db, type="pm.project.sync_now", identity=identity,
                        detail={"slug": slug})
-    return {"requested": True}
+    # The pm-sync loop reads the stamp from its own session, so it must be committed
+    # before the wake (get_db only commits after the handler returns).
+    await db.commit()
+    if not await request.app.state.sessions.pm_sync_wake():
+        repos = await _sync_now_repo_status(db, p.id, stamp)
+        return {"requested": True, "status": "daemon_unavailable", "repos": repos}
+    repos = await _await_sync_now(db, p.id, stamp)
+    return {"requested": True,
+            "status": "synced" if all(r["synced"] for r in repos) else "pending",
+            "repos": repos}
 
 
 @router.post("/projects/{slug}/edges", status_code=status.HTTP_201_CREATED)

@@ -2555,9 +2555,12 @@ def build_tools(api: AssistantApi, *, operator: bool = False,
         return await api.post(f"/api/pm/decisions/{pid}/accept", {"chosen_key": chosen_key})
 
     @spec_tool("request_product_sync",
-               "Ask the reconciler to re-sync a product from GitHub on its next pass. It "
-               "is a request, not the sync itself — nothing is synced by the time this "
-               "returns.", {"slug": str})
+               "Re-sync a product from GitHub now and wait up to 15 s for the pass. The "
+               "result's status is 'synced' (every repo was read after this call, so an "
+               "issue filed just before can be dispatched), 'pending' (the pass did not "
+               "finish in time and still runs), or 'daemon_unavailable' (nothing was woken; "
+               "the next scheduled pass syncs it). 'repos' gives each repo's state.",
+               {"slug": str})
     @guarded
     async def request_product_sync(args: dict[str, Any]) -> Any:
         return await api.post(f"/api/pm/projects/{_slug(args['slug'])}/sync")
