@@ -1,5 +1,5 @@
 import { mcpToolStem } from '@/brand'
-import { extractText } from '@/lib/toolContent'
+import { toolResultStatus } from '@/lib/toolContent'
 import type { Block } from './reducer'
 
 /**
@@ -55,12 +55,10 @@ export function artifactFromBlock(block: ToolBlock): Artifact {
   const rawKind = str(input.kind)
   const kind = (KINDS.has(rawKind) ? rawKind : 'path') as ArtifactKind
   const base = { kind, value: str(input.value), label: str(input.label), note: str(input.note) || null }
-  const result = block.result
-  if (!result) return { ...base, status: 'pending', url: null, error: null }
-  const payload = result.payload as { content?: unknown } | undefined
-  const text = (extractText(payload?.content) ?? '').trim()
-  if (!result.ok) return { ...base, status: 'error', url: null, error: text || 'share_artifact failed' }
-  return { ...base, status: 'ok', url: servedUrl(text), error: null }
+  const call = toolResultStatus(block.result, 'share_artifact failed')
+  if (call.status === 'pending') return { ...base, status: 'pending', url: null, error: null }
+  if (call.status === 'error') return { ...base, status: 'error', url: null, error: call.error }
+  return { ...base, status: 'ok', url: servedUrl(call.text), error: null }
 }
 
 function servedUrl(text: string): string | null {

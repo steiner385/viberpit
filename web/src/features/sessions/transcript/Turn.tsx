@@ -16,6 +16,8 @@ import { ErrorCard } from './ErrorCard'
 import { RecoveringCard } from './RecoveringCard'
 import { NoticeCard } from './NoticeCard'
 import { ArtifactCard } from './ArtifactCard'
+import { UserFacingToolCard } from './UserFacingToolCard'
+import { userFacingToolName } from '@/session/userFacingTools'
 import { BlockRow } from './BlockRow'
 import { TurnFeedback } from './TurnFeedback'
 import { MessageActions } from './MessageActions'
@@ -133,9 +135,17 @@ export const Turn = memo(function Turn({
         }
 
         if (item.kind === 'artifact') {
-          // A share_artifact call: the deliverable itself, always open — the one
-          // tool row that must never sit behind a "tool details" toggle.
-          return <BlockRow key={item.block.id} ts={rowTs}><ArtifactCard block={item.block} /></BlockRow>
+          // A share_artifact call or a CLI user-facing tool (SendUserFile, …): the
+          // thing the session meant the user to see, always open — never behind a
+          // "tool details" toggle.
+          const userFacing = userFacingToolName(item.block)
+          return (
+            <BlockRow key={item.block.id} ts={rowTs}>
+              {userFacing
+                ? <UserFacingToolCard block={item.block} name={userFacing} />
+                : <ArtifactCard block={item.block} />}
+            </BlockRow>
+          )
         }
 
         const block = item.block

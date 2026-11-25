@@ -292,6 +292,33 @@ describe('Turn share_artifact rendering', () => {
   })
 })
 
+describe('Turn CLI user-facing tool rendering', () => {
+  const sendFile: Block = {
+    kind: 'tool', id: 'u', toolId: 'u', name: 'SendUserFile', toolKind: 'unknown',
+    input: { files: ['/home/x/repo/.rendertest/shot.png'], caption: 'Settings page', status: 'normal' },
+  }
+
+  it('renders a SendUserFile call as its own card beside a share_artifact card, never a tool row', async () => {
+    const artifact: Block = {
+      kind: 'tool', id: 's', toolId: 's', name: 'mcp__viberpit__share_artifact', toolKind: 'app_action',
+      input: { kind: 'url', value: 'https://g.h/o/n/pull/7', label: 'PR #7' },
+    }
+    render(
+      <Turn
+        turn={makeTurn([tool('a'), sendFile, artifact])}
+        isLastTurn={false}
+        toolDetailMode="auto"
+        thinkingCollapsed={true}
+        onAnswer={noop}
+      />,
+    )
+    expect(await screen.findByTestId('send-user-file-card')).toHaveTextContent('Settings page')
+    expect(screen.getAllByTestId('artifact-card')).toHaveLength(1)
+    expect(screen.getByText('PR #7')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /tool details/i })).toHaveLength(1)
+  })
+})
+
 describe('Turn under a transcript view mode', () => {
   const thinking = (id: string, text: string): Block => ({ kind: 'thinking', id, text })
   const toggles = () => screen.getAllByRole('button', { name: /^thinking$/i })

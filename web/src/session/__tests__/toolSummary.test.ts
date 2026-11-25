@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { changedPaths, toolSummary } from '@/session/toolSummary'
+import { changedPaths, toolLabel, toolSummary } from '@/session/toolSummary'
 
 /**
  * One summary for two surfaces. The transcript card and the approval card had a
@@ -48,5 +48,29 @@ describe('toolSummary', () => {
   it('ignores malformed entries in a changes list', () => {
     expect(changedPaths([{ path: 'a.py' }, null, { nope: 1 }, { path: '' }])).toEqual(['a.py'])
     expect(changedPaths('not-an-array')).toEqual([])
+  })
+})
+
+/** The CLI's user-facing tools arrive as `unknown` kind: summarised by NAME, so a
+ *  row or a permission card never reads as a bare "SendUserFile". */
+describe('toolSummary — CLI user-facing tools', () => {
+  it('summarises SendUserFile by its caption, else its file', () => {
+    expect(toolSummary('unknown', { files: ['/home/x/repo/.rendertest/shot.png'], caption: 'Settings page', status: 'normal' }, 'SendUserFile'))
+      .toBe('Settings page')
+    expect(toolSummary('unknown', { files: ['/home/x/repo/.rendertest/shot.png'], status: 'normal' }, 'SendUserFile'))
+      .toBe('/home/x/repo/.rendertest/shot.png')
+    expect(toolSummary('unknown', { files: ['a.png', 'b.txt'] }, 'SendUserFile')).toBe('2 files')
+  })
+
+  it('summarises the message, findings count and notification', () => {
+    expect(toolSummary('unknown', { message: 'Done.\nDetails below' }, 'SendUserMessage')).toBe('Done.')
+    expect(toolSummary('unknown', { findings: [] }, 'ReportFindings')).toBe('no findings')
+    expect(toolSummary('unknown', { findings: [{ file: 'a.ts', line: 1, summary: 's', failure_scenario: 'f' }] }, 'ReportFindings')).toBe('1 finding')
+    expect(toolSummary('unknown', { message: 'Build finished' }, 'PushNotification')).toBe('Build finished')
+  })
+
+  it('stays name-blind without a name, and labels by name', () => {
+    expect(toolSummary('unknown', { message: 'x' })).toBe('')
+    expect(toolLabel('PushNotification', 'unknown', { message: 'Build finished' })).toBe('PushNotification: Build finished')
   })
 })

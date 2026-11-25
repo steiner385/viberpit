@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { stripAnsi, coerceText, buildLines, sizeHint } from './toolContent'
+import { stripAnsi, coerceText, buildLines, sizeHint, isRasterImagePath, RASTER_DATA_URL_RE, RASTER_MEDIA_TYPE_RE } from './toolContent'
 
 describe('stripAnsi', () => {
   it('removes SGR color codes', () => {
@@ -89,5 +89,20 @@ describe('sizeHint', () => {
   it('counts list-shaped result content for read/bash', () => {
     const payload = { content: [{ type: 'text', text: 'one\ntwo\nthree' }] }
     expect(sizeHint('bash', {}, payload)).toBe('3 lines')
+  })
+})
+
+describe('raster image types (one list, three derived checks)', () => {
+  it('matches the same four types as a media type, a data: URL and a path', () => {
+    for (const t of ['png', 'jpeg', 'gif', 'webp']) {
+      expect(RASTER_MEDIA_TYPE_RE.test(`image/${t}`)).toBe(true)
+      expect(RASTER_DATA_URL_RE.test(`data:image/${t};base64,iVBORw0KGgo=`)).toBe(true)
+      expect(isRasterImagePath(`/repo/shot.${t.toUpperCase()}`)).toBe(true)
+    }
+    expect(isRasterImagePath('a/b.jpg')).toBe(true)
+    expect(RASTER_MEDIA_TYPE_RE.test('image/svg+xml')).toBe(false)
+    expect(RASTER_DATA_URL_RE.test('data:image/svg+xml;base64,PHN2Zz4=')).toBe(false)
+    expect(RASTER_DATA_URL_RE.test('data:image/png;base64,a_b')).toBe(false)
+    expect(isRasterImagePath('notes.png.md')).toBe(false)
   })
 })

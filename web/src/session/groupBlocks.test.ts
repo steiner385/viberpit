@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { groupBlocks } from './groupBlocks'
+import { initialTranscript, transcriptReducer } from './reducer'
 import type { Block } from './reducer'
 
 const text = (id: string): Block => ({ kind: 'text', id, text: 'hi' })
@@ -49,5 +50,37 @@ describe('groupBlocks — share_artifact', () => {
     const items = groupBlocks([tool('a'), tool('b'), artifact('s')])
     expect(items.map((i) => i.kind)).toEqual(['toolGroup', 'artifact'])
     expect(items[0].kind === 'toolGroup' && items[0].tools.map((t) => t.id)).toEqual(['a', 'b'])
+  })
+})
+
+describe('groupBlocks — CLI user-facing tools', () => {
+  const sendFile = (id: string): Block => ({
+    kind: 'tool', id, toolId: id, name: 'SendUserFile', toolKind: 'unknown',
+    input: { files: ['/home/x/repo/.rendertest/shot.png'], caption: 'Settings page', status: 'normal' },
+  })
+
+  it('lifts each user-facing tool out of the tool run as its own artifact item', () => {
+    for (const name of ['SendUserFile', 'SendUserMessage', 'ReportFindings', 'PushNotification']) {
+      const call: Block = { kind: 'tool', id: 'u', toolId: 'u', name, toolKind: 'unknown', input: {} }
+      const items = groupBlocks([tool('a'), call, tool('b')])
+      expect(items.map((i) => i.kind)).toEqual(['toolGroup', 'artifact', 'toolGroup'])
+    }
+  })
+
+  it('leaves a look-alike name in the tool run', () => {
+    const other: Block = { kind: 'tool', id: 'x', toolId: 'x', name: 'mcp__foo__SendUserFile', toolKind: 'mcp', input: {} }
+    expect(groupBlocks([tool('a'), other]).map((i) => i.kind)).toEqual(['toolGroup'])
+  })
+
+  it('promotes a main-thread call; a sub-agent call stays inside its Task sub-thread', () => {
+    let s = initialTranscript
+    s = transcriptReducer(s, { type: 'turnStart', turnId: 't1' })
+    s = transcriptReducer(s, { type: 'toolCall', turnId: 't1', toolId: 'main', name: 'SendUserFile', toolKind: 'unknown', input: (sendFile('main') as { input: Record<string, unknown> }).input })
+    s = transcriptReducer(s, { type: 'toolCall', turnId: 'sa1', toolId: 'sub', name: 'SendUserFile', toolKind: 'unknown', input: {}, parentToolUseId: 'task1' })
+    const main = groupBlocks(s.turns[0].blocks)
+    expect(main.map((i) => i.kind)).toEqual(['artifact'])
+    expect(main[0].kind === 'artifact' && main[0].block.id).toBe('main')
+    expect(s.turns.flatMap((t) => t.blocks).some((b) => b.id === 'sub')).toBe(false)
+    expect(s.subAgents.task1.turns[0].blocks[0]).toMatchObject({ kind: 'tool', id: 'sub' })
   })
 })
