@@ -95,8 +95,9 @@ class FakeSpawn:
     """Records every spawn. ``bridge_exits`` is a queue of return codes: each bridge ssh
     pops one and exits with it at once; an empty queue means the ssh stays up."""
 
-    def __init__(self, *, prep_rc=0, cleanup_rc=0, bridge_exits=()):
+    def __init__(self, *, prep_rc=0, cleanup_rc=0, bridge_exits=(), cleanup_hang=False):
         self.procs: list[FakeProc] = []
+        self.cleanup_hang = cleanup_hang
         self.prep_rc = prep_rc
         self.cleanup_rc = cleanup_rc
         self.bridge_exits = list(bridge_exits)
@@ -107,7 +108,7 @@ class FakeSpawn:
             proc = FakeProc(argv, kw, rc=self.prep_rc, stdout=f"{S_XRD}\n".encode())
         else:
             proc = FakeProc(argv, kw)
-            if kind == "cleanup":
+            if kind == "cleanup" and not self.cleanup_hang:
                 proc.exit(self.cleanup_rc)
             elif kind == "bridge" and self.bridge_exits:
                 proc.exit(self.bridge_exits.pop(0))
@@ -198,7 +199,11 @@ async def test_ensure_starts_one_ssh_per_source_with_verified_argv(tmp_path):
         "umask 077\n"
         'd="$XDG_RUNTIME_DIR/viberpit-bridge"\n'
         'mkdir -p "$d" && chmod 700 "$d"\n'
+        '[ -d "$d" ] && [ -O "$d" ] && [ ! -L "$d" ] || '
+        "{ echo 'viberpit-bridge: private dir not owned' >&2; exit 4; }\n"
         'rm -f "$d/waypipe.sock" /tmp/.X11-unix/X150\n'
+        "if [ -e /tmp/.X11-unix/X150 ] || [ -L /tmp/.X11-unix/X150 ]; then "
+        "echo 'viberpit-bridge: /tmp/.X11-unix/X150 held by another user' >&2; exit 4; fi\n"
         ': > "$d/xauth" && chmod 600 "$d/xauth"\n'
         'xauth -q -f "$d/xauth" source -\n'
         "printf '%s\\n' \"$XDG_RUNTIME_DIR\"")
@@ -396,15 +401,129 @@ async def test_crash_restarts_with_backoff_while_desired(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_prep_exit_3_is_failed_and_retried(tmp_path):
+@pytest.mark.parametrize("rc", [3, 4])
+async def test_prep_failure_is_failed_and_retried(tmp_path, caplog, rc):
+    caplog.set_level(logging.INFO, logger="server.sessions.display_bridge")
     sleeps = Sleeps()
-    spawn = FakeSpawn(prep_rc=3)
+    spawn = FakeSpawn(prep_rc=rc)
     bridge = _bridge(FakeNative(_wayland(tmp_path)), spawn, sleeps=sleeps)
     await bridge.ensure(["rocky"], {"rocky": "rocky"})
     await _until(lambda: len(sleeps.calls) >= 1)
-    assert bridge._known["rocky"].state in ("failed", "starting")
+    failed = [r for r in caplog.records if f"rc={rc}" in r.getMessage()]
+    assert failed and all(r.levelno == logging.INFO for r in failed)
+    assert "source=rocky leg=prep state=failed" in failed[0].getMessage()
+    assert "/tmp" not in failed[0].getMessage()      # names the source, not paths
     assert spawn.of("bridge") == [] and spawn.of("client") == []
     await bridge.stop_all()
+
+
+def test_prep_refuses_a_squatted_x_socket_or_foreign_private_dir():
+    from server.sessions.display_bridge import PREP_RC_SQUATTED, _prep_script
+
+    script = _prep_script(150, x11=True)
+    lines = script.splitlines()
+    rm = next(i for i, ln in enumerate(lines) if ln.startswith("rm -f"))
+    check = next(i for i, ln in enumerate(lines) if "[ -e /tmp/.X11-unix/X150 ]" in ln)
+    # After the rm (which silently fails on another user's file in the sticky dir), before
+    # any cookie is written: a survivor means an impostor would get the cookie.
+    assert rm < check < next(i for i, ln in enumerate(lines) if "xauth" in ln)
+    assert f"exit {PREP_RC_SQUATTED}" in lines[check] and "[ -L /tmp/.X11-unix/X150 ]" in lines[check]
+    dir_check = next(i for i, ln in enumerate(lines) if '[ -O "$d" ]' in ln)
+    assert dir_check < rm and f"exit {PREP_RC_SQUATTED}" in lines[dir_check]
+    # The Wayland sockets and the cookie file live only under the private dir / runtime dir.
+    assert '"$d/waypipe.sock"' in script and '"$d/xauth"' in script
+    # No X11 leg: an X squatter must not take the Wayland leg down.
+    assert "[ -e /tmp/.X11-unix/X150 ]" not in _prep_script(150, x11=False)
+
+
+@pytest.mark.asyncio
+async def test_tick_loop_survives_a_raising_tick(tmp_path, caplog):
+    bridge = _bridge(FakeNative(_wayland(tmp_path)), FakeSpawn(), tick_s=0.005)
+    calls = []
+
+    async def flaky_tick():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        return []
+
+    bridge.tick = flaky_tick
+    bridge.start()
+    await _until(lambda: len(calls) >= 3)
+    assert not bridge._tick_task.done()
+    await bridge.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_late_failing_bridge_keeps_backing_off(tmp_path):
+    clock = Clock()
+    sleeps = Sleeps()
+    spawn = FakeSpawn()
+    bridge = _bridge(FakeNative(_wayland(tmp_path)), spawn, clock, sleeps=sleeps,
+                     backoff_initial_s=1.0, backoff_max_s=60.0)
+    await bridge.ensure(["rocky"], {"rocky": "rocky"})
+    for n in range(1, 4):   # up past settle_s, then dies soon after: still a crash loop
+        await _until(lambda: len(spawn.of("bridge")) == n and bridge._known["rocky"].state == "up")
+        clock.t += 5
+        spawn.of("bridge")[-1].exit(255)
+    await _until(lambda: len(spawn.of("bridge")) == 4 and bridge._known["rocky"].state == "up")
+    assert sleeps.calls == [1.0, 2.0, 4.0]
+    clock.t += 60           # this one stayed up a full ceiling: backoff resets
+    spawn.of("bridge")[-1].exit(255)
+    await _until(lambda: len(spawn.of("bridge")) == 5)
+    assert sleeps.calls[-1] == 1.0
+    await bridge.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_ensure_after_stop_all_starts_nothing(tmp_path):
+    spawn = FakeSpawn()
+    bridge = _bridge(FakeNative(_wayland(tmp_path)), spawn)
+    await bridge.stop_all()
+    assert await bridge.ensure(["rocky"], {"rocky": "rocky"}) == []
+    assert await bridge.tick() == []
+    await asyncio.sleep(0.02)
+    assert spawn.procs == [] and bridge._known == {}
+
+
+@pytest.mark.asyncio
+async def test_stop_all_retries_an_interrupted_cleanup(tmp_path):
+    clock = Clock()
+    spawn = FakeSpawn(cleanup_hang=True)
+    bridge = _bridge(FakeNative(_wayland(tmp_path)), spawn, clock)
+    await _up(bridge)
+    clock.t += 200
+    await bridge.tick()                          # silence: teardown, cleanup now in flight
+    await _until(lambda: len(spawn.of("cleanup")) == 1)
+    spawn.cleanup_hang = False
+    await bridge.stop_all()
+    cleanups = spawn.of("cleanup")
+    assert len(cleanups) == 2 and cleanups[0].terminated
+    assert cleanups[1].argv[-2] == "tony@rocky"
+    assert bridge._cleanup_pending == set()
+
+
+@pytest.mark.asyncio
+async def test_changed_ssh_dest_cleans_the_old_dest(tmp_path):
+    spawn = FakeSpawn()
+    bridge = _bridge(FakeNative(_wayland(tmp_path)), spawn)
+    await _up(bridge, dest="old@rocky")
+    await bridge.ensure(["rocky"], {"rocky": "new@rocky"})
+    await _until(lambda: len(spawn.of("bridge")) == 2 and bridge._known["rocky"].state == "up")
+    await _until(lambda: len(spawn.of("cleanup")) == 1)
+    assert spawn.of("cleanup")[0].argv[-2] == "old@rocky"
+    assert spawn.of("bridge")[1].argv[-2] == "new@rocky"
+    await bridge.stop_all()
+
+
+def test_shutdown_cleanup_fits_the_daemon_shutdown_cap(tmp_path):
+    from server.ipc.serve import _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S
+
+    bridge = DisplayBridge(native=FakeNative(None), accept_from=frozenset(),
+                           ssh_dest=lambda s: None, x11_enabled=True, x_start=150,
+                           grace_s=60.0, silence_s=90.0)
+    terminate_wait_s = 5.0   # x11manager._terminate's SIGTERM grace, per process group
+    assert bridge._shutdown_cleanup_timeout_s + terminate_wait_s < _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S
 
 
 @pytest.mark.asyncio
@@ -520,12 +639,12 @@ async def test_failed_cleanup_retries_then_flags_pending(tmp_path):
     await _up(bridge)
     clock.t += 200
     await bridge.tick()
-    await _until(lambda: "rocky" in bridge._cleanup_pending)
+    await _until(lambda: ("rocky", "tony@rocky") in bridge._cleanup_pending)
     assert len(spawn.of("cleanup")) == 4      # one attempt + 3 retries
     assert sleeps.calls[-3:] == [5.0, 30.0, 120.0]
     spawn.cleanup_rc = 0
     await bridge.ensure([], {})               # the next ensure retries it
-    await _until(lambda: "rocky" not in bridge._cleanup_pending)
+    await _until(lambda: ("rocky", "tony@rocky") not in bridge._cleanup_pending)
     assert len(spawn.of("cleanup")) == 5
     await bridge.stop_all()
 

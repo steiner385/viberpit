@@ -72,16 +72,35 @@ _CLEANUP_RETRY_DELAYS_S = (5.0, 30.0, 120.0)
 Spawn = Callable[..., Awaitable[Any]]
 
 
-def _prep_script(x_display: int) -> str:
-    return "\n".join((
-        "[ -d /tmp/.X11-unix ] || { echo 'viberpit-bridge: /tmp/.X11-unix missing' >&2; exit 3; }",
+PREP_RC_NO_X11_DIR = 3
+# Something the bridge user does not own sits where the bridge must bind: the private dir,
+# or (X11 leg) /tmp/.X11-unix/X<N> — world-writable sticky dir, so `rm -f` silently fails on
+# another user's squatted socket and session clients would hand the cookie to an impostor.
+PREP_RC_SQUATTED = 4
+
+
+def _prep_script(x_display: int, *, x11: bool) -> str:
+    x_sock = f"/tmp/.X11-unix/X{x_display}"
+    lines = [
+        "[ -d /tmp/.X11-unix ] || { echo 'viberpit-bridge: /tmp/.X11-unix missing' >&2; "
+        f"exit {PREP_RC_NO_X11_DIR}; }}",
         "umask 077",
         f'd="$XDG_RUNTIME_DIR/{_BRIDGE_DIR}"',
         'mkdir -p "$d" && chmod 700 "$d"',
-        f'rm -f "$d/waypipe.sock" /tmp/.X11-unix/X{x_display}',
+        '[ -d "$d" ] && [ -O "$d" ] && [ ! -L "$d" ] || '
+        f"{{ echo 'viberpit-bridge: private dir not owned' >&2; exit {PREP_RC_SQUATTED}; }}",
+        f'rm -f "$d/waypipe.sock" {x_sock}',
+    ]
+    if x11:
+        lines.append(
+            f"if [ -e {x_sock} ] || [ -L {x_sock} ]; then "
+            f"echo 'viberpit-bridge: {x_sock} held by another user' >&2; "
+            f"exit {PREP_RC_SQUATTED}; fi")
+    lines += [
         ': > "$d/xauth" && chmod 600 "$d/xauth"',
         'xauth -q -f "$d/xauth" source -',
-        "printf '%s\\n' \"$XDG_RUNTIME_DIR\""))
+        "printf '%s\\n' \"$XDG_RUNTIME_DIR\""]
+    return "\n".join(lines)
 
 
 def _cleanup_script(x_display: int) -> str:
@@ -171,7 +190,8 @@ class DisplayBridge:
                  wall: Callable[[], float] = time.time,
                  sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
                  settle_s: float = 2.0, prep_timeout_s: float = 20.0,
-                 cleanup_timeout_s: float = 20.0, backoff_initial_s: float = 1.0,
+                 cleanup_timeout_s: float = 20.0, shutdown_cleanup_timeout_s: float = 8.0,
+                 backoff_initial_s: float = 1.0,
                  backoff_max_s: float = 60.0, tick_s: float = 5.0) -> None:
         self._native = native
         self._accept = frozenset(s.lower() for s in accept_from)
@@ -187,14 +207,19 @@ class DisplayBridge:
         self._settle_s = settle_s
         self._prep_timeout_s = prep_timeout_s
         self._cleanup_timeout_s = cleanup_timeout_s
+        # stop_all's direct cleanup must fit, with the teardown, inside the daemon's
+        # shutdown sweep cap (serve._DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S, 15 s).
+        self._shutdown_cleanup_timeout_s = shutdown_cleanup_timeout_s
         self._backoff_initial_s = backoff_initial_s
         self._backoff_max_s = backoff_max_s
         self._tick_s = tick_s
         self._known: dict[str, _Bridge] = {}
         self._dests: dict[str, str] = {}               # last ssh destination the edge sent
-        self._cleanups: dict[str, asyncio.Task] = {}
-        self._cleanup_pending: dict[str, str] = {}     # source -> dest, cookie maybe left behind
+        # Keyed (source, dest): a changed dest leaves a cookie at the old one too.
+        self._cleanups: dict[tuple[str, str], asyncio.Task] = {}
+        self._cleanup_pending: set[tuple[str, str]] = set()   # cookie maybe left behind
         self._last_ensure: float | None = None
+        self._closed = False
         self._lock = asyncio.Lock()
         self._tick_task: asyncio.Task | None = None
 
@@ -203,20 +228,25 @@ class DisplayBridge:
     async def ensure(self, sources: list[str], ssh_dests: dict[str, str]) -> list[dict]:
         """Make *sources* the desired set. Idempotent; returns one row per known source."""
         async with self._lock:
+            if self._closed:    # the daemon is shutting down: never start an unsupervised bridge
+                return []
             now = self._clock()
             self._last_ensure = now
             for src, dest in ssh_dests.items():
                 self._dests[src.strip().lower()] = dest
             desired = {s.strip().lower() for s in sources if s.strip()}
             await self._reconcile(desired, now, silent=False)
-            for src, dest in list(self._cleanup_pending.items()):
-                if src not in self._known:
+            for src, dest in sorted(self._cleanup_pending):
+                b = self._known.get(src)
+                if b is None or b.dest != dest:
                     self._schedule_cleanup(src, dest, retry_delays=())
             return self._rows()
 
     async def tick(self) -> list[dict]:
         """Re-check the desktop, grace timers and the edge's silence. Run every ``tick_s``."""
         async with self._lock:
+            if self._closed:
+                return []
             now = self._clock()
             silent = self._last_ensure is None or now - self._last_ensure >= self._silence_s
             desired = set() if silent else {
@@ -235,18 +265,22 @@ class DisplayBridge:
             await cancel_and_reap(self._tick_task, phase="display_bridge.tick")
             self._tick_task = None
         async with self._lock:
+            self._closed = True
             ended = [b for b in self._known.values() if b.task is not None or b.procs]
             await asyncio.gather(*(self._teardown(b) for b in ended))
             self._known.clear()
-            for task in self._cleanups.values():
+            pending = set(self._cleanup_pending)
+            for key, task in self._cleanups.items():
+                if not task.done():
+                    pending.add(key)    # an interrupted cleanup still owes its attempt
                 await cancel_and_reap(task, phase="display_bridge.cleanup")
             self._cleanups.clear()
-            pending = dict(self._cleanup_pending)
-            pending.update({b.source: b.dest for b in ended if b.dest})
-            results = await asyncio.gather(
-                *(self._cleanup_once(s, d) for s, d in pending.items()))
-            self._cleanup_pending = {
-                s: d for (s, d), ok in zip(pending.items(), results) if not ok}
+            pending.update((b.source, b.dest) for b in ended if b.dest)
+            order = sorted(pending)
+            results = await asyncio.gather(*(
+                self._cleanup_once(s, d, timeout_s=self._shutdown_cleanup_timeout_s)
+                for s, d in order))
+            self._cleanup_pending = {k for k, ok in zip(order, results) if not ok}
 
     def info(self) -> dict:
         return {"accepts": sorted(self._accept),
@@ -299,7 +333,7 @@ class DisplayBridge:
             if b.task is None or b.task.done():
                 b.dest = dest
                 b.legs = legs
-                task = self._cleanups.pop(src, None)
+                task = self._cleanups.pop((src, dest), None)
                 if task is not None:    # the new prep rewrites everything the cleanup would remove
                     await cancel_and_reap(task, phase="display_bridge.cleanup")
                 self._set_state(b, STATE_STARTING, "+".join(legs))
@@ -307,6 +341,8 @@ class DisplayBridge:
                     self._supervise(b), name=f"display-bridge-{src}"),
                     name=f"display-bridge-{src}")
             elif dest != b.dest or (b.desktop_key is not None and b.desktop_key != key):
+                if b.dest and dest != b.dest:   # the old login still holds the cookie file
+                    self._schedule_cleanup(src, b.dest, retry_delays=_CLEANUP_RETRY_DELAYS_S)
                 b.dest = dest
                 b.legs = legs
                 log.info("display bridge: source=%s leg=%s state=restarting (desktop changed)",
@@ -340,7 +376,11 @@ class DisplayBridge:
     async def _tick_loop(self) -> None:
         while True:
             await asyncio.sleep(self._tick_s)
-            await self.tick()
+            try:
+                await self.tick()
+            except Exception:
+                # One bad tick must not end the loop: grace and silence teardown live here.
+                log.exception("display bridge: tick failed")
 
     # ---- one source's supervised process group ---------------------------------------
 
@@ -352,8 +392,12 @@ class DisplayBridge:
             if ok:
                 self._set_state(b, STATE_UP, "+".join(b.legs))
                 b.since = self._wall()
-                delay = self._backoff_initial_s
+                up_at = self._clock()
                 why = await _first_exit(b.procs, event=b.restart)
+                # Only a bridge that stayed up a full backoff ceiling earns a fresh backoff:
+                # one that dies just past settle_s is still crash-looping.
+                if self._clock() - up_at >= self._backoff_max_s:
+                    delay = self._backoff_initial_s
             else:
                 why = "exited"
             await self._kill_procs(b)
@@ -434,7 +478,8 @@ class DisplayBridge:
         proc = None
         try:
             proc = await self._spawn(
-                "ssh", "-o", "BatchMode=yes", b.dest, _prep_script(self._x_start),
+                "ssh", "-o", "BatchMode=yes", b.dest,
+                _prep_script(self._x_start, x11=LEG_X11 in b.legs),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
             out, _ = await asyncio.wait_for(proc.communicate(cookie_line),
@@ -446,10 +491,13 @@ class DisplayBridge:
             if proc is not None and proc.returncode is None:
                 await _terminate_group(proc)
         if proc.returncode != 0:
-            log.info("display bridge: source=%s leg=prep state=failed rc=%s",
-                     b.source, proc.returncode)
+            why = {PREP_RC_NO_X11_DIR: " (source has no X11 socket dir)",
+                   PREP_RC_SQUATTED: " (socket or dir held by another user)"}.get(
+                       proc.returncode, "")
+            log.info("display bridge: source=%s leg=prep state=failed rc=%s%s",
+                     b.source, proc.returncode, why)
             return None
-        self._cleanup_pending.pop(b.source, None)   # prep truncated and rewrote the cookie file
+        self._cleanup_pending.discard((b.source, b.dest))   # prep rewrote the cookie file
         lines = [ln.strip() for ln in (out or b"").decode(errors="replace").splitlines()
                  if ln.strip()]
         s_xrd = lines[-1] if lines else ""
@@ -492,10 +540,10 @@ class DisplayBridge:
     # ---- remote cleanup (Anti-goal 1: no cookie left behind) --------------------------
 
     def _schedule_cleanup(self, src: str, dest: str, *, retry_delays: tuple[float, ...]) -> None:
-        running = self._cleanups.get(src)
+        running = self._cleanups.get((src, dest))
         if running is not None and not running.done():
             return
-        self._cleanups[src] = supervise(asyncio.create_task(
+        self._cleanups[(src, dest)] = supervise(asyncio.create_task(
             self._cleanup_with_retries(src, dest, retry_delays),
             name=f"display-bridge-cleanup-{src}"), name=f"display-bridge-cleanup-{src}")
 
@@ -505,13 +553,13 @@ class DisplayBridge:
             if delay:
                 await self._sleep(delay)
             if await self._cleanup_once(src, dest):
-                self._cleanup_pending.pop(src, None)
+                self._cleanup_pending.discard((src, dest))
                 log.info("display bridge: source=%s leg=cleanup state=done", src)
                 return
-        self._cleanup_pending[src] = dest
+        self._cleanup_pending.add((src, dest))
         log.info("display bridge: source=%s leg=cleanup state=cleanup_pending", src)
 
-    async def _cleanup_once(self, src: str, dest: str) -> bool:
+    async def _cleanup_once(self, src: str, dest: str, *, timeout_s: float | None = None) -> bool:
         proc = None
         try:
             proc = await self._spawn(
@@ -519,7 +567,8 @@ class DisplayBridge:
                 _cleanup_script(self._x_start),
                 stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
-            rc = await asyncio.wait_for(proc.wait(), timeout=self._cleanup_timeout_s)
+            rc = await asyncio.wait_for(
+                proc.wait(), timeout=self._cleanup_timeout_s if timeout_s is None else timeout_s)
         except (OSError, asyncio.TimeoutError):
             return False
         finally:

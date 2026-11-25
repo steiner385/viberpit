@@ -299,7 +299,9 @@ ssh -o BatchMode=yes <ssh_host> '<PREP>'          # stdin: "add :<N> MIT-MAGIC-C
 umask 077
 d="$XDG_RUNTIME_DIR/viberpit-bridge"
 mkdir -p "$d" && chmod 700 "$d"
+[ -d "$d" ] && [ -O "$d" ] && [ ! -L "$d" ] || { echo 'viberpit-bridge: private dir not owned' >&2; exit 4; }
 rm -f "$d/waypipe.sock" /tmp/.X11-unix/X<N>
+if [ -e /tmp/.X11-unix/X<N> ] || [ -L /tmp/.X11-unix/X<N> ]; then echo 'viberpit-bridge: /tmp/.X11-unix/X<N> held by another user' >&2; exit 4; fi   # X11 leg only
 : > "$d/xauth" && chmod 600 "$d/xauth"
 xauth -q -f "$d/xauth" source -
 printf '%s\n' "$XDG_RUNTIME_DIR"
@@ -308,6 +310,18 @@ printf '%s\n' "$XDG_RUNTIME_DIR"
   `x11.conf`; present on rocky). Prep deliberately does **not** `mkdir` it: a user-created
   `/tmp/.X11-unix` would be user-owned, and X servers started later refuse or warn on it. A missing
   directory fails prep with exit 3, and the session falls back to virtual (`bridge_unavailable`).
+- **Socket squatting (exit 4, added after review):** `/tmp/.X11-unix` is world-writable and sticky, so
+  `rm -f` silently fails on a `X<N>` another local user pre-created. Session clients would then send
+  the target's cookie to an impostor X server. With the X11 leg on, prep therefore fails if `X<N>`
+  still exists after the `rm` (any survivor is foreign: the bridge user's own file was just removed).
+  The bridge logs `rc=4` at INFO with the source name only and the source shows `failed`. A squat
+  that appears after prep is caught by the bridge ssh itself: the `-R` bind fails and
+  `ExitOnForwardFailure=yes` ends the connection. Once bound, the socket is the ssh user's, and the
+  source daemon's liveness check (Task 5) verifies that owner uid before exporting `DISPLAY`. The
+  same exit code covers a private dir that is not a real directory owned by the bridge user.
+  `DISPLAY=:<N>` forces the `/tmp/.X11-unix` location, so the X socket cannot move into the
+  private dir. The Wayland sockets (`$d/waypipe.sock` and `$XDG_RUNTIME_DIR/wayland-viberpit-bridge`)
+  and the cookie file (`$d/xauth`) live only in the 0700 private dir or the 0700 `$XDG_RUNTIME_DIR`.
 - It prints `<S_XRD>`, which is needed because the `-R` remote path is not shell-expanded.
 - The cookie line is built from the resolver's `xauthority` file (`xauth -f <file> list`, field 3).
   mutter's file holds `dobby/unix:` and a FamilyWild entry with the same cookie.

@@ -395,6 +395,11 @@ async def daemon_lifespan(app, orchestrator):
             try:
                 await asyncio.wait_for(
                     display_bridge.stop_all(), timeout=_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                # An unreachable source is an expected degrade (its cookie cleanup is
+                # the §8 known limit), not an incident: INFO, never an auto-filed issue.
+                log.info("daemon shutdown: display bridge teardown hit the %.0fs cap",
+                         _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
             except Exception:
                 log.warning("daemon shutdown: display bridge teardown failed", exc_info=True)
         native = getattr(orchestrator, "_native", None)
