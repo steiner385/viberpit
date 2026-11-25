@@ -958,9 +958,14 @@ def _err(msg: str) -> dict[str, Any]:
 # (server/api/sessions.py). That endpoint does emit `branch` and `cwd` (for the
 # session rail), but they are deliberately left out of `_SESSION_KEYS`; pending
 # permission/question state is already carried by `status`
-# (`waiting_input` / `waiting_question`), not separate counters.
+# (`waiting_input` / `waiting_question`), not separate counters. `snooze` is the
+# overlay ({at, until, reason, by} | null) the Sessions page's SNOOZED section reads.
 _SESSION_KEYS = ("id", "name", "status", "repo", "host", "accountName", "model",
-                 "summary", "prs", "queuePosition", "pendingModel", "origin")
+                 "summary", "prs", "queuePosition", "pendingModel", "origin", "snooze")
+
+# list_sessions' status value for the snooze OVERLAY: not a status, so it filters on
+# `snooze` the way the UI's `isSnoozed` partition does (web/src/api/types.ts).
+_SNOOZED_FILTER = "snoozed"
 
 # Decision proposals (server/api/pm.py:_decision_to_dict) carry the inbox's
 # consequence `guidance` blob and audit columns the model never acts on; this is
@@ -1252,19 +1257,32 @@ def build_tools(api: AssistantApi, *, operator: bool = False,
                "List live sessions with status, repo, host, account, model, one-line summary, PRs "
                "and whether they are waiting on a permission or question. Filter by status "
                "(waiting_input, in_progress, ready_review, limited, queued…), host or repo. "
-               "Prefer search_sessions when looking for one session by topic.",
+               "status \"snoozed\" lists the snoozed sessions instead (soonest wake first); "
+               "every row's snooze is {at: when it was snoozed, until: wake time or null = "
+               "until woken, reason, by: \"user\" = the operator, \"session\" = it snoozed "
+               "itself} or null. A real status filter leaves snoozed sessions out, as the "
+               "live list does. Prefer search_sessions when looking for one session by topic.",
                _schema(status=str, host=str, repo=str))
     @guarded
     async def list_sessions(args: dict[str, Any]) -> Any:
         rows = await api.get("/api/sessions")
+        status = args.get("status")
         out = [_trim_session(s) for s in rows
-               if (not args.get("status") or s.get("status") == args["status"])
+               if (not status or (bool(s.get("snooze")) if status == _SNOOZED_FILTER
+                                  else s.get("status") == status and not s.get("snooze")))
                and (not args.get("host") or s.get("host") == args["host"])
                and (not args.get("repo") or s.get("repo") == args["repo"])]
+        if status == _SNOOZED_FILTER:
+            from server.sessions.snooze import snooze_until
+            # The SNOOZED section's order: soonest wake first, indefinite last.
+            far = datetime.max.replace(tzinfo=timezone.utc)
+            out.sort(key=lambda s: snooze_until(s["snooze"]) or far)
         return out
 
-    @spec_tool("get_session", "Record for one session id, including status, queue position and "
-               "any parked model approval. Does not include pending permission or question ids.",
+    @spec_tool("get_session", "Record for one session id, including status, queue position, "
+               "any parked model approval and its snooze ({at, until, reason, by} as in "
+               "list_sessions, or null when not snoozed). Does not include pending permission "
+               "or question ids.",
                {"id": str})
     @guarded
     async def get_session(args: dict[str, Any]) -> Any:
