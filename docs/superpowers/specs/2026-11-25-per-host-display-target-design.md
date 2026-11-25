@@ -297,10 +297,13 @@ ssh -o BatchMode=yes <ssh_host> '<PREP>'          # stdin: "add :<N> MIT-MAGIC-C
 ```
 [ -d /tmp/.X11-unix ] || { echo 'viberpit-bridge: /tmp/.X11-unix missing' >&2; exit 3; }
 umask 077
+case "$XDG_RUNTIME_DIR" in /*) ;; *) echo 'viberpit-bridge: XDG_RUNTIME_DIR unset' >&2; exit 5;; esac
+[ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ] || { echo 'viberpit-bridge: XDG_RUNTIME_DIR invalid' >&2; exit 5; }
 d="$XDG_RUNTIME_DIR/viberpit-bridge"
 mkdir -p "$d" && chmod 700 "$d"
 [ -d "$d" ] && [ -O "$d" ] && [ ! -L "$d" ] || { echo 'viberpit-bridge: private dir not owned' >&2; exit 4; }
 rm -f "$d/waypipe.sock" /tmp/.X11-unix/X<N>
+[ ! -L /tmp/.X11-unix ] && [ -k /tmp/.X11-unix ] && [ "$(stat -c %u /tmp/.X11-unix)" = 0 ] || { echo 'viberpit-bridge: /tmp/.X11-unix not root-owned and sticky' >&2; exit 4; }   # X11 leg only
 if [ -e /tmp/.X11-unix/X<N> ] || [ -L /tmp/.X11-unix/X<N> ]; then echo 'viberpit-bridge: /tmp/.X11-unix/X<N> held by another user' >&2; exit 4; fi   # X11 leg only
 : > "$d/xauth" && chmod 600 "$d/xauth"
 xauth -q -f "$d/xauth" source -
@@ -318,7 +321,18 @@ printf '%s\n' "$XDG_RUNTIME_DIR"
   that appears after prep is caught by the bridge ssh itself: the `-R` bind fails and
   `ExitOnForwardFailure=yes` ends the connection. Once bound, the socket is the ssh user's, and the
   source daemon's liveness check (Task 5) verifies that owner uid before exporting `DISPLAY`. The
-  same exit code covers a private dir that is not a real directory owned by the bridge user.
+  same exit code covers a private dir that is not a real directory owned by the bridge user. With the
+  X11 leg on, it also covers a `/tmp/.X11-unix` that is a symlink, not sticky, or not root-owned: that
+  directory's owner could unlink the bound socket and put an impostor in its place.
+- **Exit 5** means the source login has no usable `$XDG_RUNTIME_DIR` (unset, relative, missing, or not
+  its own). It is a configuration problem, logged as such and never as a squat.
+- **Cleanup never races a live bridge.** No cleanup ssh runs while the source has a running or
+  starting bridge: an old dest may be an alias of the live login (`rocky` vs `tony@rocky`), and its
+  `rm -f` would delete the live sockets and cookie. A dest change only marks the old dest as owed.
+  Owed cleanups run when the source's bridge is finally torn down, and before each attempt (retries
+  included) the bridge re-checks that the source is not live. (Re)starting a bridge cancels every
+  in-flight cleanup for that source. The prep for the live dest rewrites everything its own cleanup
+  would remove.
   `DISPLAY=:<N>` forces the `/tmp/.X11-unix` location, so the X socket cannot move into the
   private dir. The Wayland sockets (`$d/waypipe.sock` and `$XDG_RUNTIME_DIR/wayland-viberpit-bridge`)
   and the cookie file (`$d/xauth`) live only in the 0700 private dir or the 0700 `$XDG_RUNTIME_DIR`.

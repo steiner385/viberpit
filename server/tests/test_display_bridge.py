@@ -98,6 +98,9 @@ class FakeSpawn:
     def __init__(self, *, prep_rc=0, cleanup_rc=0, bridge_exits=(), cleanup_hang=False):
         self.procs: list[FakeProc] = []
         self.cleanup_hang = cleanup_hang
+        # For each cleanup ssh: how many bridge ssh processes were still live at its spawn.
+        # Any non-zero entry means a cleanup `rm -f` raced a live bridge's sockets/cookie.
+        self.live_at_cleanup: list[int] = []
         self.prep_rc = prep_rc
         self.cleanup_rc = cleanup_rc
         self.bridge_exits = list(bridge_exits)
@@ -108,6 +111,9 @@ class FakeSpawn:
             proc = FakeProc(argv, kw, rc=self.prep_rc, stdout=f"{S_XRD}\n".encode())
         else:
             proc = FakeProc(argv, kw)
+            if kind == "cleanup":
+                self.live_at_cleanup.append(
+                    sum(1 for p in self.of("bridge") if p.returncode is None))
             if kind == "cleanup" and not self.cleanup_hang:
                 proc.exit(self.cleanup_rc)
             elif kind == "bridge" and self.bridge_exits:
@@ -197,11 +203,18 @@ async def test_ensure_starts_one_ssh_per_source_with_verified_argv(tmp_path):
     assert prep.argv[4] == (
         "[ -d /tmp/.X11-unix ] || { echo 'viberpit-bridge: /tmp/.X11-unix missing' >&2; exit 3; }\n"
         "umask 077\n"
+        'case "$XDG_RUNTIME_DIR" in /*) ;; *) '
+        "echo 'viberpit-bridge: XDG_RUNTIME_DIR unset' >&2; exit 5;; esac\n"
+        '[ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ] || '
+        "{ echo 'viberpit-bridge: XDG_RUNTIME_DIR invalid' >&2; exit 5; }\n"
         'd="$XDG_RUNTIME_DIR/viberpit-bridge"\n'
         'mkdir -p "$d" && chmod 700 "$d"\n'
         '[ -d "$d" ] && [ -O "$d" ] && [ ! -L "$d" ] || '
         "{ echo 'viberpit-bridge: private dir not owned' >&2; exit 4; }\n"
         'rm -f "$d/waypipe.sock" /tmp/.X11-unix/X150\n'
+        '[ ! -L /tmp/.X11-unix ] && [ -k /tmp/.X11-unix ] && '
+        '[ "$(stat -c %u /tmp/.X11-unix)" = 0 ] || '
+        "{ echo 'viberpit-bridge: /tmp/.X11-unix not root-owned and sticky' >&2; exit 4; }\n"
         "if [ -e /tmp/.X11-unix/X150 ] || [ -L /tmp/.X11-unix/X150 ]; then "
         "echo 'viberpit-bridge: /tmp/.X11-unix/X150 held by another user' >&2; exit 4; fi\n"
         ': > "$d/xauth" && chmod 600 "$d/xauth"\n'
@@ -401,7 +414,7 @@ async def test_crash_restarts_with_backoff_while_desired(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("rc", [3, 4])
+@pytest.mark.parametrize("rc", [3, 4, 5])
 async def test_prep_failure_is_failed_and_retried(tmp_path, caplog, rc):
     caplog.set_level(logging.INFO, logger="server.sessions.display_bridge")
     sleeps = Sleeps()
@@ -412,6 +425,10 @@ async def test_prep_failure_is_failed_and_retried(tmp_path, caplog, rc):
     failed = [r for r in caplog.records if f"rc={rc}" in r.getMessage()]
     assert failed and all(r.levelno == logging.INFO for r in failed)
     assert "source=rocky leg=prep state=failed" in failed[0].getMessage()
+    # Each exit code names its own cause: an unset runtime dir is not reported as a squat.
+    expected = {3: "no X11 socket dir", 4: "held by another user",
+                5: "XDG_RUNTIME_DIR unset or invalid"}[rc]
+    assert expected in failed[0].getMessage()
     assert "/tmp" not in failed[0].getMessage()      # names the source, not paths
     assert spawn.of("bridge") == [] and spawn.of("client") == []
     await bridge.stop_all()
@@ -430,10 +447,23 @@ def test_prep_refuses_a_squatted_x_socket_or_foreign_private_dir():
     assert f"exit {PREP_RC_SQUATTED}" in lines[check] and "[ -L /tmp/.X11-unix/X150 ]" in lines[check]
     dir_check = next(i for i, ln in enumerate(lines) if '[ -O "$d" ]' in ln)
     assert dir_check < rm and f"exit {PREP_RC_SQUATTED}" in lines[dir_check]
+    # /tmp/.X11-unix itself must be root-owned and sticky, else its owner can unlink the
+    # bound socket; checked before any cookie is written.
+    sticky = next(i for i, ln in enumerate(lines) if "[ -k /tmp/.X11-unix ]" in ln)
+    assert '"$(stat -c %u /tmp/.X11-unix)" = 0' in lines[sticky]
+    assert "[ ! -L /tmp/.X11-unix ]" in lines[sticky]
+    assert f"exit {PREP_RC_SQUATTED}" in lines[sticky]
+    assert sticky < next(i for i, ln in enumerate(lines) if "xauth" in ln)
+    # An unset/invalid runtime dir has its own code, checked before $d is used.
+    from server.sessions.display_bridge import PREP_RC_NO_RUNTIME_DIR
+    xrd = [i for i, ln in enumerate(lines) if f"exit {PREP_RC_NO_RUNTIME_DIR}" in ln]
+    assert len(xrd) == 2 and max(xrd) < next(
+        i for i, ln in enumerate(lines) if ln.startswith('d="'))
     # The Wayland sockets and the cookie file live only under the private dir / runtime dir.
     assert '"$d/waypipe.sock"' in script and '"$d/xauth"' in script
     # No X11 leg: an X squatter must not take the Wayland leg down.
     assert "[ -e /tmp/.X11-unix/X150 ]" not in _prep_script(150, x11=False)
+    assert "[ -k /tmp/.X11-unix ]" not in _prep_script(150, x11=False)
 
 
 @pytest.mark.asyncio
@@ -503,17 +533,66 @@ async def test_stop_all_retries_an_interrupted_cleanup(tmp_path):
     assert bridge._cleanup_pending == set()
 
 
+class GateSleeps:
+    """Every sleep blocks until the gate opens: a cleanup retry stays parked mid-backoff."""
+
+    def __init__(self):
+        self.calls: list[float] = []
+        self.gate = asyncio.Event()
+
+    async def __call__(self, d):
+        self.calls.append(d)
+        await self.gate.wait()
+
+
 @pytest.mark.asyncio
-async def test_changed_ssh_dest_cleans_the_old_dest(tmp_path):
+async def test_alias_dests_never_clean_while_the_source_is_live(tmp_path):
+    # `rocky` (fallback alias) and `tony@rocky` are the same login: cleaning the "old" one
+    # while the bridge runs on the new one would delete the live sockets and cookie.
+    clock = Clock()
     spawn = FakeSpawn()
-    bridge = _bridge(FakeNative(_wayland(tmp_path)), spawn)
-    await _up(bridge, dest="old@rocky")
-    await bridge.ensure(["rocky"], {"rocky": "new@rocky"})
+    bridge = _bridge(FakeNative(_wayland(tmp_path)), spawn, clock)
+    await _up(bridge, dest="rocky")
+    await bridge.ensure(["rocky"], {"rocky": "tony@rocky"})
     await _until(lambda: len(spawn.of("bridge")) == 2 and bridge._known["rocky"].state == "up")
-    await _until(lambda: len(spawn.of("cleanup")) == 1)
-    assert spawn.of("cleanup")[0].argv[-2] == "old@rocky"
-    assert spawn.of("bridge")[1].argv[-2] == "new@rocky"
+    await asyncio.sleep(0.05)
+    assert spawn.of("cleanup") == []                 # owed, not run against the live bridge
+    assert ("rocky", "rocky") in bridge._cleanup_pending
+    clock.t += 1
+    await bridge.ensure([], {})
+    assert spawn.of("cleanup") == []                 # still live during grace
+    clock.t += 60
+    await bridge.ensure([], {})                      # final teardown: now both dests are cleaned
+    await _until(lambda: len(spawn.of("cleanup")) == 2)
+    assert sorted(p.argv[-2] for p in spawn.of("cleanup")) == ["rocky", "tony@rocky"]
+    assert spawn.live_at_cleanup == [0, 0]
+    await _until(lambda: not bridge._cleanup_pending)
     await bridge.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_dest_flip_with_delayed_retry_never_deletes_the_live_setup(tmp_path):
+    clock = Clock()
+    sleeps = GateSleeps()
+    spawn = FakeSpawn(cleanup_rc=255)
+    bridge = _bridge(FakeNative(_wayland(tmp_path)), spawn, clock, sleeps=sleeps)
+    await _up(bridge, dest="a@rocky")
+    clock.t += 200
+    await bridge.tick()                              # silence: cleanup of A fails, retry parked
+    await _until(lambda: len(spawn.of("cleanup")) == 1 and sleeps.calls == [5.0])
+    await _up(bridge, dest="a@rocky")                # relisted at A before the retry fires
+    await bridge.ensure(["rocky"], {"rocky": "b@rocky"})                    # A -> B
+    await _until(lambda: len(spawn.of("bridge")) == 3 and bridge._known["rocky"].state == "up")
+    await bridge.ensure(["rocky"], {"rocky": "a@rocky"})                    # B -> A
+    await _until(lambda: len(spawn.of("bridge")) == 4 and bridge._known["rocky"].state == "up")
+    sleeps.gate.set()                                # the parked retry would fire now
+    await asyncio.sleep(0.05)
+    assert len(spawn.of("cleanup")) == 1             # nothing ran against the live A bridge
+    assert spawn.live_at_cleanup == [0]
+    assert bridge._cleanup_pending == {("rocky", "b@rocky")}   # B still owed, A rewritten
+    assert spawn.of("bridge")[-1].returncode is None
+    await bridge.stop_all()
+    assert all(n == 0 for n in spawn.live_at_cleanup)
 
 
 def test_shutdown_cleanup_fits_the_daemon_shutdown_cap(tmp_path):

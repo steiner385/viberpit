@@ -77,6 +77,9 @@ PREP_RC_NO_X11_DIR = 3
 # or (X11 leg) /tmp/.X11-unix/X<N> — world-writable sticky dir, so `rm -f` silently fails on
 # another user's squatted socket and session clients would hand the cookie to an impostor.
 PREP_RC_SQUATTED = 4
+# The source login has no usable $XDG_RUNTIME_DIR (unset, relative, missing or not its own):
+# a configuration problem, kept distinct so the log never points at a squat that did not happen.
+PREP_RC_NO_RUNTIME_DIR = 5
 
 
 def _prep_script(x_display: int, *, x11: bool) -> str:
@@ -85,6 +88,10 @@ def _prep_script(x_display: int, *, x11: bool) -> str:
         "[ -d /tmp/.X11-unix ] || { echo 'viberpit-bridge: /tmp/.X11-unix missing' >&2; "
         f"exit {PREP_RC_NO_X11_DIR}; }}",
         "umask 077",
+        'case "$XDG_RUNTIME_DIR" in /*) ;; *) '
+        f"echo 'viberpit-bridge: XDG_RUNTIME_DIR unset' >&2; exit {PREP_RC_NO_RUNTIME_DIR};; esac",
+        '[ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ] || '
+        f"{{ echo 'viberpit-bridge: XDG_RUNTIME_DIR invalid' >&2; exit {PREP_RC_NO_RUNTIME_DIR}; }}",
         f'd="$XDG_RUNTIME_DIR/{_BRIDGE_DIR}"',
         'mkdir -p "$d" && chmod 700 "$d"',
         '[ -d "$d" ] && [ -O "$d" ] && [ ! -L "$d" ] || '
@@ -92,6 +99,12 @@ def _prep_script(x_display: int, *, x11: bool) -> str:
         f'rm -f "$d/waypipe.sock" {x_sock}',
     ]
     if x11:
+        # A user-owned or non-sticky /tmp/.X11-unix lets its owner unlink the bound socket.
+        lines.append(
+            '[ ! -L /tmp/.X11-unix ] && [ -k /tmp/.X11-unix ] && '
+            '[ "$(stat -c %u /tmp/.X11-unix)" = 0 ] || '
+            "{ echo 'viberpit-bridge: /tmp/.X11-unix not root-owned and sticky' >&2; "
+            f"exit {PREP_RC_SQUATTED}; }}")
         lines.append(
             f"if [ -e {x_sock} ] || [ -L {x_sock} ]; then "
             f"echo 'viberpit-bridge: {x_sock} held by another user' >&2; "
@@ -237,8 +250,7 @@ class DisplayBridge:
             desired = {s.strip().lower() for s in sources if s.strip()}
             await self._reconcile(desired, now, silent=False)
             for src, dest in sorted(self._cleanup_pending):
-                b = self._known.get(src)
-                if b is None or b.dest != dest:
+                if not self._source_live(src):
                     self._schedule_cleanup(src, dest, retry_delays=())
             return self._rows()
 
@@ -333,16 +345,18 @@ class DisplayBridge:
             if b.task is None or b.task.done():
                 b.dest = dest
                 b.legs = legs
-                task = self._cleanups.pop((src, dest), None)
-                if task is not None:    # the new prep rewrites everything the cleanup would remove
-                    await cancel_and_reap(task, phase="display_bridge.cleanup")
+                await self._quiesce_cleanups(src, dest)
                 self._set_state(b, STATE_STARTING, "+".join(legs))
                 b.task = supervise(asyncio.create_task(
                     self._supervise(b), name=f"display-bridge-{src}"),
                     name=f"display-bridge-{src}")
             elif dest != b.dest or (b.desktop_key is not None and b.desktop_key != key):
-                if b.dest and dest != b.dest:   # the old login still holds the cookie file
-                    self._schedule_cleanup(src, b.dest, retry_delays=_CLEANUP_RETRY_DELAYS_S)
+                if b.dest and dest != b.dest:
+                    # The old login may still hold the cookie file. It may also be the SAME
+                    # login under another alias, so it is only cleaned once this source has
+                    # no live bridge (_teardown / the next ensure), never against the new one.
+                    self._cleanup_pending.add((src, b.dest))
+                    await self._quiesce_cleanups(src, dest)
                 b.dest = dest
                 b.legs = legs
                 log.info("display bridge: source=%s leg=%s state=restarting (desktop changed)",
@@ -492,7 +506,8 @@ class DisplayBridge:
                 await _terminate_group(proc)
         if proc.returncode != 0:
             why = {PREP_RC_NO_X11_DIR: " (source has no X11 socket dir)",
-                   PREP_RC_SQUATTED: " (socket or dir held by another user)"}.get(
+                   PREP_RC_SQUATTED: " (socket or dir held by another user)",
+                   PREP_RC_NO_RUNTIME_DIR: " (source XDG_RUNTIME_DIR unset or invalid)"}.get(
                        proc.returncode, "")
             log.info("display bridge: source=%s leg=prep state=failed rc=%s%s",
                      b.source, proc.returncode, why)
@@ -525,6 +540,24 @@ class DisplayBridge:
                 pass
             b.client_socket = None
 
+    def _source_live(self, src: str) -> bool:
+        """A bridge for *src* is running or starting. No cleanup ssh may run then: any dest
+        could be an alias of the live login, and its `rm -f` would hit the live sockets."""
+        b = self._known.get(src)
+        return b is not None and b.task is not None and not b.task.done()
+
+    async def _quiesce_cleanups(self, src: str, dest: str) -> None:
+        """Before a bridge for (src, dest) (re)starts: stop every in-flight cleanup for the
+        source. Other dests stay owed (pending, run after this bridge ends); the new prep
+        rewrites everything a cleanup of *dest* would remove."""
+        for key in [k for k in self._cleanups if k[0] == src]:
+            task = self._cleanups.pop(key)
+            if not task.done():
+                await cancel_and_reap(task, phase="display_bridge.cleanup")
+                if key[1] != dest:
+                    self._cleanup_pending.add(key)
+        self._cleanup_pending.discard((src, dest))
+
     async def _teardown(self, b: _Bridge, *, cleanup: bool = False) -> None:
         if b.task is not None:
             await cancel_and_reap(b.task, phase="display_bridge.supervisor")
@@ -534,8 +567,12 @@ class DisplayBridge:
         b.desktop_key = None
         if b.state == STATE_UP:
             b.state = STATE_STARTING
-        if cleanup and b.dest:
-            self._schedule_cleanup(b.source, b.dest, retry_delays=_CLEANUP_RETRY_DELAYS_S)
+        if cleanup:
+            owed = {d for s, d in self._cleanup_pending if s == b.source}
+            if b.dest:
+                owed.add(b.dest)
+            for dest in sorted(owed):
+                self._schedule_cleanup(b.source, dest, retry_delays=_CLEANUP_RETRY_DELAYS_S)
 
     # ---- remote cleanup (Anti-goal 1: no cookie left behind) --------------------------
 
@@ -552,6 +589,13 @@ class DisplayBridge:
         for delay in (0.0, *retry_delays):
             if delay:
                 await self._sleep(delay)
+            if self._source_live(src):
+                # A bridge came back for this source meanwhile: never race its prep/bind.
+                # Still owed unless it is the live dest (whose prep rewrote everything).
+                b = self._known[src]
+                if dest != b.dest:
+                    self._cleanup_pending.add((src, dest))
+                return
             if await self._cleanup_once(src, dest):
                 self._cleanup_pending.discard((src, dest))
                 log.info("display bridge: source=%s leg=cleanup state=done", src)
