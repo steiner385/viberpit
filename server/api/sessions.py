@@ -1389,6 +1389,13 @@ class BatchSessionIdsRequest(BaseModel):
     ids: list[str] = Field(..., min_length=1, max_length=200)
 
 
+def _batch_failure_level(exc: Exception) -> int:
+    """Log level for a per-id batch failure. An unreachable daemon (restart/deploy/drain)
+    is a transient the response already reports in ``failed`` — INFO, since WARNING is what
+    the error sink files as an issue (#3455)."""
+    return logging.INFO if isinstance(exc, DaemonUnavailable) else logging.WARNING
+
+
 @router.post("/batch/unarchive")
 async def batch_unarchive_sessions(
     body: BatchSessionIdsRequest,
@@ -1404,7 +1411,7 @@ async def batch_unarchive_sessions(
         try:
             record = await orch.unarchive(session_id)
         except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
-            log.warning("batch unarchive failed for %s: %s", session_id, exc)
+            log.log(_batch_failure_level(exc), "batch unarchive failed for %s: %s", session_id, exc)
             failed.append({"id": session_id, "error": str(exc)})
             continue
         if record is None:
@@ -1435,7 +1442,7 @@ async def batch_permanent_delete_sessions(
         try:
             deleted = await orch.permanent_delete(session_id)
         except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
-            log.warning("batch permanent-delete failed for %s: %s", session_id, exc)
+            log.log(_batch_failure_level(exc), "batch permanent-delete failed for %s: %s", session_id, exc)
             failed.append({"id": session_id, "error": str(exc)})
             continue
         if not deleted:
@@ -1468,11 +1475,11 @@ async def batch_archive_sessions(
         except DaemonUnavailable:
             # The daemon may have completed the archive but lost its response.
             if not await _session_is_archived(orch, session_id):
-                log.warning("batch archive failed for %s: DaemonUnavailable", session_id)
+                log.info("batch archive failed for %s: DaemonUnavailable", session_id)
                 failed.append({"id": session_id, "error": "daemon unavailable"})
                 continue
         except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
-            log.warning("batch archive failed for %s: %s", session_id, exc)
+            log.log(_batch_failure_level(exc), "batch archive failed for %s: %s", session_id, exc)
             failed.append({"id": session_id, "error": str(exc)})
             continue
         succeeded.append(session_id)
@@ -1512,7 +1519,7 @@ async def batch_resume_sessions(
                 failed.append({"id": session_id, "error": "resume timed out; still pending"})
                 continue
         except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
-            log.warning("batch resume failed for %s: %s", session_id, exc)
+            log.log(_batch_failure_level(exc), "batch resume failed for %s: %s", session_id, exc)
             failed.append({"id": session_id, "error": str(exc)})
             continue
         if result == "resumed":
@@ -1543,7 +1550,7 @@ async def batch_rotate_sessions(
         try:
             result = await orch.rotate_to_best(session_id, identity)
         except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
-            log.warning("batch rotate failed for %s: %s", session_id, exc)
+            log.log(_batch_failure_level(exc), "batch rotate failed for %s: %s", session_id, exc)
             failed.append({"id": session_id, "error": str(exc)})
             continue
         if result in ("rotated", "rotated_new_thread"):

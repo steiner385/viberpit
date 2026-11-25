@@ -1199,3 +1199,25 @@ def test_delete_orphaned_session_returns_204():
                 assert archived.status_code == 200
                 archived_ids = [s["id"] for s in archived.json()]
                 assert session_id in archived_ids, "orphaned session must be archived in DB after DELETE"
+
+
+def test_batch_archive_daemon_unavailable_is_not_a_warning(caplog):
+    """An unreachable daemon is a transient: reported in `failed`, but logged below
+    WARNING so the error sink does not file it (#3455)."""
+    import logging
+    from unittest.mock import AsyncMock, patch
+
+    from server.ipc.client import DaemonUnavailable
+
+    with temp_env() as d:
+        with _client_with_account(d) as client:
+            a = _create_session(client, "A")
+            orch = client.app.state.sessions
+            with patch.object(type(orch), "archive_session", AsyncMock(side_effect=DaemonUnavailable("down"))), \
+                 patch("server.api.sessions._session_is_archived", AsyncMock(return_value=False)), \
+                 caplog.at_level(logging.INFO, logger="server.api.sessions"):
+                resp = client.post("/api/sessions/batch/archive", json={"ids": [a]}, headers=IDENTITY_HEADERS)
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["failed"] == [{"id": a, "error": "daemon unavailable"}]
+            recs = [r for r in caplog.records if "batch archive failed" in r.getMessage()]
+            assert recs and all(r.levelno < logging.WARNING for r in recs)
