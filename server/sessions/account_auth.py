@@ -65,7 +65,8 @@ ORG_ENV = "CLAUDE_CODE_ORGANIZATION_UUID"
 
 # What a Claude session actually launched with (``SessionRecord.launch_credential``),
 # recorded at spawn by the orchestrator's factory and never re-derived from the store:
-#   slot     — the browser-login slot's short-lived ACCESS token (Remote Control launch)
+#   slot     — the browser-login slot's short-lived ACCESS token (Remote Control launch);
+#              on a broker runner, the authority's Remote Control envelope of that token
 #   setup    — the account's long-lived inference-only setup-token
 #   envelope — a broker runner's envelope access token (#2629)
 #   cfg      — no env token: the CLI reads the composed cfg-dir ``claudeAiOauth`` and may
@@ -154,18 +155,55 @@ def _usable_access_token(blob: dict, *, skew_s: float) -> str | None:
     return tok
 
 
-def slot_access_token(account: str) -> str | None:
-    """*account*'s current slot access token when it is full-scope and not about to
-    expire — the value pushed to a live Remote Control CLI. Reads only; never refreshes
-    (the authority's sweep does) and never touches the refresh token. A secret: never
-    log it."""
+#: How long a broker runner's Remote Control envelope must still live for a NEW launch on
+#: it (capped by ``expiry_skew_sec``). Shorter than the authority's refresh skew on
+#: purpose: the authority refreshes the slot once it is within ``expiry_skew_sec`` of
+#: expiry, on its sweep cadence, so a vended token is briefly inside that window before
+#: its successor arrives — and a live session is pushed each new token on the next sync
+#: anyway, so a launch only needs a token that outlives one refresh-and-push cycle.
+RUNNER_RC_LAUNCH_SKEW_S = 120.0
+
+
+def _runner_rc_envelope(account: str, *, skew_s: float) -> credential_envelope.Envelope | None:
+    """A broker runner's Remote Control envelope for *account* (the authority's slot access
+    token + org UUID) when its lease is live, it outlives *skew_s* and it names an org;
+    else None — fail closed. Never reads the mounted slot."""
+    env = credential_envelope.rc_runner_store().launch_envelope(account, skew_s=skew_s)
+    if env is None or env.kind != credential_envelope.OAUTH_ACCESS or not env.org_uuid:
+        return None
+    return env
+
+
+def _runner_rc_launch_skew() -> float:
+    return min(float(load_config().expiry_skew_sec), RUNNER_RC_LAUNCH_SKEW_S)
+
+
+def slot_remote_control_credential(account: str) -> tuple[str, float] | None:
+    """``(access token, expires at epoch seconds)`` of *account*'s browser-login slot when
+    the token is full-scope and not yet expired, else None — what the authority vends a
+    runner as its Remote Control envelope. Reads only; never refreshes, never the refresh
+    token. The token is a secret: never log it."""
     try:
         blob = read_json(_paths.slot_path(account))
     except (OSError, ValueError):
         return None
     if not isinstance(blob, dict):
         return None
-    return _usable_access_token(blob, skew_s=0)
+    tok = _usable_access_token(blob, skew_s=0)
+    return (tok, float(blob["expiresAt"]) / 1000.0) if tok else None
+
+
+def slot_access_token(account: str) -> str | None:
+    """*account*'s current Remote Control access token when it is full-scope and not
+    expired — the value pushed to a live Remote Control CLI. On the authority, the slot's;
+    on a broker runner, the held Remote Control envelope's (lease live). Reads only; never
+    refreshes (the authority's sweep does) and never touches the refresh token. A secret:
+    never log it."""
+    if _accounts.runner_uses_envelope(account):
+        env = _runner_rc_envelope(account, skew_s=0)
+        return env.token if env is not None else None
+    cred = slot_remote_control_credential(account)
+    return cred[0] if cred is not None else None
 
 
 def remote_control_env_for(account: str, *, allow_refresh: bool = True) -> dict[str, str] | None:
@@ -179,7 +217,15 @@ def remote_control_env_for(account: str, *, allow_refresh: bool = True) -> dict[
     ``sync_back`` recovery of a rotation a cfg-dir CLI already made — unless
     *allow_refresh* is False (a live session owns the slot's token family), when only an
     already-fresh token is used. Blocking IO, and possibly a network refresh: async
-    callers wrap it in ``account_store_io``. Never logs or returns the refresh token."""
+    callers wrap it in ``account_store_io``. Never logs or returns the refresh token.
+
+    On a broker runner (``runner_uses_envelope``) the login is the authority's Remote
+    Control envelope instead (``_runner_rc_envelope``): no refresh, no mounted slot."""
+    if _accounts.runner_uses_envelope(account):
+        env = _runner_rc_envelope(account, skew_s=_runner_rc_launch_skew())
+        if env is None or env.org_uuid is None:
+            return None
+        return {TOKEN_ENV: env.token, ORG_ENV: env.org_uuid}
     if not remote_control_slot_ready(account):
         return None
     org = organization_uuid(account)
@@ -204,7 +250,12 @@ def remote_control_readiness(account: str, *, allow_refresh: bool) -> str | None
     judged without refreshing? None when it would; ``login_needed`` when the account has
     no usable claude.ai login (``remote_control_slot_ready``); ``login_busy`` when the
     login is fine but its access token is stale and may not be refreshed now (a live
-    session owns the slot's family). Reads the slot's expiry, never returns a token."""
+    session owns the slot's family). Reads the slot's expiry, never returns a token.
+    On a broker runner: None while a usable Remote Control envelope is held, else
+    ``login_needed`` (the runner can only wait for the authority to vend one)."""
+    if _accounts.runner_uses_envelope(account):
+        usable = _runner_rc_envelope(account, skew_s=_runner_rc_launch_skew()) is not None
+        return None if usable else "login_needed"
     if not remote_control_slot_ready(account):
         return "login_needed"
     if allow_refresh:

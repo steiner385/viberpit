@@ -1221,16 +1221,38 @@ class FleetOrchestrator:
         cached view), never the envelope lease. A runner answering with ``mcp_offers`` (its
         terminal logins) has them merged into the store under the ordinary policy; a merge
         failure is a WARNING that leaves the acks untouched.
+
+        Remote Control envelopes (each Remote-Control-ready account's slot access token + org
+        UUID, ``mint_remote_control_envelopes``) ride the same push as ``rc_envelopes``, sent
+        only when there are any: a runner reads an absent field as "none vended" and drops what
+        it held, and an old runner ignores the field. A failed Remote Control mint costs this
+        tick that field only (WARNING), never the inference lease. A runner that answers with
+        ``rc_acks`` below a pushed generation is a fleet warning.
         """
         from viberpit import accounts as _accounts
         from viberpit import creds
         from server.mcp_health import grants
-        from server.sessions.claude_authority import mint_envelopes
+        from server.sessions import claude_authority
 
-        envs = await asyncio.to_thread(mint_envelopes, _accounts._anthropic_account_names())
+        names = _accounts._anthropic_account_names()
+        envs = await asyncio.to_thread(claude_authority.mint_envelopes, names)
         wire = [{"account": e.account, "kind": e.kind, "token": e.token,
                  "expires_at": e.expires_at, "generation": e.generation} for e in envs]
         want = {e.account: e.generation for e in envs}
+        rc: dict = {}  # ``rc_envelopes``, absent when none were minted
+        rc_want: dict[str, int] = {}
+        try:
+            rc_envs = await asyncio.to_thread(
+                claude_authority.mint_remote_control_envelopes, names)
+            if rc_envs:
+                rc = {"rc_envelopes": [
+                    {"account": e.account, "kind": e.kind, "token": e.token,
+                     "expires_at": e.expires_at, "generation": e.generation,
+                     "org_uuid": e.org_uuid} for e in rc_envs]}
+                rc_want = {e.account: e.generation for e in rc_envs}
+        except Exception:  # noqa: BLE001 — Remote Control must never cost a runner its lease
+            log.warning("fleet.creds_sync remote control envelopes unavailable; pushing the "
+                        "inference envelopes only", exc_info=True)
         mcp: dict = {}  # the MCP fields, absent (not None) when the store could not be read
         try:
             store = await asyncio.to_thread(creds.read_shared_mcp)
@@ -1242,7 +1264,7 @@ class FleetOrchestrator:
 
         async def _one(name: str):
             try:
-                res = await self._router.get(name).creds_sync(wire, lease_s, **mcp)
+                res = await self._router.get(name).creds_sync(wire, lease_s, **mcp, **rc)
                 return name, res, None
             except Exception as e:  # noqa: BLE001 — one runner must not block the rest
                 return name, None, e
@@ -1259,6 +1281,12 @@ class FleetOrchestrator:
             behind = sorted(a for a, g in want.items() if acks.get(a, -1) < g)
             if behind:
                 log.warning("fleet.creds_sync host=%s behind on accounts=%s", name, behind)
+            rc_acks = res.get("rc_acks")
+            if isinstance(rc_acks, dict) and rc_want:
+                rc_behind = sorted(a for a, g in rc_want.items() if rc_acks.get(a, -1) < g)
+                if rc_behind:
+                    log.warning("fleet.creds_sync host=%s behind on remote control "
+                                "accounts=%s", name, rc_behind)
             offers = res.get("mcp_offers")
             if isinstance(offers, dict) and offers:
                 await self._merge_runner_offers(name, offers)

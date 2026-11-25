@@ -93,6 +93,15 @@ a setup-token. Each account needs **one fresh browser login** into its slot.
 3. **Live rotation.** Before the access token expires (about 8 h), the authority pushes the
    refreshed token to every live session on that account with the top-level
    `update_environment_variables` message (E4). Runners get it through the existing envelope push.
+   - **Built (runner follow-up).** The push carries a separate Remote Control envelope
+     (`rc_envelopes`: access token + org UUID, own generations, never a refresh token). The
+     inference envelope still prefers the setup-token. Each runner sync pushes a new token
+     into that runner's live Remote Control CLIs.
+   - **Principle II note.** Like the inference envelope (#2629), the runner caches it in a
+     host-local 0600 file (`rc-envelopes.json`) so a daemon restart can relaunch before the
+     next push. That departs from the constitution's "never written to … disk" for access
+     material, and follows the existing envelope-cache precedent. It carries a short-lived
+     access token only.
 4. **Transcript parity.** Add `--replay-user-messages` so prompts typed in the Claude apps appear
    in ViberPit's transcript.
    - The driver must not double-render its own prompts, which are echoed back too: dedupe by
@@ -125,6 +134,9 @@ a setup-token. Each account needs **one fresh browser login** into its slot.
   the bridge's worker JWT re-derives from it is inferred from the CLI code, not observed.
 - What the Claude app shows while a ViberPit approval card is pending.
 - A Copilot account stays ineligible: it has no claude.ai login.
+- A bridge opened on a **runner** with the vended Remote Control envelope, and a live push
+  across it, have not been observed. Runner launches use the same recipe (E3o), but rocky
+  has not run it yet.
 
 ## 5. Operator action required
 

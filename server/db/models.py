@@ -369,6 +369,13 @@ class Session(Base):
     # Nullable so init_db's reconcile adds them on both dialects.
     remote_control: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     remote_control_url: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # What the session's CLI last launched with (``account_auth.LAUNCH_*``: slot | setup |
+    # envelope | cfg | copilot), written by the OWNING host at each spawn. The primary reads
+    # it for its mirror of a runner's session (``live_session_owns_slot_family``) — a
+    # runner's Remote Control session holds only an access token, so it must not pin the
+    # authority off refreshing the slot. NULL = unrecorded (counts as owning). Nullable so
+    # init_db's reconcile adds it on both dialects.
+    launch_credential: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Output style (D-16a): the session's chosen CLI output style, applied at spawn
     # through the ``--settings`` JSON and live through ``apply_flag_settings``. NULL =
     # use ``AppSettings.default_output_style``. Nullable so reconcile adds it.

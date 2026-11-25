@@ -1759,6 +1759,7 @@ class RemoteOrchestrator:
     async def creds_sync(
         self, envelopes: list[dict], lease_s: float,
         mcp_bundles: dict | None = None, mcp_drop: list[str] | None = None,
+        rc_envelopes: list[dict] | None = None,
     ) -> dict:
         """Push the primary's Claude credential envelopes to this runner (#2629), and with
         them the shared MCP store's public view and the grant reconcile's purge keys (#3287).
@@ -1766,8 +1767,13 @@ class RemoteOrchestrator:
         The MCP fields go on the wire only when not None, so a caller with nothing to send
         leaves the request exactly as an old daemon expects it. The response may carry
         ``mcp_offers`` (a runner's terminal logins); an old runner returns none.
+
+        ``rc_envelopes`` (the Remote Control envelopes) likewise goes on the wire only when
+        not None; a runner that holds any answers ``rc_acks``.
         """
         extra: dict = {}
+        if rc_envelopes is not None:
+            extra["rc_envelopes"] = rc_envelopes
         if mcp_bundles is not None:
             extra["mcp_bundles"] = mcp_bundles
         if mcp_drop is not None:

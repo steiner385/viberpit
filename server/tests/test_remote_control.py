@@ -1264,6 +1264,141 @@ async def test_a_runner_session_is_unavailable_as_runner(env) -> None:
     assert _rc_sent(env.control) == []
 
 
+# ── broker runners: the authority's Remote Control envelope is the runner's login ─────
+
+
+async def _persisted_launch(orch) -> None:
+    """Wait for the background ``launch_credential`` row writes."""
+    tasks = [t for t in list(getattr(orch, "_bg_tasks", ()))
+             if (t.get_name() or "").startswith("launch-credential-")]
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.fixture
+def on_runner():
+    """This daemon is a broker runner (not the refresh authority) holding envelopes for the
+    account. Whether it holds a usable Remote Control envelope is what the env fixture's
+    ``remote_control_env_for`` / ``remote_control_readiness`` patches answer."""
+    with patch(f"{_ORCH}.is_refresh_authority", return_value=False), \
+            patch(f"{_ORCH}._runner_uses_envelope", return_value=True):
+        yield
+
+
+@pytest.mark.asyncio
+async def test_a_runner_session_launches_on_the_rc_envelope(env, on_runner) -> None:
+    seen = _capture_spawn_env(env.orch)
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+    assert seen[-1]["CLAUDE_CODE_OAUTH_TOKEN"] == SLOT_TOKEN
+    assert seen[-1]["CLAUDE_CODE_ORGANIZATION_UUID"] == "org-1"
+    assert rec.launch_credential == "slot"
+    assert rec.remote_control_unavailable_reason is None       # no longer "runner"
+    assert rec.remote_control_url == URL                       # the spawn-time enable ran
+    await _persisted_launch(env.orch)
+    assert (await _row(rec.id)).launch_credential == "slot"    # visible to the primary
+
+
+@pytest.mark.asyncio
+async def test_a_runner_without_an_rc_envelope_is_login_needed(env, on_runner) -> None:
+    seen = _capture_spawn_env(env.orch)
+    with patch(f"{_ORCH}.remote_control_env_for", return_value=None), \
+            patch(f"{_ORCH}.remote_control_readiness", return_value="login_needed"):
+        rec = await env.make()
+        assert "CLAUDE_CODE_ORGANIZATION_UUID" not in seen[-1]
+        assert rec.launch_credential != "slot"
+        assert rec.remote_control_unavailable_reason == rc.REASON_LOGIN_NEEDED
+        assert _rc_sent(env.control) == []
+        with pytest.raises(rc.RemoteControlError) as ei:
+            await env.orch.set_remote_control(rec.id, True)
+    assert str(ei.value) == rc.LOGIN_NEEDED_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_a_creds_sync_pushes_a_new_rc_token_into_live_runner_sessions(
+        env, on_runner, caplog) -> None:
+    caplog.set_level(logging.INFO)
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+    driver = env.orch._drivers[rec.id]
+    pushed: list[str] = []
+
+    async def _push(token: str) -> None:
+        pushed.append(token)
+    driver.push_oauth_token = _push
+    fresh = "sk-ant-oat01-NEXT-GENERATION"
+    with patch(f"{_ORCH}.slot_access_token", return_value=fresh):
+        await env.orch.remote_control_credentials_synced()
+        await env.orch.remote_control_credentials_synced()
+    assert pushed == [fresh]                                  # once per new token
+    assert env.orch._drivers[rec.id] is driver
+    assert fresh not in caplog.text and SLOT_TOKEN not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_failed_runner_push_is_retried_on_the_next_sync(env, on_runner) -> None:
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+    driver = env.orch._drivers[rec.id]
+    calls: list[str] = []
+
+    async def _push(token: str) -> None:
+        calls.append(token)
+        if len(calls) == 1:
+            raise rc.RemoteControlError(rc.REMOTE_CONTROL_FAILED, "no reply")
+    driver.push_oauth_token = _push
+    with patch(f"{_ORCH}.slot_access_token", return_value="sk-ant-oat01-NEW"):
+        await env.orch.remote_control_credentials_synced()
+        await env.orch.remote_control_credentials_synced()
+        await env.orch.remote_control_credentials_synced()
+    assert len(calls) == 2 and env.orch._drivers[rec.id] is driver
+
+
+@pytest.mark.asyncio
+async def test_the_authority_ignores_creds_syncs(env) -> None:
+    upkeep = []
+
+    async def _upkeep() -> None:
+        upkeep.append(1)
+    env.orch._maintain_remote_control_logins = _upkeep
+    assert env.orch.remote_control_credentials_synced() is None
+    assert upkeep == []
+
+
+@pytest.mark.asyncio
+async def test_runner_toggle_off_respawns_onto_the_inference_envelope(env, on_runner) -> None:
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+    first = env.orch._drivers[rec.id]
+    env.control.replies = [{}]
+    await env.orch.set_remote_control(rec.id, False)
+    assert env.orch._drivers[rec.id] is not first
+    assert rec.launch_credential != "slot"
+    assert rec.id not in env.orch._rc_token_fps()
+
+
+@pytest.mark.asyncio
+async def test_runner_toggle_off_mid_turn_revokes_at_a_later_creds_sync(env, on_runner) -> None:
+    env.control.replies = [ON_REPLY]
+    rec = await env.make()
+    first = env.orch._drivers[rec.id]
+    rec.status = "working"
+    env.control.replies = [{}]
+    await env.orch.set_remote_control(rec.id, False)
+    assert env.orch._drivers[rec.id] is first and rec.launch_credential == "slot"
+    pushed: list[str] = []
+
+    async def _push(token: str) -> None:
+        pushed.append(token)
+    first.push_oauth_token = _push
+    with patch(f"{_ORCH}.slot_access_token", return_value="sk-ant-oat01-ROTATED"):
+        await env.orch.remote_control_credentials_synced()
+    assert pushed == []                                 # a revoked CLI is never renewed
+    rec.status = "idle"
+    await env.orch.remote_control_credentials_synced()
+    assert env.orch._drivers[rec.id] is not first
+    assert rec.launch_credential != "slot"
+
+
 @pytest.mark.asyncio
 async def test_the_sweep_pushes_a_refreshed_token_to_live_slot_sessions(env, caplog) -> None:
     caplog.set_level(logging.DEBUG)

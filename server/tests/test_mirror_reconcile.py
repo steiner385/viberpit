@@ -214,6 +214,48 @@ async def test_session_row_liveness_partitions_against_a_real_db(tmp_path):
     assert await o._session_row_liveness([]) == (set(), set())
 
 
+@pytest.mark.asyncio
+async def test_liveness_refreshes_a_foreign_mirrors_launch_credential(tmp_path, monkeypatch):
+    """A runner's Remote Control session persists ``launch_credential = "slot"`` on its row;
+    the primary's mirror picks it up on the reconcile query, so it stops counting as owning
+    the slot's token family. A row this daemon owns is never overwritten from the DB."""
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby-test")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    from server.db import init_db, db_session
+    from server.db.models import Session as DbSession
+
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'launch.db'}")
+    async with db_session() as db:
+        db.add(DbSession(id="rocky-rc", name="R", account_name="acct", host="rocky",
+                         engine_session_id=None, status="idle", cwd="/tmp",
+                         launch_credential="slot"))
+        db.add(DbSession(id="mine", name="M", account_name="acct", host="dobby-test",
+                         engine_session_id=None, status="idle", cwd="/tmp",
+                         launch_credential="slot"))
+    o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
+    foreign, mine = _rec(o, "rocky-rc", host="rocky"), _rec(o, "mine", host="dobby-test")
+    assert o.live_session_owns_slot_family("acct") is True        # unrecorded: owning
+    await o._session_row_liveness(["rocky-rc", "mine"])
+    assert foreign.launch_credential == "slot"
+    assert mine.launch_credential is None
+    assert o.live_session_owns_slot_family("acct") is False
+
+
+def test_a_foreign_row_maps_its_launch_credential_a_local_row_does_not(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setenv("VIBERPIT_HOST_NAME", "dobby-test")
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+
+    def row(host):
+        return SimpleNamespace(id="s", name="n", account_name="a", engine="claude_code",
+                               engine_session_id="", cwd="/tmp", repo=None, status="idle",
+                               name_is_auto=False, permission_mode="default",
+                               created_at=None, host=host, launch_credential="slot")
+    assert SessionOrchestrator._record_from_row(row("rocky")).launch_credential == "slot"
+    assert SessionOrchestrator._record_from_row(row("dobby-test")).launch_credential is None
+    assert SessionOrchestrator._record_from_row(row(None)).launch_credential is None
+
+
 # ---------------------------------------------------------------------------
 # Loop wiring: reconcile is NOT paced by the autopilot tick (#1033)
 # ---------------------------------------------------------------------------

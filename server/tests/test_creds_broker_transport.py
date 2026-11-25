@@ -68,9 +68,11 @@ class _Runner:
         return res
 
 
-def _mint_one(monkeypatch):
+def _mint_one(monkeypatch, rc=()):
     env = ce.Envelope("a", "setup_token", "tok", None, 2)
     monkeypatch.setattr("server.sessions.claude_authority.mint_envelopes", lambda names: [env])
+    monkeypatch.setattr("server.sessions.claude_authority.mint_remote_control_envelopes",
+                        lambda names: list(rc))
     monkeypatch.setattr("viberpit.accounts._anthropic_account_names", lambda: ["a"])
 
 
@@ -168,3 +170,119 @@ def test_push_without_a_readable_store_still_pushes_envelopes(monkeypatch, caplo
     assert out == {"r1": {"a": 2}}
     assert ok.calls[0][2] == {}
     assert any(r.levelno == logging.WARNING and "mcp view" in r.getMessage() for r in caplog.records)
+
+
+# --- Remote Control envelopes ride the same push in their own field -------------------------
+
+RC_ENV = ce.Envelope("a", ce.OAUTH_ACCESS, "rc-AT-secret", 9e9, 4, org_uuid="org-1")
+
+
+def _rc_wire(gen=4, token="rc-AT-secret", **over):
+    return {"account": "a", "kind": "oauth_access", "token": token, "expires_at": 9e9,
+            "generation": gen, "org_uuid": "org-1", **over}
+
+
+def test_push_carries_rc_envelopes_beside_the_inference_ones(monkeypatch):
+    _mint_one(monkeypatch, rc=[RC_ENV])
+    monkeypatch.setattr("viberpit.creds.read_shared_mcp", dict)
+    ok = _Runner()
+    asyncio.run(_fleet({"dobby": _Runner(), "r1": ok}).push_credentials())
+    envelopes, _lease, kw = ok.calls[0]
+    assert [e["kind"] for e in envelopes] == ["setup_token"]          # inference unchanged
+    assert kw["rc_envelopes"] == [_rc_wire()]
+    assert "refresh" not in json.dumps(kw).lower()
+
+
+def test_push_without_rc_envelopes_leaves_the_wire_as_before(monkeypatch):
+    _mint_one(monkeypatch)
+    monkeypatch.setattr("viberpit.creds.read_shared_mcp", dict)
+    ok = _Runner()
+    asyncio.run(_fleet({"dobby": _Runner(), "r1": ok}).push_credentials())
+    assert "rc_envelopes" not in ok.calls[0][2]
+
+
+def test_a_failed_rc_mint_never_costs_the_inference_lease(monkeypatch, caplog):
+    _mint_one(monkeypatch)
+    monkeypatch.setattr("viberpit.creds.read_shared_mcp", dict)
+
+    def boom(names):
+        raise OSError("slot unreadable")
+    monkeypatch.setattr("server.sessions.claude_authority.mint_remote_control_envelopes", boom)
+    ok = _Runner()
+    with caplog.at_level(logging.INFO, logger=fo.log.name):
+        out = asyncio.run(_fleet({"dobby": _Runner(), "r1": ok}).push_credentials())
+    assert out == {"r1": {"a": 2}} and "rc_envelopes" not in ok.calls[0][2]
+    assert any(r.levelno == logging.WARNING and "remote control" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_a_runner_behind_on_rc_generations_is_a_warning(monkeypatch, caplog):
+    _mint_one(monkeypatch, rc=[RC_ENV])
+    monkeypatch.setattr("viberpit.creds.read_shared_mcp", dict)
+
+    class _RcRunner(_Runner):
+        async def creds_sync(self, envelopes, lease_s, **kw):
+            res = await super().creds_sync(envelopes, lease_s, **kw)
+            res["rc_acks"] = {"a": 3}
+            return res
+    with caplog.at_level(logging.INFO, logger=fo.log.name):
+        asyncio.run(_fleet({"dobby": _Runner(), "r1": _RcRunner()}).push_credentials())
+    assert "behind on remote control accounts=['a']" in caplog.text
+    assert "rc-AT-secret" not in caplog.text
+
+
+def _rpc(tmp_path, monkeypatch, orchestrator=None):
+    monkeypatch.setenv("VIBERPIT_CLAUDE_CREDS_DIR", str(tmp_path))
+    ce.reset_runner_store()
+    app = _App()
+    app.state.rpc = {}
+    app.state.orchestrator = orchestrator    # class-level state: always (re)set
+    register_creds(app)
+    return app.state.rpc["creds_sync"]
+
+
+def test_creds_sync_rpc_stores_rc_envelopes_and_acks_them(tmp_path, monkeypatch):
+    sync = _rpc(tmp_path, monkeypatch)
+    try:
+        res = asyncio.run(sync({"envelopes": [_wire(gen=3)], "lease_s": 60,
+                                "rc_envelopes": [_rc_wire()]}))
+        assert res == {"acks": {"a": 3}, "rc_acks": {"a": 4}}
+        held = ce.rc_runner_store().launch_envelope("a")
+        assert (held.token, held.org_uuid) == ("rc-AT-secret", "org-1")
+        assert ce.runner_store().launch_token("a") == "tok"           # inference untouched
+        # A superseded rotation is refused; the ack still names the higher generation.
+        res = asyncio.run(sync({"envelopes": [_wire(gen=3)], "lease_s": 60,
+                                "rc_envelopes": [_rc_wire(gen=2, token="old")]}))
+        assert res["rc_acks"] == {"a": 4}
+        # An edge that vends none (or an old edge, which never sends the field): dropped.
+        res = asyncio.run(sync({"envelopes": [_wire(gen=3)], "lease_s": 60}))
+        assert res == {"acks": {"a": 3}}
+        assert ce.rc_runner_store().launch_envelope("a") is None
+    finally:
+        ce.reset_runner_store()
+
+
+def test_malformed_rc_envelopes_are_skipped_never_fail_the_sync(tmp_path, monkeypatch):
+    sync = _rpc(tmp_path, monkeypatch)
+    try:
+        bad = [{"account": "a"}, _rc_wire(kind="setup_token"), _rc_wire(org_uuid=None), "x"]
+        res = asyncio.run(sync({"envelopes": [_wire(gen=3)], "lease_s": 60,
+                                "rc_envelopes": bad}))
+        assert res == {"acks": {"a": 3}}
+        assert ce.rc_runner_store().launch_envelope("a") is None
+    finally:
+        ce.reset_runner_store()
+
+
+def test_creds_sync_tells_the_orchestrator(tmp_path, monkeypatch):
+    calls = []
+
+    class _Orch:
+        def remote_control_credentials_synced(self):
+            calls.append(1)
+    sync = _rpc(tmp_path, monkeypatch, orchestrator=_Orch())
+    try:
+        asyncio.run(sync({"envelopes": [], "lease_s": 60, "rc_envelopes": [_rc_wire()]}))
+        assert calls == [1]
+    finally:
+        ce.reset_runner_store()
