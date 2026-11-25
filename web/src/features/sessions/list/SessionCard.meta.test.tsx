@@ -133,3 +133,11 @@ describe('SessionCard display fallback badge', () => {
     expect(screen.queryByTestId('card-display-fallback')).toBeNull()
   })
 })
+
+describe('SessionCard remote display label', () => {
+  it('labels a remote session with its target host', () => {
+    renderCard({ ...base, displayMode: 'remote', displayTargetHost: 'dobby' })
+    expect(screen.getByTestId('card-desktop-remote')).toHaveTextContent('on dobby')
+    expect(screen.queryByTestId('card-display-fallback')).toBeNull()
+  })
+})
