@@ -128,6 +128,12 @@ class NativeDisplay:
     def available(self) -> bool:
         return self._usable(self._current())
 
+    def current_session(self) -> DesktopSession | None:
+        """The cached, usable desktop (None when unavailable or in the Xvfb pool). Read-only;
+        callers ``await refresh()`` first. The display bridge reads the desktop through this."""
+        cur = self._current()
+        return cur if self._usable(cur) else None
+
     def unavailable_reason(self) -> str | None:
         cur = self._current()
         if self._in_pool(cur):

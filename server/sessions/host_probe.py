@@ -63,6 +63,10 @@ CAPACITY_ALARM = CapacityAlarm()
 
 Fetch = Callable[[str], Awaitable[dict]]
 
+# How often probe_loop re-reads every host's /info. The display bridge's fail-closed
+# silence window is a multiple of it (server/sessions/display_bridge.py).
+PROBE_INTERVAL_S = 30.0
+
 __all__ = ["probe_host", "probe_all", "probe_loop", "default_fetch",
            "FENCED_REACHABLE_PREFIXES"]
 
@@ -119,7 +123,8 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
                        protocol=daemon_proto, load_avg=info.get("loadAvg"),
                        mem_available_mb=info.get("memAvailableMb"),
                        active_sessions=info.get("activeSessions"),
-                       engines=engines, platforms=_platforms_snapshot(info))
+                       engines=engines, platforms=_platforms_snapshot(info),
+                       display_bridge=_display_bridge_snapshot(info))
         # Gate 1 — protocol: a daemon speaking another RPC protocol is never dispatchable.
         if daemon_proto is not None and daemon_proto != PROTOCOL_VERSION:
             values.update(healthy=False, last_error=(
@@ -234,6 +239,15 @@ def _platforms_snapshot(info: dict) -> list | None:
     return raw if isinstance(raw, list) else None
 
 
+def _display_bridge_snapshot(info: dict) -> dict | None:
+    """The `/info.displayBridge` dict ({accepts, active}) to persist, or None for a daemon
+    that does not advertise one (older, or its bridge is disabled)."""
+    from server.sessions.display_bridge import DISPLAY_BRIDGE_INFO_KEY
+
+    raw = info.get(DISPLAY_BRIDGE_INFO_KEY)
+    return raw if isinstance(raw, dict) else None
+
+
 async def probe_all(*, fetch: Fetch | None = None,
                     is_ancestor: IsAncestor = edge_is_ancestor) -> int:
     """Probe every enabled host. Returns how many were probed.
@@ -299,7 +313,7 @@ async def _deploy_excused(hosts) -> set[str]:
             or (deploying and (h.last_error or "").startswith(FENCED_REACHABLE_PREFIXES))}
 
 
-async def probe_loop(interval_s: float = 30.0, *, fetch: Fetch | None = None,
+async def probe_loop(interval_s: float = PROBE_INTERVAL_S, *, fetch: Fetch | None = None,
                      stop: asyncio.Event | None = None) -> None:
     """Probe every enabled host forever, every *interval_s* seconds.
 

@@ -460,6 +460,7 @@ def create_daemon_app() -> FastAPI:
 
     @app.get("/info")
     async def info() -> dict:
+        from server.sessions.display_bridge import DISPLAY_BRIDGE_INFO_KEY
         from server.sessions.host_engines import ENGINES_INFO_KEY, build_engines_info
         from server.sessions.host_platforms import (
             PLATFORMS_INFO_KEY, build_platforms_info, configured_platforms)
@@ -476,9 +477,13 @@ def create_daemon_app() -> FastAPI:
         # Absent on a daemon older than this change — the edge reads that as Linux only.
         platforms = build_platforms_info(await _platform_probe.advertised(
             configured_platforms(get_settings().host_platforms)))
+        # Which sources may draw on this desktop, and which bridges are up. None when the
+        # daemon runs no bridge (kill switch off, or no native display).
+        bridge = getattr(app.state, "display_bridge", None)
         return {"sha": running_git_sha(), "checkoutSha": checkout_git_sha(),
                 "protocol": proto.PROTOCOL_VERSION, ENGINES_INFO_KEY: engines,
                 PLATFORMS_INFO_KEY: platforms,
+                DISPLAY_BRIDGE_INFO_KEY: bridge.info() if bridge is not None else None,
                 proto.CAPABILITIES_INFO_KEY: list(proto.DAEMON_CAPABILITIES),
                 "epoch": _app_epoch, **_capacity_snapshot(active),
                 "admittedOverCap": admitted_over_cap}
