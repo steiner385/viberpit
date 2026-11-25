@@ -35,15 +35,17 @@ class _Orch:
     """A bare SessionOrchestrator over an isolated DB, with the driver/prompt/push
     seams recorded instead of real."""
 
-    def __init__(self, records, *, send_result="sent"):
+    def __init__(self, records, *, send_result="sent", driver=True):
         self.o = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
         self.o._records = {r.id: r for r in records}
         self.prompts: list[tuple[str, str, object]] = []
         self.pushes: list[tuple] = []
+        self.ensured: list[str] = []
         self.send_result = send_result
 
         async def ensure_driver(sid, identity):
-            return object()
+            self.ensured.append(sid)
+            return object() if driver else None
 
         async def send_prompt(sid, text, *a, **k):
             # The snooze is cleared BEFORE the wake prompt goes out, so the turn it
@@ -56,14 +58,14 @@ class _Orch:
 
 @pytest.fixture
 def orch(isolated_db, monkeypatch):
-    async def seed(*records, send_result="sent"):
+    async def seed(*records, send_result="sent", driver=True):
         from server.db import db_session
         from server.db.models import Session as DbSession
         async with db_session() as db:
             for r in records:
                 db.add(DbSession(id=r.id, name=r.name, account_name="a", cwd="/tmp",
                                  snooze=r.snooze))
-        h = _Orch(records, send_result=send_result)
+        h = _Orch(records, send_result=send_result, driver=driver)
 
         async def notify(*a, **k):
             h.pushes.append((a, k))
@@ -177,6 +179,69 @@ def test_sweep_wakes_only_due_timed_snoozes_and_drops_ended_ones(orch):
         assert h.o._records["due"].snooze is None
         assert h.o._records["later"].snooze and h.o._records["forever"].snooze
         assert h.o._records["gone"].snooze is None and h.pushes and len(h.pushes) == 1
+    asyncio.run(run())
+
+
+def test_sweep_leaves_sessions_stamped_for_another_live_host_to_their_owner(orch, monkeypatch):
+    """#3475/#3476: the primary holds every fleet row, so its sweep saw a rocky
+    session's due snooze, cleared the shared row, hit the lease fence and pushed a
+    false "could not be resumed". It must skip a foreign record in every branch."""
+    monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
+    monkeypatch.setattr(orch_mod, "self_host_name", lambda: "dobby")
+
+    async def run():
+        foreign_due = _rec("rocky-due", host="rocky", snooze=_snooze(by="session", hours=1))
+        foreign_ended = _rec("rocky-ended", status="ended", host="rocky",
+                             snooze=_snooze(hours=1))
+        mine = _rec("mine", snooze=_snooze(by="session", hours=1))
+        h = await orch(foreign_due, foreign_ended, mine)
+
+        async def enabled():
+            return frozenset({"dobby", "rocky"})
+        h.o._enabled_host_names = enabled
+        woken = await h.o._wake_due_snoozes_once(NOW + timedelta(hours=3))
+        assert woken == 1 and h.ensured == ["mine"]
+        assert h.o._records["mine"].snooze is None
+        for sid in ("rocky-due", "rocky-ended"):
+            assert h.o._records[sid].snooze is not None
+            assert await _row_snooze(sid) is not None
+        assert h.pushes == []
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("status, level", [("ended", "INFO"), ("queued", "INFO"),
+                                           ("idle", "WARNING")])
+def test_no_driver_wake_is_info_when_the_session_ended_or_queued(orch, caplog, status, level):
+    """#3474: ensure_driver declines by design once the session ended or is queued;
+    the push + audit row tell the person, so it must not file an auto-error."""
+    async def run():
+        h = await orch(_rec(snooze=_snooze(by="session")), driver=False)
+
+        async def ensure_driver(sid, identity):
+            h.o._records[sid].status = status
+            return None
+        h.o.ensure_driver = ensure_driver
+        with caplog.at_level("INFO", logger=orch_mod.__name__):
+            assert await h.o.wake_session("s1", cause="timer") is True
+        [rec] = [r for r in caplog.records if "wake_prompt_undelivered" in r.getMessage()]
+        assert rec.levelname == level and f"status={status}" in rec.getMessage()
+        [(args, _)] = h.pushes
+        assert "could not be resumed" in args[2]
+    asyncio.run(run())
+
+
+def test_no_driver_wake_of_a_popped_record_is_info(orch, caplog):
+    async def run():
+        h = await orch(_rec(snooze=_snooze(by="session")))
+
+        async def ensure_driver(sid, identity):
+            h.o._records.pop(sid)
+            return None
+        h.o.ensure_driver = ensure_driver
+        with caplog.at_level("INFO", logger=orch_mod.__name__):
+            assert await h.o.wake_session("s1", cause="timer") is True
+        [rec] = [r for r in caplog.records if "wake_prompt_undelivered" in r.getMessage()]
+        assert rec.levelname == "INFO" and "status=gone" in rec.getMessage()
     asyncio.run(run())
 
 
