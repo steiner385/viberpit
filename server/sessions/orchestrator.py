@@ -2740,18 +2740,20 @@ class SessionOrchestrator:
             log.debug("completion.worktree_tie_failed sid=%s", rec.id, exc_info=True)
             return False
 
-    async def _pr_owner_elsewhere(self, session_id: str, repo: str, number: int,
+    async def _pr_owner_elsewhere(self, session_id: str, repo: str, number: int | None,
                                   branch: str) -> str | None:
         """The id of another live (non-archived) session that owns ``repo#number``:
         its head *branch* is that session's ``branch`` / ``authored_branches`` (DB rows,
         so sessions on other hosts count) or one of its in-memory ``foreign_pr_refs``,
-        or the PR is its PR Doctor dispatch origin. None when nobody else holds it."""
+        or the PR is its PR Doctor dispatch origin (needs *number*; None skips that).
+        None when nobody else holds it."""
         from sqlalchemy import func as sa_func, or_, select as sa_select
         target = (repo.lower(), number)
 
         def _owns(row) -> bool:
             origin = self._origin_pr_ref(row)
-            if origin is not None and (origin[0].lower(), origin[1]) == target:
+            if (number is not None and origin is not None
+                    and (origin[0].lower(), origin[1]) == target):
                 return True
             return ((row.repo or "").lower() == target[0]
                     and (branch == row.branch or branch in (row.authored_branches or ())))
@@ -18560,8 +18562,45 @@ class SessionOrchestrator:
             branches += [i.head_ref for i in population.cached(rec.repo)
                          if i.head_sha == head_sha and i.head_ref
                          and i.state in ("open", "draft")]
-        for br in branches:
+        for br in dict.fromkeys(branches):
+            if br in (rec.authored_branches or []):
+                continue
+            # `git checkout -B x origin/<b>` tracks <b> by default: inspecting another
+            # live session's PR branch must not adopt it (#3485).
+            numbers = [i.number for i in population.cached(rec.repo)
+                       if i.head_ref == br] if population is not None else []
+            if await self._pushed_branch_owned_elsewhere(rec, br, numbers):
+                continue
             await self._note_authored_branch(session_id, br)
+
+    async def _pushed_branch_owned_elsewhere(self, rec, branch: str,
+                                             numbers: list[int]) -> bool:
+        """Is *branch* (push evidence of *rec*'s worktree) another live session's PR
+        branch, with no own ``gh pr create`` of a PR on it to override? The origin PR
+        is already linked before push evidence runs. Failure counts as owned."""
+        candidates: list[int | None] = list(numbers) or [None]
+        owner: str | None = None
+        try:
+            for number in candidates:
+                owner = await self._pr_owner_elsewhere(rec.id, rec.repo, number, branch)
+                if owner is not None:
+                    break
+        except Exception:
+            log.debug("completion.pr_owner_lookup_failed sid=%s", rec.id, exc_info=True)
+            owner = "unknown"
+        if owner is None:
+            return False
+        if numbers:
+            try:
+                created = await self._session_created_prs(rec.id) or set()
+            except Exception:
+                log.debug("completion.created_prs_failed sid=%s", rec.id, exc_info=True)
+                created = set()
+            if any(r.lower() == rec.repo.lower() and n in numbers for r, n in created):
+                return False
+        log.info("completion.pushed_branch_owned_elsewhere sid=%s branch=%s owner=%s",
+                 rec.id, branch, owner)
+        return True
 
     async def _autopilot_resolve_pr_intent(self, rec, goal_text, goal_source,
                                            pr_facts, transcript_tail) -> "str | None":

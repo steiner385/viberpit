@@ -1226,10 +1226,11 @@ def _record_authored(orch):
 
 
 @pytest.mark.asyncio
-async def test_refresh_links_the_pushed_upstream_branch(orch, monkeypatch):
+async def test_refresh_links_the_pushed_upstream_branch(orch, monkeypatch, tmp_path):
     """Session whose PR head branch ≠ worktree branch: the branch HEAD pushes to is
     linked, so the PR on it reaches the facts."""
     from server.github.pr_status import PullRequestInfo
+    await _init_db(tmp_path)
     pr = PullRequestInfo(number=77, url="u", state="open", checks="passing", title="t",
                          auto_merge_enabled=True)
     monkeypatch.setattr("viberpit.worktrees.push_evidence", lambda cwd: ("fix/remote", None))
@@ -1241,8 +1242,48 @@ async def test_refresh_links_the_pushed_upstream_branch(orch, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_refresh_links_an_open_pr_by_head_sha(orch, monkeypatch):
+async def test_tracking_another_sessions_branch_does_not_adopt_it(orch, monkeypatch, tmp_path):
+    """#3485 via push evidence: `git checkout -B x origin/<A's branch>` sets an
+    upstream by default, so B merely inspecting live session A's PR branch must not
+    adopt it — neither by upstream nor by head-SHA match."""
     from server.github.pr_status import PullRequestInfo
+    await _init_db(tmp_path)
+    await _add_owner("A", authored=["feat/a"])
+    sha = "b" * 40
+    orch._pr_population = _FakePopulation({"o/r": [PullRequestInfo(
+        number=81, url="u", state="open", checks="failing", title="t", repo="o/r",
+        head_ref="feat/a", head_sha=sha)]})
+    monkeypatch.setattr("viberpit.worktrees.push_evidence", lambda cwd: ("feat/a", sha))
+    _created(orch)
+    _record_authored(orch)
+    orch.pr_for = lambda repo, branch: None
+    facts = await orch._autopilot_refresh_pr_facts("s1")
+    assert "feat/a" not in (orch._records["s1"].authored_branches or [])
+    assert facts.prs == ()
+
+
+@pytest.mark.asyncio
+async def test_tracking_another_sessions_branch_adopts_a_pr_it_created(orch, monkeypatch,
+                                                                       tmp_path):
+    """Same exception as the share rule: this session's own `gh pr create` wins."""
+    from server.github.pr_status import PullRequestInfo
+    await _init_db(tmp_path)
+    await _add_owner("A", authored=["feat/a"])
+    orch._pr_population = _FakePopulation({"o/r": [PullRequestInfo(
+        number=81, url="u", state="open", checks="passing", title="t", repo="o/r",
+        head_ref="feat/a")]})
+    monkeypatch.setattr("viberpit.worktrees.push_evidence", lambda cwd: ("feat/a", None))
+    _created(orch, ("o/r", 81))
+    _record_authored(orch)
+    orch.pr_for = lambda repo, branch: None
+    await orch._autopilot_refresh_pr_facts("s1")
+    assert "feat/a" in orch._records["s1"].authored_branches
+
+
+@pytest.mark.asyncio
+async def test_refresh_links_an_open_pr_by_head_sha(orch, monkeypatch, tmp_path):
+    from server.github.pr_status import PullRequestInfo
+    await _init_db(tmp_path)
     sha = "a" * 40
     open_pr = PullRequestInfo(number=78, url="u", state="open", checks="passing",
                               title="t", auto_merge_enabled=True, repo="o/r",
