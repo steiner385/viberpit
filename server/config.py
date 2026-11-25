@@ -294,7 +294,6 @@ try:
         # host names allowed to bridge onto THIS host's desktop.
         display_bridge_enabled: bool = Field(default=True, alias="VIBERPIT_DISPLAY_BRIDGE_ENABLED")
         display_bridge_accept_from: str = Field(default="", alias="VIBERPIT_DISPLAY_BRIDGE_ACCEPT_FROM")
-        display_bridge_x_start: int = Field(default=150, alias="VIBERPIT_DISPLAY_BRIDGE_X_START")
         display_bridge_x11: bool = Field(default=True, alias="VIBERPIT_DISPLAY_BRIDGE_X11")
         display_bridge_start_timeout_s: float = Field(
             default=15.0, alias="VIBERPIT_DISPLAY_BRIDGE_START_TIMEOUT_S")
@@ -768,9 +767,6 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         display_bridge_accept_from: str = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_DISPLAY_BRIDGE_ACCEPT_FROM", "")
-        )
-        display_bridge_x_start: int = dataclasses.field(
-            default_factory=lambda: int(os.environ.get("VIBERPIT_DISPLAY_BRIDGE_X_START", "150"))
         )
         display_bridge_x11: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_DISPLAY_BRIDGE_X11", "true").lower() in ("1","true","yes","on")

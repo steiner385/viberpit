@@ -58,7 +58,8 @@ Every program a rocky session starts then shows up as a real, separate window on
 - A target misconfiguration (unknown host, self-target, target with no desktop) breaking session spawn on
   that host.
 - Forwarded X11 displays colliding with the Xvfb pool range (`display_start`…+`display_count`), whose
-  orphan sweep would kill them.
+  orphan sweep would kill them. (Avoided by construction since §8 fix round 1: the forward is a path
+  display in a private dir, not a `:N` display number.)
 
 ## Constraints
 
@@ -279,7 +280,8 @@ starting with `/` as a socket path: it connects to that filesystem path only (st
 display`). Evidence: `xeyes` and a headed Chrome started on rocky with that env were listed by
 `xwininfo -root -tree` on dobby's `:0`; without the cookie file the display refuses with
 `Authorization required`. `/tmp/.X11-unix` existence, sticky-bit and squat checks are gone from prep,
-and the forwarded display number (`display_bridge_x_start`) no longer matters.
+and the forwarded display number no longer exists: the `VIBERPIT_DISPLAY_BRIDGE_X_START` setting was
+removed.
 
 **Answer: one `waypipe server` serves many concurrent clients — yes.** The server's Wayland socket
 accepts any number of connections. Both server and client fork one worker per connection (`client-conn`

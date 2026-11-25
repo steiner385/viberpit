@@ -36,7 +36,6 @@ React + TS (Fleet settings).
     false means every host behaves as `local`.
   - `display_bridge_accept_from: str = ""` (`VIBERPIT_DISPLAY_BRIDGE_ACCEPT_FROM`): comma-separated
     source host names allowed to draw here.
-  - `display_bridge_x_start: int = 150` (`VIBERPIT_DISPLAY_BRIDGE_X_START`).
   - `display_bridge_x11: bool = True` (`VIBERPIT_DISPLAY_BRIDGE_X11`).
   - `display_bridge_start_timeout_s: float = 15.0` (`VIBERPIT_DISPLAY_BRIDGE_START_TIMEOUT_S`).
   - `display_bridge_grace_s: float = 60.0` (`VIBERPIT_DISPLAY_BRIDGE_GRACE_S`).
@@ -73,9 +72,9 @@ React + TS (Fleet settings).
 4. **Two sources target one desktop at once** (rocky and a future runner both → dobby). They need
    independent bridges and target-side socket names keyed by source, and tearing one down must not touch
    the other. (Task 4 `test_two_sources_are_independent`.)
-5. ~~**`display_bridge_x_start` lands inside the Xvfb pool range.**~~ Moot since spec §8 fix round 1:
-   the X11 forward is a path display in the private dir, with no display number to collide. (Task 5
-   `test_x11_leg_follows_only_its_setting`.)
+5. ~~**The bridge's X display lands inside the Xvfb pool range.**~~ Moot since spec §8 fix round 1:
+   the X11 forward is a path display in the private dir, with no display number to collide, and the
+   `display_bridge_x_start` setting was removed. (Task 5 `test_x11_leg_follows_only_its_setting`.)
 
 ---
 
@@ -197,7 +196,7 @@ React + TS (Fleet settings).
   wayland_display, kind), `accepted_sources`, and Task 1 §8 argv.
 - Produces:
   - `class DisplayBridge`, constructed as
-    `DisplayBridge(*, native: NativeDisplay, accept_from: frozenset[str], ssh_dest: Callable[[str], str | None], x11_enabled: bool, x_start: int, grace_s: float, silence_s: float, spawn=asyncio.create_subprocess_exec, clock=time.monotonic)`.
+    `DisplayBridge(*, native: NativeDisplay, accept_from: frozenset[str], ssh_dest: Callable[[str], str | None], x11_enabled: bool, grace_s: float, silence_s: float, spawn=asyncio.create_subprocess_exec, clock=time.monotonic)`.
   - `async def ensure(self, sources: list[str], ssh_dests: dict[str, str]) -> list[dict]`. It returns
     one dict per known source:
     `{"source": str, "state": "up"|"starting"|"stopping"|"not_accepted"|"desktop_unavailable"|"failed", "legs": ["wayland","x11"], "since": float|None}`.
@@ -266,7 +265,7 @@ React + TS (Fleet settings).
   - `test_remote_env_wayland_only_when_x11_absent`.
   - `test_remote_env_dead_socket_is_bridge_unavailable`.
   - `test_remote_env_foreign_uid_is_wrong_user`.
-  - `test_x_start_inside_pool_disables_x11_leg`.
+  - `test_x11_leg_follows_only_its_setting` (replaced the x_start/Xvfb-pool test in fix round 1).
   - Orchestrator:
     - `test_create_session_with_target_and_live_bridge_is_remote_and_persists_target_host`.
     - `test_create_session_target_but_dead_bridge_is_virtual_with_reason`.
