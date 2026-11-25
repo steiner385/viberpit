@@ -861,7 +861,8 @@ def _remote_control_view(record: Any) -> dict[str, Any]:
         # is actually open.
         "remoteControl": on,
         "remoteControlState": remote_control_mod.display_state(
-            available=available, reason=reason, effective_on=on, url=url),
+            available=available, reason=reason, effective_on=on, url=url,
+            live=not getattr(record, "detached", False)),
         "remoteControlOverride": override,
         "remoteControlUrl": url,
         "remoteControlAvailable": available,

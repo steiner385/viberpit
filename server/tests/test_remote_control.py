@@ -1690,3 +1690,28 @@ async def test_a_pinned_login_is_not_upgraded(env) -> None:
 def test_display_state_matrix(available, reason, on, url, state) -> None:
     assert rc.display_state(available=available, reason=reason, effective_on=on,
                             url=url) == state
+
+
+@pytest.mark.parametrize("on,url,state", [
+    (True, None, "standby"),     # on, no CLI process: connects when the session runs
+    (True, URL, "standby"),      # a stored URL from the last run is dead once detached
+    (False, None, "off"),
+])
+def test_a_detached_session_is_standby_not_connecting(on, url, state) -> None:
+    assert rc.display_state(available=True, reason=None, effective_on=on, url=url,
+                            live=False) == state
+
+
+def test_payload_reports_standby_for_a_detached_session() -> None:
+    rec: Any = SessionRecord(id=SID, name="n", account="a", engine=AgentEngine.CLAUDE_CODE,
+                             engine_session_id="c", cols=80, rows=24, cwd="/tmp")
+    rec.remote_control_available = True
+    rec.remote_control = True
+    rec.remote_control_url = URL
+    rec.detached = True
+    with patch.dict(os.environ, _ENV):
+        p = _payload(rec)
+    assert p["remoteControlState"] == "standby"
+    rec.detached = False
+    with patch.dict(os.environ, _ENV):
+        assert _payload(rec)["remoteControlState"] == "on"

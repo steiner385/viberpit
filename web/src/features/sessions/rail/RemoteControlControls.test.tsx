@@ -75,6 +75,17 @@ describe('RemoteControlControls', () => {
     expect(screen.queryByTestId('remote-control-connecting')).toBeNull()
   })
 
+  it('says Standby (no link) for a detached session that is on', () => {
+    mount({ enabled: true, override: null, url: URL, state: 'standby' })
+    expect(toggle()).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('remote-control-state')).toHaveTextContent(
+      'Standby · Following the default')
+    expect(screen.getByTestId('remote-control-standby')).toHaveTextContent(
+      'Appears in the Claude apps when this session runs again')
+    expect(screen.queryByTestId('remote-control-connecting')).toBeNull()
+    expect(screen.queryByRole('link', { name: /Open in Claude app/ })).toBeNull()
+  })
+
   it('an unavailable session never reads as connecting', () => {
     mount({ enabled: true, state: 'connecting', unavailableReason: 'login_needed' })
     expect(screen.getByTestId('remote-control-state')).toHaveTextContent('Unavailable')
