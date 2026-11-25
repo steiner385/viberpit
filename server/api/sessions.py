@@ -2504,6 +2504,36 @@ async def session_memory_file(
         _raise_daemon_outdated_or_reraise(exc, "read memory files")
 
 
+@router.post("/{session_id}/sent-files/{tool_use_id}")
+async def session_sent_files(
+    session_id: str,
+    tool_use_id: str,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """``{files: [{path, url, mediaType, reason}]}`` — the files the session's
+    main-thread ``SendUserFile`` call *tool_use_id* sent the user (#3487), each raster
+    image ingested into the attachment store on the daemon that owns the session and
+    served at ``url`` (``/api/attachments/{id}``); anything else ``url: null`` with a
+    short ``reason``. The paths come only from that call in the session's own
+    transcript — the request names a tool call, never a file. Idempotent (a stable,
+    content-addressed row per file). No such call (an unknown id, another tool's, a
+    sub-agent's) 404 ``TOOL_CALL_NOT_FOUND``; unknown session 404; an old daemon 409
+    ``daemon_outdated``."""
+    from server.sessions.sent_files import SentFileError
+    try:
+        return await _get_orchestrator(request).sent_files(session_id, tool_use_id)
+    except SentFileError as exc:
+        log.info("sent files refused for %s tool %s: %s", session_id, tool_use_id, exc.code)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={"code": exc.code}) from exc
+    except KeyError:
+        log.info("sent files refused for %s: session not found", session_id)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except DaemonError as exc:
+        _raise_daemon_outdated_or_reraise(exc, "show sent files")
+
+
 @router.get("/{session_id}/dev-servers")
 async def session_dev_servers(
     session_id: str,

@@ -196,28 +196,82 @@ def created_worktree_candidates(events) -> list[tuple[str, str, float, float]]:
                 out.append((path, branch, start, event.ts))
     return out
 
+class ImageReadError(ToolArgError):
+    """``read_image`` refused a file. ``code`` is a short, stable reason the
+    `SendUserFile` ingest (``sent_files``) reports per file; the message stays the
+    corrective text `share_artifact` hands the model."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+# ``ImageReadError.code`` values.
+IMAGE_NOT_FOUND = "not_found"
+IMAGE_NOT_A_FILE = "not_a_file"
+IMAGE_UNREADABLE = "unreadable"
+IMAGE_TOO_LARGE = "too_large"
+IMAGE_NOT_IMAGE = "not_image"
+
+
 def read_image(value: str) -> tuple[bytes, str]:
     """Read an image the session named, on this host. Returns ``(bytes, media_type)``.
 
-    Refuses (as ``ToolArgError``) a missing or non-regular file, one over the
-    attachment cap, and any content that does not sniff as a supported image.
+    Refuses (as ``ImageReadError``, a ``ToolArgError``) a missing or non-regular
+    file, one over the attachment cap, and any content that does not sniff as a
+    supported image.
     """
     p = Path(value)
     try:
         st = p.stat()
     except FileNotFoundError:
-        raise ToolArgError(f"no such file on this host: {value}") from None
+        raise ImageReadError(IMAGE_NOT_FOUND, f"no such file on this host: {value}") from None
     except OSError as e:
-        raise ToolArgError(f"cannot read {value}: {e.strerror or e}") from None
+        raise ImageReadError(IMAGE_UNREADABLE,
+                             f"cannot read {value}: {e.strerror or e}") from None
     if not p.is_file():
-        raise ToolArgError(f"not a regular file: {value}")
+        raise ImageReadError(IMAGE_NOT_A_FILE, f"not a regular file: {value}")
     if st.st_size > MAX_BYTES:
-        raise ToolArgError(f"{value} is {st.st_size} bytes; the image cap is {MAX_BYTES} bytes")
-    with p.open("rb") as stream:
-        data = stream.read(MAX_BYTES + 1)
+        raise ImageReadError(IMAGE_TOO_LARGE,
+                             f"{value} is {st.st_size} bytes; the image cap is {MAX_BYTES} bytes")
+    try:
+        with p.open("rb") as stream:
+            data = stream.read(MAX_BYTES + 1)
+    except OSError as e:
+        raise ImageReadError(IMAGE_UNREADABLE,
+                             f"cannot read {value}: {e.strerror or e}") from None
     if len(data) > MAX_BYTES:
-        raise ToolArgError("image exceeds attachment size limit")
+        raise ImageReadError(IMAGE_TOO_LARGE, "image exceeds attachment size limit")
     media_type = sniff_media_type(data[:12])
     if media_type not in IMAGE_MEDIA_TYPES:
-        raise ToolArgError(f"{value} is not an image by content (png, jpeg, gif or webp)")
+        raise ImageReadError(IMAGE_NOT_IMAGE,
+                             f"{value} is not an image by content (png, jpeg, gif or webp)")
     return data, media_type
+
+
+async def ingest_image(db, path: str, *, session_id: str, identity: str,
+                       attachment_id: str | None = None):
+    """Copy the image at *path* on this host into the content-addressed attachment
+    store under a row bound to *session_id*; returns the ``Attachment`` row, served
+    at ``/api/attachments/{row.id}``.
+
+    THE session-image ingest — `share_artifact` kind ``image`` and the
+    `SendUserFile` ingest both go through it, so they cannot disagree about what
+    an image is. Runs on the daemon that owns the session: it has the file, and
+    the attachments dir is shared with the edge. With a stable *attachment_id* a
+    repeat call returns the saved row without re-reading the file (idempotent).
+    Raises ``ImageReadError`` for a file ``read_image`` refuses.
+    """
+    import asyncio
+
+    from server.db.models import Attachment
+    from server.sessions.attachments import store_attachment
+
+    if attachment_id is not None:
+        row = await db.get(Attachment, attachment_id)
+        if row is not None:
+            return row
+    data, media_type = await asyncio.to_thread(read_image, path)
+    return await store_attachment(db, data, media_type, session_id=session_id,
+                                  identity=identity, filename=Path(path).name[:255],
+                                  attachment_id=attachment_id)

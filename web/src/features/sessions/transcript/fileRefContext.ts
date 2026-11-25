@@ -26,3 +26,13 @@ export const FileRefContext = createContext<FileRefActions | null>(null)
 export function useFileRefActions(): FileRefActions | null {
   return useContext(FileRefContext)
 }
+
+/**
+ * The id of the archived session whose transcript the read-only reader shows —
+ * the one host with a session but no `FileRefContext` (no live worktree). It lets
+ * a `SendUserFile` card there ask the owning daemon to publish its files (#3487);
+ * the live view needs none, its `FileRefActions.sessionId` is the same id. Here,
+ * beside `FileRefContext`, so the lazy card reads it without splitting another
+ * eager module into a preloaded chunk.
+ */
+export const TranscriptSessionContext = createContext<string | null>(null)

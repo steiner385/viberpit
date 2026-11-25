@@ -26,6 +26,7 @@ import { fetchOlderTurns } from '@/api/transcript'
 import { isValidTimestamp } from '@/lib/relativeTime'
 import { ARCHIVED_PATH } from '@/session/sessionNavState'
 import { TranscriptView } from '@/features/sessions/transcript/TranscriptView'
+import { TranscriptSessionContext } from '@/features/sessions/transcript/fileRefContext'
 import { PageHeader } from '@/ui/PageHeader'
 import { PageContent } from '@/ui/PageContent'
 import { Skeleton } from '@/ui/Skeleton'
@@ -105,15 +106,18 @@ export function ArchivedReviewPage({ sessionId }: { sessionId: string }) {
         ) : state.turns.length === 0 ? (
           <EmptyState icon={<Archive size={32} />} title="No transcript available for this session." />
         ) : (
-          <TranscriptView
-            turns={state.turns}
-            toolDetailMode="auto"
-            thinkingCollapsed={true}
-            onAnswer={() => { /* read-only */ }}
-            earliestTurn={state.earliestTurn}
-            loadingOlder={state.loadingOlder}
-            onLoadOlder={onLoadOlder}
-          />
+          // The session id lets a SendUserFile card publish its files (#3487).
+          <TranscriptSessionContext.Provider value={sessionId}>
+            <TranscriptView
+              turns={state.turns}
+              toolDetailMode="auto"
+              thinkingCollapsed={true}
+              onAnswer={() => { /* read-only */ }}
+              earliestTurn={state.earliestTurn}
+              loadingOlder={state.loadingOlder}
+              onLoadOlder={onLoadOlder}
+            />
+          </TranscriptSessionContext.Provider>
         )}
       </PageContent>
     </div>

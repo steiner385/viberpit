@@ -24,6 +24,8 @@ vi.mock('@/api/hooks', () => ({
   useSessionRecoveryRefs: vi.fn(() => ({ data: undefined })),
 }))
 vi.mock('@/api/transcript', () => ({ fetchOlderTurns: vi.fn() }))
+const { useSentFiles } = vi.hoisted(() => ({ useSentFiles: vi.fn() }))
+vi.mock('@/api/sentFilesHooks', () => ({ useSentFiles }))
 
 const ARCHIVED = [{
   id: 'arc-99', name: 'Implement issue 16', account: 'alice', cwd: '/tmp/x', repo: 'o/r',
@@ -182,6 +184,25 @@ describe('ArchivedReviewPage', () => {
     await user.click(screen.getByRole('button', { name: /restore this session from archive/i }))
     expect(mutate).toHaveBeenCalledWith('arc-99', expect.objectContaining({ onSuccess: expect.any(Function) }))
     expect(await screen.findByTestId('archived-list')).toBeInTheDocument()
+  })
+
+  it('publishes a SendUserFile image under the archived session id and shows it (#3487)', async () => {
+    useSentFiles.mockReturnValue(queryResult({ files: [
+      { path: '/tmp/chart.png', url: '/api/attachments/a9', mediaType: 'image/png', reason: null },
+    ] }))
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue(queryResult({
+      events: [
+        { type: 'turnStart', turnId: 't1' },
+        { type: 'toolCall', turnId: 't1', toolId: 'toolu_9', name: 'SendUserFile', toolKind: 'unknown',
+          input: { files: ['/tmp/chart.png'], status: 'normal' } },
+        { type: 'toolResult', toolId: 'toolu_9', ok: true, payload: { content: [{ type: 'text', text: '1 files delivered to user.' }] } },
+        { type: 'turnEnd', turnId: 't1' },
+      ],
+      earliestTurn: 0, totalTurns: 1,
+    }) as never)
+    renderPage()
+    expect(await screen.findByRole('img', { name: 'chart.png' })).toHaveAttribute('src', '/api/attachments/a9')
+    expect(useSentFiles).toHaveBeenCalledWith('arc-99', 'toolu_9', { enabled: true })
   })
 
   it('shows "Restoring…" and disables the button while unarchive is pending', () => {

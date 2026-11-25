@@ -1483,6 +1483,21 @@ export interface SessionRecoveryRefs {
   refs: RecoveryRef[]
 }
 
+/** One file of a `SendUserFile` call (#3487): `url` (`/api/attachments/{id}`) when the
+ *  owning daemon ingested it as an image, else null with a short `reason`
+ *  (`not_found`, `not_image`, `too_large`, …). `path` is as the call wrote it. */
+export interface IngestedSentFile {
+  path: string
+  url: string | null
+  mediaType: string | null
+  reason: string | null
+}
+
+/** `POST /sessions/{id}/sent-files/{toolUseId}`. */
+export interface SentFilesIngest {
+  files: IngestedSentFile[]
+}
+
 /** `POST /sessions/{id}/worktree/repair`. */
 export interface WorktreeRepairResult {
   repaired: true
