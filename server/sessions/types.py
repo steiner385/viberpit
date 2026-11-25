@@ -174,6 +174,9 @@ class SessionRecord:
     # Why a would-be-native session went virtual (display_policy.resolve_display_decision);
     # mirrors DB Session.display_fallback_reason. None = no fallback.
     display_fallback_reason: str | None = None
+    # The fleet host whose desktop a "remote" session renders on; mirrors DB
+    # Session.display_target_host. None unless display_mode == "remote".
+    display_target_host: str | None = None
     # Move to host (D-17). ``moving_to``: the target host while a move is in flight
     # (the edge overlays its live saga state on every read); ``moved_from`` / ``moved_at``:
     # the last completed move, mirroring the DB columns of the same names.
@@ -412,6 +415,7 @@ class SessionRecord:
             "host": self.host,
             "displayMode": self.display_mode,
             "displayFallbackReason": self.display_fallback_reason,
+            "displayTargetHost": self.display_target_host,
             "movingTo": self.moving_to,
             "movedFrom": self.moved_from,
             "movedAt": iso_utc(self.moved_at),
@@ -504,6 +508,7 @@ class SessionRecord:
             host=d.get("host"),
             display_mode=d.get("displayMode"),
             display_fallback_reason=d.get("displayFallbackReason"),
+            display_target_host=d.get("displayTargetHost"),
             moving_to=d.get("movingTo"),
             moved_from=d.get("movedFrom"),
             moved_at=(datetime.fromisoformat(d["movedAt"]) if d.get("movedAt") else None),

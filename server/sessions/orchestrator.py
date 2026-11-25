@@ -22096,6 +22096,7 @@ class SessionOrchestrator:
             host=getattr(row, "host", None),
             display_mode=getattr(row, "display_mode", None),
             display_fallback_reason=getattr(row, "display_fallback_reason", None),
+            display_target_host=getattr(row, "display_target_host", None),
             moving_to=getattr(row, "moving_to", None),
             moved_from=getattr(row, "moved_from", None),
             moved_at=getattr(row, "moved_at", None),
