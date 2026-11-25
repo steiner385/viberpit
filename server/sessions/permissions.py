@@ -508,6 +508,20 @@ class PermissionRegistry:
                 moved += 1
         return moved
 
+    def settle_elsewhere(self, perm_id: str) -> bool:
+        """Drop *perm_id* because it was settled OUTSIDE this registry — the CLI
+        answered it itself (Remote Control: someone answered in the Claude app) and
+        cancelled the awaiting ``can_use_tool``. No decision is recorded: ViberPit never
+        learned it, so no grant (draft-ready, deploy) may follow from it. Returns True
+        if the card was still pending, False if a ViberPit decision got there first."""
+        rec = self._pending.pop(perm_id, None)
+        if rec is None:
+            return False
+        self._deny_reasons.pop(perm_id, None)
+        if not rec["future"].done():
+            rec["future"].cancel()
+        return True
+
     def deny_all(self, session_id, reason: str | None = None) -> int:
         """Settle every pending prompt of *session_id* as denied. Returns how many
         were actually awaiting (a future already resolved counts for nothing).

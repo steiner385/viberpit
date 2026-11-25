@@ -63,6 +63,7 @@ from .orphaned_asks import (AUTOPILOT_ANSWER_PREFIX, CLOSE_REASON_RESTART,
                             QUESTION_MODE_INTERRUPTED,
                             RESTART_ASK_MESSAGE)
 from .questions import QuestionRegistry
+from . import answered_elsewhere
 from .sdk_contract import is_turn_message
 from .status import SEEDABLE_STATUSES, StatusSignals, derive_status
 from .transcript_repair import (INTERRUPT_TEXT, RESTART_INTERRUPT_TEXT, find_transcript,
@@ -688,6 +689,13 @@ class ClaudeAgentDriver:
         self._source: _MessageSource | None = None
         self._listener: asyncio.Task | None = None
         self._closing: bool = False
+        # Asks the CLI settled because they were answered in the Claude app (Remote
+        # Control), keyed by the asking tool_use id: the outcome is read off that call's
+        # tool_result when it streams in (see _settle_answered_elsewhere).
+        self._answered_elsewhere: dict[str, dict] = {}
+        # Status refreshes scheduled from a cancelled ``can_use_tool`` (which must not
+        # await while unwinding); held here so they are not garbage-collected mid-run.
+        self._status_refreshes: set[asyncio.Task] = set()
 
     @property
     def engine_session_id(self) -> str | None:
@@ -972,7 +980,8 @@ class ClaudeAgentDriver:
         return f"- {q_text} → {answer_str}"
 
     async def _handle_ask_user_question(self, tool_input: dict, turn_id: str,
-                                        parent_tool_use_id: str | None = None) -> PermissionResultDeny:
+                                        parent_tool_use_id: str | None = None,
+                                        tool_use_id: str | None = None) -> PermissionResultDeny:
         """Block the SDK callback, emit ev.Question events, await user answers.
 
         The SDK offers no channel to return an answer via PermissionResultAllow; the
@@ -986,6 +995,7 @@ class ClaudeAgentDriver:
 
         # For each question in the tool call, register a pending entry and emit the event.
         pending: list[tuple[dict, asyncio.Future]] = []
+        qids: list[str] = []
         for q in raw_questions:
             header = q.get("header") or ""
             question_text = q.get("question") or ""
@@ -997,6 +1007,7 @@ class ClaudeAgentDriver:
                 self.session_id, turn_id, header, question_text, options, multi_select,
                 self.identity, parent_tool_use_id=parent_tool_use_id,
             )
+            qids.append(qid)
             self._emit(ev.Question(
                 question_id=qid,
                 turn_id=turn_id,
@@ -1024,7 +1035,15 @@ class ClaudeAgentDriver:
         # Await all answers concurrently (gather preserves order).
         # Each future resolves to (selected, mode) or None (dismissed).
         futs = [fut for _, fut in pending]
-        answers: list[tuple[list[str], str] | None] = await asyncio.gather(*futs)
+        try:
+            answers: list[tuple[list[str], str] | None] = await asyncio.gather(*futs)
+        except asyncio.CancelledError:
+            # The SDK cancels this handler when the CLI settled the ask itself — someone
+            # answered it in the Claude app (Remote Control). Clear the cards now,
+            # synchronously, then let the cancellation unwind.
+            self._settle_cancelled_questions(
+                [(q, qid) for (q, _), qid in zip(pending, qids)], turn_id, tool_use_id)
+            raise
 
         # Question(s) resolved → back to in_progress.
         await self._emit_status()
@@ -1069,6 +1088,98 @@ class ClaudeAgentDriver:
             msg = "\n".join(lines)
 
         return PermissionResultDeny(message=msg)
+
+    def _cancel_via(self) -> str | None:
+        """Who settled an ask whose waiter was cancelled. Our own teardown settles
+        every ask through ``deny_all`` before anything is cancelled, so a cancel that
+        still finds the ask pending — outside a close — is the SDK relaying the CLI's
+        ``control_cancel_request``: the ask was answered in the Claude app."""
+        return None if self._closing else answered_elsewhere.VIA_CLAUDE_APP
+
+    def _settle_cancelled_permission(self, perm_id: str, turn_id: str,
+                                     fut: asyncio.Future, tool_use_id: str | None) -> None:
+        """A ``can_use_tool`` parked on *perm_id* was cancelled. Synchronous by design
+        (it runs while a CancelledError unwinds): resolve the card on the stream, drop
+        it from the registry and schedule the status refresh. Never raises."""
+        try:
+            if self._reg.settle_elsewhere(perm_id):
+                via = self._cancel_via()
+                self._emit(ev.PermissionResolved(
+                    perm_id, turn_id, None if via else False, via=via))
+                if via and tool_use_id:
+                    self._answered_elsewhere[tool_use_id] = {
+                        "kind": "permission", "perm_id": perm_id, "turn_id": turn_id}
+                log.info("driver: permission settled outside ViberPit session=%s perm=%s via=%s",
+                         self.session_id, perm_id, via)
+            elif fut.done() and not fut.cancelled():
+                # A ViberPit decision landed just before the cancel: report it as usual.
+                self._emit(ev.PermissionResolved(perm_id, turn_id, bool(fut.result())))
+            self._schedule_status_refresh()
+        except Exception:
+            log.warning("driver: settling a cancelled permission failed session=%s perm=%s",
+                        self.session_id, perm_id, exc_info=True)
+
+    def _settle_cancelled_questions(self, asked: list[tuple[dict, str]], turn_id: str,
+                                    tool_use_id: str | None) -> None:
+        """The AskUserQuestion twin of :meth:`_settle_cancelled_permission`. A question
+        already answered in ViberPit emitted its own QuestionResolved (done-callback);
+        only the still-pending ones are resolved here."""
+        try:
+            via = self._cancel_via()
+            settled: list[tuple[dict, str]] = []
+            for q, qid in asked:
+                if not self._qreg.settle_elsewhere(qid):
+                    continue
+                settled.append((q, qid))
+                self._emit(ev.QuestionResolved(
+                    question_id=qid, turn_id=turn_id, selected=None,
+                    mode="option" if via else "dismissed", via=via))
+            if settled and via and tool_use_id:
+                self._answered_elsewhere[tool_use_id] = {
+                    "kind": "question", "turn_id": turn_id, "questions": settled}
+            if settled:
+                log.info("driver: question(s) settled outside ViberPit session=%s n=%d via=%s",
+                         self.session_id, len(settled), via)
+            self._schedule_status_refresh()
+        except Exception:
+            log.warning("driver: settling cancelled questions failed session=%s",
+                        self.session_id, exc_info=True)
+
+    def _schedule_status_refresh(self) -> None:
+        """Run :meth:`_emit_status` soon, as a tracked task — the caller is unwinding a
+        cancellation and must not await. Skipped once the driver is closing: its own
+        teardown reports the final status."""
+        if self._closing:
+            return
+        task = asyncio.get_running_loop().create_task(self._emit_status())
+        self._status_refreshes.add(task)
+        task.add_done_callback(self._status_refreshes.discard)
+
+    def _settle_answered_elsewhere(self, result: ev.ToolResult) -> None:
+        """The tool_result of an ask answered in the Claude app arrived: emit a second
+        resolution for the same card carrying what was chosen, as far as the result
+        shows it. Best-effort — an unreadable answer leaves the first frame standing."""
+        rec = self._answered_elsewhere.pop(result.tool_id, None)
+        if rec is None:
+            return
+        content = (result.payload or {}).get("content")
+        via = answered_elsewhere.VIA_CLAUDE_APP
+        try:
+            if rec["kind"] == "permission":
+                self._emit(ev.PermissionResolved(
+                    rec["perm_id"], rec["turn_id"],
+                    answered_elsewhere.permission_allowed(result.ok, content), via=via))
+                return
+            asked = rec["questions"]
+            answers = answered_elsewhere.question_answers(content, [q for q, _ in asked])
+            for (_, qid), selected in zip(asked, answers):
+                if selected is not None:
+                    self._emit(ev.QuestionResolved(
+                        question_id=qid, turn_id=rec["turn_id"], selected=selected,
+                        mode="option", via=via))
+        except Exception:
+            log.warning("driver: reading an answered-elsewhere outcome failed session=%s",
+                        self.session_id, exc_info=True)
 
     def _emit_question_resolved(self, question_id: str, turn_id: str,
                                 fut: asyncio.Future) -> None:
@@ -1152,6 +1263,9 @@ class ClaudeAgentDriver:
         self._condensing = False
         self._condense_started_at = None
         self._pending_hand_back_reason = None
+        # An answered-elsewhere ask whose tool_result never came (the turn was stopped)
+        # has nothing left to report.
+        self._answered_elsewhere.clear()
 
     def _dash_signals(self) -> StatusSignals:
         """Snapshot the live driver state into the inputs of derive_status."""
@@ -1188,7 +1302,9 @@ class ClaudeAgentDriver:
                          tool_name, self.session_id)
                 return PermissionResultDeny(message=why)
         if tool_name == "AskUserQuestion":
-            return await self._handle_ask_user_question(tool_input, turn_id, parent_tool_use_id=pid)
+            return await self._handle_ask_user_question(
+                tool_input, turn_id, parent_tool_use_id=pid,
+                tool_use_id=getattr(ctx, "tool_use_id", None) if ctx is not None else None)
         if is_assistant_kind(self.kind) and not is_mcp_tool(tool_name):
             # An assistant-kind session's model is scoped to our own MCP
             # server only (spec §4.4) — anything else (Bash, a third-party MCP
@@ -1232,7 +1348,17 @@ class ClaudeAgentDriver:
                 session_grant_effective=self._reg.session_grant_effective_for(perm_id)))
             # A prompt is now pending for the user → waiting_input / ready_review.
             await self._emit_status()
-        allowed = await fut
+        try:
+            allowed = await fut
+        except asyncio.CancelledError:
+            # See _handle_ask_user_question: the CLI settled this prompt itself (it was
+            # answered in the Claude app) or the driver is tearing down. Clear the card
+            # now, synchronously, then let the cancellation unwind.
+            if perm_id is not None:
+                self._settle_cancelled_permission(
+                    perm_id, turn_id, fut,
+                    getattr(ctx, "tool_use_id", None) if ctx is not None else None)
+            raise
         # Broadcast the resolution so it rides the same stream as the request
         # frame — the daemon ring replays that frame on a mid-turn reattach, and
         # without a PermissionResolved after it an already-decided permission
@@ -2016,6 +2142,8 @@ class ClaudeAgentDriver:
                 self._turn_produced_output = True
             self._note_progress(e)
             self._emit(e)
+            if isinstance(e, ev.ToolResult) and e.tool_id in self._answered_elsewhere:
+                self._settle_answered_elsewhere(e)
             if isinstance(e, ev.ToolCall) and e.kind is ev.ToolKind.MCP:
                 self._note_mcp_tool_call(e)
             elif isinstance(e, ev.ToolResult) and e.tool_id in self._mcp_tool_calls:
