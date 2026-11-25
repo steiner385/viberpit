@@ -709,6 +709,10 @@ def test_every_remote_method_is_classified():
         # reads above. Fleet-wide multi-host routing is unimplemented (gated behind
         # VIBERPIT_CODEX_REFINE_ENABLED anyway) — see refine_prompt_codex's docstring.
         "refine_prompt_codex",
+        # Remote sessions (plan 2026-11-25): only the primary may use the accounts'
+        # claude.ai logins (constitution II), and its watchers' bus is the primary's.
+        "remote_sessions_list", "remote_session_open", "remote_session_prompt",
+        "remote_session_answer", "_remote_sessions_call",
         "subscribe_events", "unsubscribe_events", "x11_metrics", "adopt_session",
         "daemon_sha", "daemon_pool_stats", "daemon_epoch", "startup_report",
         "maybe_start_queued",
@@ -926,6 +930,8 @@ def test_api_orchestrator_reads_are_all_classified():
         # One-shot Codex-native prompt refinement (#1288), primary-routed like the
         # codex_* reads above — see the GLOBAL-set comment in the sibling test.
         "refine_prompt_codex",
+        # Remote sessions: primary-only — see the GLOBAL-set comment in the sibling test.
+        "remote_sessions_list", "remote_session_prompt", "remote_session_answer",
     }
     EXPLICIT = {"create_session", "list_sessions", "codex_account_status",
                 "codex_invalidate_credentials", "automation_statuses",

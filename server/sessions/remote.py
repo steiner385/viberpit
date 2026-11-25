@@ -85,6 +85,9 @@ SANDBOX_TOGGLE_RPC_TIMEOUT = 2 * DRIVER_SWAP_TIMEOUT_S + 4 * sandbox.PROBE_TIMEO
 # Remote Control: the CLI registers a claude.ai environment before it answers (bounded
 # on the daemon at remote_control.REMOTE_CONTROL_TIMEOUT_S), plus a margin.
 REMOTE_CONTROL_RPC_TIMEOUT = remote_control.REMOTE_CONTROL_TIMEOUT_S + 15.0
+# A remote sessions call may wait out one claude.ai read (list / first events page) and
+# one POST, each bounded by the client's own timeout.
+REMOTE_SESSIONS_RPC_TIMEOUT = 60.0
 
 # PR mutations on the owning daemon (D-15): ``merge_pr`` = a 15s live label read + a 60s
 # ``gh pr merge``; ``ready_merge`` = that read + two 60s ``gh`` calls. Over the 30s client
@@ -154,6 +157,17 @@ def _settings_error(exc: DaemonError) -> Exception:
     code = (exc.data or {}).get("code")
     if exc.err_type == "SettingsError" and code in SETTINGS_CODES:
         return SettingsError(code, exc.message)
+    return exc
+
+
+def _remote_sessions_error(exc: DaemonError) -> Exception:
+    """The exception a remote sessions RPC's error envelope stands for:
+    ``RemoteSessionsError`` for a known code, else the DaemonError itself (an old
+    daemon's UnknownMethod included)."""
+    from server.remote_sessions import service as rs
+    code = (exc.data or {}).get("code")
+    if exc.err_type == "RemoteSessionsError" and code in rs.CODES:
+        return rs.RemoteSessionsError(code, exc.message)
     return exc
 
 
@@ -1506,6 +1520,49 @@ class RemoteOrchestrator:
                                            timeout=REMOTE_CONTROL_RPC_TIMEOUT)
         except DaemonError as exc:
             raise _remote_control_error(exc) from exc
+
+    # --- remote sessions (plan 2026-11-25): Remote Control sessions started outside
+    # ViberPit. Never per-session routed: the fleet sends them to the primary, the only
+    # daemon that may use the accounts' claude.ai logins.
+
+    async def _remote_sessions_call(self, method: str, **params) -> Any:
+        try:
+            return await self._client.call(method, **params,
+                                           timeout=REMOTE_SESSIONS_RPC_TIMEOUT)
+        except DaemonError as exc:
+            raise _remote_sessions_error(exc) from exc
+
+    async def remote_sessions_list(self) -> dict:
+        """``{enabled, sessions, accounts}`` from the primary daemon."""
+        return await self._remote_sessions_call("remote_sessions_list")
+
+    async def remote_session_open(self, session_id: str):
+        """A live :class:`~server.remote_sessions.view.RemoteSessionView`: the bus
+        stream ``remote:<id>`` is joined BEFORE the snapshot RPC, so no event falls
+        between them."""
+        from server.remote_sessions.service import stream_id
+        from server.remote_sessions.view import RemoteSessionView
+        live, release = self._client.subscribe_with_release(stream_id(session_id))
+        try:
+            snap = await self._remote_sessions_call("remote_session_open",
+                                                    session_id=session_id)
+        except BaseException:
+            release()
+            raise
+
+        async def _touch() -> dict:
+            return await self._remote_sessions_call("remote_session_touch",
+                                                    session_id=session_id)
+
+        return RemoteSessionView(snap if isinstance(snap, dict) else {}, live, release, _touch)
+
+    async def remote_session_prompt(self, session_id: str, text: str) -> dict:
+        return await self._remote_sessions_call("remote_session_prompt",
+                                                session_id=session_id, text=text)
+
+    async def remote_session_answer(self, session_id: str, ask_id: str, **answer) -> dict:
+        return await self._remote_sessions_call("remote_session_answer",
+                                                session_id=session_id, ask_id=ask_id, **answer)
 
     async def apply_remote_control_default(self, enabled: bool) -> dict:
         """Proxy apply_remote_control_default to this daemon: ``{sessions, failed}``.

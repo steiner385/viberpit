@@ -5,6 +5,7 @@ import re
 from collections import deque
 from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, UserMessage,
                               ResultMessage, ToolUseBlock, ToolResultBlock, TextBlock,
+                              ThinkingBlock,
                               RateLimitEvent, TaskStartedMessage, TaskProgressMessage,
                               TaskUpdatedMessage, TaskNotificationMessage,
                               TERMINAL_TASK_STATUSES)
@@ -62,7 +63,13 @@ def _not_typed_in_an_app(msg, text: str) -> bool:
 
 
 class Translator:
-    def __init__(self):
+    def __init__(self, *, consolidated_text: bool = False):
+        """*consolidated_text*: the stream carries NO partial messages, so emit an
+        AssistantMessage's text and thinking blocks as whole ``TextDelta`` /
+        ``ThinkingDelta`` events. The remote sessions watcher reads claude.ai's events
+        log, which holds only consolidated messages; the live driver always streams
+        deltas and leaves it off (a second copy of every block would double the text)."""
+        self.consolidated_text = consolidated_text
         self.session_id: str | None = None
         self._turn_ids: dict[str | None, str] = {}   # parent_tool_use_id -> turn id (None = main)
         self._open: set[str | None] = set()           # agent keys that emitted TurnStart
@@ -392,6 +399,14 @@ class Translator:
                     if isinstance(b, TextBlock):
                         self._turn_text += b.text
             for b in msg.content:
+                if self.consolidated_text and isinstance(b, TextBlock):
+                    out.append(ev.TextDelta(tid, b.text, getattr(msg, "uuid", None),
+                                            parent_tool_use_id=pid))
+                    continue
+                if self.consolidated_text and isinstance(b, ThinkingBlock):
+                    out.append(ev.ThinkingDelta(tid, b.thinking, getattr(msg, "uuid", None),
+                                                parent_tool_use_id=pid))
+                    continue
                 if isinstance(b, ToolUseBlock) and b.id not in self._seen_tools:
                     self._seen_tools.add(b.id)
                     # AskUserQuestion is handled by the driver (emits ev.Question);

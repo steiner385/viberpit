@@ -65,6 +65,7 @@ from server.assistant.context import validate_context
 from server.audit import record_audit, redact_event
 from server.auth.identity import human_gate_via, human_sender, verify_identity
 from server.quick_replies import observe_reply
+from server.remote_sessions import service as remote_sessions_mod
 from server.auth.middleware import require_ws_identity
 from server.config import get_settings
 from server.db import db_session
@@ -2316,6 +2317,54 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         session_id, status)
                 await _send(_prompt_rejected(msg, session_id, status))
 
+        async def _handle_remote_attach(session_id: str) -> None:
+            """Attach a remote session's live view (``remote:<id>``, plan 2026-11-25).
+
+            Not a ViberPit session: no record, driver or transcript file. The watcher's
+            snapshot stands in for the transcript replay — the same replayReset /
+            events / replayComplete frames, through the same FIFO — and the view then
+            runs on the ordinary live forwarder. A refusal (kill switch off, unknown id,
+            claude.ai unavailable) is an ``error`` frame plus the spinner-clearing
+            replayComplete."""
+            await _teardown_live_task(session_id)
+            gen = _next_gen()
+            try:
+                view = await orchestrator.remote_session_open(
+                    remote_sessions_mod.session_of(session_id))
+            except remote_sessions_mod.RemoteSessionsError as exc:
+                code, message = exc.code, str(exc)
+            except (DaemonUnavailable, DaemonError) as exc:
+                log.info("ws.attach: remote session %s unavailable (%s)", session_id,
+                         type(exc).__name__)
+                code = remote_sessions_mod.UNAVAILABLE
+                message = "Remote sessions are unavailable right now."
+            else:
+                out_q.put_nowait({"type": "replayReset", "sessionId": session_id, "gen": gen})
+                for wire in view.snapshot:
+                    out_q.put_nowait({**wire, "sessionId": session_id})
+                out_q.put_nowait({"type": "replayComplete", "sessionId": session_id,
+                                  "earliestTurn": 0, "totalTurns": 0})
+                _start_live_stream(session_id, view, gen)
+                return
+            await _send({"type": "error", "code": code, "message": message,
+                         "sessionId": session_id})
+            out_q.put_nowait(_error_complete(session_id))
+
+        async def _run_remote_frame(msg_type: str, session_id: str) -> None:
+            """A chained frame for a remote session: only attach and detach. Prompts and
+            answers go through ``/api/remote-sessions/{id}/prompt|answer`` (person-only,
+            audited), never this socket."""
+            if msg_type == "attach":
+                async with _attach_lock(session_id):
+                    await _handle_remote_attach(session_id)
+            elif msg_type == "detach":
+                async with _attach_lock(session_id):
+                    await _teardown_live_task(session_id)
+            else:
+                await _send({"type": "error", "code": "REMOTE_SESSION_FRAME_UNSUPPORTED",
+                             "message": "Use the remote sessions API to act on a remote "
+                                        "session.", "sessionId": session_id})
+
         async def _run_session_frame(msg: dict) -> None:
             """Dispatch one _CHAINED_FRAMES frame. Runs on the session's chain.
 
@@ -2325,6 +2374,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             """
             msg_type = msg.get("type", "")
             session_id = msg.get("sessionId", "")
+            if remote_sessions_mod.is_stream_id(session_id):
+                await _run_remote_frame(msg_type, session_id)
+                return
             if msg_type == "attach":
                 # Optional wave-3 catch-up cursor: the client's last CONTIGUOUS daemon
                 # srcSeq (audit W2.3). Accept only a real non-negative int (reject bool,

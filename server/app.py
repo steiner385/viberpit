@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 # API routers (T036–T038)
 from server.api.sessions import router as sessions_router
 from server.api.internal_sessions import router as internal_sessions_router
+from server.api.remote_sessions import router as remote_sessions_router
 from server.api.attachments import router as attachments_router
 from server.api.accounts import router as accounts_router
 from server.api.auth import router as auth_router
@@ -797,6 +798,14 @@ async def _lifespan(app: FastAPI):
                 _logging.getLogger("server").warning(
                     "shutdown: native display sweep incomplete", exc_info=True)
 
+        # In process, the remote sessions service (if anything used it) lives on the
+        # orchestrator (``remote_sessions.service.service_for``).
+        from server.remote_sessions.service import RemoteSessionsService
+        _remote_sessions = getattr(app.state.orchestrator, "_remote_sessions", None)
+        if isinstance(_remote_sessions, RemoteSessionsService):
+            await bounded_wait(_remote_sessions.aclose(), timeout=_SHUTDOWN_PHASE_TIMEOUT_S,
+                               phase="shutdown:remote-sessions")
+
         await bounded_wait(app.state.orchestrator.stop(),
                            timeout=_SHUTDOWN_STOP_TIMEOUT_S,
                            phase="shutdown:orchestrator-stop")
@@ -1174,6 +1183,7 @@ def create_app(
     # REST API routers (T036–T038)
     app.include_router(sessions_router)
     app.include_router(internal_sessions_router)
+    app.include_router(remote_sessions_router)
     app.include_router(attachments_router)
     app.include_router(accounts_router)
     app.include_router(auth_router)

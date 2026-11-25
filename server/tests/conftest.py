@@ -301,6 +301,10 @@ os.environ["VIBERPIT_DEV"] = "1"
 # consume replies a test scripted on a fake control channel. Off for the suite;
 # test_remote_control.py turns it on where it is the thing under test.
 os.environ["VIBERPIT_REMOTE_CONTROL_ENABLED"] = "false"
+# Remote sessions read claude.ai's sessions API with an account's login: never by
+# accident from a test (the default is already off; a live shell may set it).
+# test_remote_sessions.py injects its own enabled() where it is the thing under test.
+os.environ["VIBERPIT_REMOTE_SESSIONS_ENABLED"] = "false"
 
 
 # --------------------------------------------------------------------------- #
