@@ -301,10 +301,19 @@ class PermissionResolved:
     dismissals land here as allowed=False). Same rationale as QuestionResolved:
     the resolution must ride the same stream as the PermissionRequest frame so a
     mid-turn reattach's ring resupply doesn't resurrect an already-decided card."""
-    perm_id: str; turn_id: str; allowed: bool
+    perm_id: str; turn_id: str; allowed: bool | None
     ts: float | None = field(default_factory=_now_ms)
-    def to_wire(self): return {"type": "permissionResolved", "permId": self.perm_id,
-                               "turnId": self.turn_id, "allowed": self.allowed, "ts": self.ts}
+    # Where it was answered when not in ViberPit: ``answered_elsewhere.VIA_CLAUDE_APP``
+    # for an ask the CLI settled because someone answered it in the Claude app (Remote
+    # Control). ``allowed`` is then None until the tool_result reveals the outcome, when
+    # a second frame for the same permId carries it. Omitted from the wire when unset.
+    via: str | None = None
+    def to_wire(self):
+        out = {"type": "permissionResolved", "permId": self.perm_id,
+               "turnId": self.turn_id, "allowed": self.allowed, "ts": self.ts}
+        if self.via is not None:
+            out["via"] = self.via
+        return out
 
 @dataclass
 class Question:
@@ -332,9 +341,16 @@ class QuestionResolved:
     reattached client (other live tabs would never learn it was answered)."""
     question_id: str; turn_id: str; selected: list[str] | None; mode: str = "option"
     ts: float | None = field(default_factory=_now_ms)
-    def to_wire(self): return {"type": "questionResolved", "questionId": self.question_id,
-                               "turnId": self.turn_id, "selected": self.selected,
-                               "mode": self.mode, "ts": self.ts}
+    # Same as PermissionResolved.via: set when the question was answered in the Claude
+    # app. ``selected`` is then None until the tool_result reveals the chosen labels.
+    via: str | None = None
+    def to_wire(self):
+        out = {"type": "questionResolved", "questionId": self.question_id,
+               "turnId": self.turn_id, "selected": self.selected,
+               "mode": self.mode, "ts": self.ts}
+        if self.via is not None:
+            out["via"] = self.via
+        return out
 
 @dataclass
 class Title:

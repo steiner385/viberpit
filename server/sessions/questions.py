@@ -173,6 +173,19 @@ class QuestionRegistry:
                 moved += 1
         return moved
 
+    def settle_elsewhere(self, question_id: str) -> bool:
+        """Drop *question_id* because it was settled OUTSIDE this registry — the CLI
+        answered it itself (Remote Control: someone answered in the Claude app) and
+        cancelled the waiter. Nothing is delivered to the future: its waiter is gone
+        (an unresolved one is cancelled so nothing can block on it). Returns True if the
+        question was still pending, False if a ViberPit answer got there first."""
+        rec = self._pending.pop(question_id, None)
+        if rec is None:
+            return False
+        if not rec["future"].done():
+            rec["future"].cancel()
+        return True
+
     def deny_all(self, session_id: str, *, mode: str | None = None) -> None:
         """Resolve all pending questions for session_id with None (dismissed sentinel).
 

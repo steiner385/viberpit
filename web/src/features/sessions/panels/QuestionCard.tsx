@@ -245,6 +245,11 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
             {freeform.join(', ')}
           </p>
         )}
+        {block.answeredVia && (
+          <p data-testid="answered-in-claude-app" className="mt-2 text-xs text-ink-muted">
+            Answered in the Claude app
+          </p>
+        )}
       </div>
     )
   }

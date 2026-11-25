@@ -61,12 +61,17 @@ export interface EvPermissionRequest { type: 'permissionRequest'; permId: string
 // A permission's future settled server-side (allowed or denied). Rides the same stream
 // as the request frame so a mid-turn reattach (ring resupply re-delivers the request)
 // clears the recreated card instead of resurrecting an already-decided permission.
-export interface EvPermissionResolved { type: 'permissionResolved'; permId: string; turnId: string; allowed: boolean; ts?: number }
+// `via: 'claude_app'` marks a prompt answered in the Claude app over Remote Control:
+// `allowed` is null until the tool's result shows the outcome, when a second frame for
+// the same permId carries it.
+export interface EvPermissionResolved { type: 'permissionResolved'; permId: string; turnId: string; allowed: boolean | null; via?: string; ts?: number }
 export interface EvQuestion      { type: 'question';      questionId: string; turnId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; orphaned?: boolean; parentToolUseId?: string | null; ts?: number }
 // A question's future settled server-side — answered (selected carries the labels) or
 // dismissed (selected null). Rides the same stream as the question frame so a mid-turn
 // reattach (ring resupply re-delivers the question) re-resolves the recreated block.
-export interface EvQuestionResolved { type: 'questionResolved'; questionId: string; turnId: string; selected: string[] | null; mode?: string; ts?: number }
+// `via: 'claude_app'` as on EvPermissionResolved: selected is null until the tool's
+// result shows the chosen labels.
+export interface EvQuestionResolved { type: 'questionResolved'; questionId: string; turnId: string; selected: string[] | null; mode?: string; via?: string; ts?: number }
 export interface EvSessionMeta   { type: 'sessionMeta';   model: string; sessionId: string; permissionMode?: string }
 export interface EvTurnModel     { type: 'turnModel';     turnId: string; model: string; parentToolUseId?: string | null }
 export interface EvTitle         { type: 'title';         title: string; source: string }

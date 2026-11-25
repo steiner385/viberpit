@@ -34,8 +34,11 @@ export type Block =
   | { kind: 'image';      id: string; images: Array<{ url: string; mime: string; name: string }>; ts?: number }
   | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown>; ts?: number }; ts?: number }
   | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; items?: string[] | null; ruleSuggestions?: RuleSuggestion[]; sessionGrantEffective?: boolean; ts?: number }
-  | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; orphaned?: boolean; answered?: string[]; ts?: number }
-  | { kind: 'notice';     id: string; text: string; ts?: number }
+  // `answeredVia` names where a question was answered when not in ViberPit ('claude_app').
+  | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; orphaned?: boolean; answered?: string[]; answeredVia?: string; ts?: number }
+  // `perm` is set on the echo of a permission answered in the Claude app: the card it
+  // stands for, so the outcome frame that follows can rewrite the line.
+  | { kind: 'notice';     id: string; text: string; perm?: Extract<Block, { kind: 'permission' }>; ts?: number }
   // `errorKind` (not `kind`, the block discriminant) is the event's `kind` (D-19).
   | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null; errorKind?: ErrorKind; ts?: number }
   | { kind: 'recovering'; id: string; message: string; ts?: number }
@@ -515,14 +518,38 @@ function permissionDecisionText(
   return `${verb} ${toolLabel(block.tool, block.toolKind, block.input)}`
 }
 
-/** Append a client-local transient notice as its own assistant turn ("Model → sonnet"). */
-function appendNotice(state: TranscriptState, text: string): TranscriptState {
+/**
+ * Append a client-local transient notice as its own assistant turn ("Model → sonnet").
+ * `block` replaces the default notice block (an answered-in-the-Claude-app line).
+ */
+function appendNotice(state: TranscriptState, text: string, block?: Block): TranscriptState {
   const id = `notice:${state.turns.length}`
   return {
     ...state,
-    turns: [...state.turns, { id, role: 'assistant', blocks: [{ kind: 'notice', id: `${id}:n`, text }] }],
+    turns: [...state.turns, { id, role: 'assistant', blocks: [block ?? { kind: 'notice', id: `${id}:n`, text }] }],
     openBlockId: null,
   }
+}
+
+/**
+ * The line a permission answered in the Claude app (`via: 'claude_app'`) leaves
+ * behind. The first frame (`allowed` null) only says where it was answered; the
+ * outcome frame that follows rewrites the same line, keyed by permId, so a ring
+ * resupply replaying every frame still leaves one line and no live card.
+ */
+function answeredElsewhere(state: TranscriptState, permId: string, allowed: boolean | null): TranscriptState {
+  const id = `rc:${permId}`
+  const s = removePermissionBlock(state, permId)
+  const old = s.turns.flatMap((t) => t.blocks).find((b) => b.id === id)
+  const perm = old?.kind === 'notice' ? old.perm : findPermissionBlock(state, permId)
+  if (!perm || (old && allowed === null)) return s
+  const text = allowed === null
+    ? `Answered in the Claude app: ${perm.plan ? 'plan approval' : toolLabel(perm.tool, perm.toolKind, perm.input)}`
+    : `${permissionDecisionText(perm, allowed ? 'allow' : 'deny')} — answered in the Claude app`
+  const notice: Block = { kind: 'notice', id, text, perm }
+  return old
+    ? { ...s, turns: s.turns.map((t) => (t.blocks.includes(old) ? { ...t, blocks: t.blocks.map((b) => (b === old ? notice : b)) } : t)) }
+    : appendNotice(s, text, notice)
 }
 
 function removePermissionBlock(state: TranscriptState, permId: string): TranscriptState {
@@ -557,7 +584,7 @@ function removePermissionBlock(state: TranscriptState, permId: string): Transcri
  * reattach's ring resupply recreates). Returns the same state reference when no
  * matching block exists.
  */
-function resolveQuestionInPlace(state: TranscriptState, questionId: string, answered: string[]): TranscriptState {
+function resolveQuestionInPlace(state: TranscriptState, questionId: string, answered: string[], via?: string): TranscriptState {
   const resolve = (turns: Turn[]): Turn[] => {
     let changed = false
     const next = turns.map((turn) => {
@@ -567,7 +594,9 @@ function resolveQuestionInPlace(state: TranscriptState, questionId: string, answ
       return {
         ...turn,
         blocks: turn.blocks.map((b) =>
-          b.kind === 'question' && b.questionId === questionId ? { ...b, live: false, answered } : b),
+          // An answered-elsewhere question resolves twice: labels unknown, then read
+          // off the tool result. The stream (and any ring resupply) keeps that order.
+          b.kind === 'question' && b.questionId === questionId ? { ...b, live: false, answered, answeredVia: via } : b),
       }
     })
     return changed ? next : turns
@@ -1111,6 +1140,8 @@ export function transcriptReducer(
     // reattach's ring resupply recreates, and clearing cards in OTHER attached
     // clients.
     case 'permissionResolved': {
+      // Answered in the Claude app: clear the card AND say so, with the outcome once known.
+      if (ev.via) return answeredElsewhere(state, ev.permId, ev.allowed)
       return removePermissionBlock(state, ev.permId)
     }
 
@@ -1174,7 +1205,7 @@ export function transcriptReducer(
       // block that re-offer's live upgrade, so the card stays exactly as it is.
       if (ev.mode === 'interrupted') return state
       const selected = ev.selected ?? []
-      const next = resolveQuestionInPlace(state, ev.questionId, selected)
+      const next = resolveQuestionInPlace(state, ev.questionId, selected, ev.via)
       // A composer prompt sent while this question was pending is delivered by the
       // server AS the answer (chat mode) — it never echoes as a `user` turn, so
       // nothing else would consume its pendingSent entry and the next

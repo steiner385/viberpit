@@ -16,6 +16,19 @@ const singleQ: QuestionBlock = {
   multiSelect: false,
 }
 
+describe('QuestionCard answered in the Claude app', () => {
+  it('notes where it was answered and highlights the answer read back', () => {
+    render(<QuestionCard block={{ ...singleQ, live: false, answered: ['Option B'], answeredVia: 'claude_app' }} onAnswer={() => {}} readOnly />)
+    expect(screen.getByTestId('answered-in-claude-app')).toHaveTextContent('Answered in the Claude app')
+    expect(screen.getByText('Option B').closest('li')).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('shows no note for an answer given in ViberPit', () => {
+    render(<QuestionCard block={{ ...singleQ, live: false, answered: ['Option A'] }} onAnswer={() => {}} readOnly />)
+    expect(screen.queryByTestId('answered-in-claude-app')).toBeNull()
+  })
+})
+
 const multiQ: QuestionBlock = {
   ...singleQ,
   id: 'q-2',
