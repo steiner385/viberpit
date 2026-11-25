@@ -7,6 +7,8 @@ import { deliveryOpenItem, type DeliveryOpenItem } from '@/features/delivery/del
 export type OpenItem =
   | { kind: 'session'; id: string }
   | { kind: 'archived'; id: string }
+  /** A Remote Control session ViberPit does not run (`REMOTE_SESSION_ROUTE`). */
+  | { kind: 'remote'; id: string }
   | RoadmapOpenItem
   | DeliveryOpenItem
 
@@ -17,13 +19,15 @@ export type OpenItemResolver = (params: Readonly<Params<string>>, search: URLSea
  *
  * Sessions: the archived reader's param is `archivedId`, not `id`, and that
  * NAME is what keeps `PageHost` from mounting a live runtime over a dead
- * session (`session/sessionNavState.ts` decides it). A section with no entry
+ * session (`session/sessionNavState.ts` decides it). The remote page's param is
+ * `remoteId` for the same reason. A section with no entry
  * here never reports an open item, so a `:id`-shaped route elsewhere cannot
  * be mistaken for a session.
  */
 export const OPEN_ITEM_RESOLVERS: Partial<Record<NavId, OpenItemResolver>> = {
-  sessions: ({ id, archivedId }) => {
+  sessions: ({ id, archivedId, remoteId }) => {
     if (archivedId) return { kind: 'archived', id: archivedId }
+    if (remoteId) return { kind: 'remote', id: remoteId }
     if (id) return { kind: 'session', id }
     return null
   },

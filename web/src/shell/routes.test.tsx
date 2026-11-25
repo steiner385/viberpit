@@ -61,6 +61,14 @@ vi.mock('@/features/sessions/ReviewPage', () => ({
     <div data-testid="page-review">{sessionId}</div>
   ),
 }))
+// The remote feature's one lazy entry: the remote page (and the list's Remote group,
+// stubbed out of the way — it polls).
+vi.mock('@/features/sessions/remote', () => ({
+  RemoteSessionPage: ({ remoteId }: { remoteId: string }) => (
+    <div data-testid="page-remote">{remoteId}</div>
+  ),
+  RemoteSessionsSection: () => null,
+}))
 // `/sessions/archived`'s PAGE is the empty state beside the list column — the
 // archived list itself is a scope of that column, not a page.
 vi.mock('@/features/sessions/ArchivedWelcome', () => ({ ArchivedWelcome: stub('archived') }))
@@ -338,6 +346,8 @@ describe('route table — pages', () => {
     // Background detail routes reuse the LIVE pages: a background session is live.
     ['/sessions/background/abc', 'page-session-detail'],
     ['/sessions/background/abc/agents/x', 'page-subagent'],
+    // A Remote Control session ViberPit does not run — never `/sessions/:id`.
+    ['/sessions/remote/session_abc', 'page-remote'],
     ['/settings/general', 'page-settings'],
     ['/settings', 'page-settings'],
     // `findBy` rather than `getBy`: Pipeline, Roadmap, Initiative, Delivery and
@@ -497,6 +507,7 @@ const MATRIX_PATHS: ReadonlyArray<readonly [path: string, testid: string]> = [
   ['/sessions/background', 'page-background'],
   ['/sessions/background/abc', 'page-session-detail'],
   ['/sessions/background/abc/agents/x', 'page-subagent'],
+  ['/sessions/remote/session_abc', 'page-remote'],
   ['/settings/general', 'page-settings'],
 ]
 
@@ -585,8 +596,8 @@ describe('every route renders in every layout mode', () => {
     })
 
     expect([...new Set(covered)].sort()).toEqual([...pageRoutes].sort())
-    expect(pageRoutes).toHaveLength(19)
-    expect(MATRIX_PATHS).toHaveLength(19)
+    expect(pageRoutes).toHaveLength(20)
+    expect(MATRIX_PATHS).toHaveLength(20)
   })
 
   /**
@@ -599,7 +610,7 @@ describe('every route renders in every layout mode', () => {
   /**
    * R9 successor map for the kiosk cells that asserted
    * `kiosk · <path> renders <that path's page>` for a section kiosk is not
-   * allowed on — the seventeen listed in the refusal test below.
+   * allowed on — the eighteen listed in the refusal test below.
    *
    * That claim is now false BY DESIGN: `AppShell`'s `KioskPageGuard` redirects a
    * kiosk URL off any section not marked `showInKiosk` (verified read-only), so
@@ -623,11 +634,11 @@ describe('every route renders in every layout mode', () => {
     }),
   )
 
-  it('the matrix is 76 cells', () => {
-    expect(CELLS).toHaveLength(76)
+  it('the matrix is 80 cells', () => {
+    expect(CELLS).toHaveLength(80)
   })
 
-  // The seventeen refused cells are exactly the kiosk rows for a section that is not
+  // The eighteen refused cells are exactly the kiosk rows for a section that is not
   // kiosk-safe — pinned so a `showInKiosk` flip has to come here and say so.
   // `/roadmap` now carries the reason `/triage` used to be the least negotiable of
   // them: the Inbox scope accepts and bulk-accepts on a single unconfirmed
@@ -648,6 +659,7 @@ describe('every route renders in every layout mode', () => {
       '/initiatives/views',
       '/sessions/archived', '/sessions/archived/abc',
       '/sessions/background', '/sessions/background/abc', '/sessions/background/abc/agents/x',
+      '/sessions/remote/session_abc',
       '/settings/general',
     ])
     expect(refused.every(([, , testid, url]) => testid === 'page-pipeline' && url === '/pipeline')).toBe(true)

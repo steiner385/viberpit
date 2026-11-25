@@ -31,6 +31,19 @@ describe('Composer + menu', () => {
     expect(items).toEqual(['Attach file', 'Slash commands'])
   })
 
+  it('offers no Attach when attachments are off (a remote session takes text only)', async () => {
+    render(<Composer status={{ state: 'idle', count: 0 }} onPrompt={() => {}} commands={[CMD]} allowAttachments={false} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Add' }))
+    const items = screen.getAllByRole('menuitem').map((i) => i.textContent?.replace(/\d$/, ''))
+    expect(items).toEqual(['Slash commands'])
+  })
+
+  it('has no Stop while busy when there is nothing to interrupt', () => {
+    render(<Composer status={{ state: 'in_progress', count: 0 }} onPrompt={() => {}} />)
+    expect(screen.getByRole('button', { name: /queue message/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /stop current turn/i })).toBeNull()
+  })
+
   it('Attach opens the file picker', async () => {
     const { container } = mount()
     const input = container.querySelector('input[type=file]') as HTMLInputElement

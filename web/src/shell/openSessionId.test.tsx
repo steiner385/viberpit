@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_SESSION_ROUTE, ARCHIVED_PATH, SESSIONS_PATH } from '@/session/sessionNavState'
+import {
+  SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_SESSION_ROUTE, ARCHIVED_PATH, SESSIONS_PATH, REMOTE_SESSION_ROUTE,
+} from '@/session/sessionNavState'
 import {
   CAPABILITY_ROUTE, INITIATIVE_ROUTE, PRODUCT_ROUTE, ROADMAP_PATH,
 } from '@/features/roadmap/roadmapNavState'
@@ -17,7 +19,8 @@ function describeItem(item: OpenItem | null): string {
   if (!item) return 'none'
   switch (item.kind) {
     case 'session':
-    case 'archived': return `${item.kind}:${item.id}`
+    case 'archived':
+    case 'remote': return `${item.kind}:${item.id}`
     case 'product': return `product:${item.productSlug}`
     case 'capability': return `capability:${item.productSlug}/${item.capSlug}`
     case 'initiative': return `initiative:${item.initiativeSlug}`
@@ -40,7 +43,7 @@ function renderAt(path: string) {
     <MemoryRouter initialEntries={[path]}>
       <Routes>
         {[
-          SESSIONS_PATH, SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_PATH, ARCHIVED_SESSION_ROUTE,
+          SESSIONS_PATH, SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_PATH, ARCHIVED_SESSION_ROUTE, REMOTE_SESSION_ROUTE,
           '/pipeline',
           ROADMAP_PATH, PRODUCT_ROUTE, CAPABILITY_ROUTE, INITIATIVE_ROUTE,
           DELIVERY_PATH, AUTOMATION_ROUTE, CI_REPO_ROUTE, CAPACITY_ROUTE,
@@ -91,5 +94,12 @@ describe('useOpenItem', () => {
     // live runtime to it.
     renderAt('/sessions/archived/abc')
     expect(screen.getByTestId('probe')).toHaveTextContent('archived:abc|-')
+  })
+
+  it('reports a remote session as open, but never as an open SESSION', () => {
+    // Same two halves as archived: a phone shows the remote page, and PageHost
+    // never mounts a ViberPit runtime over a session ViberPit does not run.
+    renderAt('/sessions/remote/session_01abc')
+    expect(screen.getByTestId('probe')).toHaveTextContent('remote:session_01abc|-')
   })
 })

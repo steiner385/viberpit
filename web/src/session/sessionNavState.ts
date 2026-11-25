@@ -85,6 +85,18 @@ export const BACKGROUND_PATH = `${SESSIONS_PATH}/background`
 export const BACKGROUND_SESSION_ROUTE = `${BACKGROUND_PATH}/:id`
 export const BACKGROUND_SUBAGENT_ROUTE = `${BACKGROUND_PATH}/:id/agents/:agentId`
 
+/**
+ * `/sessions/remote/:remoteId` — a Remote Control session ViberPit does not run
+ * (interactive `claude` + /remote-control, another SDK host, another machine),
+ * watched over `/ws` as `remote:<id>` and driven through `/api/remote-sessions`.
+ * Its param is `remoteId`, NOT `id`, for the archived route's reason: there is no
+ * ViberPit session behind it, so `useOpenSessionId` must find nothing and
+ * `PageHost` must not mount a live runtime (the page brings its own). Static
+ * `remote` outranks the dynamic `:id` sibling, so it never resolves as a session.
+ */
+export const REMOTE_PATH = `${SESSIONS_PATH}/remote`
+export const REMOTE_SESSION_ROUTE = `${REMOTE_PATH}/:remoteId`
+
 /** Pre-scope-switch spellings. Bookmarks only — nothing in the app builds these. */
 export const LEGACY_ARCHIVED_PATH = '/archived'
 export const LEGACY_ARCHIVED_SESSION_ROUTE = '/archived/:sessionId'
@@ -108,6 +120,11 @@ export function subAgentPath(id: string, agentId: string, scope?: ListScope): st
 /** The route of an archived session's read-only transcript (DEC-6). */
 export function archivedSessionPath(id: string): string {
   return `${ARCHIVED_PATH}/${id}`
+}
+
+/** The route of a remote (Remote Control) session's page. */
+export function remoteSessionPath(id: string): string {
+  return `${REMOTE_PATH}/${encodeURIComponent(id)}`
 }
 
 /**
@@ -137,7 +154,7 @@ export function listScopeForPath(pathname: string): ListScope {
 }
 
 /** The two page shapes the shell treats as a Reader (page-migration §2.2). */
-export type ReaderRoute = 'archived' | 'subagent'
+export type ReaderRoute = 'archived' | 'subagent' | 'remote'
 
 /**
  * Whether the route is a Reader page, and which — the archived transcript or a
@@ -151,6 +168,9 @@ export type ReaderRoute = 'archived' | 'subagent'
 export function readerRouteForPath(pathname: string): ReaderRoute | null {
   if (matchPath(ARCHIVED_SESSION_ROUTE, pathname)) return 'archived'
   if (matchPath(SUBAGENT_ROUTE, pathname) || matchPath(BACKGROUND_SUBAGENT_ROUTE, pathname)) return 'subagent'
+  // The remote page carries its own composer (prompts go over REST, not the
+  // dock's socket frames), so the dock hides behind it like a Reader's.
+  if (matchPath(REMOTE_SESSION_ROUTE, pathname)) return 'remote'
   return null
 }
 

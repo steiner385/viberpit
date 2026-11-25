@@ -23,7 +23,9 @@ import { SESSION_COMPOSER_ATTR } from '@/lib/detachKeyGuard'
 interface Props {
   status: { state: string; count: number }
   onPrompt: (text: string, attachmentIds: string[], context?: PromptContext, replySource?: 'suggested') => void
-  onInterrupt: () => void
+  /** Stop the live turn. Omitted (a remote session — nothing ViberPit can interrupt),
+   *  the busy row has no Stop button. */
+  onInterrupt?: () => void
   /** "Send now" while busy: stop the live turn and run this draft next instead of
    *  queueing it. Returns false when the frame could not be sent (draft is kept). */
   onInterruptAndPrompt?: (text: string, attachmentIds: string[], replySource?: 'suggested') => boolean
@@ -67,6 +69,9 @@ interface Props {
    *  object each time; its text goes back into the box — into an empty box as is,
    *  else below the draft after a blank line — so nothing typed is lost. */
   returnedDraft?: { text: string } | null
+  /** False: text only — no Attach entry, and pasted/dropped files are ignored (a
+   *  remote session's prompt endpoint takes text, never attachment ids). */
+  allowAttachments?: boolean
 }
 
 /** What the composer lets the transcript do to its draft (D-7). */
@@ -79,7 +84,7 @@ export interface ComposerAttach {
   draftText: () => string
 }
 
-export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource, fileMentionSessionId, sessionComposer = false, attachRef, extraPlusEntries = [], returnedDraft = null }: Props) {
+export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft, mentionSource, fileMentionSessionId, sessionComposer = false, attachRef, extraPlusEntries = [], returnedDraft = null, allowAttachments = true }: Props) {
   const { replies, statusText: repliesStatus } = useQuickReplies()
   const draft = useSessionDraft(sessionId)
   const [text, setText] = useState(draft.initial.text)
@@ -378,11 +383,13 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   }, [onRequestSuggestions, generating, onPrompt])
 
   function handlePaste(e: React.ClipboardEvent) {
+    if (!allowAttachments) return
     const files = Array.from(e.clipboardData?.files || [])
     if (files.length) { e.preventDefault(); void att.addFiles(files) }
   }
 
   function handleDrop(e: React.DragEvent) {
+    if (!allowAttachments) return
     const files = Array.from(e.dataTransfer?.files || [])
     if (files.length) { e.preventDefault(); void att.addFiles(files) }
   }
@@ -433,7 +440,7 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   // opens on — only into an empty (or blank) box, never over a typed draft, which
   // it just focuses — re-armed even if Esc dismissed it at that text before.
   const plusEntries: PlusMenuEntry[] = [
-    { id: 'attach', label: 'Attach file', run: () => fileRef.current?.click() },
+    ...(allowAttachments ? [{ id: 'attach', label: 'Attach file', run: () => fileRef.current?.click() }] : []),
     ...(commands.length > 0 ? [{
       id: 'slash', label: 'Slash commands',
       run: () => {
@@ -631,23 +638,26 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
 
         {showResume && (
           <div className="relative flex items-center">
-            <button
-              type="button"
-              aria-label="Resume (generate the next step with AI)"
-              aria-busy={generating}
-              disabled={generating}
-              title="Resume — generate the next step with AI"
-              onClick={() => void play()}
-              className={cn(
-                'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-target',
-                'bg-success-strong text-on-strong hover:bg-success-strong/90 disabled:opacity-70',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-success',
-              )}
-            >
-              {generating
-                ? <Loader2 size={16} aria-hidden="true" className="animate-spin" />
-                : <Sparkles size={16} aria-hidden="true" />}
-            </button>
+            {/* The sparkle needs a generator; a composer without one keeps the quick-reply menu. */}
+            {onRequestSuggestions && (
+              <button
+                type="button"
+                aria-label="Resume (generate the next step with AI)"
+                aria-busy={generating}
+                disabled={generating}
+                title="Resume — generate the next step with AI"
+                onClick={() => void play()}
+                className={cn(
+                  'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-target',
+                  'bg-success-strong text-on-strong hover:bg-success-strong/90 disabled:opacity-70',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-success',
+                )}
+              >
+                {generating
+                  ? <Loader2 size={16} aria-hidden="true" className="animate-spin" />
+                  : <Sparkles size={16} aria-hidden="true" />}
+              </button>
+            )}
             <button
               type="button"
               aria-label="Quick replies"
@@ -756,18 +766,20 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
                 Send now
               </button>
             )}
-            <button
-              type="button"
-              aria-label="Stop current turn"
-              onClick={onInterrupt}
-              className={cn(
-                'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-target',
-                'bg-danger-strong text-on-strong hover:bg-danger-strong/90',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-              )}
-            >
-              Stop
-            </button>
+            {onInterrupt && (
+              <button
+                type="button"
+                aria-label="Stop current turn"
+                onClick={onInterrupt}
+                className={cn(
+                  'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-target',
+                  'bg-danger-strong text-on-strong hover:bg-danger-strong/90',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                )}
+              >
+                Stop
+              </button>
+            )}
           </>
         ) : (
           // Between hosts (D-17) the session is idle, so this is the only button a
