@@ -1,4 +1,5 @@
-import { createContext, useContext, useId, useMemo, type ComponentProps } from 'react'
+import { createContext, useContext, useId, useMemo, type ComponentProps, type ReactNode } from 'react'
+import { Link, useInRouterContext } from 'react-router-dom'
 import ReactMarkdown, { defaultUrlTransform, type Components, type Options, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -9,11 +10,13 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
 import 'katex/dist/katex.min.css'
 import { MermaidDiagram } from './MermaidDiagram'
 import 'highlight.js/styles/github-dark.css'
-import { isFilePathRef, localPathTarget } from './filePathRef'
+import { isFilePathRef, localPathTarget, worktreeRelativePath, type FilePathRef } from './filePathRef'
+import { useFileRefActions } from './fileRefContext'
 import { PathRef } from './PathRef'
 import { ResultImage } from './ResultImages'
 import { WorktreeImage } from './WorktreeImage'
 import { isSafeHttpUrl } from '@/lib/safeUrl'
+import { useIsAppRoute } from '@/shell/appRouteContext'
 
 interface Props {
   children: string
@@ -58,6 +61,25 @@ function MarkdownImage({ src, alt }: ComponentProps<'img'>) {
   const local = localPathTarget(url)
   if (local) return <WorktreeImage path={local.path} alt={alt || ''} linked={linked} />
   return <ResultImage url={url} name={alt || ''} linked={linked} />
+}
+
+/**
+ * A link whose href is scheme-less or `file:` — a path, never an href the
+ * browser should open as written. Under the live session's worktree it opens
+ * in Files; else an absolute href naming a page of this app (`/sessions/<id>`,
+ * which the assistant drawer is told to write) is an in-app, same-tab link;
+ * anything else is plain text titled with the path (`PathRef`).
+ */
+function HostPathLink({ href, target, children }: { href: string; target: FilePathRef; children: ReactNode }) {
+  const actions = useFileRefActions()
+  const inRouter = useInRouterContext()
+  const isAppRoute = useIsAppRoute()
+  const inWorktree = actions !== null && worktreeRelativePath(target.path, actions.cwd) !== null
+  if (!inWorktree && href.startsWith('/') && isAppRoute(href.split(/[?#]/)[0])) {
+    return inRouter ? <Link to={href}>{children}</Link> : <a href={href}>{children}</a>
+  }
+  const text = target.line ? `${target.path}:${target.line}` : target.path
+  return <PathRef text={text} target={target}>{children}</PathRef>
 }
 
 /** Inline code. A path-like span is a `PathRef` (Files link under the live
@@ -113,12 +135,15 @@ export function MarkdownDoc({ children, streaming = false, searchPlugin, untrust
       // No href: sanitize dropped an unsafe one. Text, not an anchor that does nothing.
       if (!props.href) return <ImageLinkContext.Provider value={true}><span>{props.children}</span></ImageLinkContext.Provider>
       // A path on the session host (`docs/x.md`, `file:///…`): a relative href
-      // would open a dead SPA url and a `file:` one is blocked, so it is a Files
-      // link under the live session's worktree, else plain text — never an href.
+      // would open a dead SPA url and a `file:` one is blocked (see `HostPathLink`).
       const target = untrusted ? null : localPathTarget(props.href)
       if (target) {
-        const text = target.line ? `${target.path}:${target.line}` : target.path
-        return <ImageLinkContext.Provider value={true}><PathRef text={text} target={target}>{props.children}</PathRef></ImageLinkContext.Provider>
+        return <ImageLinkContext.Provider value={true}><HostPathLink href={props.href} target={target}>{props.children}</HostPathLink></ImageLinkContext.Provider>
+      }
+      // A `file:` url that is not a local path (`file://host/share`, unparseable):
+      // still never an href — text.
+      if (/^file:/i.test(props.href)) {
+        return <ImageLinkContext.Provider value={true}><span>{props.children}</span></ImageLinkContext.Provider>
       }
       const local = props.href.startsWith('#')
       return <ImageLinkContext.Provider value={true}>

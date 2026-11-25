@@ -27,10 +27,12 @@ export function WorktreeImage({ path, alt = '', linked = false }: Props) {
   const actions = useFileRefActions()
   const rel = actions ? worktreeRelativePath(path, actions.cwd) : null
   if (!actions || rel === null) {
+    const where = linked ? <code>{path}</code> : <CopyablePath text={path} />
     return (
       <span className={IMAGE_NOTICE_CLASS}>
-        {alt || 'Image'} is at {linked ? <code>{path}</code> : <CopyablePath text={path} />} on the session host,
-        outside its worktree, so it can't be shown here — ask the session to share it with share_artifact.
+        {alt || 'Image'} is {actions
+          ? <>at {where} on the session host, outside its worktree,</>
+          : <>a file on the session host ({where}),</>} so it can't be shown here — ask the session to share it with share_artifact.
       </span>
     )
   }

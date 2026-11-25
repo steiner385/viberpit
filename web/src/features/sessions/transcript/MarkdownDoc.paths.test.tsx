@@ -4,9 +4,12 @@
 // the cwd, a path keeps today's click-to-copy.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
 import { MarkdownDoc } from './MarkdownDoc'
 import { FileRefContext, type FileRefActions } from './fileRefContext'
+import { AppRouteContext } from '@/shell/appRouteContext'
+import { isAppRoute } from '@/shell/routes'
 
 vi.mock('./MermaidDiagram', () => ({ MermaidDiagram: () => null }))
 // userEvent installs its own getter-only clipboard, so assert at the app's copy seam.
@@ -18,9 +21,11 @@ vi.mock('@/api/hooks', () => ({ useSessionFile }))
 function renderWith(md: string, actions: Partial<FileRefActions> | null) {
   const value = actions ? { sessionId: 's1', cwd: '/repo', openFile: vi.fn(), ...actions } : null
   render(
-    <FileRefContext.Provider value={value}>
-      <MarkdownDoc>{md}</MarkdownDoc>
-    </FileRefContext.Provider>,
+    <AppRouteContext.Provider value={isAppRoute}>
+      <FileRefContext.Provider value={value}>
+        <MarkdownDoc>{md}</MarkdownDoc>
+      </FileRefContext.Provider>
+    </AppRouteContext.Provider>,
   )
   return value
 }
@@ -171,6 +176,49 @@ describe('markdown links to local paths', () => {
     expect(container.querySelector('a [role="button"], a button')).toBeNull()
   })
 
+  it.each([
+    ['in a live session', {}],
+    ['in the assistant drawer (no provider)', null],
+  ])('an in-app route stays a working same-tab link %s', (_where, actions) => {
+    renderWith('open [the session](/sessions/abc?tab=files)', actions)
+    const link = screen.getByRole('link', { name: 'the session' })
+    expect(link).toHaveAttribute('href', '/sessions/abc?tab=files')
+    expect(link).not.toHaveAttribute('target')
+  })
+
+  it('inside the router an in-app route navigates in place', async () => {
+    const user = userEvent.setup()
+    function Where() { return <span data-testid="where">{useLocation().pathname}</span> }
+    render(
+      <AppRouteContext.Provider value={isAppRoute}>
+        <MemoryRouter initialEntries={['/sessions']}>
+          <MarkdownDoc>{'[go](/sessions/abc)'}</MarkdownDoc>
+          <Where />
+        </MemoryRouter>
+      </AppRouteContext.Provider>,
+    )
+    await user.click(screen.getByRole('link', { name: 'go' }))
+    expect(screen.getByTestId('where')).toHaveTextContent('/sessions/abc')
+  })
+
+  it('an absolute path in the worktree that is not a page still opens Files', async () => {
+    const user = userEvent.setup()
+    const ctx = renderWith('[a](/repo/sessions/abc.md)', { cwd: '/repo' })!
+    await user.click(screen.getByRole('button', { name: 'a' }))
+    expect(ctx.openFile).toHaveBeenCalledWith('sessions/abc.md', null)
+  })
+
+  it.each(['file://otherhost/share/a.md', 'file://%zz/a.md', 'file:'])('%s (not a local path) is text, never a file: href', (href) => {
+    renderWith(`[x](${href})`, {})
+    expect(document.querySelector('a')).toBeNull()
+    expect(screen.getByText('x').tagName).toBe('SPAN')
+  })
+
+  it('a path that is not a page of the app is still plain text', () => {
+    renderWith('[x](/nope/abc)', null)
+    expect(document.querySelector('a')).toBeNull()
+  })
+
   it('a served attachment link stays a link', () => {
     renderWith('[shot](/api/attachments/abc)', {})
     expect(screen.getByRole('link', { name: 'shot' })).toHaveAttribute('href', '/api/attachments/abc')
@@ -221,14 +269,13 @@ describe('markdown images at local paths', () => {
   })
 
   it.each([
-    ['outside the worktree', '![Settings](/tmp/shot.png)', {}],
-    ['without a provider', '![Settings](out/shot.png)', null],
-  ])('%s it explains the image is on the session host and never fetches it', (_why, md, actions) => {
+    ['outside the worktree', '![Settings](/tmp/shot.png)', {}, /^Settings is at \/tmp\/shot\.png on the session host, outside its worktree,.*share_artifact/],
+    ['without a provider', '![Settings](out/shot.png)', null, /^Settings is a file on the session host \(out\/shot\.png\), so it can't be shown here.*share_artifact/],
+  ])('%s it explains the image is on the session host and never fetches it', (_why, md, actions, text) => {
     renderWith(md, actions)
     expect(screen.queryByRole('img')).toBeNull()
     expect(useSessionFile).not.toHaveBeenCalled()
-    const notice = screen.getByText(/on the session host/)
-    expect(notice).toHaveTextContent(/^Settings is at .*outside its worktree.*share_artifact/)
+    expect(screen.getByText(/on the session host/)).toHaveTextContent(text)
   })
 
   it('an image inside a path link is the bare image — one click target', () => {

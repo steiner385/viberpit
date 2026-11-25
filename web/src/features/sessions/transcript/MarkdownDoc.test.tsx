@@ -65,7 +65,7 @@ describe('workspace screenshots', () => {
   ])('does not fetch workspace image %s as a browser URL', (src, path) => {
     render(<Markdown>{`![Settings screenshot](${src})`}</Markdown>)
     expect(screen.queryByRole('img')).toBeNull()
-    expect(screen.getByText(/share_artifact/)).toHaveTextContent(/^Settings screenshot is at .*on the session host/)
+    expect(screen.getByText(/share_artifact/)).toHaveTextContent(/^Settings screenshot is a file on the session host .*can't be shown here/)
     expect(screen.getByRole('button', { name: path })).toBeInTheDocument()
   })
 

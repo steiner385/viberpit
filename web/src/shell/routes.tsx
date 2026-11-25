@@ -55,7 +55,7 @@
    drift this file exists to prevent. */
 import { Suspense, lazy, type ReactElement } from 'react'
 import {
-  Navigate, Outlet, useLocation, useNavigate, useParams, useSearchParams, type RouteObject,
+  matchRoutes, Navigate, Outlet, useLocation, useNavigate, useParams, useSearchParams, type RouteObject,
 } from 'react-router-dom'
 import { NAV_BY_ID, settingsSectionPath } from './navDefs'
 import {
@@ -389,6 +389,17 @@ const PAGES: RouteObject[] = [
 
   { path: '*', element: <Navigate to={SESSIONS_PATH} replace /> },
 ]
+
+/**
+ * Whether `pathname` is a page of this app — the table above is the one list.
+ * A transcript link to `/sessions/<id>` (the assistant drawer is told to write
+ * them) is an in-app link, not a path on the session host. The `*` catch-all
+ * (redirect home) matches everything, so it does not count.
+ */
+export function isAppRoute(pathname: string): boolean {
+  const matched = matchRoutes(PAGES, pathname)
+  return matched !== null && matched[matched.length - 1].route.path !== '*'
+}
 
 /**
  * The whole table, rendered into `layout` — one layout route with every page as

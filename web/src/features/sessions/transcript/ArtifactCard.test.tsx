@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ArtifactCard } from './ArtifactCard'
 import { FileRefContext } from './fileRefContext'
@@ -83,5 +83,16 @@ describe('ArtifactCard', () => {
     )
     expect(await screen.findByRole('button', { name: '/tmp/w/report.md' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /in Files/ })).toBeNull()
+  })
+
+  it('a path chunk that fails to load leaves the copy chip, not an error', async () => {
+    vi.resetModules()
+    vi.doMock('./PathRef', () => { throw new Error('Failed to fetch dynamically imported module') })
+    const { ArtifactCard: Fresh } = await import('./ArtifactCard')
+    render(<Fresh block={share({ kind: 'path', value: '/tmp/w/report.md' })} />)
+    // Let the failed import settle and React retry the render.
+    await act(() => new Promise((r) => setTimeout(r, 50)))
+    expect(screen.getByRole('button', { name: '/tmp/w/report.md' })).toBeInTheDocument()
+    vi.doUnmock('./PathRef')
   })
 })

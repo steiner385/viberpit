@@ -11,8 +11,12 @@ interface Props {
 
 // `PathRef` (its menu, the worktree-path rules) stays off the initial payload —
 // this card is in the eager transcript tree; `npm run budget` is what says so.
-// Until it lands the path is the click-to-copy chip it falls back to anyway.
-const PathRef = lazy(() => import('./PathRef').then((m) => ({ default: m.PathRef })))
+// Until it lands the path is the click-to-copy chip it falls back to anyway —
+// and stays one if the chunk cannot load (stale hashes after a release).
+const PathRef = lazy(() => import('./PathRef').then(
+  (m) => ({ default: m.PathRef }),
+  () => ({ default: ({ text }: { text: string }) => <CopyablePath text={text} /> }),
+))
 
 /** A Files link under the live session's worktree, else click-to-copy. */
 function ArtifactPath({ text }: { text: string }) {
