@@ -18,6 +18,7 @@ stay in the same event-loop context and the init/seed/query all share state.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 from pathlib import Path
@@ -613,7 +614,7 @@ def test_permanent_delete_leaves_non_viberpit_cwd_in_place(tmp_path):
 
 
 @_NAMESPACES
-def test_permanent_delete_never_removes_a_shared_clone_root(tmp_path, namespace):
+def test_permanent_delete_never_removes_a_shared_clone_root(tmp_path, namespace, caplog):
     """Containment guard: a cwd that IS the shared clone root is never deleted.
 
     A queued session (and a backlog dispatch that never got to spawn) records the
@@ -622,6 +623,9 @@ def test_permanent_delete_never_removes_a_shared_clone_root(tmp_path, namespace)
     one such queued-then-obsolete row rmtree'd the whole KinDash clone, orphaned
     77 worktrees and made every queued pm session fail at spawn with "Working
     directory does not exist". The row must still be purged; the clone must stay.
+
+    The never-spawned case is expected, so it must not log at WARNING: a WARNING
+    auto-files an issue per purge (#3464).
     """
     db_url, _archive_base, orch = _make_orch(tmp_path)
     clone = tmp_path / "GitHub" / namespace / "clones" / "cairnea" / "KinDash"
@@ -651,6 +655,9 @@ def test_permanent_delete_never_removes_a_shared_clone_root(tmp_path, namespace)
     assert db_row is None
     assert (clone / "README.md").exists()  # the shared clone is untouched
     assert (clone / ".git").is_dir()
+    warnings = [r for r in caplog.records
+                if r.levelno >= logging.WARNING and "permanent_delete" in r.getMessage()]
+    assert warnings == []
 
 
 def test_permanent_delete_returns_false_for_unknown(tmp_path):

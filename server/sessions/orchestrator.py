@@ -31640,7 +31640,9 @@ class SessionOrchestrator:
             )
             return True  # nothing we should delete on disk; the row can still go
         if gitrepos.is_clone_path(str(cwd_path)):
-            log.warning(
+            # Expected for a never-spawned row, not a fault: logged at INFO because a
+            # WARNING auto-files an issue per purge (same reasoning as #2029 above).
+            log.info(
                 "session.permanent_delete id=%s cwd=%s is a shared repo clone, not a "
                 "session worktree (row never spawned) — leaving it in place, "
                 "deleting the row only",
