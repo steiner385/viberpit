@@ -187,7 +187,6 @@ def test_sweep_leaves_sessions_stamped_for_another_live_host_to_their_owner(orch
     session's due snooze, cleared the shared row, hit the lease fence and pushed a
     false "could not be resumed". It must skip a foreign record in every branch."""
     monkeypatch.delenv("VIBERPIT_DAEMON_ROLE", raising=False)
-    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
     monkeypatch.setattr(orch_mod, "self_host_name", lambda: "dobby")
 
     async def run():
