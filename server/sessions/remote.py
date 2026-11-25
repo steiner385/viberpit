@@ -1883,6 +1883,7 @@ class RemoteOrchestrator:
     def subscribe(self, session_id: str):
         return self._client.subscribe(session_id)
 
+    @rpc_deadline
     async def display_bridge_ensure(self, sources: list[str], ssh_dests: dict[str, str],
                                     *, timeout: float | None = None) -> list[dict]:
         """Assert this (target) daemon's full set of bridged source hosts; returns each

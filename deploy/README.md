@@ -259,6 +259,7 @@ PYTHONPATH=<repo>/src <repo>/.venv/bin/python -m server.deploy --once
 
 ## Notes
 
+- **Display bridge** (a host's sessions open GUI windows on another host's desktop; `VIBERPIT_DISPLAY_BRIDGE_*` on the target daemon): see `docs/runbooks/display-bridge.md`.
 - **Backend dependency changes** (new Python deps) trigger `pip install -e '.[server,stt]'`
   automatically when `uv.lock`/`pyproject.toml` changed since the last deploy.
 - **Frontend dependency changes** trigger `npm ci` automatically when
