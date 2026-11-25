@@ -52,15 +52,32 @@ describe('Markdown', () => {
     expect(screen.getByText('Enter').tagName).toBe('KBD')
     expect(container.querySelector('script, iframe, [onerror]')).toBeNull()
     expect(screen.getByText('bad')).not.toHaveAttribute('href', expect.stringContaining('javascript:'))
+    // A stripped href leaves text, not an anchor that does nothing.
+    expect(screen.getByText('bad').tagName).toBe('SPAN')
   })
 })
 
 describe('workspace screenshots', () => {
-  it.each(['/home/user/worktree/screenshot.png', './docs/screenshot.png', 'file:///tmp/screenshot.png'])('does not fetch workspace image %s as a browser URL', (path) => {
-    render(<Markdown>{`![Settings screenshot](${path})`}</Markdown>)
+  it.each([
+    ['/home/user/worktree/screenshot.png', '/home/user/worktree/screenshot.png'],
+    ['./docs/screenshot.png', './docs/screenshot.png'],
+    ['file:///tmp/screenshot.png', '/tmp/screenshot.png'],
+  ])('does not fetch workspace image %s as a browser URL', (src, path) => {
+    render(<Markdown>{`![Settings screenshot](${src})`}</Markdown>)
     expect(screen.queryByRole('img')).toBeNull()
-    expect(screen.getByText(/share_artifact/)).toHaveTextContent('Image unavailable')
-    expect(screen.getByText(/Settings screenshot/)).toBeVisible()
+    expect(screen.getByText(/share_artifact/)).toHaveTextContent(/^Settings screenshot is at .*on the session host/)
+    expect(screen.getByRole('button', { name: path })).toBeInTheDocument()
+  })
+
+  it('renders a strict base64 data: image inline', () => {
+    render(<Markdown>{'![dot](data:image/png;base64,iVBORw0KGgo=)'}</Markdown>)
+    expect(screen.getByRole('img', { name: 'dot' })).toHaveAttribute('src', 'data:image/png;base64,iVBORw0KGgo=')
+  })
+
+  it('a non-image data: url is still refused', () => {
+    render(<Markdown>{'![x](data:text/html;base64,PHNjcmlwdD4=)'}</Markdown>)
+    expect(screen.queryByRole('img')).toBeNull()
+    expect(screen.getByText(/Image unavailable/)).toBeInTheDocument()
   })
 
   it('renders canonical attachment images', () => {

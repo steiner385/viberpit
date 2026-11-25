@@ -121,8 +121,8 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
     ? { sessionId: sessionRecord.id, reason: sessionRecord.sandbox?.reason ?? null, escaped: pausedReason === SANDBOX_ESCAPE }
     : null
   const fileRefActions = useMemo<FileRefActions | null>(
-    () => (cwd ? { cwd, openFile: setFile, attachMention } : null),
-    [cwd, setFile, attachMention],
+    () => (cwd ? { sessionId: rt.sessionId, cwd, openFile: setFile, attachMention } : null),
+    [rt.sessionId, cwd, setFile, attachMention],
   )
 
   // The rail is a column on a pane of 64rem or more — the pane's own width, so

@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { FileText, Image as ImageIcon, Link2 } from 'lucide-react'
 import { artifactFromBlock, type Artifact, type ToolBlock } from '@/session/artifacts'
 import { CopyablePath } from './CopyablePath'
@@ -6,6 +7,16 @@ import { isSafeHttpUrl } from '@/lib/safeUrl'
 
 interface Props {
   block: ToolBlock
+}
+
+// `PathRef` (its menu, the worktree-path rules) stays off the initial payload —
+// this card is in the eager transcript tree; `npm run budget` is what says so.
+// Until it lands the path is the click-to-copy chip it falls back to anyway.
+const PathRef = lazy(() => import('./PathRef').then((m) => ({ default: m.PathRef })))
+
+/** A Files link under the live session's worktree, else click-to-copy. */
+function ArtifactPath({ text }: { text: string }) {
+  return <Suspense fallback={<CopyablePath text={text} />}><PathRef text={text} /></Suspense>
 }
 
 /**
@@ -57,13 +68,13 @@ function Body({ a }: { a: Artifact }) {
         ? <a href={a.value} target="_blank" rel="noopener noreferrer" className="break-all text-accent hover:underline">{a.value}</a>
         : <span className="break-all">{a.value}</span>
     case 'path':
-      return <CopyablePath text={a.value} />
+      return <ArtifactPath text={a.value} />
     case 'image':
       if (!a.url) {
         return (
           <div>
             <p className="text-ink-muted">Uploading image…</p>
-            <div className="mt-1"><CopyablePath text={a.value} /></div>
+            <div className="mt-1"><ArtifactPath text={a.value} /></div>
           </div>
         )
       }
@@ -71,7 +82,7 @@ function Body({ a }: { a: Artifact }) {
         <div>
           <ResultImage url={a.url} name={a.label} />
           <div className="mt-1 flex items-center gap-3 text-xs">
-            <CopyablePath text={a.value} />
+            <ArtifactPath text={a.value} />
           </div>
         </div>
       )

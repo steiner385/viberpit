@@ -12,9 +12,11 @@ vi.mock('./MermaidDiagram', () => ({ MermaidDiagram: () => null }))
 // userEvent installs its own getter-only clipboard, so assert at the app's copy seam.
 const { writeText } = vi.hoisted(() => ({ writeText: vi.fn() }))
 vi.mock('@/lib/copyText', () => ({ copyText: writeText }))
+const { useSessionFile } = vi.hoisted(() => ({ useSessionFile: vi.fn() }))
+vi.mock('@/api/hooks', () => ({ useSessionFile }))
 
 function renderWith(md: string, actions: Partial<FileRefActions> | null) {
-  const value = actions ? { cwd: '/repo', openFile: vi.fn(), ...actions } : null
+  const value = actions ? { sessionId: 's1', cwd: '/repo', openFile: vi.fn(), ...actions } : null
   render(
     <FileRefContext.Provider value={value}>
       <MarkdownDoc>{md}</MarkdownDoc>
@@ -25,6 +27,7 @@ function renderWith(md: string, actions: Partial<FileRefActions> | null) {
 
 beforeEach(() => {
   writeText.mockReset().mockResolvedValue(true)
+  useSessionFile.mockReset().mockReturnValue({ isPending: true, data: undefined })
 })
 
 describe('transcript file paths (D-7)', () => {
@@ -113,5 +116,125 @@ describe('transcript file paths (D-7)', () => {
     expect(screen.queryByRole('button', { name: /in Files/ })).toBeNull()
     await user.click(screen.getByRole('button', { name: 'src/a.ts:3' }))
     expect(writeText).toHaveBeenCalledWith('src/a.ts:3')
+  })
+})
+
+describe('markdown links to local paths', () => {
+  it('a relative link in the worktree opens Files, labelled, with no href', async () => {
+    const user = userEvent.setup()
+    const ctx = renderWith('see [notes](.rendertest/notes.md)', {})!
+    expect(document.querySelector('a')).toBeNull()
+    const link = screen.getByRole('button', { name: 'notes' })
+    expect(link).toHaveAttribute('title', 'Open .rendertest/notes.md in Files')
+    await user.click(link)
+    expect(ctx.openFile).toHaveBeenCalledWith('.rendertest/notes.md', null)
+  })
+
+  it.each([
+    ['[a](src/a.ts#L12)', 'src/a.ts', 12],
+    ['[a](./src/a.ts:7)', 'src/a.ts', 7],
+    ['[a](file:///repo/src/a.ts#L3-L9)', 'src/a.ts', 3],
+    ['[a](/repo/docs/my%20notes.md)', 'docs/my notes.md', null],
+  ])('%s opens %s at line %s', async (md, rel, line) => {
+    const user = userEvent.setup()
+    const ctx = renderWith(md, {})!
+    expect(document.querySelector('a')).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'a' }))
+    expect(ctx.openFile).toHaveBeenCalledWith(rel, line)
+  })
+
+  it.each([
+    ['outside the worktree', '[x](file:///etc/hostname)', {}],
+    ['outside the worktree (relative escape)', '[x](../other/a.md)', {}],
+    ['without a provider', '[x](docs/x.md)', null],
+  ])('%s it is plain text titled with the path — no anchor, no button', (_why, md, actions) => {
+    renderWith(md, actions)
+    expect(document.querySelector('a')).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
+    expect(screen.getByText('x').tagName).toBe('SPAN')
+    expect(screen.getByText('x').getAttribute('title')).toMatch(/hostname|a\.md|x\.md/)
+  })
+
+  it('a code label inside a path link is one click target — no copy chip nested in it', async () => {
+    const user = userEvent.setup()
+    const ctx = renderWith('[`docs/x.md`](docs/x.md)', {})!
+    expect(screen.getAllByRole('button', { name: 'docs/x.md' })).toHaveLength(1)
+    expect(document.querySelector('button [role="button"], button button')).toBeNull()
+    await user.click(screen.getByText('docs/x.md'))
+    expect(ctx.openFile).toHaveBeenCalledWith('docs/x.md', null)
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('a code label inside a web link is plain code, not a PathRef', () => {
+    const { container } = render(<MarkdownDoc>{'[`docs/x.md`](https://example.com/x)'}</MarkdownDoc>)
+    expect(screen.getByRole('link')).toHaveAttribute('href', 'https://example.com/x')
+    expect(container.querySelector('a [role="button"], a button')).toBeNull()
+  })
+
+  it('a served attachment link stays a link', () => {
+    renderWith('[shot](/api/attachments/abc)', {})
+    expect(screen.getByRole('link', { name: 'shot' })).toHaveAttribute('href', '/api/attachments/abc')
+  })
+
+  it('web links, mailto and footnotes are unchanged', () => {
+    renderWith('[w](https://example.com) [m](mailto:a@b.c) note[^1]\n\n[^1]: foot', {})
+    expect(screen.getByRole('link', { name: 'w' })).toHaveAttribute('target', '_blank')
+    expect(screen.getByRole('link', { name: 'm' })).toHaveAttribute('href', 'mailto:a@b.c')
+    const ref = document.querySelector('sup a')!
+    expect(ref.getAttribute('href')).toMatch(/^#markdown-.*fn-1$/)
+  })
+
+  it('untrusted text never routes a local path — it stays text', () => {
+    render(
+      <FileRefContext.Provider value={{ sessionId: 's1', cwd: '/repo', openFile: vi.fn() }}>
+        <MarkdownDoc untrusted>{'[x](docs/x.md) [y](file:///repo/a.ts)'}</MarkdownDoc>
+      </FileRefContext.Provider>,
+    )
+    expect(document.querySelector('a')).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+})
+
+describe('markdown images at local paths', () => {
+  it('an in-worktree image loads through the Files read and opens Files on click', async () => {
+    const user = userEvent.setup()
+    useSessionFile.mockReturnValue({ isPending: false, data: { image: { mediaType: 'image/png', data: 'iVBORw0K' } } })
+    const ctx = renderWith('![shot](.rendertest/shot.png)', {})!
+    expect(useSessionFile).toHaveBeenCalledWith('s1', '.rendertest/shot.png')
+    const img = screen.getByRole('img', { name: 'shot' })
+    expect(img).toHaveAttribute('src', 'data:image/png;base64,iVBORw0K')
+    await user.click(screen.getByRole('button', { name: 'Open .rendertest/shot.png in Files' }))
+    expect(ctx.openFile).toHaveBeenCalledWith('.rendertest/shot.png', null)
+  })
+
+  it('an absolute in-worktree path is read cwd-relative; loading shows a notice', () => {
+    renderWith('![shot](/repo/out/shot.png)', {})
+    expect(useSessionFile).toHaveBeenCalledWith('s1', 'out/shot.png')
+    expect(screen.getByText('Loading image…')).toBeInTheDocument()
+  })
+
+  it('a worktree file that is not an image names its path', () => {
+    useSessionFile.mockReturnValue({ isPending: false, data: { binary: false, text: 'x' } })
+    renderWith('![shot](out/shot.png)', {})
+    expect(screen.queryByRole('img')).toBeNull()
+    expect(screen.getByText(/Image unavailable/)).toHaveTextContent('out/shot.png')
+  })
+
+  it.each([
+    ['outside the worktree', '![Settings](/tmp/shot.png)', {}],
+    ['without a provider', '![Settings](out/shot.png)', null],
+  ])('%s it explains the image is on the session host and never fetches it', (_why, md, actions) => {
+    renderWith(md, actions)
+    expect(screen.queryByRole('img')).toBeNull()
+    expect(useSessionFile).not.toHaveBeenCalled()
+    const notice = screen.getByText(/on the session host/)
+    expect(notice).toHaveTextContent(/^Settings is at .*outside its worktree.*share_artifact/)
+  })
+
+  it('an image inside a path link is the bare image — one click target', () => {
+    useSessionFile.mockReturnValue({ isPending: false, data: { image: { mediaType: 'image/png', data: 'AAAA' } } })
+    renderWith('[![shot](out/shot.png)](docs/x.md)', {})
+    expect(screen.getAllByRole('button', { name: /in Files|^shot$/ })).toHaveLength(1)
+    expect(document.querySelector('button button')).toBeNull()
   })
 })
