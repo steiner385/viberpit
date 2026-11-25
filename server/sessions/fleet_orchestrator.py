@@ -8,7 +8,8 @@ import asyncio
 import logging
 import math
 import time
-from typing import TYPE_CHECKING
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, AsyncIterator
 
 from viberpit import credential_envelope
 from viberpit.quota import QuotaSnapshot
@@ -370,7 +371,8 @@ class FleetOrchestrator:
         # Edge display-bridge broker (server/sessions/display_bridge_broker.py); None
         # leaves every session local, exactly as before the per-host display target.
         self._display_bridge = display_bridge
-        # Fire-and-forget reasserts kicked by an archive; held so they are not GC'd.
+        # Fire-and-forget reasserts kicked by an archive; held so they are not GC'd, and
+        # reaped at edge shutdown (aclose_display_reasserts).
         self._display_reasserts: set[asyncio.Task] = set()
         self._host_cache: dict[str, str] = {}  # session_id -> host
         # Per-instance, not module-level: one fleet per process, and a fresh fleet
@@ -732,39 +734,71 @@ class FleetOrchestrator:
         self._display_reasserts.add(task)
         task.add_done_callback(self._display_reasserts.discard)
 
-    async def drain_display_reasserts(self) -> None:
-        """Wait for every in-flight archive-kicked reassert (tests, shutdown)."""
-        while self._display_reasserts:
-            await asyncio.gather(*list(self._display_reasserts), return_exceptions=True)
+    async def aclose_display_reasserts(self) -> None:
+        """Cancel and reap every in-flight archive-kicked reassert (edge shutdown)."""
+        from server.aio import cancel_and_reap
+        for task in list(self._display_reasserts):
+            await cancel_and_reap(task, phase="shutdown:display-bridge-reassert",
+                                  timeout=5.0)
 
-    async def _with_display_target(self, host: str, kwargs: dict) -> dict:
-        """*kwargs* plus ``display_target`` when *host* draws on another fleet host's
-        desktop (spec §2 "Spawn waits for the bridge").
+    @asynccontextmanager
+    async def _display_spawn(self, host: str, kwargs: dict,
+                             ctx: dict) -> AsyncIterator[dict]:
+        """*kwargs* plus ``display_target`` (and ``display_fallback_hint``) when *host*
+        draws on another fleet host's desktop (spec §2 "Spawn waits for the bridge").
 
-        The bridge is asked for and awaited (up to the broker's timeout) first; the
-        target is passed even when that wait failed, because the source daemon's own
-        socket check is what records the precise fallback reason. A queued row does not
-        wait — nothing spawns yet. An explicit virtual request, the assistant drawer and
-        a disabled broker / kill switch leave the request byte-identical.
+        Wrap the daemon's ``create_session`` in it: the broker's claim on the bridge is
+        held until that RPC returns, so a probe tick or an archive meanwhile cannot drop
+        the source from the target's set before the session row exists. The target is
+        passed even when the wait failed — the source daemon's own socket check decides,
+        naming the edge's hint as the reason when it fails too.
+
+        *ctx* is per ``_dispatch``: the host registry is read once, and a target already
+        waited on for an earlier candidate host is not waited on again (the cascade
+        after a refused spawn must not cost another full timeout). A queued row does not
+        wait (nothing spawns yet; the source daemon re-resolves it at actual spawn). An
+        explicit virtual request, the assistant drawer, a missing broker and the kill
+        switch leave the request byte-identical.
         """
         broker = self._display_bridge
         if (broker is None or kwargs.get("display") == DISPLAY_VIRTUAL
                 or is_assistant_kind(kwargs.get("kind"))):
-            return kwargs
-        target = await broker.target_for(host)
-        if target is None:
-            return kwargs
-        if not kwargs.get("queue_only"):
-            await broker.prepare(host)
-        return {**kwargs, "display_target": target}
+            yield kwargs
+            return
+        if "hosts" not in ctx:
+            try:
+                ctx["hosts"] = await broker.hosts()
+            except Exception as exc:  # noqa: BLE001 — unreadable registry: spawn local
+                log.info("display bridge: host registry unreadable (%s); spawning without "
+                         "a display target", type(exc).__name__)
+                ctx["hosts"] = None
+        hosts = ctx["hosts"]
+        if hosts is None:
+            yield kwargs
+            return
+        waited: dict[str, str | None] = ctx.setdefault("waited", {})
+        target = broker.target_for(host, hosts)
+        wait = not kwargs.get("queue_only") and target not in waited
+        async with broker.prepare(host, hosts=hosts, wait=wait) as prep:
+            if prep.target is None:
+                yield kwargs
+                return
+            if wait:
+                waited[prep.target] = None if prep.up else prep.hint
+            hint = waited.get(prep.target)
+            extra: dict = {"display_target": prep.target}
+            if hint is not None:
+                extra["display_fallback_hint"] = hint
+            yield {**kwargs, **extra}
 
     async def _dispatch(self, order: list[str], kwargs: dict):
         """Try *order* best-first; the first daemon that accepts wins."""
         last_exc: Exception | None = None
+        display_ctx: dict = {}
         for host in order:
             try:
-                rec = await self._router.get(host).create_session(
-                    **await self._with_display_target(host, kwargs))
+                async with self._display_spawn(host, kwargs, display_ctx) as spawn_kwargs:
+                    rec = await self._router.get(host).create_session(**spawn_kwargs)
             except DaemonUnavailable as e:
                 if e.outcome_unknown:
                     # The RPC reached the host and timed out or reset mid-response: the

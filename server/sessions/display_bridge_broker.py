@@ -8,10 +8,24 @@ archive and on every fleet probe tick. A target that hears nothing for three
 probe intervals treats its set as empty (fail closed), so the tick asserts even
 an empty set; an edge restart loses nothing because the set lives in the DB.
 
-The desired set is live ``display_mode == "remote"`` sessions grouped by
-``display_target_host`` → their source ``host``, plus spawns waiting on
-:meth:`DisplayBridgeBroker.prepare`. Reaching a target is an expected degrade,
-logged at INFO (WARNING auto-files issues).
+The desired set is
+* live ``display_mode == "remote"`` sessions grouped by ``display_target_host`` →
+  their source ``host``;
+* queued / held sessions that may still go remote at actual spawn (no decision yet,
+  or virtual for a bridge reason) under their source host's CURRENT target — the
+  source daemon re-resolves their remote leg when they start;
+* spawns in flight: :meth:`DisplayBridgeBroker.prepare` holds a claim from before
+  the first ``ensure`` until the source daemon's ``create_session`` has returned
+  (and so written the row that keeps the source desired).
+
+Every ensure for one target — a prepare poll or a reassert — computes the set and
+sends it under that target's lock, so an older full set can never land after a
+newer one. Reaching a target is an expected degrade, logged at INFO (WARNING
+auto-files issues).
+
+Only hosts the edge's ``FleetRouter`` knows (enabled at edge start) have a client:
+a host added to the fleet later is never ensured until the edge restarts — the
+same limitation as dispatching sessions to it.
 """
 from __future__ import annotations
 
@@ -19,14 +33,18 @@ import asyncio
 import logging
 import time
 from collections import Counter
-from typing import Awaitable, Callable, Iterable, Protocol
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import AsyncIterator, Awaitable, Callable, Iterable, Protocol
 
-from sqlalchemy import select as sa_select
+from sqlalchemy import or_, select as sa_select
 
 from server.db import db_session
 from server.db.models import INACTIVE_SESSION_STATUSES, Host, Session as DbSession
 from server.obs.logdedupe import LogThrottle, log_event_throttled
-from server.sessions.display_policy import DISPLAY_REMOTE
+from server.sessions.display_bridge import STATE_UP, TARGET_STATE_HINTS
+from server.sessions.display_bridge_env import BRIDGE_FALLBACK_REASONS
+from server.sessions.display_policy import DISPLAY_REMOTE, DISPLAY_VIRTUAL
 from server.sessions.display_target import parse_display_target
 
 log = logging.getLogger(__name__)
@@ -37,8 +55,9 @@ log = logging.getLogger(__name__)
 ENSURE_RPC_TIMEOUT_S = 12.0
 # How often prepare() re-asks a target whose bridge for the source is still starting.
 PREPARE_POLL_S = 0.5
-# Target answers that will not turn "up" by waiting: stop the spawn wait at once.
-_TERMINAL_STATES = frozenset({"not_accepted", "desktop_unavailable"})
+# Sessions not started yet: a queued row and a model-approval hold. Their display
+# decision is (re-)resolved at actual spawn, so the bridge must already be wanted.
+_AWAITING_SPAWN_STATUSES = frozenset({"queued", "pending_approval"})
 
 
 class BridgeClient(Protocol):
@@ -46,6 +65,16 @@ class BridgeClient(Protocol):
 
     async def display_bridge_ensure(self, sources: list[str], ssh_dests: dict[str, str],
                                     *, timeout: float | None = None) -> list[dict]: ...
+
+
+@dataclass(frozen=True)
+class PreparedBridge:
+    """What a spawn learned: the source's ``target`` (None = local), whether the target
+    reported the bridge ``up``, and the fallback ``hint`` the target's state implies
+    (``TARGET_STATE_HINTS``) for the source daemon to record if its own check fails."""
+    target: str | None
+    up: bool = False
+    hint: str | None = None
 
 
 async def _all_hosts() -> list[Host]:
@@ -81,7 +110,7 @@ class DisplayBridgeBroker:
         self._clients = clients
         self._hosts = hosts or _all_hosts
         self._timeout_s = timeout_s
-        # target -> source -> number of prepare()s waiting on that bridge right now.
+        # target -> source -> number of spawns holding a claim on that bridge right now.
         self._inflight: dict[str, Counter[str]] = {}
         # Sources already reported as lacking an ssh destination (log once each).
         self._no_dest_logged: set[str] = set()
@@ -89,37 +118,53 @@ class DisplayBridgeBroker:
         # []) so their bridges come down even if they stop advertising a bridge.
         self._asserted: set[str] = set()
         self._unreachable_log = LogThrottle()
-        # Serializes reasserts, so an older full set can never land after a newer one.
-        self._reassert_lock = asyncio.Lock()
+        # target -> lock serializing "compute the set, send it" for that target.
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def _lock_for(self, target: str) -> asyncio.Lock:
+        return self._locks.setdefault(target, asyncio.Lock())
+
+    async def hosts(self) -> list[Host]:
+        """The host registry, read once per caller pass (spawns pass it back in)."""
+        return await self._hosts()
 
     # ── desired state ──────────────────────────────────────────────────────────────
-    async def desired(self) -> dict[str, list[str]]:
-        """target → sorted sources: live remote sessions in the DB plus in-flight spawns."""
+    async def desired(self, hosts: list[Host] | None = None) -> dict[str, list[str]]:
+        """target → sorted sources (see the module docstring for the three inputs)."""
+        if hosts is None:
+            hosts = await self._hosts()
+        current = {h.name: t for h in hosts if (t := _target_of(h)) is not None}
         async with db_session() as db:
-            rows = (await db.execute(
+            live = (await db.execute(
                 sa_select(DbSession.display_target_host, DbSession.host).where(
                     DbSession.display_mode == DISPLAY_REMOTE,
                     DbSession.display_target_host.is_not(None),
                     DbSession.host.is_not(None),
                     DbSession.status.not_in(INACTIVE_SESSION_STATUSES)))).all()
+            waiting = (await db.execute(
+                sa_select(DbSession.host).where(
+                    DbSession.status.in_(_AWAITING_SPAWN_STATUSES),
+                    DbSession.host.in_(list(current)),
+                    or_(DbSession.display_mode.is_(None),
+                        (DbSession.display_mode == DISPLAY_VIRTUAL)
+                        & DbSession.display_fallback_reason.in_(
+                            sorted(BRIDGE_FALLBACK_REASONS)))))).scalars().all()
         out: dict[str, set[str]] = {}
-        for target, source in rows:
+        for target, source in live:
             out.setdefault(target, set()).add(source)
+        for source in waiting:
+            if source is not None:          # the query filters NULL hosts out
+                out.setdefault(current[source], set()).add(source)
         for target, sources in self._inflight.items():
-            live = {s for s, n in sources.items() if n > 0}
-            if live:
-                out.setdefault(target, set()).update(live)
+            claimed = {s for s, n in sources.items() if n > 0}
+            if claimed:
+                out.setdefault(target, set()).update(claimed)
         return {t: sorted(s) for t, s in sorted(out.items())}
 
-    async def target_for(self, source: str) -> str | None:
-        """The bare target host *source*'s sessions should draw on, or None (local, the
-        kill switch is off, or the registry is unreadable)."""
+    def target_for(self, source: str, hosts: list[Host]) -> str | None:
+        """The bare target host *source*'s sessions should draw on, or None (local, or
+        the kill switch is off)."""
         if not _enabled():
-            return None
-        try:
-            hosts = await self._hosts()
-        except Exception as exc:  # noqa: BLE001 — an unreadable registry reads as local
-            log.info("display bridge: host registry unreadable (%s)", type(exc).__name__)
             return None
         row = next((h for h in hosts if h.name == source), None)
         target = _target_of(row) if row is not None else None
@@ -145,53 +190,68 @@ class DisplayBridgeBroker:
             dests[source] = dest
         return kept, dests
 
-    async def _ensure(self, target: str, client: BridgeClient, sources: list[str],
-                      dests: dict[str, str]) -> list[dict] | None:
-        """One ``display_bridge_ensure``; None (logged at INFO) when the target fails."""
-        try:
-            bridges = await client.display_bridge_ensure(
-                sources, dests, timeout=ENSURE_RPC_TIMEOUT_S)
-        except Exception as exc:  # noqa: BLE001 — an unreachable target is a degrade
-            log_event_throttled(
-                log, self._unreachable_log, target, logging.INFO,
-                "display_bridge.ensure_failed", target=target,
-                cause=f"{type(exc).__name__}: {exc}"[:300])
-            return None
-        self._unreachable_log.forget(target)
-        if sources:
-            self._asserted.add(target)
-        return bridges if isinstance(bridges, list) else []
+    async def _assert(self, target: str, client: BridgeClient,
+                      hosts: list[Host]) -> list[dict] | None:
+        """Compute *target*'s full set and send it, under the target's lock. Returns the
+        bridges, or None (logged at INFO) when the target could not be reached."""
+        by_name = {h.name: h for h in hosts}
+        async with self._lock_for(target):
+            sources, dests = self._dests_for(
+                (await self.desired(hosts)).get(target, []), by_name)
+            try:
+                bridges = await client.display_bridge_ensure(
+                    sources, dests, timeout=ENSURE_RPC_TIMEOUT_S)
+            except Exception as exc:  # noqa: BLE001 — an unreachable target is a degrade
+                log_event_throttled(
+                    log, self._unreachable_log, target, logging.INFO,
+                    "display_bridge.ensure_failed", target=target,
+                    cause=f"{type(exc).__name__}: {exc}"[:300])
+                return None
+            self._unreachable_log.forget(target)
+            if sources:
+                self._asserted.add(target)
+            else:
+                self._asserted.discard(target)
+            return bridges if isinstance(bridges, list) else []
 
     # ── spawn ──────────────────────────────────────────────────────────────────────
-    async def prepare(self, source: str) -> str | None:
-        """Ask *source*'s target to bridge it and wait up to ``timeout_s`` for ``up``.
+    @asynccontextmanager
+    async def prepare(self, source: str, *, hosts: list[Host] | None = None,
+                      wait: bool = True) -> AsyncIterator[PreparedBridge]:
+        """Claim *source*'s bridge on its target for the body of the ``async with``.
 
-        Returns the target host name once the target reports the bridge up, else None
-        (no target, kill switch off, target disabled/unknown, no ssh destination, the
-        target refused, or the wait ran out). The caller passes the target to the source
-        daemon either way; its own socket check records the precise fallback reason.
+        Wrap the source daemon's ``create_session`` in it: the claim keeps *source* in
+        the target's desired set until that RPC has returned (the row it writes keeps it
+        there afterwards), so no tick or archive can tear down the bridge a spawn waited
+        for. With *wait*, asks the target to bridge *source* and waits up to
+        ``timeout_s`` for ``up``. Yields ``PreparedBridge(target=None)`` for a local
+        source / kill switch off; ``up=False`` when the target is disabled or not in the
+        fleet, the source has no ssh destination, the target refused, or time ran out.
         """
-        target = await self.target_for(source)
+        if hosts is None:
+            hosts = await self._hosts()
+        target = self.target_for(source, hosts)
         if target is None:
-            return None
-        try:
-            hosts = {h.name: h for h in await self._hosts()}
-        except Exception as exc:  # noqa: BLE001 — target_for just read it; a flake here
-            log.info("display bridge: host registry unreadable (%s)", type(exc).__name__)
-            return None
-        row = hosts.get(target)
+            yield PreparedBridge(None)
+            return
+        by_name = {h.name: h for h in hosts}
+        row = by_name.get(target)
         client = self._clients(target) if row is not None and row.enabled else None
         if client is None:
             log.info("display bridge: target host=%s for source=%s is disabled or not in "
                      "the fleet; not waiting", target, source)
-            return None
-        if _ssh_dest(hosts.get(source)) is None:
-            self._dests_for([source], hosts)
-            return None
+            yield PreparedBridge(target)
+            return
+        if _ssh_dest(by_name.get(source)) is None:
+            self._dests_for([source], by_name)
+            yield PreparedBridge(target)
+            return
         counter = self._inflight.setdefault(target, Counter())
         counter[source] += 1
         try:
-            return await self._wait_up(target, client, source, hosts)
+            result = (await self._wait_up(target, client, source, hosts) if wait
+                      else PreparedBridge(target))
+            yield result
         finally:
             counter[source] -= 1
             if counter[source] <= 0:
@@ -200,21 +260,19 @@ class DisplayBridgeBroker:
                 self._inflight.pop(target, None)
 
     async def _wait_up(self, target: str, client: BridgeClient, source: str,
-                       hosts: dict[str, Host]) -> str | None:
+                       hosts: list[Host]) -> PreparedBridge:
         deadline = time.monotonic() + self._timeout_s
         state = None
         try:
             async with asyncio.timeout(self._timeout_s):
                 while True:
-                    sources, dests = self._dests_for(
-                        (await self.desired()).get(target, []), hosts)
-                    bridges = await self._ensure(target, client, sources, dests)
+                    bridges = await self._assert(target, client, hosts)
                     state = next((b.get("state") for b in bridges or []
                                   if isinstance(b, dict) and b.get("source") == source),
                                  None)
-                    if state == "up":
-                        return target
-                    if state in _TERMINAL_STATES:
+                    if state == STATE_UP:
+                        return PreparedBridge(target, up=True)
+                    if state in TARGET_STATE_HINTS:
                         break
                     await asyncio.sleep(min(PREPARE_POLL_S,
                                             max(0.0, deadline - time.monotonic())))
@@ -222,7 +280,7 @@ class DisplayBridgeBroker:
             pass
         log.info("display bridge: source=%s -> target=%s not up (state=%s); the session "
                  "decides virtual or remote from its own sockets", source, target, state)
-        return None
+        return PreparedBridge(target, hint=TARGET_STATE_HINTS.get(state or ""))
 
     # ── reconcile ──────────────────────────────────────────────────────────────────
     async def reassert(self) -> None:
@@ -230,15 +288,13 @@ class DisplayBridgeBroker:
         if not _enabled():
             return
         try:
-            async with self._reassert_lock:
-                await self._reassert()
+            await self._reassert()
         except Exception:  # noqa: BLE001 — a bad tick must not stop the next one
             log.info("display bridge: reassert failed", exc_info=True)
 
     async def _reassert(self) -> None:
         hosts = await self._hosts()
-        by_name = {h.name: h for h in hosts}
-        desired = await self.desired()
+        desired = await self.desired(hosts)
         configured = {t for h in hosts if (t := _target_of(h)) is not None}
         targets = sorted(
             h.name for h in hosts
@@ -247,10 +303,7 @@ class DisplayBridgeBroker:
 
         async def _one(target: str) -> None:
             client = self._clients(target)
-            if client is None:
-                return
-            sources, dests = self._dests_for(desired.get(target, []), by_name)
-            if await self._ensure(target, client, sources, dests) is not None and not sources:
-                self._asserted.discard(target)
+            if client is not None:
+                await self._assert(target, client, hosts)
 
         await asyncio.gather(*(_one(t) for t in targets))

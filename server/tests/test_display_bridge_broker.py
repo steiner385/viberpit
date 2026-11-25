@@ -53,11 +53,18 @@ def _broker(clients: dict, timeout_s=2.0):
     return DisplayBridgeBroker(clients=clients.get, timeout_s=timeout_s)
 
 
+async def _prep(broker, source):
+    """Enter and leave prepare(): what the spawn would have learned."""
+    async with broker.prepare(source) as prep:
+        return prep
+
+
 async def test_prepare_returns_target_when_up(isolated_db):
     await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"),
                 _host("dobby"))
     dobby = _FakeTarget("up")
-    assert await _broker({"dobby": dobby}).prepare("rocky") == "dobby"
+    prep = await _prep(_broker({"dobby": dobby}), "rocky")
+    assert prep.target == "dobby" and prep.up and prep.hint is None
     assert dobby.calls[0] == (["rocky"], {"rocky": "tony@rocky"})
 
 
@@ -65,7 +72,8 @@ async def test_prepare_times_out_returns_none_within_timeout(isolated_db):
     await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"), _host("dobby"))
     dobby = _FakeTarget("starting")
     t0 = time.monotonic()
-    assert await _broker({"dobby": dobby}, timeout_s=0.3).prepare("rocky") is None
+    prep = await _prep(_broker({"dobby": dobby}, timeout_s=0.3), "rocky")
+    assert prep.target == "dobby" and not prep.up and prep.hint is None
     assert time.monotonic() - t0 < 1.5
     assert len(dobby.calls) >= 1
 
@@ -74,30 +82,33 @@ async def test_prepare_uses_display_ssh_host_over_ssh_host(isolated_db):
     await _seed(_host("rocky", target="host:dobby", ssh="ops@rocky", dssh="tony@rocky"),
                 _host("dobby"))
     dobby = _FakeTarget("up")
-    await _broker({"dobby": dobby}).prepare("rocky")
+    await _prep(_broker({"dobby": dobby}), "rocky")
     assert dobby.calls[0][1] == {"rocky": "tony@rocky"}
 
 
 async def test_prepare_without_ssh_destination_never_calls_ensure(isolated_db):
     await _seed(_host("rocky", target="host:dobby"), _host("dobby"))
     dobby = _FakeTarget("up")
-    assert await _broker({"dobby": dobby}).prepare("rocky") is None
+    assert not (await _prep(_broker({"dobby": dobby}), "rocky")).up
     assert dobby.calls == []
 
 
-async def test_prepare_returns_none_at_once_when_target_refuses(isolated_db):
+@pytest.mark.parametrize("state,hint", [("not_accepted", "bridge_not_accepted"),
+                                        ("desktop_unavailable", "target_desktop_unavailable")])
+async def test_prepare_stops_at_once_with_a_hint_when_target_refuses(isolated_db, state, hint):
     await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"), _host("dobby"))
-    dobby = _FakeTarget("not_accepted")
+    dobby = _FakeTarget(state)
     t0 = time.monotonic()
-    assert await _broker({"dobby": dobby}, timeout_s=5.0).prepare("rocky") is None
+    prep = await _prep(_broker({"dobby": dobby}, timeout_s=5.0), "rocky")
     assert time.monotonic() - t0 < 1.0
+    assert not prep.up and prep.hint == hint
 
 
 async def test_prepare_swallows_an_unreachable_target(isolated_db):
     from server.ipc.client import DaemonUnavailable
     await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"), _host("dobby"))
     dobby = _FakeTarget(fail=DaemonUnavailable("All connection attempts failed"))
-    assert await _broker({"dobby": dobby}, timeout_s=0.3).prepare("rocky") is None
+    assert not (await _prep(_broker({"dobby": dobby}, timeout_s=0.3), "rocky")).up
 
 
 class _Rec:
@@ -230,7 +241,7 @@ async def test_desired_includes_in_flight_prepares(isolated_db):
             return [{"source": s, "state": "up"} for s in sources]
 
     broker = _broker({"dobby": _Slow()})
-    assert await broker.prepare("rocky") == "dobby"
+    assert (await _prep(broker, "rocky")).up
     assert seen == [{"dobby": ["rocky"]}]
     assert await broker.desired() == {}
 
@@ -286,7 +297,7 @@ async def test_kill_switch_off_never_calls_ensure(isolated_db, monkeypatch):
     dobby = _FakeTarget()
     broker = _broker({"dobby": dobby})
     await broker.reassert()
-    assert await broker.prepare("rocky") is None
+    assert (await _prep(broker, "rocky")).target is None
     fo, rocky = _fleet(monkeypatch, broker)
     await fo.create_session(account="a")
     assert dobby.calls == []
@@ -302,7 +313,7 @@ async def test_archive_reasserts_the_desired_set(isolated_db, monkeypatch):
     async with db_session() as db:
         (await db.get(DbSession, "s1")).status = "archived"
     await fo.archive_session("s1")
-    await fo.drain_display_reasserts()
+    await asyncio.gather(*list(fo._display_reasserts))
     assert rocky.archived == ["s1"]
     assert dobby.calls == [([], {})]
 
@@ -325,3 +336,151 @@ async def test_probe_loop_reasserts_every_tick(monkeypatch):
     await asyncio.wait_for(
         host_probe.probe_loop(0.01, stop=stop, display_bridge=_B()), timeout=5)
     assert len(ticks) == 2
+
+
+# --- fix round 1 ----------------------------------------------------------------------
+
+async def test_reassert_during_the_create_rpc_keeps_the_source(isolated_db, monkeypatch):
+    """The claim outlives the wait: a probe tick (or archive) that reasserts while the
+    source daemon is still inside create_session — its row not written yet — must keep
+    the source in the target's set, or it tears down the bridge the spawn waited for."""
+    await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"), _host("dobby"))
+    dobby = _FakeTarget("up")
+    broker = _broker({"dobby": dobby})
+    fo, rocky = _fleet(monkeypatch, broker)
+
+    async def _create(**kw):
+        await broker.reassert()            # a probe tick lands mid-spawn
+        rocky.created.append(kw)
+        return _Rec("sess-rocky")
+    rocky.create_session = _create
+    await fo.create_session(account="a")
+    assert [c[0] for c in dobby.calls] == [["rocky"], ["rocky"]]
+    # Released after the RPC: with no row, the next tick drops it.
+    await broker.reassert()
+    assert dobby.calls[-1] == ([], {})
+
+
+async def test_ensures_for_one_target_never_overlap(isolated_db):
+    """Compute-and-send is serialized per target, so an older full set can never land
+    after a newer one."""
+    await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"), _host("dobby"))
+    active = 0
+    peak = 0
+
+    class _Slow(_FakeTarget):
+        async def display_bridge_ensure(self, sources, ssh_dests, *, timeout=None):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.05)
+            active -= 1
+            return await super().display_bridge_ensure(sources, ssh_dests, timeout=timeout)
+
+    dobby = _Slow("up")
+    broker = _broker({"dobby": dobby})
+    await asyncio.gather(broker.reassert(), _prep(broker, "rocky"), broker.reassert())
+    assert peak == 1
+    assert len(dobby.calls) == 3
+
+
+async def test_desired_counts_queued_and_held_sessions_on_a_targeted_source(isolated_db):
+    def _row(sid, host, status, mode=None, reason=None):
+        return DbSession(id=sid, name=sid, account_name="a", cwd="/tmp", status=status,
+                         host=host, display_mode=mode, display_fallback_reason=reason)
+    await _seed(_host("rocky", target="host:dobby", ssh="r"), _host("pi", ssh="p"),
+                _host("dobby"),
+                _row("q-undecided", "rocky", "queued"),
+                _row("held-fallback", "rocky", "pending_approval", "virtual",
+                     "bridge_unavailable"),
+                _row("q-native", "rocky", "queued", "native"),
+                _row("q-plain-virtual", "rocky", "queued", "virtual"),
+                _row("q-untargeted", "pi", "queued"),
+                _row("idle-fallback", "rocky", "idle", "virtual", "bridge_unavailable"))
+    assert await _broker({}).desired() == {"dobby": ["rocky"]}
+    # Only the first two count: drop them and nothing is wanted.
+    async with db_session() as db:
+        for sid in ("q-undecided", "held-fallback"):
+            (await db.get(DbSession, sid)).status = "ended"
+    assert await _broker({}).desired() == {}
+
+
+async def test_create_session_passes_the_targets_hint(isolated_db, monkeypatch):
+    await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"), _host("dobby"))
+    fo, rocky = _fleet(monkeypatch, _broker({"dobby": _FakeTarget("desktop_unavailable")}))
+    await fo.create_session(account="a")
+    assert rocky.created[0]["display_target"] == "dobby"
+    assert rocky.created[0]["display_fallback_hint"] == "target_desktop_unavailable"
+
+
+async def test_up_bridge_sends_no_hint(isolated_db, monkeypatch):
+    await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"), _host("dobby"))
+    fo, rocky = _fleet(monkeypatch, _broker({"dobby": _FakeTarget("up")}))
+    await fo.create_session(account="a")
+    assert "display_fallback_hint" not in rocky.created[0]
+
+
+async def test_cascade_after_refusal_does_not_wait_again_for_the_same_target(
+        isolated_db, monkeypatch):
+    await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"),
+                _host("pi", target="host:dobby", ssh="tony@pi"), _host("dobby"))
+    dobby = _FakeTarget("starting")
+    broker = _broker({"dobby": dobby}, timeout_s=0.4)
+    rocky, pi = _SourceOrch("rocky"), _SourceOrch("pi")
+
+    async def _refuse(**kw):
+        rocky.created.append(kw)
+        raise RuntimeError("spawn failed")
+    rocky.create_session = _refuse
+    fo = FleetOrchestrator(_Router({"rocky": rocky, "pi": pi}, ["rocky", "pi"]),
+                           primary="rocky", display_bridge=broker)
+
+    async def _stamp(sid, host):
+        return None
+    monkeypatch.setattr(fo, "_stamp_host", _stamp)
+    t0 = time.monotonic()
+    rec = await fo.create_session(account="a")
+    assert rec.id == "sess-pi"
+    assert time.monotonic() - t0 < 0.8              # one wait, not two
+    assert rocky.created[0]["display_target"] == pi.created[0]["display_target"] == "dobby"
+
+
+async def test_registry_read_once_per_spawn(isolated_db, monkeypatch):
+    await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"), _host("dobby"))
+    reads = 0
+    from server.sessions import display_bridge_broker as mod
+
+    async def _hosts():
+        nonlocal reads
+        reads += 1
+        return await mod._all_hosts()
+    broker = DisplayBridgeBroker(clients={"dobby": _FakeTarget("up")}.get, hosts=_hosts,
+                                 timeout_s=2.0)
+    fo, _rocky = _fleet(monkeypatch, broker)
+    await fo.create_session(account="a")
+    assert reads == 1
+
+
+async def test_unreadable_registry_spawns_without_target(isolated_db, monkeypatch):
+    async def _boom():
+        raise RuntimeError("db down")
+    broker = DisplayBridgeBroker(clients={}.get, hosts=_boom, timeout_s=2.0)
+    fo, rocky = _fleet(monkeypatch, broker)
+    await fo.create_session(account="a")
+    assert "display_target" not in rocky.created[0]
+
+
+async def test_aclose_display_reasserts_reaps_pending_tasks(isolated_db, monkeypatch):
+    started = asyncio.Event()
+
+    class _Hang:
+        async def reassert(self):
+            started.set()
+            await asyncio.sleep(3600)
+    fo, _rocky = _fleet(monkeypatch, _Hang())
+    fo._kick_display_reassert()
+    await started.wait()
+    task = next(iter(fo._display_reasserts))
+    await fo.aclose_display_reasserts()
+    assert task.cancelled()
+    assert not fo._display_reasserts

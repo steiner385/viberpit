@@ -706,6 +706,12 @@ async def _lifespan(app: FastAPI):
             await bounded_wait(_t, timeout=_SHUTDOWN_PHASE_TIMEOUT_S,
                                phase=f"shutdown:{_phase}")
     from server.aio import cancel_and_reap
+    # Archive-kicked display-bridge reasserts (FleetOrchestrator only; the class
+    # attribute is read so a non-fleet orchestrator's __getattr__ is never consulted).
+    _fleet = getattr(app.state, "sessions", None)
+    _reassert_close = getattr(type(_fleet), "aclose_display_reasserts", None)
+    if _reassert_close is not None:
+        await _reassert_close(_fleet)
     await cancel_and_reap(getattr(app.state, "trusted_author_bind_task", None),
                           phase="shutdown:trusted-author-bind",
                           timeout=_SHUTDOWN_PHASE_TIMEOUT_S)
