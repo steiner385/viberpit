@@ -30279,7 +30279,7 @@ class SessionOrchestrator:
         never ends parked on it. If a timer wake cannot deliver it during a deploy
         drain, the snooze is restored for the next tick; any other failure leaves the
         session awake and tells the person, rather than retrying forever."""
-        from .snooze import wake_prompt
+        from .snooze import UNSNOOZABLE_STATUSES, wake_prompt
         rec = self._records.get(session_id)
         snooze = getattr(rec, "snooze", None) if rec is not None else None
         if not snooze:
@@ -30295,8 +30295,17 @@ class SessionOrchestrator:
                 await self._write_snooze(session_id, snooze)
                 return False
             if delivered != "sent":
-                log.warning("snooze.wake_prompt_undelivered session=%s result=%s",
-                            session_id, delivered)
+                # ensure_driver declines by design for a session that ended, was
+                # archived or is queued meanwhile (the wake raced its end, #3474).
+                # The audit row and the push below already tell the person, so that
+                # is INFO; any other undelivered result stays a WARNING.
+                cur = self._records.get(session_id)
+                status = cur.status if cur is not None else "gone"
+                expected = delivered == "no_driver" and (
+                    cur is None or cur.status in UNSNOOZABLE_STATUSES)
+                log.log(logging.INFO if expected else logging.WARNING,
+                        "snooze.wake_prompt_undelivered session=%s result=%s status=%s",
+                        session_id, delivered, status)
         log.info("snooze.woken session=%s cause=%s by=%s", session_id, cause, snooze.get("by"))
         async with db_session() as db:
             await record_audit(db, "session.wake", identity,
@@ -30329,9 +30338,17 @@ class SessionOrchestrator:
         from .snooze import UNSNOOZABLE_STATUSES, is_due
         now = now or datetime.now(timezone.utc)
         woken = 0
+        enabled_hosts = await self._enabled_host_names()
         for sid, rec in list(self._records.items()):
             snooze = getattr(rec, "snooze", None)
             if not snooze:
+                continue
+            # The primary holds every fleet row; a session stamped for another live
+            # host is that host's to wake. Acting on it here cleared the owner's
+            # shared snooze row, hit the lease fence and sent a false "could not be
+            # resumed" push (#3475/#3476). Gate before EVERY branch: the unsnoozable
+            # clear below writes the shared row too.
+            if not self._owns_record(rec, enabled_hosts):
                 continue
             if rec.status in UNSNOOZABLE_STATUSES:
                 await self._write_snooze(sid, None)
