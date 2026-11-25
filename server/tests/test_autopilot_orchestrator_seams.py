@@ -953,6 +953,35 @@ async def test_a_pr_doctor_origin_claim_never_blocks_the_prs_author(orch, monkey
 
 
 @pytest.mark.asyncio
+async def test_share_artifact_binding_counts_cached_creations_without_a_replay(
+        orch, monkeypatch, tmp_path):
+    """The tool binding must answer promptly: it never exports the transcript (up
+    to TRANSCRIPT_EXPORT_CEILING_S) yet still adopts a PR the cached creations hold."""
+    await _init_db(tmp_path)
+    captured, replays = {}, []
+
+    def _build(ctx):
+        captured["ctx"] = ctx
+        return object()
+
+    async def _no_replay(sid, **kw):
+        replays.append(kw)
+        raise AssertionError("share_artifact must not replay the transcript")
+
+    monkeypatch.setattr("server.sessions.tools.server.build_session_server", _build)
+    orch.register_overlay = lambda sid, overlay: None
+    orch.transcript_window = _no_replay
+    orch._created_pr_cache = {"s1": (3, frozenset({("o/r", 55)}))}
+    monkeypatch.setattr("server.github.pr_poller.pr_head_ref", lambda repo, n: "feat/mine")
+    _worktree_ties(monkeypatch)
+    orch._pr_poller = SimpleNamespace(in_cooldown=True)
+    await orch._setup_session_overlay("s1", identity="u")
+    await captured["ctx"].note_shared_pr("o/r", 55)
+    assert replays == []
+    assert "feat/mine" in orch._records["s1"].authored_branches
+
+
+@pytest.mark.asyncio
 async def test_sharing_an_unowned_pr_with_no_tie_does_not_adopt_it(orch, monkeypatch, tmp_path):
     """A bare reference link (a human's PR) is a card, not a deliverable."""
     await _init_db(tmp_path)
