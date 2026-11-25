@@ -37,6 +37,16 @@ X11_AUTH_DISPLAY = 0
 # Fallback reasons (spec Global Constraints; exact strings).
 REASON_BRIDGE_UNAVAILABLE = "bridge_unavailable"
 REASON_BRIDGE_WRONG_USER = "bridge_wrong_user"
+# Observed by the EDGE on the target (display_bridge_ensure state) and passed to this
+# daemon as ``display_fallback_hint``; used only when the live check here also fails.
+REASON_BRIDGE_NOT_ACCEPTED = "bridge_not_accepted"
+REASON_TARGET_DESKTOP_UNAVAILABLE = "target_desktop_unavailable"
+# Every reason a would-be-remote session went virtual for: a queued/held row carrying
+# one re-resolves its remote leg at actual spawn (spec §2 "resolve at actual spawn").
+BRIDGE_FALLBACK_REASONS: frozenset[str] = frozenset({
+    REASON_BRIDGE_UNAVAILABLE, REASON_BRIDGE_WRONG_USER,
+    REASON_BRIDGE_NOT_ACCEPTED, REASON_TARGET_DESKTOP_UNAVAILABLE,
+})
 
 _CONNECT_TIMEOUT_S = 0.5
 

@@ -194,6 +194,9 @@ _CREATE_FALLBACKS: tuple[tuple[tuple[str, ...], str], ...] = (
     # Per-host display target: that daemon has no bridge env; the session stays local.
     (("display_target",),
      "predates the display bridge (session will not open on the target desktop)"),
+    # The edge's observed target state: without it the daemon records its own reason.
+    (("display_fallback_hint",),
+     "predates the bridge fallback hint (the session records its own fallback reason)"),
     # The per-session dispatch toggles: the autopilot pause is re-applied after create;
     # the auto-archive opt-out has no pre-existing setter, so that daemon cannot honour it.
     (("autopilot_paused", "auto_archive_opt_out_reason"),

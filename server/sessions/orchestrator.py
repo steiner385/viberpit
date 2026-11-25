@@ -178,7 +178,10 @@ from server.sessions.display_policy import (
     resolve_display_decision,
 )
 from server.sessions.display_bridge_env import (
+    BRIDGE_FALLBACK_REASONS,
+    REASON_BRIDGE_NOT_ACCEPTED,
     REASON_BRIDGE_UNAVAILABLE,
+    REASON_TARGET_DESKTOP_UNAVAILABLE,
     bridge_x11_enabled,
     remote_env,
     source_runtime_dir,
@@ -243,6 +246,10 @@ _UPGRADABLE_LAUNCHES = frozenset({_account_auth.LAUNCH_SETUP, _account_auth.LAUN
 # would lose in-flight work, so the deploy drain waits for them to clear. All other
 # statuses (idle / done / limited / ended / archived) are restart-safe: resume +
 # transcript replay recover them.
+# Fallback reasons only the EDGE can observe (on the target) and may hand a spawn as
+# ``display_fallback_hint``; anything else in that kwarg is ignored.
+_EDGE_FALLBACK_HINTS = frozenset({REASON_BRIDGE_NOT_ACCEPTED, REASON_TARGET_DESKTOP_UNAVAILABLE})
+
 _ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "condensing"})
 
 # Statuses where the SDK owned an in-flight turn when the deploy snapshot was taken.
@@ -4686,6 +4693,7 @@ class SessionOrchestrator:
         client_node: str | None = None,
         display: str | None = None,
         display_target: str | None = None,
+        display_fallback_hint: str | None = None,
         autopilot_paused: bool = False,
         auto_archive_opt_out_reason: str | None = None,
         ownership_token: str | None = None,
@@ -4841,6 +4849,7 @@ class SessionOrchestrator:
                     reasoning_effort=reasoning_effort, kind=kind,
                     owner_identity=owner_identity, engine=selected_engine,
                     client_node=client_node, display=display, display_target=display_target,
+                    display_fallback_hint=display_fallback_hint,
                     parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
@@ -4869,6 +4878,7 @@ class SessionOrchestrator:
                     model=model, reasoning_effort=reasoning_effort, kind=kind,
                     owner_identity=owner_identity, engine=selected_engine,
                     client_node=client_node, display=display, display_target=display_target,
+                    display_fallback_hint=display_fallback_hint,
                     parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
@@ -4883,6 +4893,7 @@ class SessionOrchestrator:
                     reasoning_effort=reasoning_effort, kind=kind,
                     owner_identity=owner_identity, engine=selected_engine,
                     client_node=client_node, display=display, display_target=display_target,
+                    display_fallback_hint=display_fallback_hint,
                     parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
@@ -4909,6 +4920,7 @@ class SessionOrchestrator:
                     model=model, reasoning_effort=reasoning_effort, kind=kind,
                     owner_identity=owner_identity, engine=selected_engine,
                     client_node=client_node, display=display, display_target=display_target,
+                    display_fallback_hint=display_fallback_hint,
                     parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
@@ -5194,8 +5206,23 @@ class SessionOrchestrator:
             return None
         return getattr(prior, "display_target_host", None) or (display_target or "").strip() or None
 
+    def _remote_leg(self, target: str | None,
+                    fallback_hint: str | None) -> tuple[bool, str | None]:
+        """(available, reason) of the remote leg toward *target*. The edge's
+        *fallback_hint* (what the TARGET reported: not accepted / desktop logged out) names
+        the reason only when this host's own live check fails too — never overrides it."""
+        if target is None:
+            return False, None
+        bridge = self._bridge_state(target)
+        if isinstance(bridge, dict):
+            return True, None
+        if fallback_hint in _EDGE_FALLBACK_HINTS:
+            return False, fallback_hint
+        return False, bridge
+
     def _resolve_display_mode_for(self, display: str | None, client_node: str | None,
-                                  display_target: str | None = None) -> DisplayDecision:
+                                  display_target: str | None = None,
+                                  fallback_hint: str | None = None) -> DisplayDecision:
         """The one call to ``resolve_display_decision`` for this daemon — used by the
         spawn, enqueue and hold paths so the decision is made identically wherever a
         session is born, not just where it happens to start a driver. A queued or
@@ -5215,27 +5242,62 @@ class SessionOrchestrator:
             native_reason = (self._native.unavailable_reason() if self._native is not None
                              else "native_disabled")
         target = self._effective_display_target(display_target)
-        bridge = self._bridge_state(target) if target is not None else None
+        remote_ok, remote_reason = self._remote_leg(target, fallback_hint)
         return resolve_display_decision(
             requested=display, client_node=client_node, runner=self_host_name(),
             native_available=available, native_unavailable_reason=native_reason,
-            remote_target=target, remote_available=isinstance(bridge, dict),
-            remote_unavailable_reason=bridge if isinstance(bridge, str) else None)
+            remote_target=target, remote_available=remote_ok,
+            remote_unavailable_reason=remote_reason)
 
     def _display_decision(self, prior, display: str | None, client_node: str | None,
-                          display_target: str | None = None) -> DisplayDecision:
+                          display_target: str | None = None,
+                          fallback_hint: str | None = None) -> DisplayDecision:
         """A prior record's persisted decision (queued/held/resumed row) wins over a
         fresh re-resolution; otherwise decide now."""
         prior_mode = getattr(prior, "display_mode", None)
         if prior_mode:
             return DisplayDecision(prior_mode, getattr(prior, "display_fallback_reason", None))
-        return self._resolve_display_mode_for(display, client_node, display_target)
+        return self._resolve_display_mode_for(display, client_node, display_target,
+                                              fallback_hint)
+
+    async def _decide_display(self, prior, display: str | None, client_node: str | None,
+                              display_target: str | None,
+                              fallback_hint: str | None = None,
+                              ) -> tuple[DisplayDecision, str | None, bool]:
+        """Warm the inputs and decide: ``(decision, display_target_host, redecided)``.
+
+        The persisted prior wins (``_display_decision``) with ONE exception (spec §2
+        "Queued/held sessions resolve at actual spawn"): a row born virtual only because
+        the bridge was not up yet (a ``BRIDGE_FALLBACK_REASONS`` reason) re-asks the
+        REMOTE leg against this host's current target — the edge keeps that bridge
+        desired for queued/held rows. Native is never re-decided (the client_node that
+        could justify it is long gone). ``redecided`` tells the spawn to overwrite the
+        row's persisted decision instead of keeping it.
+        """
+        if (getattr(prior, "display_mode", None) == DISPLAY_VIRTUAL
+                and getattr(prior, "display_fallback_reason", None) in BRIDGE_FALLBACK_REASONS):
+            target = self._effective_display_target(
+                display_target or await self._current_display_target())
+            if target is not None:
+                await self._refresh_display(target)
+                remote_ok, remote_reason = self._remote_leg(target, fallback_hint)
+                decision = resolve_display_decision(
+                    requested=None, client_node=None, runner=self_host_name(),
+                    native_available=False, native_unavailable_reason=None,
+                    remote_target=target, remote_available=remote_ok,
+                    remote_unavailable_reason=remote_reason)
+                return decision, self._display_target_host(None, decision, target), True
+        await self._refresh_display(display_target)
+        decision = self._display_decision(prior, display, client_node, display_target,
+                                          fallback_hint)
+        return decision, self._display_target_host(prior, decision, display_target), False
 
     async def _enqueue_session(self, session_id: str, *, name, account,
                                initial_prompt, cols, rows, cwd, branch, repo,
                                identity, permission_mode, attachment_ids,
                                name_is_auto, origin, origin_ref, model,
                                client_node=None, display=None, display_target=None,
+                               display_fallback_hint: str | None = None,
                                parent_session_id=None,
                                reasoning_effort=None, kind=None, owner_identity=None,
                                engine=AgentEngine.CLAUDE_CODE,
@@ -5270,10 +5332,9 @@ class SessionOrchestrator:
         # comment on why), so its persisted display_mode must win over a fresh
         # re-resolution with client_node=None.
         _prior = self._records.get(session_id)
-        await self._refresh_display(display_target)
-        decision = self._display_decision(_prior, display, client_node, display_target)
+        decision, display_target_host, _ = await self._decide_display(
+            _prior, display, client_node, display_target, display_fallback_hint)
         display_mode, display_fallback_reason = decision
-        display_target_host = self._display_target_host(_prior, decision, display_target)
         async with db_session() as db:
             if replace_row:
                 existing = await db.get(DbSession, session_id)
@@ -5375,6 +5436,7 @@ class SessionOrchestrator:
                                  identity, permission_mode, attachment_ids,
                                  name_is_auto, origin, origin_ref, model,
                                  client_node=None, display=None, display_target=None,
+                                 display_fallback_hint: str | None = None,
                                  parent_session_id=None,
                                  reasoning_effort=None, kind=None, owner_identity=None,
                                  engine=AgentEngine.CLAUDE_CODE,
@@ -5404,10 +5466,9 @@ class SessionOrchestrator:
         now = datetime.utcnow()
         host = local_host_stamp()
         selected_engine = parse_agent_engine(engine)
-        await self._refresh_display(display_target)
-        decision = self._resolve_display_mode_for(display, client_node, display_target)
+        decision, display_target_host, _ = await self._decide_display(
+            None, display, client_node, display_target, display_fallback_hint)
         display_mode, display_fallback_reason = decision
-        display_target_host = self._display_target_host(None, decision, display_target)
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -6715,6 +6776,7 @@ class SessionOrchestrator:
         client_node: str | None = None,
         display: str | None = None,
         display_target: str | None = None,
+        display_fallback_hint: str | None = None,
         autopilot_paused: bool = False,
         auto_archive_opt_out_reason: str | None = None,
         parent_session_id: str | None = None,
@@ -6862,10 +6924,9 @@ class SessionOrchestrator:
             # Decide where this session's GUI renders — ONCE, here — then either lease a
             # virtual Xvfb display or leave the host's real one to _display_env. A
             # previously-queued/resumed row keeps its persisted decision.
-            await self._refresh_display(display_target)
-            decision = self._display_decision(_prior, display, client_node, display_target)
+            decision, display_target_host, display_redecided = await self._decide_display(
+                _prior, display, client_node, display_target, display_fallback_hint)
             display_mode, display_fallback_reason = decision
-            display_target_host = self._display_target_host(_prior, decision, display_target)
             if display_mode == DISPLAY_VIRTUAL and self._x11 is not None:
                 try:
                     await self._x11.start_display(session_id)
@@ -7086,10 +7147,24 @@ class SessionOrchestrator:
                 # display_mode only overwrites a NULL (legacy/pre-decision row) — a row
                 # that already carries a persisted decision (native or virtual) keeps it,
                 # matching the in-memory `display_mode` resolved above from `_prior`.
+                # The one exception is a bridge-fallback row whose remote leg was
+                # re-resolved at this spawn (_decide_display): that decision replaces it.
                 async with db_session() as db:
                     from sqlalchemy import update as sa_update
                     from sqlalchemy import func as sa_func
                     from sqlalchemy import case as sa_case
+                    _display_values: dict = (
+                        dict(display_mode=display_mode,
+                             display_fallback_reason=display_fallback_reason,
+                             display_target_host=display_target_host)
+                        if display_redecided else
+                        dict(display_mode=sa_func.coalesce(DbSession.display_mode, display_mode),
+                             display_fallback_reason=sa_func.coalesce(
+                                 DbSession.display_fallback_reason, display_fallback_reason),
+                             # Follows display_mode: set only alongside a NULL mode.
+                             display_target_host=sa_case(
+                                 (DbSession.display_mode.is_(None), display_target_host),
+                                 else_=DbSession.display_target_host)))
                     await db.execute(
                         sa_update(DbSession)
                         .where(DbSession.id == session_id)
@@ -7101,13 +7176,7 @@ class SessionOrchestrator:
                                 pending_model_requested_at=None,
                                 reasoning_effort=reasoning_effort,
                                 sandbox=_pre_record.sandbox,
-                                display_mode=sa_func.coalesce(DbSession.display_mode, display_mode),
-                                display_fallback_reason=sa_func.coalesce(
-                                    DbSession.display_fallback_reason, display_fallback_reason),
-                                # Follows display_mode: set only alongside a NULL mode.
-                                display_target_host=sa_case(
-                                    (DbSession.display_mode.is_(None), display_target_host),
-                                    else_=DbSession.display_target_host))
+                                **_display_values)
                     )
             else:
                 # Persist DB row (fresh session, not previously queued)

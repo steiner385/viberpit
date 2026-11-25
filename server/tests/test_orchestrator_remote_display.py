@@ -331,3 +331,182 @@ async def test_current_display_target_reads_this_hosts_row(spawn_env):
             assert await orch._current_display_target() is None      # kill switch
     finally:
         await orch.stop()
+
+
+# --- fix round 1: queued/held rows resolve their remote leg at actual spawn ----------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("birth_reason", ["bridge_unavailable", "bridge_wrong_user"])
+async def test_queued_bridge_fallback_re_resolves_remote_at_dequeue(spawn_env, bridge,
+                                                                   birth_reason):
+    """Born virtual only because the bridge was not up yet: the actual spawn re-asks the
+    remote leg (spec §2 "Queued/held sessions resolve at actual spawn")."""
+    x11 = FakeX11()
+    orch = await _orch(spawn_env, x11, FakeNative(available=False), max_active_sessions=1)
+    try:
+        a = await orch.create_session("one", account="acct")
+        bridge.state = birth_reason
+        q = await orch.create_session("q", account="acct", display_target="dobby")
+        assert q.status == "queued" and q.display_mode == "virtual"
+        assert q.display_fallback_reason == birth_reason
+        bridge.state = dict(LIVE_ENV)                 # the edge brought the bridge up
+        await orch.close_session(a.id)
+        assert await orch._maybe_start_queued() == 1
+        assert orch._records[q.id].display_mode == "remote"
+        assert orch._records[q.id].display_target_host == "dobby"
+        assert orch._records[q.id].display_fallback_reason is None
+        row = await _row(q.id)
+        assert row.display_mode == "remote" and row.display_target_host == "dobby"
+        assert row.display_fallback_reason is None
+        assert q.id not in x11.started
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_queued_bridge_fallback_stays_virtual_when_bridge_still_down(spawn_env, bridge):
+    orch = await _orch(spawn_env, FakeX11(), FakeNative(available=False), max_active_sessions=1)
+    try:
+        a = await orch.create_session("one", account="acct")
+        bridge.state = "bridge_unavailable"
+        q = await orch.create_session("q", account="acct", display_target="dobby")
+        bridge.state = "bridge_wrong_user"
+        await orch.close_session(a.id)
+        assert await orch._maybe_start_queued() == 1
+        assert orch._records[q.id].display_mode == "virtual"
+        assert orch._records[q.id].display_fallback_reason == "bridge_wrong_user"
+        assert orch._records[q.id].display_target_host is None
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_queued_bridge_fallback_without_target_keeps_prior(spawn_env, bridge):
+    orch = await _orch(spawn_env, FakeX11(), FakeNative(available=False), max_active_sessions=1)
+    try:
+        a = await orch.create_session("one", account="acct")
+        bridge.state = "bridge_unavailable"
+        q = await orch.create_session("q", account="acct", display_target="dobby")
+        bridge.state = dict(LIVE_ENV)
+        bridge.current = None                         # target cleared meanwhile
+        await orch.close_session(a.id)
+        assert await orch._maybe_start_queued() == 1
+        assert orch._records[q.id].display_mode == "virtual"
+        assert orch._records[q.id].display_fallback_reason == "bridge_unavailable"
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,reason", [
+    ("virtual", "no_graphical_session"),     # a native fallback
+    ("virtual", None),                       # explicit virtual / no target
+    ("native", None),
+    ("remote", None),
+])
+async def test_only_bridge_fallback_priors_are_re_decided(spawn_env, bridge, mode, reason):
+    """Only the remote leg of a bridge-fallback row re-resolves: every other persisted
+    decision wins even with a live bridge and a configured target."""
+    from types import SimpleNamespace
+    orch = await _orch(spawn_env, FakeX11(), FakeNative(available=False))
+    try:
+        prior = SimpleNamespace(display_mode=mode, display_fallback_reason=reason,
+                                display_target_host="dobby" if mode == "remote" else None)
+        decision, _host, redecided = await orch._decide_display(prior, None, None, None)
+        assert redecided is False
+        assert tuple(decision) == (mode, reason)
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_held_bridge_fallback_re_resolves_remote_on_approve(spawn_env, bridge):
+    orch = await _orch(spawn_env, FakeX11(), FakeNative(available=False))
+    try:
+        bridge.state = "bridge_unavailable"
+        rec = await orch.create_session("n", account="acct", model="fable",
+                                        display_target="dobby")
+        assert rec.status == "pending_approval" and rec.display_mode == "virtual"
+        bridge.state = dict(LIVE_ENV)
+        await orch.resolve_model_approval(rec.id, "approve", identity="user@x")
+        assert orch._records[rec.id].display_mode == "remote"
+        assert orch._records[rec.id].display_target_host == "dobby"
+        assert (await _row(rec.id)).display_mode == "remote"
+    finally:
+        await orch.stop()
+
+
+# --- fix round 1: the edge's fallback hint ---------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hint", ["bridge_not_accepted", "target_desktop_unavailable"])
+async def test_fallback_hint_names_the_reason_when_local_check_fails(spawn_env, bridge, hint):
+    bridge.state = "bridge_unavailable"
+    orch = await _orch(spawn_env, FakeX11(), FakeNative(available=False))
+    try:
+        rec = await orch.create_session("n", account="acct", display_target="dobby",
+                                        display_fallback_hint=hint)
+        assert rec.display_mode == "virtual" and rec.display_fallback_reason == hint
+        assert (await _row(rec.id)).display_fallback_reason == hint
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_fallback_hint_ignored_when_bridge_is_live(spawn_env, bridge):
+    orch = await _orch(spawn_env, FakeX11(), FakeNative(available=False))
+    try:
+        rec = await orch.create_session("n", account="acct", display_target="dobby",
+                                        display_fallback_hint="bridge_not_accepted")
+        assert rec.display_mode == "remote" and rec.display_fallback_reason is None
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_unknown_fallback_hint_is_ignored(spawn_env, bridge):
+    bridge.state = "bridge_wrong_user"
+    orch = await _orch(spawn_env, FakeX11(), FakeNative(available=False))
+    try:
+        rec = await orch.create_session("n", account="acct", display_target="dobby",
+                                        display_fallback_hint="made_up")
+        assert rec.display_fallback_reason == "bridge_wrong_user"
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_fallback_hint_persists_on_queued_row(spawn_env, bridge):
+    bridge.state = "bridge_unavailable"
+    orch = await _orch(spawn_env, FakeX11(), FakeNative(available=False), max_active_sessions=1)
+    try:
+        await orch.create_session("one", account="acct")
+        q = await orch.create_session("q", account="acct", display_target="dobby",
+                                      display_fallback_hint="target_desktop_unavailable")
+        assert q.status == "queued"
+        assert q.display_fallback_reason == "target_desktop_unavailable"
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_old_daemon_sheds_display_fallback_hint(caplog):
+    from server.ipc.client import DaemonError
+    from server.sessions.remote import RemoteOrchestrator
+
+    class _Old:
+        def __init__(self): self.calls = []
+        async def call(self, method, **params):
+            self.calls.append((method, params))
+            if "display_fallback_hint" in params:
+                raise DaemonError("TypeError", "create_session() got an unexpected keyword "
+                                               "argument 'display_fallback_hint'")
+            return {"session": {"id": "s1", "name": "n", "account": "a",
+                                "engine": "claude_code", "engineSessionId": "", "cols": 80,
+                                "rows": 24, "cwd": "/tmp"}}
+    c = _Old()
+    await RemoteOrchestrator(c).create_session(name="n", display_target="dobby",
+                                               display_fallback_hint="bridge_not_accepted")
+    assert len(c.calls) == 2
+    assert "display_fallback_hint" not in c.calls[1][1]
+    assert c.calls[1][1]["display_target"] == "dobby"

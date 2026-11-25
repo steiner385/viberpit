@@ -42,9 +42,10 @@ from server.aio import cancel_and_reap
 from server.deploy.steps import SSH_HOST_RE
 from server.obs.tasks import supervise
 from server.sessions.desktop_session import DesktopSession, _cookie_for
-from server.sessions.display_bridge_env import (BRIDGE_DIR, SOURCE_WAYLAND_DISPLAY,
-                                                X11_AUTH_DISPLAY, X11_SOCKET, XAUTH_FILE,
-                                                bridge_x11_enabled)
+from server.sessions.display_bridge_env import (BRIDGE_DIR, REASON_BRIDGE_NOT_ACCEPTED,
+                                                REASON_TARGET_DESKTOP_UNAVAILABLE,
+                                                SOURCE_WAYLAND_DISPLAY, X11_AUTH_DISPLAY,
+                                                X11_SOCKET, XAUTH_FILE, bridge_x11_enabled)
 from server.sessions.display_target import _HOST_NAME_RE, accepted_sources
 from server.sessions.native_display import _STALE_ENV, NativeDisplay, _display_number
 from server.sessions.x11manager import _terminate
@@ -59,6 +60,12 @@ STATE_STOPPING = "stopping"
 STATE_NOT_ACCEPTED = "not_accepted"
 STATE_DESKTOP_UNAVAILABLE = "desktop_unavailable"
 STATE_FAILED = "failed"
+# A target state that waiting will not turn "up" -> the fallback reason the edge hands
+# the source daemon as ``display_fallback_hint`` (server/sessions/display_bridge_broker.py).
+TARGET_STATE_HINTS: dict[str, str] = {
+    STATE_NOT_ACCEPTED: REASON_BRIDGE_NOT_ACCEPTED,
+    STATE_DESKTOP_UNAVAILABLE: REASON_TARGET_DESKTOP_UNAVAILABLE,
+}
 
 LEG_WAYLAND = "wayland"
 LEG_X11 = "x11"
