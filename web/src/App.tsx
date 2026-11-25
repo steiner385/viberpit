@@ -32,10 +32,15 @@
  */
 import { RouterProvider, createBrowserRouter } from 'react-router-dom'
 import { AppShell } from './shell/AppShell'
-import { buildRoutes } from './shell/routes'
+import { buildRoutes, isAppRoute } from './shell/routes'
+import { AppRouteContext } from './shell/appRouteContext'
 
 const router = createBrowserRouter(buildRoutes(<AppShell />))
 
 export default function App() {
-  return <RouterProvider router={router} />
+  return (
+    <AppRouteContext.Provider value={isAppRoute}>
+      <RouterProvider router={router} />
+    </AppRouteContext.Provider>
+  )
 }

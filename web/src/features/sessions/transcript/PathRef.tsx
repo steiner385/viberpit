@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -6,31 +6,46 @@ import { copyText } from '@/lib/copyText'
 import { Menu } from '@/ui/Menu'
 import { ICON_TOUCH_FLOOR } from '@/ui/list/listControlStyles'
 import { CopyablePath } from './CopyablePath'
-import { parseFilePathRef, worktreeRelativePath } from './filePathRef'
+import { parseFilePathRef, worktreeRelativePath, type FilePathRef } from './filePathRef'
 import { useFileRefActions, type FileRefActions } from './fileRefContext'
 
-/**
- * A path-like inline code span in the transcript (D-7). Under the live
- * session's `cwd` (see `fileRefContext`) it is a link to the Files tab at its
- * `:line`, with a small menu for Copy path and Attach as @; anything else — a
- * path outside the worktree, or no provider at all (archived reader, sub-agent
- * page, assistant drawer) — keeps the click-to-copy `CopyablePath`.
- */
-export function PathRef({ text }: { text: string }) {
-  const actions = useFileRefActions()
-  const ref = parseFilePathRef(text)
-  const rel = actions && ref ? worktreeRelativePath(ref.path, actions.cwd) : null
-  if (!actions || !ref || rel === null) return <CopyablePath text={text} />
-  return <FileLink text={text} path={ref.path} rel={rel} line={ref.line ?? null} actions={actions} />
+interface Props {
+  /** The reference as written (`src/a.ts:12`): parsed when `target` is absent, and what the controls are named by. */
+  text: string
+  /** An already-parsed target — a markdown link's `localPathTarget`. */
+  target?: FilePathRef | null
+  /** A markdown link's label. Shown instead of `text`; with no Files link it is
+   *  plain text titled with the path — never a dead anchor, never click-to-copy. */
+  children?: ReactNode
 }
 
-function FileLink({ text, path, rel, line, actions }: {
+/**
+ * A path in the transcript (D-7): a path-like inline code span, a markdown link
+ * to a local path, a `share_artifact` path. Under the live session's `cwd` (see
+ * `fileRefContext`) it is a link to the Files tab at its `:line`, with a small
+ * menu for Copy path and Attach as @; anything else — a path outside the
+ * worktree, or no provider at all (archived reader, sub-agent page, assistant
+ * drawer) — keeps the click-to-copy `CopyablePath` (a labelled link: its label).
+ */
+export function PathRef({ text, target, children }: Props) {
+  const actions = useFileRefActions()
+  const ref = target === undefined ? parseFilePathRef(text) : target
+  const rel = actions && ref ? worktreeRelativePath(ref.path, actions.cwd) : null
+  if (!actions || !ref || rel === null) {
+    if (children !== undefined) return <span title={ref?.path ?? text}>{children}</span>
+    return <CopyablePath text={text} />
+  }
+  return <FileLink text={text} path={ref.path} rel={rel} line={ref.line ?? null} actions={actions} label={children} />
+}
+
+function FileLink({ text, path, rel, line, actions, label }: {
   text: string
   /** The path as written, without its `:line[:col]` — what Copy path copies. */
   path: string
   rel: string
   line: number | null
   actions: FileRefActions
+  label?: ReactNode
 }) {
   const anchorRef = useRef<HTMLButtonElement>(null)
   const [open, setOpen] = useState(false)
@@ -55,17 +70,21 @@ function FileLink({ text, path, rel, line, actions }: {
     if (await copyText(path)) toast('Copied')
     else toast.error("Couldn't copy")
   }
+  const labelled = label !== undefined
 
   return (
     <span className="inline-flex items-baseline">
       <button
         type="button"
-        aria-label={`Open ${text} in Files`}
-        title="Open in Files"
+        // A labelled link is named by its label, as an anchor would be.
+        aria-label={labelled ? undefined : `Open ${text} in Files`}
+        title={labelled ? `Open ${text} in Files` : 'Open in Files'}
         onClick={() => actions.openFile(rel, line)}
         className="cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >
-        <code className="text-accent underline underline-offset-2 hover:bg-edge">{text}</code>
+        {labelled
+          ? <span className="text-accent underline underline-offset-2 hover:bg-edge">{label}</span>
+          : <code className="text-accent underline underline-offset-2 hover:bg-edge">{text}</code>}
       </button>
       <button
         ref={anchorRef}

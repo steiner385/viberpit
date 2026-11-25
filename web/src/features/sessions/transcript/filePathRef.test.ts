@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { isFilePathRef, parseFilePathRef, worktreeRelativePath } from './filePathRef'
+import { isFilePathRef, localPathTarget, parseFilePathRef, worktreeRelativePath } from './filePathRef'
 
 describe('isFilePathRef', () => {
   it.each([
@@ -91,5 +91,36 @@ describe('worktreeRelativePath', () => {
     ['c:a.ts', '/repo'],
   ])('%j under %j is not a worktree file', (path, cwd) => {
     expect(worktreeRelativePath(path, cwd)).toBeNull()
+  })
+})
+
+describe('localPathTarget', () => {
+  it.each([
+    ['docs/x.md', { path: 'docs/x.md' }],
+    ['.rendertest/notes.md', { path: '.rendertest/notes.md' }],
+    ['./a.ts', { path: './a.ts' }],
+    ['/abs/a.ts', { path: '/abs/a.ts' }],
+    ['src/a.ts#L10', { path: 'src/a.ts', line: 10 }],
+    ['src/a.ts#L10-L20', { path: 'src/a.ts', line: 10 }],
+    ['src/a.ts:10', { path: 'src/a.ts', line: 10 }],
+    ['src/a.ts:10:4', { path: 'src/a.ts', line: 10 }],
+    ['src/a.ts#section', { path: 'src/a.ts' }],
+    ['src/a.ts?raw=1', { path: 'src/a.ts' }],
+    ['docs/my%20notes.md', { path: 'docs/my notes.md' }],
+    ['docs/100%.md', { path: 'docs/100%.md' }],
+    ['file:///etc/hostname', { path: '/etc/hostname' }],
+    ['file://localhost/repo/a.ts#L3', { path: '/repo/a.ts', line: 3 }],
+    ['FILE:///repo/a.ts', { path: '/repo/a.ts' }],
+    ['src/a.ts:0', { path: 'src/a.ts' }],
+  ])('%j → %j', (url, ref) => {
+    expect(localPathTarget(url)).toEqual(ref)
+  })
+
+  it.each([
+    null, undefined, '', '#fn-1', '#L10', '//cdn.example.com/a.png', 'https://example.com/a.md',
+    'http://x', 'mailto:a@b.c', 'data:image/png;base64,AAAA', 'javascript:alert(1)',
+    'file://otherhost/a.ts', '/api/attachments/abc', '?q=1',
+  ])('%j is not a local path', (url) => {
+    expect(localPathTarget(url)).toBeNull()
   })
 })

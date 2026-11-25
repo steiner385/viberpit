@@ -73,7 +73,7 @@ describe('ResultImages recovery and actions', () => {
     render(<ResultImages images={[{ url, name: 'Screenshot', mime: '' }]} />)
     expect(screen.queryByRole('img')).toBeNull()
     expect(screen.queryByRole('link')).toBeNull()
-    expect(screen.getByText(/Image unavailable/)).toHaveTextContent('share_artifact')
+    expect(screen.getByText(/Image unavailable/)).toHaveTextContent(/^Image unavailable: Screenshot\.$/)
   })
 
   it('replaces missing image with recovery guidance and resets for a new URL', () => {

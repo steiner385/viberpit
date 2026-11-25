@@ -1,14 +1,19 @@
 import { useState } from 'react'
-import type { ImageRef } from '@/lib/toolContent'
+import { isAttachmentUrl, type ImageRef } from '@/lib/toolContent'
 
 interface Props {
   images: ImageRef[]
 }
 
+/** A transcript image's box — shared with `WorktreeImage`. */
+export const RESULT_IMAGE_CLASS = 'h-auto max-h-64 max-w-full rounded border border-edge object-contain md:max-h-96'
+/** What stands in for an image that cannot be shown. */
+export const IMAGE_NOTICE_CLASS = 'block rounded border border-edge p-3 text-sm text-ink-muted'
+
 /** Shared by tool output, artifacts and assistant Markdown; never fetch host paths. */
 export function ResultImage({ url, name, linked = false }: Pick<ImageRef, 'url' | 'name'> & { linked?: boolean }) {
   const [failedUrl, setFailedUrl] = useState<string | null>(null)
-  const attachment = /^\/api\/attachments\/[a-zA-Z0-9_-]+$/.test(url)
+  const attachment = isAttachmentUrl(url)
   const inline = /^data:image\/(?:png|jpeg|gif|webp);base64,[a-zA-Z0-9+/=\s]+$/.test(url)
   let remote = false
   try {
@@ -18,9 +23,9 @@ export function ResultImage({ url, name, linked = false }: Pick<ImageRef, 'url' 
   const available = (attachment || inline || remote) && failedUrl !== url
   const label = name || 'tool result image'
   if (!available) {
-    return <span className="block rounded border border-edge p-3 text-sm text-ink-muted">Image unavailable{ name ? `: ${name}.` : '.' } Ask the assistant to share it again using share_artifact.</span>
+    return <span className={IMAGE_NOTICE_CLASS}>Image unavailable{ name ? `: ${name}.` : '.' }</span>
   }
-  const image = <img src={url} alt={label} onError={() => setFailedUrl(url)} className="h-auto max-h-64 max-w-full rounded border border-edge object-contain md:max-h-96" />
+  const image = <img src={url} alt={label} onError={() => setFailedUrl(url)} className={RESULT_IMAGE_CLASS} />
   if (linked) return image
   return (
     <span className="block min-w-0 max-w-full">

@@ -2461,7 +2461,9 @@ async def session_file_content(
     _identity: str = Depends(current_identity),
 ) -> dict:
     """``{path, text, binary, truncated, size}`` of one file in the session's worktree
-    (D-7 Files tab), read on the daemon that owns it. ``path`` is a query parameter, not
+    (D-7 Files tab), plus ``image: {mediaType, data}`` (whole file, base64) for a
+    content-sniffed png/jpeg/gif/webp within the attachment size cap
+    (``worktree_files.read_file``), read on the daemon that owns it. ``path`` is a query parameter, not
     a route segment, so slashes need no special routing. A path resolving outside the
     worktree or into ``.git`` is 400 ``PATH_OUTSIDE_WORKTREE``; a missing file (or no
     git cwd) 404 ``FILE_NOT_FOUND``; unknown session 404; an old daemon 409

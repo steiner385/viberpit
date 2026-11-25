@@ -30,6 +30,7 @@ Synchronous by design — callers run it via ``asyncio.to_thread``.
 
 from __future__ import annotations
 
+import base64
 import errno
 import heapq
 import logging
@@ -41,6 +42,8 @@ from typing import Any
 
 from server.obs.context import log_event
 from server.permission_rules.patterns import worktree_rel
+# Module, not names: the image cap and types stay the attachment store's (one source).
+from server.sessions import attachments
 from viberpit.fs_beneath import SymlinkInPath, open_beneath
 from viberpit.worktree_diff import (
     BINARY_SNIFF_BYTES,
@@ -306,6 +309,13 @@ def read_file(cwd: str, path: str) -> dict[str, Any]:
     ``BINARY_SNIFF_BYTES`` makes it ``binary`` with ``text: None``. ``size`` is the
     file's size on disk.
 
+    A raster image the attachment store serves — its *content* sniffed as one of
+    ``attachments.IMAGE_MEDIA_TYPES`` (the extension is never trusted) — of at most
+    ``attachments.MAX_BYTES`` also carries ``image: {mediaType, data}``, ``data`` the
+    WHOLE file base64-encoded (not cut at ``MAX_READ_BYTES``), read through the same
+    fd. Every other key keeps its meaning (such a file is ``binary``, ``text: None``).
+    Over the cap, or not such an image, there is no ``image`` key.
+
     Raises ``FileAccessError(PATH_OUTSIDE_WORKTREE)`` for anything resolving outside
     ``cwd`` (above it included), into ``.git``, or to something other than a regular file (a FIFO
     never blocks), and ``FileAccessError(FILE_NOT_FOUND)`` for a missing file or a
@@ -330,18 +340,31 @@ def read_file(cwd: str, path: str) -> dict[str, Any]:
     if not stat.S_ISREG(st.st_mode):
         os.close(fd)
         raise FileAccessError(PATH_OUTSIDE_WORKTREE)
+    image: dict[str, str] | None = None
     with os.fdopen(fd, "rb") as fh:
         data = fh.read(MAX_READ_BYTES + 1)
+        media_type = attachments.sniff_media_type(data[:16])
+        cap = attachments.MAX_BYTES
+        if media_type in attachments.IMAGE_MEDIA_TYPES and st.st_size <= cap:
+            # The whole file, through the same fd; one byte over the cap proves it
+            # grew past it since the fstat.
+            whole = data + fh.read(max(0, cap + 1 - len(data)))
+            if len(whole) <= cap:
+                image = {"mediaType": media_type,
+                         "data": base64.b64encode(whole).decode("ascii")}
     truncated = len(data) > MAX_READ_BYTES
     data = data[:MAX_READ_BYTES]
     binary = b"\0" in data[:BINARY_SNIFF_BYTES]
-    return {
+    res: dict[str, Any] = {
         "path": rel,
         "text": None if binary else data.decode("utf-8", "replace"),
         "binary": binary,
         "truncated": truncated,
         "size": max(st.st_size, len(data)),
     }
+    if image is not None:
+        res["image"] = image
+    return res
 
 
 # ------------------------------------------------------------------ content search

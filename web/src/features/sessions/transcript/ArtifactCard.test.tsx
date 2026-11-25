@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { act, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { ArtifactCard } from './ArtifactCard'
+import { FileRefContext } from './fileRefContext'
 import type { Block } from '@/session/reducer'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
@@ -59,5 +61,38 @@ describe('ArtifactCard', () => {
     render(<ArtifactCard block={block} />)
     expect(screen.getByText('no such file on this host: /tmp/nope.png')).toBeInTheDocument()
     expect(screen.queryByRole('img')).toBeNull()
+  })
+
+  it('inside the live worktree a path artifact opens in Files', async () => {
+    const user = userEvent.setup()
+    const openFile = vi.fn()
+    render(
+      <FileRefContext.Provider value={{ sessionId: 's1', cwd: '/tmp/w', openFile }}>
+        <ArtifactCard block={share({ kind: 'path', value: '/tmp/w/report.md', label: 'Audit report' })} />
+      </FileRefContext.Provider>,
+    )
+    await user.click(await screen.findByRole('button', { name: 'Open /tmp/w/report.md in Files' }))
+    expect(openFile).toHaveBeenCalledWith('report.md', null)
+  })
+
+  it('outside the worktree a path artifact stays copy-only', async () => {
+    render(
+      <FileRefContext.Provider value={{ sessionId: 's1', cwd: '/repo', openFile: vi.fn() }}>
+        <ArtifactCard block={share({ kind: 'path', value: '/tmp/w/report.md' })} />
+      </FileRefContext.Provider>,
+    )
+    expect(await screen.findByRole('button', { name: '/tmp/w/report.md' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /in Files/ })).toBeNull()
+  })
+
+  it('a path chunk that fails to load leaves the copy chip, not an error', async () => {
+    vi.resetModules()
+    vi.doMock('./PathRef', () => { throw new Error('Failed to fetch dynamically imported module') })
+    const { ArtifactCard: Fresh } = await import('./ArtifactCard')
+    render(<Fresh block={share({ kind: 'path', value: '/tmp/w/report.md' })} />)
+    // Let the failed import settle and React retry the render.
+    await act(() => new Promise((r) => setTimeout(r, 50)))
+    expect(screen.getByRole('button', { name: '/tmp/w/report.md' })).toBeInTheDocument()
+    vi.doUnmock('./PathRef')
   })
 })

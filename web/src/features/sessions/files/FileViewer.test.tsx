@@ -118,6 +118,18 @@ describe('FileViewer', () => {
     expect(document.querySelector('[data-line]')).toBeNull()
   })
 
+  it('an image the server returned is drawn from its data, not called binary', async () => {
+    serve(200, file(null, {
+      path: 'shots/logo.png', binary: true, size: 4,
+      image: { mediaType: 'image/png', data: 'iVBORw==' },
+    }))
+    renderViewer({ path: 'shots/logo.png' })
+    const img = await screen.findByRole('img', { name: 'shots/logo.png' })
+    expect(img).toHaveAttribute('src', 'data:image/png;base64,iVBORw==')
+    expect(screen.queryByText('Binary file — not shown')).toBeNull()
+    expect(document.querySelector('[data-line]')).toBeNull()
+  })
+
   it('a truncated file shows the notice above what was read', async () => {
     serve(200, file('first\n', { truncated: true, size: 2 * 1024 * 1024 }))
     renderViewer()

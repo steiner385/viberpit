@@ -35,6 +35,12 @@ interface ContentBlock {
   source?: { type?: string; media_type?: string; data?: string; url?: string }
 }
 
+/** An edge-served attachment, `/api/attachments/{id}` — the one relative URL a
+ *  transcript image may load, and never a path on the session host. */
+export function isAttachmentUrl(url: string): boolean {
+  return /^\/api\/attachments\/[a-zA-Z0-9_-]+$/.test(url)
+}
+
 /** A displayable image reference (same shape as user-turn images from replay). */
 export interface ImageRef {
   url: string

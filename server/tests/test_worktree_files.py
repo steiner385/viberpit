@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 import os
+import struct
 import subprocess
 import threading
 import time
+import zlib
 from pathlib import Path
 
 import pytest
 
 from server.permission_rules.patterns import worktree_rel, worktree_rel_path
-from server.sessions import worktree_files
+from server.sessions import attachments, worktree_files
 from server.sessions.worktree_files import (
     MAX_LIST_LIMIT,
     MAX_READ_BYTES,
@@ -304,6 +307,63 @@ def test_binary_file(repo: Path) -> None:
     (repo / "img.bin").write_bytes(b"\x89PNG\x00\x01\x02" + b"z" * 100)
     res = read_file(str(repo), "img.bin")
     assert res["binary"] is True and res["text"] is None and res["size"] == 107
+    assert "image" not in res  # PNG-ish prefix but not the full signature
+
+
+def _png(width: int = 2, height: int = 2, pad: bytes = b"") -> bytes:
+    """A valid RGB PNG; ``pad`` is extra raw scanline bytes compressed in (size knob)."""
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return (struct.pack(">I", len(body)) + kind + body
+                + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF))
+    raw = b"".join(b"\x00" + b"\xff\x00\x00" * width for _ in range(height))
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw))
+            + (chunk(b"tEXt", b"pad\x00" + pad) if pad else b"")
+            + chunk(b"IEND", b""))
+
+
+def test_png_image_is_returned_base64(repo: Path) -> None:
+    png = _png()
+    (repo / "shot.png").write_bytes(png)
+    res = read_file(str(repo), "shot.png")
+    assert res["binary"] is True and res["text"] is None and res["size"] == len(png)
+    assert res["image"]["mediaType"] == "image/png"
+    assert base64.b64decode(res["image"]["data"]) == png
+
+
+def test_image_type_is_sniffed_not_taken_from_the_extension(repo: Path) -> None:
+    (repo / "fake.png").write_text("not an image\n")
+    res = read_file(str(repo), "fake.png")
+    assert "image" not in res and res["text"] == "not an image\n"
+    # A real PNG under a non-image name is still an image.
+    (repo / "pic.dat").write_bytes(_png())
+    assert read_file(str(repo), "pic.dat")["image"]["mediaType"] == "image/png"
+
+
+def test_image_larger_than_the_read_window_is_returned_whole(repo: Path) -> None:
+    png = _png(pad=b"p" * (MAX_READ_BYTES + 1000))
+    (repo / "big.png").write_bytes(png)
+    res = read_file(str(repo), "big.png")
+    assert base64.b64decode(res["image"]["data"]) == png
+    assert res["truncated"] is True  # existing semantics: the text window was cut
+
+
+def test_image_over_the_attachment_cap_has_no_image(
+        repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    png = _png()
+    monkeypatch.setattr(attachments, "MAX_BYTES", len(png) - 1)
+    (repo / "shot.png").write_bytes(png)
+    res = read_file(str(repo), "shot.png")
+    assert "image" not in res and res["binary"] is True
+
+
+def test_image_outside_the_worktree_is_still_refused(repo: Path, tmp_path: Path) -> None:
+    (tmp_path / "out.png").write_bytes(_png())
+    assert _code(repo, str(tmp_path / "out.png")) == "PATH_OUTSIDE_WORKTREE"
+    assert _code(repo, "../out.png") == "PATH_OUTSIDE_WORKTREE"
+    os.symlink(str(tmp_path / "out.png"), repo / "link.png")
+    assert _code(repo, "link.png") == "PATH_OUTSIDE_WORKTREE"
 
 
 def test_symlink_inside_worktree_resolves(repo: Path) -> None:

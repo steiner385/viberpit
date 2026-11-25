@@ -147,7 +147,7 @@ import { ThemeProvider } from '@/shell/theme'
 import { AppShell } from './AppShell'
 import { NAV_BY_ID, NAV_DEFS, isKioskSafePath, navDefForPath } from './navDefs'
 import { readKioskConfig } from './kiosk'
-import { buildRoutes } from './routes'
+import { buildRoutes, isAppRoute } from './routes'
 import { LAYOUT_MODES, type LayoutMode } from './useViewport'
 
 // ── harness ──────────────────────────────────────────────────────────────────
@@ -693,5 +693,15 @@ describe('every route renders in every layout mode', () => {
     expect(count('[data-rail="top"]'), `${mode} top rail`).toBe(rail.top)
     expect(count('[data-rail="bottom"]'), `${mode} bottom rail`).toBe(rail.bottom)
     expect(count('[data-rail="left"]'), `${mode} left rail`).toBe(rail.left)
+  })
+})
+
+describe('isAppRoute', () => {
+  it.each(['/sessions', '/sessions/abc', '/sessions/archived/x', '/settings/accounts', '/roadmap/kindash'])('%s is a page', (p) => {
+    expect(isAppRoute(p)).toBe(true)
+  })
+
+  it.each(['/nope', '/home/u/repo/a.ts', '/etc/hostname'])('%s is not — the catch-all does not count', (p) => {
+    expect(isAppRoute(p)).toBe(false)
   })
 })

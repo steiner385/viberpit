@@ -1,5 +1,6 @@
-import { createContext, useContext, useId, useMemo, type ComponentProps } from 'react'
-import ReactMarkdown, { type Components, type Options } from 'react-markdown'
+import { createContext, useContext, useId, useMemo, type ComponentProps, type ReactNode } from 'react'
+import { Link, useInRouterContext } from 'react-router-dom'
+import ReactMarkdown, { defaultUrlTransform, type Components, type Options, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import remarkMath from 'remark-math'
@@ -9,10 +10,13 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
 import 'katex/dist/katex.min.css'
 import { MermaidDiagram } from './MermaidDiagram'
 import 'highlight.js/styles/github-dark.css'
-import { isFilePathRef } from './filePathRef'
+import { isFilePathRef, localPathTarget, worktreeRelativePath, type FilePathRef } from './filePathRef'
+import { useFileRefActions } from './fileRefContext'
 import { PathRef } from './PathRef'
 import { ResultImage } from './ResultImages'
+import { WorktreeImage } from './WorktreeImage'
 import { isSafeHttpUrl } from '@/lib/safeUrl'
+import { useIsAppRoute } from '@/shell/appRouteContext'
 
 interface Props {
   children: string
@@ -26,7 +30,20 @@ interface Props {
   untrusted?: boolean
 }
 
+/** True inside a link: an image or code span there is part of the link's one
+ *  click target, never a control of its own. */
 const ImageLinkContext = createContext(false)
+
+/** react-markdown's default drops any url with a scheme outside http(s)/mailto/…;
+ *  trusted text also keeps a `file:` url (never emitted as an href — the `a` and
+ *  `img` renderers route it through `localPathTarget`) and a `data:` image src
+ *  (`ResultImage` admits only its strict base64 raster form). The sanitize
+ *  schema below allows the same two, and only for trusted text. */
+const trustedUrlTransform: UrlTransform = (url, key) => {
+  if (/^file:/i.test(url)) return url
+  if (key === 'src' && /^data:/i.test(url)) return url
+  return defaultUrlTransform(url)
+}
 
 /** An untrusted image, never fetched: its alt text, linked to its url when that
  *  is http(s) and it is not already inside a link. */
@@ -39,7 +56,42 @@ function UntrustedImage({ src, alt }: ComponentProps<'img'>) {
 
 function MarkdownImage({ src, alt }: ComponentProps<'img'>) {
   const linked = useContext(ImageLinkContext)
-  return <ResultImage url={typeof src === 'string' ? src : ''} name={alt || ''} linked={linked} />
+  const url = typeof src === 'string' ? src : ''
+  // A path on the session host, not a url the browser can fetch.
+  const local = localPathTarget(url)
+  if (local) return <WorktreeImage path={local.path} alt={alt || ''} linked={linked} />
+  return <ResultImage url={url} name={alt || ''} linked={linked} />
+}
+
+/**
+ * A link whose href is scheme-less or `file:` — a path, never an href the
+ * browser should open as written. Under the live session's worktree it opens
+ * in Files; else an absolute href naming a page of this app (`/sessions/<id>`,
+ * which the assistant drawer is told to write) is an in-app, same-tab link;
+ * anything else is plain text titled with the path (`PathRef`).
+ */
+function HostPathLink({ href, target, children }: { href: string; target: FilePathRef; children: ReactNode }) {
+  const actions = useFileRefActions()
+  const inRouter = useInRouterContext()
+  const isAppRoute = useIsAppRoute()
+  const inWorktree = actions !== null && worktreeRelativePath(target.path, actions.cwd) !== null
+  if (!inWorktree && href.startsWith('/') && isAppRoute(href.split(/[?#]/)[0])) {
+    return inRouter ? <Link to={href}>{children}</Link> : <a href={href}>{children}</a>
+  }
+  const text = target.line ? `${target.path}:${target.line}` : target.path
+  return <PathRef text={text} target={target}>{children}</PathRef>
+}
+
+/** Inline code. A path-like span is a `PathRef` (Files link under the live
+ *  session's cwd, else click-to-copy) — except inside a link, whose own target
+ *  is the one thing a click does. Fenced blocks arrive as highlighted element
+ *  arrays (not a string), so the typeof guard restricts this to inline code
+ *  only — no `inline` prop exists in react-markdown v10. */
+function MarkdownCode({ node, children, ...props }: ComponentProps<'code'> & { node?: unknown }) {
+  void node // hast node — drop it rather than forward to the DOM
+  const linked = useContext(ImageLinkContext)
+  if (!linked && typeof children === 'string' && isFilePathRef(children)) return <PathRef text={children} />
+  return <code {...props}>{children}</code>
 }
 
 // Shared markdown renderer for assistant transcript content (prose and insight
@@ -53,12 +105,19 @@ function MarkdownImage({ src, alt }: ComponentProps<'img'>) {
 export function MarkdownDoc({ children, streaming = false, searchPlugin, untrusted = false }: Props) {
   // Sanitized IDs are unique across messages; local links follow the same prefix.
   const idPrefix = `markdown-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}-`
+  const protocols = defaultSchema.protocols ?? {}
   const schema = {
     ...defaultSchema,
     clobberPrefix: idPrefix,
     attributes: {
       ...defaultSchema.attributes,
       code: [['className', /^language-./, 'math-inline', 'math-display']],
+    },
+    // See `trustedUrlTransform`: untrusted text keeps the default protocols.
+    protocols: untrusted ? protocols : {
+      ...protocols,
+      href: [...(protocols.href ?? []), 'file'],
+      src: [...(protocols.src ?? []), 'file', 'data'],
     },
   }
   // Stable component identities preserve mounted diagrams when transcript
@@ -73,9 +132,22 @@ export function MarkdownDoc({ children, streaming = false, searchPlugin, untrust
       if (untrusted && !isSafeHttpUrl(props.href)) {
         return <ImageLinkContext.Provider value={true}><span>{props.children}</span></ImageLinkContext.Provider>
       }
-      const local = props.href?.startsWith('#')
+      // No href: sanitize dropped an unsafe one. Text, not an anchor that does nothing.
+      if (!props.href) return <ImageLinkContext.Provider value={true}><span>{props.children}</span></ImageLinkContext.Provider>
+      // A path on the session host (`docs/x.md`, `file:///…`): a relative href
+      // would open a dead SPA url and a `file:` one is blocked (see `HostPathLink`).
+      const target = untrusted ? null : localPathTarget(props.href)
+      if (target) {
+        return <ImageLinkContext.Provider value={true}><HostPathLink href={props.href} target={target}>{props.children}</HostPathLink></ImageLinkContext.Provider>
+      }
+      // A `file:` url that is not a local path (`file://host/share`, unparseable):
+      // still never an href — text.
+      if (/^file:/i.test(props.href)) {
+        return <ImageLinkContext.Provider value={true}><span>{props.children}</span></ImageLinkContext.Provider>
+      }
+      const local = props.href.startsWith('#')
       return <ImageLinkContext.Provider value={true}>
-        <a {...props} href={local ? `#${idPrefix}${props.href!.slice(1)}` : props.href}
+        <a {...props} href={local ? `#${idPrefix}${props.href.slice(1)}` : props.href}
           target={local ? undefined : '_blank'} rel="noopener noreferrer" />
       </ImageLinkContext.Provider>
     },
@@ -89,18 +161,7 @@ export function MarkdownDoc({ children, streaming = false, searchPlugin, untrust
       }
       return <pre {...props}>{children}</pre>
     },
-    // Make path-like INLINE code spans clickable: a link to the Files tab under
-    // the live session's cwd, else click-to-copy (see `PathRef`). Fenced blocks
-    // arrive as highlighted element arrays (not a string), so the
-    // typeof guard restricts this to inline code only — no `inline`
-    // prop exists in react-markdown v10.
-    code: ({ node, children, ...props }) => {
-      void node
-      if (typeof children === 'string' && isFilePathRef(children)) {
-        return <PathRef text={children} />
-      }
-      return <code {...props}>{children}</code>
-    },
+    code: MarkdownCode,
   }), [idPrefix, streaming, untrusted])
   // Sanitize author HTML before trusted math/highlighting generate markup. The
   // search marks (D-11) go last: they wrap the final tree's text nodes, skipping
@@ -113,6 +174,7 @@ export function MarkdownDoc({ children, streaming = false, searchPlugin, untrust
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={rehypePlugins}
         components={components}
+        urlTransform={untrusted ? defaultUrlTransform : trustedUrlTransform}
       >
         {children}
       </ReactMarkdown>
