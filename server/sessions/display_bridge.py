@@ -40,6 +40,8 @@ from server.aio import cancel_and_reap
 from server.deploy.steps import SSH_HOST_RE
 from server.obs.tasks import supervise
 from server.sessions.desktop_session import DesktopSession, _cookie_for
+from server.sessions.display_bridge_env import (BRIDGE_DIR, SOURCE_WAYLAND_DISPLAY,
+                                                bridge_x11_disabled_reason)
 from server.sessions.display_target import _HOST_NAME_RE, accepted_sources
 from server.sessions.native_display import _STALE_ENV, NativeDisplay, _display_number
 from server.sessions.x11manager import _terminate
@@ -58,9 +60,8 @@ STATE_FAILED = "failed"
 LEG_WAYLAND = "wayland"
 LEG_X11 = "x11"
 
-# Source-side fixed names (spec §8; one target per source host).
-_SOURCE_WAYLAND_DISPLAY = "wayland-viberpit-bridge"
-_BRIDGE_DIR = "viberpit-bridge"
+# Source-side fixed names (spec §8; one target per source host) live with the source's
+# liveness check in display_bridge_env, so both ends spell the layout once.
 _SSH_OPTS = ("-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
              "-o", "StreamLocalBindUnlink=yes", "-o", "ServerAliveInterval=15",
              "-o", "ServerAliveCountMax=3")
@@ -92,7 +93,7 @@ def _prep_script(x_display: int, *, x11: bool) -> str:
         f"echo 'viberpit-bridge: XDG_RUNTIME_DIR unset' >&2; exit {PREP_RC_NO_RUNTIME_DIR};; esac",
         '[ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ] || '
         f"{{ echo 'viberpit-bridge: XDG_RUNTIME_DIR invalid' >&2; exit {PREP_RC_NO_RUNTIME_DIR}; }}",
-        f'd="$XDG_RUNTIME_DIR/{_BRIDGE_DIR}"',
+        f'd="$XDG_RUNTIME_DIR/{BRIDGE_DIR}"',
         'mkdir -p "$d" && chmod 700 "$d"',
         '[ -d "$d" ] && [ -O "$d" ] && [ ! -L "$d" ] || '
         f"{{ echo 'viberpit-bridge: private dir not owned' >&2; exit {PREP_RC_SQUATTED}; }}",
@@ -117,12 +118,12 @@ def _prep_script(x_display: int, *, x11: bool) -> str:
 
 
 def _cleanup_script(x_display: int) -> str:
-    return (f'rm -f /tmp/.X11-unix/X{x_display} "$XDG_RUNTIME_DIR/{_BRIDGE_DIR}/waypipe.sock" '
-            f'"$XDG_RUNTIME_DIR/{_BRIDGE_DIR}/xauth"')
+    return (f'rm -f /tmp/.X11-unix/X{x_display} "$XDG_RUNTIME_DIR/{BRIDGE_DIR}/waypipe.sock" '
+            f'"$XDG_RUNTIME_DIR/{BRIDGE_DIR}/xauth"')
 
 
 def _client_socket(t_xrd: str, source: str) -> str:
-    return f"{t_xrd}/{_BRIDGE_DIR}/{source}-waypipe.sock"
+    return f"{t_xrd}/{BRIDGE_DIR}/{source}-waypipe.sock"
 
 
 def _desktop_key(desk: DesktopSession) -> tuple:
@@ -467,14 +468,14 @@ class DisplayBridge:
     def _bridge_argv(self, b: _Bridge, desk: DesktopSession, s_xrd: str) -> list[str]:
         assert b.dest is not None
         argv = ["ssh", *_SSH_OPTS]
-        remote_sock = f"{s_xrd}/{_BRIDGE_DIR}/waypipe.sock"
+        remote_sock = f"{s_xrd}/{BRIDGE_DIR}/waypipe.sock"
         if LEG_WAYLAND in b.legs:
             argv += ["-R", f"{remote_sock}:{b.client_socket}"]
         if LEG_X11 in b.legs:
             argv += ["-R", f"/tmp/.X11-unix/X{self._x_start}:"
                            f"/tmp/.X11-unix/X{_display_number(desk.display)}"]
         if LEG_WAYLAND in b.legs:
-            remote = (f"exec waypipe --socket {remote_sock} --display {_SOURCE_WAYLAND_DISPLAY} "
+            remote = (f"exec waypipe --socket {remote_sock} --display {SOURCE_WAYLAND_DISPLAY} "
                       "--unlink-socket server -- cat")
         else:
             remote = "exec cat"   # holds the X forward; dies with the connection like the server
@@ -630,16 +631,10 @@ def build_display_bridge(settings, native: NativeDisplay | None) -> DisplayBridg
         log.info("display bridge: native display disabled on this host; bridge off")
         return None
     x_start = int(getattr(settings, "display_bridge_x_start", 150))
-    x11 = bool(getattr(settings, "display_bridge_x11", True))
-    if not x11:
-        log.info("display bridge: X11 leg disabled (VIBERPIT_DISPLAY_BRIDGE_X11=false)")
-    elif getattr(settings, "enable_xvfb", False):
-        start = int(getattr(settings, "display_start", 100))
-        count = int(getattr(settings, "display_count", 12))
-        if start <= x_start < start + count:
-            log.info("display bridge: X11 leg disabled: :%d is inside the Xvfb pool [%d, %d)",
-                     x_start, start, start + count)
-            x11 = False
+    x11_off = bridge_x11_disabled_reason(settings)
+    if x11_off is not None:
+        log.info("display bridge: X11 leg disabled: %s", x11_off)
+    x11 = x11_off is None
     from server.sessions.host_probe import PROBE_INTERVAL_S
     return DisplayBridge(
         native=native, accept_from=accepted_sources(settings),

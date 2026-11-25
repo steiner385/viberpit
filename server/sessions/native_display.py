@@ -166,6 +166,17 @@ class NativeDisplay:
         cur = self._current()          # ONE snapshot: argv and env must come from the same resolution
         if not self._usable(cur):
             return REASON_NATIVE_UNAVAILABLE
+        wayland = self._prefer_wayland(cur)
+        return await self.launch_browser_with_env(
+            session_id, url, env=cur.env(prefer_wayland=wayland), wayland=wayland)
+
+    async def launch_browser_with_env(self, session_id: str, url: str | None, *,
+                                      env: dict[str, str], wayland: bool) -> str | None:
+        """Open a managed browser on the display *env* points at: the resolved desktop
+        (``launch_browser``), or a remote session's display-bridge sockets on a source
+        host. One argv, cap, throwaway profile and ``close`` for both. *wayland* picks
+        ``--ozone-platform``; it must match what *env* offers. None = launched; else
+        ``cap`` / ``launch_failed``."""
         procs = self._browsers.setdefault(session_id, [])
         # The cap counts live browsers only: a closed window must not hold a slot.
         procs[:] = [p for p in procs if getattr(p, "returncode", None) is None]
@@ -177,7 +188,6 @@ class NativeDisplay:
             log.info("native display: refused a non-http(s) browser URL for session %s",
                      session_id)
             return REASON_LAUNCH_FAILED
-        wayland = self._prefer_wayland(cur)
         argv = [self._chromium_cmd, "--disable-dev-shm-usage", "--no-first-run", "--new-window",
                 f"--ozone-platform={'wayland' if wayland else 'x11'}"]
         if self._no_sandbox:
@@ -188,12 +198,12 @@ class NativeDisplay:
         profile = tempfile.mkdtemp(prefix=f"viberpit-native-{session_id}-", dir=self._run_dir)
         argv.append(f"--user-data-dir={profile}")
         argv.extend(url_tail)
-        # Inherit the daemon env, but drop anything that could contradict the resolved
-        # desktop (a stale inherited cookie or Wayland socket must never win).
-        env = {k: v for k, v in os.environ.items() if k not in _STALE_ENV}
-        env.update(cur.env(prefer_wayland=wayland))
+        # Inherit the daemon env, but drop anything that could contradict the target
+        # display (a stale inherited cookie or Wayland socket must never win).
+        full_env = {k: v for k, v in os.environ.items() if k not in _STALE_ENV}
+        full_env.update(env)
         try:
-            proc = await self._spawn(*argv, env=env,
+            proc = await self._spawn(*argv, env=full_env,
                                      stdout=asyncio.subprocess.DEVNULL,
                                      stderr=asyncio.subprocess.DEVNULL)
         except FileNotFoundError:

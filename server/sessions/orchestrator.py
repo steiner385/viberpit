@@ -172,9 +172,17 @@ from server.sessions.selection import (  # noqa: F401
 )
 from server.sessions.display_policy import (
     DISPLAY_NATIVE,
+    DISPLAY_REMOTE,
     DISPLAY_VIRTUAL,
     DisplayDecision,
     resolve_display_decision,
+)
+from server.sessions.display_bridge_env import (
+    REASON_BRIDGE_UNAVAILABLE,
+    bridge_x11_disabled_reason,
+    bridge_x_display,
+    remote_env,
+    source_runtime_dir,
 )
 from server.sessions.background_tasks import (
     EMPTY_BACKGROUND_WORK, OpenBgTask, background_work_snapshot, build_rearm_prompt,
@@ -224,6 +232,9 @@ _PR_DOCTOR_FOREIGN_HOLDER_CACHE_S = 30.0
 _PR_DOCTOR_MECHANICAL_DEADLINE_S = 1800.0
 
 _DRIVER_CONTROL_TIMEOUT_S = 5.0
+# How long a display-bridge liveness probe stands for the sync env/decision readers. Every
+# spawn and browser launch re-probes first, so this only bounds a reader with no fresh probe.
+_BRIDGE_PROBE_TTL_S = 5.0
 # Inference-only launch credentials a Remote Control session is upgraded off once its
 # account's login is ready: the setup-token (primary) and the inference envelope (runner).
 _UPGRADABLE_LAUNCHES = frozenset({_account_auth.LAUNCH_SETUP, _account_auth.LAUNCH_ENVELOPE})
@@ -3006,13 +3017,19 @@ class SessionOrchestrator:
         """The DISPLAY/XAUTHORITY env for this session's process — the one place it
         is chosen. Native records get the live desktop's env from NativeDisplay's
         resolver (DISPLAY plus the rotating XAUTHORITY cookie, and the Wayland socket
-        when browsers run Wayland-native); everything else the Xvfb lease if one exists. A native record
-        whose desktop is gone gets {} — the same degrade an exhausted pool gives."""
+        when browsers run Wayland-native); remote records the display bridge's
+        forwarded sockets, from the last liveness probe (``_refresh_bridge``, which the
+        spawn runs first); everything else the Xvfb lease if one exists. A native record
+        whose desktop is gone, or a remote one whose bridge is down, gets {} — the same
+        degrade an exhausted pool gives."""
         rec = self._records.get(session_id)
         if rec is not None and rec.display_mode == DISPLAY_NATIVE:
             if self._native is not None and self._native.available():
                 return self._native.env()
             return {}
+        if rec is not None and rec.display_mode == DISPLAY_REMOTE:
+            state = self._bridge_state()
+            return dict(state) if isinstance(state, dict) else {}
         return self._x11.env_for(session_id) if self._x11 else {}
 
     def _session_factory(self, session_id: str):
@@ -3051,6 +3068,23 @@ class SessionOrchestrator:
             declared = set()
         def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None,
                      **fork_kw):
+            # A remote-display session re-probes the bridge off the loop right before its
+            # spawn, so _display_env (sync) injects what is live NOW — a socket that died
+            # since the last probe is never handed to the CLI.
+            rec = self._records.get(session_id)
+            if rec is None or rec.display_mode != DISPLAY_REMOTE:
+                return _launch(cwd, config_dir, can_use_tool, mode, resume,
+                               on_pre_compact=on_pre_compact, **fork_kw)
+
+            async def _remote_launch():
+                await self._refresh_bridge()
+                client = _launch(cwd, config_dir, can_use_tool, mode, resume,
+                                 on_pre_compact=on_pre_compact, **fork_kw)
+                return await client if inspect.isawaitable(client) else client
+            return _remote_launch()
+
+        def _launch(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None,
+                    **fork_kw):
             # Remote Control (plan 2026-11-24 Task B): a session that may launch on the
             # account's slot access token resolves its auth env asynchronously — the app
             # default is a DB read and the slot refresh may hit the token endpoint, neither
@@ -4652,6 +4686,7 @@ class SessionOrchestrator:
         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
         client_node: str | None = None,
         display: str | None = None,
+        display_target: str | None = None,
         autopilot_paused: bool = False,
         auto_archive_opt_out_reason: str | None = None,
         ownership_token: str | None = None,
@@ -4806,7 +4841,8 @@ class SessionOrchestrator:
                     origin=origin, origin_ref=origin_ref, model=gate_model,
                     reasoning_effort=reasoning_effort, kind=kind,
                     owner_identity=owner_identity, engine=selected_engine,
-                    client_node=client_node, display=display, parent_session_id=parent_session_id,
+                    client_node=client_node, display=display, display_target=display_target,
+                    parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                     model_reason=INHERITED_DEFAULT_REASON if gate_model != model else None,
@@ -4833,7 +4869,8 @@ class SessionOrchestrator:
                     name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
                     model=model, reasoning_effort=reasoning_effort, kind=kind,
                     owner_identity=owner_identity, engine=selected_engine,
-                    client_node=client_node, display=display, parent_session_id=parent_session_id,
+                    client_node=client_node, display=display, display_target=display_target,
+                    parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                     queue_reason=queue_reason, platform=platform, sandbox=sandbox)
@@ -4846,7 +4883,8 @@ class SessionOrchestrator:
                     origin=origin, origin_ref=origin_ref, model=model,
                     reasoning_effort=reasoning_effort, kind=kind,
                     owner_identity=owner_identity, engine=selected_engine,
-                    client_node=client_node, display=display, parent_session_id=parent_session_id,
+                    client_node=client_node, display=display, display_target=display_target,
+                    parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                     platform=platform, sandbox=sandbox)
@@ -4871,7 +4909,8 @@ class SessionOrchestrator:
                     name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
                     model=model, reasoning_effort=reasoning_effort, kind=kind,
                     owner_identity=owner_identity, engine=selected_engine,
-                    client_node=client_node, display=display, parent_session_id=parent_session_id,
+                    client_node=client_node, display=display, display_target=display_target,
+                    parent_session_id=parent_session_id,
                     autopilot_paused=autopilot_paused,
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                     queue_reason="account_limited", platform=platform, sandbox=sandbox)
@@ -5084,7 +5123,61 @@ class SessionOrchestrator:
         if self._native is not None:
             await self._native.refresh()
 
-    def _resolve_display_mode_for(self, display: str | None, client_node: str | None) -> DisplayDecision:
+    def _effective_display_target(self, display_target: str | None) -> str | None:
+        """The target host a new session may draw on, or None for local. The kill
+        switch (``VIBERPIT_DISPLAY_BRIDGE_ENABLED=false``) makes every target local —
+        no fallback reason, exactly as if none were configured."""
+        target = (display_target or "").strip()
+        if not target:
+            return None
+        from server.config import get_settings
+        if not getattr(get_settings(), "display_bridge_enabled", True):
+            return None
+        return target
+
+    async def _refresh_bridge(self) -> dict[str, str] | str:
+        """Probe the display bridge's sockets on this (source) host in a worker thread
+        (each connect may wait up to 0.5 s) and cache the result for the sync readers
+        (``_display_env``, ``_resolve_display_mode_for``). Returns the env, or why not."""
+        from server.config import get_settings
+        settings = get_settings()
+        x_display = bridge_x_display(settings)
+        if x_display is None and not getattr(self, "_bridge_x11_off_logged", False):
+            self._bridge_x11_off_logged = True
+            log.info("display bridge: X11 leg not exported to remote sessions: %s",
+                     bridge_x11_disabled_reason(settings))
+        uid = os.getuid()
+        state = await asyncio.to_thread(
+            remote_env, runtime_dir=source_runtime_dir(uid), x_display=x_display, uid=uid)
+        self._bridge_probe = (time.monotonic(), state)
+        return state
+
+    def _bridge_state(self) -> dict[str, str] | str:
+        """The last bridge probe while it is fresh (``_BRIDGE_PROBE_TTL_S``), else
+        unavailable: a stale "live" must not outlive the sockets it saw."""
+        probe = getattr(self, "_bridge_probe", None)
+        if probe is None or time.monotonic() - probe[0] > _BRIDGE_PROBE_TTL_S:
+            return REASON_BRIDGE_UNAVAILABLE
+        return probe[1]
+
+    async def _refresh_display(self, display_target: str | None) -> None:
+        """Warm every input of ``_resolve_display_mode_for`` off the loop: the native
+        desktop, and — only for a session that names a live target — the bridge."""
+        await self._refresh_native()
+        if self._effective_display_target(display_target) is not None:
+            await self._refresh_bridge()
+
+    @staticmethod
+    def _display_target_host(prior, decision: DisplayDecision,
+                             display_target: str | None) -> str | None:
+        """Which desktop a remote decision draws on: the prior record's (a persisted
+        decision wins), else the requested target. None unless the mode is remote."""
+        if decision.mode != DISPLAY_REMOTE:
+            return None
+        return getattr(prior, "display_target_host", None) or (display_target or "").strip() or None
+
+    def _resolve_display_mode_for(self, display: str | None, client_node: str | None,
+                                  display_target: str | None = None) -> DisplayDecision:
         """The one call to ``resolve_display_decision`` for this daemon — used by the
         spawn, enqueue and hold paths so the decision is made identically wherever a
         session is born, not just where it happens to start a driver. A queued or
@@ -5094,32 +5187,38 @@ class SessionOrchestrator:
         until spawn time would silently lose it and fall back to virtual.
 
         Also returns why a would-be-native session went virtual (the desktop is
-        locked/logged out/refusing, or native display is not configured here).
+        locked/logged out/refusing, or native display is not configured here), or why
+        a would-be-remote one did (the bridge's sockets are not live here, or belong
+        to another user). Callers ``await self._refresh_display(display_target)`` first.
         """
         available = self._native is not None and self._native.available()
         native_reason = None
         if not available:
             native_reason = (self._native.unavailable_reason() if self._native is not None
                              else "native_disabled")
+        target = self._effective_display_target(display_target)
+        bridge = self._bridge_state() if target is not None else None
         return resolve_display_decision(
             requested=display, client_node=client_node, runner=self_host_name(),
             native_available=available, native_unavailable_reason=native_reason,
-            remote_target=None, remote_available=False, remote_unavailable_reason=None)
+            remote_target=target, remote_available=isinstance(bridge, dict),
+            remote_unavailable_reason=bridge if isinstance(bridge, str) else None)
 
-    def _display_decision(self, prior, display: str | None,
-                          client_node: str | None) -> DisplayDecision:
+    def _display_decision(self, prior, display: str | None, client_node: str | None,
+                          display_target: str | None = None) -> DisplayDecision:
         """A prior record's persisted decision (queued/held/resumed row) wins over a
         fresh re-resolution; otherwise decide now."""
         prior_mode = getattr(prior, "display_mode", None)
         if prior_mode:
             return DisplayDecision(prior_mode, getattr(prior, "display_fallback_reason", None))
-        return self._resolve_display_mode_for(display, client_node)
+        return self._resolve_display_mode_for(display, client_node, display_target)
 
     async def _enqueue_session(self, session_id: str, *, name, account,
                                initial_prompt, cols, rows, cwd, branch, repo,
                                identity, permission_mode, attachment_ids,
                                name_is_auto, origin, origin_ref, model,
-                               client_node=None, display=None, parent_session_id=None,
+                               client_node=None, display=None, display_target=None,
+                               parent_session_id=None,
                                reasoning_effort=None, kind=None, owner_identity=None,
                                engine=AgentEngine.CLAUDE_CODE,
                                autopilot_paused: bool = False,
@@ -5153,9 +5252,10 @@ class SessionOrchestrator:
         # comment on why), so its persisted display_mode must win over a fresh
         # re-resolution with client_node=None.
         _prior = self._records.get(session_id)
-        await self._refresh_native()
-        display_mode, display_fallback_reason = self._display_decision(
-            _prior, display, client_node)
+        await self._refresh_display(display_target)
+        decision = self._display_decision(_prior, display, client_node, display_target)
+        display_mode, display_fallback_reason = decision
+        display_target_host = self._display_target_host(_prior, decision, display_target)
         async with db_session() as db:
             if replace_row:
                 existing = await db.get(DbSession, session_id)
@@ -5177,6 +5277,7 @@ class SessionOrchestrator:
                 kind=kind, owner_identity=owner_identity,
                 display_mode=display_mode,
                 display_fallback_reason=display_fallback_reason,
+                display_target_host=display_target_host,
                 autopilot_paused=autopilot_paused or None,
                 auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                 # D-23: a sandboxed parent's queued child is stamped now, so a deleted
@@ -5242,6 +5343,7 @@ class SessionOrchestrator:
             model=model, reasoning_effort=reasoning_effort, host=host,
             kind=kind, owner_identity=owner_identity,
             display_mode=display_mode, display_fallback_reason=display_fallback_reason,
+            display_target_host=display_target_host,
             permission_mode=permission_mode,
             autopilot_paused=autopilot_paused,
             auto_archive_opt_out_reason=auto_archive_opt_out_reason)
@@ -5254,7 +5356,8 @@ class SessionOrchestrator:
                                  initial_prompt, cols, rows, cwd, branch, repo,
                                  identity, permission_mode, attachment_ids,
                                  name_is_auto, origin, origin_ref, model,
-                                 client_node=None, display=None, parent_session_id=None,
+                                 client_node=None, display=None, display_target=None,
+                                 parent_session_id=None,
                                  reasoning_effort=None, kind=None, owner_identity=None,
                                  engine=AgentEngine.CLAUDE_CODE,
                                  autopilot_paused: bool = False,
@@ -5283,9 +5386,10 @@ class SessionOrchestrator:
         now = datetime.utcnow()
         host = local_host_stamp()
         selected_engine = parse_agent_engine(engine)
-        await self._refresh_native()
-        display_mode, display_fallback_reason = self._resolve_display_mode_for(
-            display, client_node)
+        await self._refresh_display(display_target)
+        decision = self._resolve_display_mode_for(display, client_node, display_target)
+        display_mode, display_fallback_reason = decision
+        display_target_host = self._display_target_host(None, decision, display_target)
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -5302,6 +5406,7 @@ class SessionOrchestrator:
                 kind=kind, owner_identity=owner_identity,
                 display_mode=display_mode,
                 display_fallback_reason=display_fallback_reason,
+                display_target_host=display_target_host,
                 autopilot_paused=autopilot_paused or None,
                 auto_archive_opt_out_reason=auto_archive_opt_out_reason))
             await record_audit(db, type="model_approval.requested", identity=identity,
@@ -5331,6 +5436,7 @@ class SessionOrchestrator:
             pending_model_reason=model_reason,
             kind=kind, owner_identity=owner_identity,
             display_mode=display_mode, display_fallback_reason=display_fallback_reason,
+            display_target_host=display_target_host,
             permission_mode=permission_mode,
             autopilot_paused=autopilot_paused,
             auto_archive_opt_out_reason=auto_archive_opt_out_reason)
@@ -5655,6 +5761,7 @@ class SessionOrchestrator:
         _prior_rec = self._records.get(session_id)
         prior_mode = getattr(_prior_rec, "display_mode", None)
         prior_fallback = getattr(_prior_rec, "display_fallback_reason", None)
+        prior_target_host = getattr(_prior_rec, "display_target_host", None)
         try:
             async with db_session() as db:
                 # The failed spawn may or may not have INSERTed a row before raising;
@@ -5686,6 +5793,7 @@ class SessionOrchestrator:
                     owner_identity=kwargs.get("owner_identity"),
                     display_mode=prior_mode,
                     display_fallback_reason=prior_fallback,
+                    display_target_host=prior_target_host,
                     autopilot_paused=kwargs.get("autopilot_paused") or None,
                     auto_archive_opt_out_reason=kwargs.get("auto_archive_opt_out_reason")))
             restored = dict(kwargs)
@@ -5708,6 +5816,7 @@ class SessionOrchestrator:
                 owner_identity=kwargs.get("owner_identity"),
                 display_mode=prior_mode,
                 display_fallback_reason=prior_fallback,
+                display_target_host=prior_target_host,
                 permission_mode=kwargs.get("permission_mode") or "interactive",
                 autopilot_paused=bool(kwargs.get("autopilot_paused")),
                 auto_archive_opt_out_reason=kwargs.get("auto_archive_opt_out_reason"))
@@ -6587,6 +6696,7 @@ class SessionOrchestrator:
         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
         client_node: str | None = None,
         display: str | None = None,
+        display_target: str | None = None,
         autopilot_paused: bool = False,
         auto_archive_opt_out_reason: str | None = None,
         parent_session_id: str | None = None,
@@ -6734,9 +6844,10 @@ class SessionOrchestrator:
             # Decide where this session's GUI renders — ONCE, here — then either lease a
             # virtual Xvfb display or leave the host's real one to _display_env. A
             # previously-queued/resumed row keeps its persisted decision.
-            await self._refresh_native()
-            display_mode, display_fallback_reason = self._display_decision(
-                _prior, display, client_node)
+            await self._refresh_display(display_target)
+            decision = self._display_decision(_prior, display, client_node, display_target)
+            display_mode, display_fallback_reason = decision
+            display_target_host = self._display_target_host(_prior, decision, display_target)
             if display_mode == DISPLAY_VIRTUAL and self._x11 is not None:
                 try:
                     await self._x11.start_display(session_id)
@@ -6749,6 +6860,10 @@ class SessionOrchestrator:
                 log.info("session.display_native id=%s client_node=%s display=%s",
                          session_id, client_node,
                          self._native.display if self._native is not None else None)
+            elif display_mode == DISPLAY_REMOTE:
+                # The bridge's sockets are injected (live-checked) by _display_env.
+                log.info("session.display_remote id=%s target=%s",
+                         session_id, display_target_host)
             _host = getattr(_prior, "host", None) or local_host_stamp()
             # Belt-and-suspenders for #1107: the queue-drain call site threads the
             # row's engine_session_id through `resume` explicitly, but if some future
@@ -6838,6 +6953,7 @@ class SessionOrchestrator:
                 last_activity_at=time.monotonic(),
                 display_mode=display_mode,
                 display_fallback_reason=display_fallback_reason,
+                display_target_host=display_target_host,
                 # The in-memory record is what every later driver REBUILD reads its mode
                 # from (ensure_driver after a completion release / idle reap / detach,
                 # _reassign's driverless path). Seeding it without the mode left the
@@ -6955,6 +7071,7 @@ class SessionOrchestrator:
                 async with db_session() as db:
                     from sqlalchemy import update as sa_update
                     from sqlalchemy import func as sa_func
+                    from sqlalchemy import case as sa_case
                     await db.execute(
                         sa_update(DbSession)
                         .where(DbSession.id == session_id)
@@ -6968,7 +7085,11 @@ class SessionOrchestrator:
                                 sandbox=_pre_record.sandbox,
                                 display_mode=sa_func.coalesce(DbSession.display_mode, display_mode),
                                 display_fallback_reason=sa_func.coalesce(
-                                    DbSession.display_fallback_reason, display_fallback_reason))
+                                    DbSession.display_fallback_reason, display_fallback_reason),
+                                # Follows display_mode: set only alongside a NULL mode.
+                                display_target_host=sa_case(
+                                    (DbSession.display_mode.is_(None), display_target_host),
+                                    else_=DbSession.display_target_host))
                     )
             else:
                 # Persist DB row (fresh session, not previously queued)
@@ -7000,6 +7121,7 @@ class SessionOrchestrator:
                         owner_identity=owner_identity,
                         display_mode=display_mode,
                         display_fallback_reason=display_fallback_reason,
+                        display_target_host=display_target_host,
                         autopilot_paused=autopilot_paused or None,
                         auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                         platform=platform,
@@ -7391,6 +7513,7 @@ class SessionOrchestrator:
 
         Returns {"ok", "reason"}; reasons: no_display (no such live session / no lease),
         cap (per-session browser limit), native_unavailable (the desktop went away),
+        bridge_unavailable / bridge_wrong_user (a remote session's bridge is not live here),
         launch_failed (the native browser binary is missing or exited during startup).
         The daemon RPC ``x11_open_browser`` and the in-process API route both call
         this, so the native/virtual branch exists exactly once.
@@ -7403,6 +7526,18 @@ class SessionOrchestrator:
             if self._native is None or not self._native.available():
                 return {"ok": False, "reason": "native_unavailable"}
             reason = await self._native.launch_browser(session_id, url)
+            return {"ok": reason is None, "reason": reason}
+        if not force_virtual and rec is not None and rec.display_mode == DISPLAY_REMOTE:
+            # Chromium runs HERE (the source host) and draws on the target desktop
+            # through the bridge's forwarded sockets — Wayland-native when that leg is
+            # live, else over the X11 leg.
+            state = await self._refresh_bridge()
+            if not isinstance(state, dict):
+                return {"ok": False, "reason": state}
+            if self._native is None:
+                return {"ok": False, "reason": "no_display"}
+            reason = await self._native.launch_browser_with_env(
+                session_id, url, env=state, wayland="WAYLAND_DISPLAY" in state)
             return {"ok": reason is None, "reason": reason}
         if self._x11 is None or self._x11.display_for(session_id) is None:
             return {"ok": False, "reason": "no_display"}
@@ -24578,7 +24713,8 @@ class SessionOrchestrator:
         a native session's on-demand display is released when its preview browser exits
         or sits unwatched for the VNC idle timeout (``X11Manager.track_preview``)."""
         rec = self.record(session_id)
-        native = rec.display_mode == DISPLAY_NATIVE
+        # No Xvfb lease of its own (native, or remote via the bridge): on-demand display.
+        native = rec.display_mode in (DISPLAY_NATIVE, DISPLAY_REMOTE)
         if not _dev_server_detect_enabled():
             raise _dev_servers.DevServerError(_dev_servers.DEV_SERVER_DETECT_DISABLED)
         servers = await self._detect_dev_servers(session_id, fresh=True)
@@ -26352,7 +26488,8 @@ class SessionOrchestrator:
         # with the display-injecting factory but x11.env_for() returns {}, so the
         # claude subprocess launches with no DISPLAY and X rendering escapes the
         # virtual viewport. start_display is idempotent (no-op if already leased).
-        if self._x11 is not None and getattr(rec, "display_mode", None) != DISPLAY_NATIVE:
+        if self._x11 is not None and getattr(rec, "display_mode", None) not in (
+                DISPLAY_NATIVE, DISPLAY_REMOTE):
             try:
                 await self._x11.start_display(session_id)
             except Exception:

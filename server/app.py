@@ -1285,6 +1285,8 @@ def create_app(
         "no_display": "no display for session",
         "cap": "browser cap reached",
         "native_unavailable": "native display unavailable",
+        "bridge_unavailable": "display bridge unavailable",
+        "bridge_wrong_user": "display bridge owned by another user",
         "launch_failed": "browser failed to start",
     }
 

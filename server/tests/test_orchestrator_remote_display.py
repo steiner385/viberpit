@@ -1,0 +1,271 @@
+"""The source daemon's half of a per-host display target (spec §2 "Env injection").
+
+A session born with ``display_target`` decides ``remote`` only while the bridge's
+forwarded sockets are live on this host, persists which desktop, and injects the
+bridge env — read live, never a dead socket at spawn.
+"""
+from __future__ import annotations
+
+import asyncio
+import os
+from unittest.mock import patch
+
+import pytest
+
+from server.sessions.desktop_session import DesktopUnavailable
+from server.sessions.native_display import NativeDisplay
+from server.tests.test_orchestrator_native_display import FakeNative, FakeX11, _orch, _row, _seed
+from server.tests.test_orchestrator_native_display import spawn_env as spawn_env  # noqa: F401 — fixture
+
+LIVE_ENV = {"WAYLAND_DISPLAY": "wayland-viberpit-bridge", "XDG_RUNTIME_DIR": "/run/user/1000",
+            "DISPLAY": ":150", "XAUTHORITY": "/run/user/1000/viberpit-bridge/xauth"}
+
+
+class _Bridge:
+    """Stands in for display_bridge_env.remote_env; records every probe."""
+    def __init__(self, state):
+        self.state = state
+        self.calls: list[dict] = []
+
+    def __call__(self, **kw):
+        self.calls.append(kw)
+        return self.state
+
+
+@pytest.fixture
+def bridge():
+    b = _Bridge(dict(LIVE_ENV))
+    with patch("server.sessions.orchestrator.remote_env", b):
+        yield b
+
+
+@pytest.mark.asyncio
+async def test_create_session_with_target_and_live_bridge_is_remote_and_persists_target_host(
+        spawn_env, bridge):
+    x11, native = FakeX11(), FakeNative(available=False)
+    orch = await _orch(spawn_env, x11, native)
+    try:
+        rec = await orch.create_session("n", account="acct", client_node="phone",
+                                        display_target="dobby")
+        assert rec.display_mode == "remote"
+        assert rec.display_target_host == "dobby"
+        assert rec.display_fallback_reason is None
+        assert x11.started == []                     # no Xvfb lease for a remote session
+        row = await _row(rec.id)
+        assert row.display_mode == "remote" and row.display_target_host == "dobby"
+        assert bridge.calls and bridge.calls[0]["uid"] == os.getuid()
+        assert bridge.calls[0]["x_display"] == 150
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_local_client_with_native_still_wins_over_target(spawn_env, bridge):
+    orch = await _orch(spawn_env, FakeX11(), FakeNative())
+    try:
+        rec = await orch.create_session("n", account="acct", client_node="dobby",
+                                        display_target="dobby")
+        assert rec.display_mode == "native" and rec.display_target_host is None
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["bridge_unavailable", "bridge_wrong_user"])
+async def test_create_session_target_but_dead_bridge_is_virtual_with_reason(
+        spawn_env, bridge, reason):
+    bridge.state = reason
+    x11 = FakeX11()
+    orch = await _orch(spawn_env, x11, FakeNative(available=False))
+    try:
+        rec = await orch.create_session("n", account="acct", client_node="phone",
+                                        display_target="dobby")
+        assert rec.display_mode == "virtual"
+        assert rec.display_fallback_reason == reason
+        assert rec.display_target_host is None
+        assert x11.started == [rec.id]
+        row = await _row(rec.id)
+        assert row.display_fallback_reason == reason and row.display_target_host is None
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_kill_switch_off_ignores_target(spawn_env, bridge):
+    with patch.dict(os.environ, {"VIBERPIT_DISPLAY_BRIDGE_ENABLED": "false"}):
+        orch = await _orch(spawn_env, FakeX11(), FakeNative(available=False))
+        try:
+            rec = await orch.create_session("n", account="acct", client_node="phone",
+                                            display_target="dobby")
+            assert rec.display_mode == "virtual"
+            assert rec.display_fallback_reason is None     # local, not a fallback
+            assert rec.display_target_host is None
+            assert bridge.calls == []                       # never probed
+        finally:
+            await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_queued_and_held_remote_decision_persists(spawn_env, bridge):
+    orch = await _orch(spawn_env, FakeX11(), FakeNative(available=False),
+                       max_active_sessions=1)
+    try:
+        a = await orch.create_session("one", account="acct")
+        q = await orch.create_session("q", account="acct", display_target="dobby")
+        assert q.status == "queued" and q.display_mode == "remote"
+        assert (await _row(q.id)).display_target_host == "dobby"
+        bridge.state = "bridge_unavailable"           # promotion keeps the birth decision
+        await orch.close_session(a.id)
+        assert await orch._maybe_start_queued() == 1
+        assert orch._records[q.id].display_mode == "remote"
+        assert orch._records[q.id].display_target_host == "dobby"
+        assert (await _row(q.id)).display_target_host == "dobby"
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_held_for_approval_remote_decision_persists(spawn_env, bridge):
+    orch = await _orch(spawn_env, FakeX11(), FakeNative(available=False))
+    try:
+        rec = await orch.create_session("n", account="acct", model="fable",
+                                        display_target="dobby")
+        assert rec.status == "pending_approval"
+        assert rec.display_mode == "remote" and rec.display_target_host == "dobby"
+        assert (await _row(rec.id)).display_target_host == "dobby"
+
+        async def _boom(*a, **k):
+            raise RuntimeError("spawn exploded")
+        orch._spawn_session = _boom  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError):
+            await orch.resolve_model_approval(rec.id, "approve", identity="user@x")
+        assert orch._records[rec.id].display_target_host == "dobby"
+        assert (await _row(rec.id)).display_target_host == "dobby"
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_resume_keeps_persisted_remote_decision(spawn_env, bridge):
+    x11, native = FakeX11(), FakeNative(available=False)
+    orch = await _orch(spawn_env, x11, native)
+    try:
+        rec = await orch.create_session("n", account="acct", display_target="dobby")
+        sid = rec.id
+    finally:
+        await orch.stop()
+    x11b = FakeX11()
+    orch2 = await _orch(spawn_env, x11b, FakeNative(available=False))
+    try:
+        await orch2.rehydrate()
+        assert orch2._records[sid].display_mode == "remote"
+        assert orch2._records[sid].display_target_host == "dobby"
+        drv = await orch2.ensure_driver(sid)
+        assert drv is not None
+        assert x11b.started == []                    # a remote session never leases Xvfb
+        assert orch2._display_env(sid) == LIVE_ENV
+    finally:
+        await orch2.stop()
+
+
+def _recording_factory(seen):
+    def rec_factory(cwd, cfg, cut, mode, resume, extra_env=None, *, on_pre_compact=None):
+        seen["extra_env"] = extra_env
+        class _F: ...
+        return _F()
+    return rec_factory
+
+
+@pytest.mark.asyncio
+async def test_display_env_remote_branch_returns_bridge_env(bridge):
+    from server.sessions.orchestrator import SessionOrchestrator
+    seen: dict = {}
+    orch = SessionOrchestrator(sdk_factory=_recording_factory(seen), x11=FakeX11())
+    _seed(orch, "s1", display_mode="remote", display_target_host="dobby")
+    # The spawn probes the bridge off the loop first, then injects what it found.
+    client = orch._session_factory("s1")("/tmp", "/cfg", None, "interactive", None)
+    assert asyncio.iscoroutine(client)
+    await client
+    assert seen["extra_env"] == LIVE_ENV
+    assert orch._display_env("s1") == LIVE_ENV
+    # Bridge gone at the next spawn: nothing injected (a dead socket never is).
+    bridge.state = "bridge_unavailable"
+    seen.clear()
+    await orch._session_factory("s1")("/tmp", "/cfg", None, "interactive", None)
+    assert not seen["extra_env"]
+    assert orch._display_env("s1") == {}
+
+
+def test_display_env_remote_with_no_probe_yet_is_empty(bridge):
+    from server.sessions.orchestrator import SessionOrchestrator
+    orch = SessionOrchestrator(sdk_factory=_recording_factory({}), x11=FakeX11())
+    _seed(orch, "s1", display_mode="remote", display_target_host="dobby")
+    assert orch._display_env("s1") == {}
+
+
+class _Proc:
+    returncode = None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state,platform", [
+    (dict(LIVE_ENV), "wayland"),
+    ({"DISPLAY": ":150", "XAUTHORITY": "/x"}, "x11"),
+])
+async def test_open_browser_remote_uses_bridge_env_and_ozone_wayland(
+        spawn_env, bridge, tmp_path, state, platform):
+    spawned: list[tuple[tuple, dict]] = []
+
+    async def _spawn(*argv, **kw):
+        spawned.append((argv, kw))
+        return _Proc()
+    native = NativeDisplay(run_dir=str(tmp_path), chromium_cmd="chromium", no_sandbox=False,
+                           max_browsers=2, spawn=_spawn,
+                           resolve=lambda: DesktopUnavailable(reason="no_graphical_session"))
+    orch = await _orch(spawn_env, FakeX11(), native)
+    try:
+        rec = await orch.create_session("n", account="acct", display_target="dobby")
+        assert rec.display_mode == "remote"
+        bridge.state = state
+        assert await orch.open_browser(rec.id, "https://a") == {"ok": True, "reason": None}
+        argv, kw = spawned[-1]
+        assert argv[0] == "chromium"
+        assert f"--ozone-platform={platform}" in argv
+        assert argv[-2:] == ("--", "https://a")
+        for k, v in state.items():
+            assert kw["env"][k] == v
+        if platform == "x11":
+            assert "WAYLAND_DISPLAY" not in kw["env"]
+        bridge.state = "bridge_wrong_user"
+        assert await orch.open_browser(rec.id, None) == {"ok": False,
+                                                          "reason": "bridge_wrong_user"}
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_old_daemon_sheds_display_target_and_stays_local(caplog):
+    """The edge sends display_target only to daemons that bind it: an older one rejects
+    the kwarg, and the retry drops just that key (the session stays local there)."""
+    import logging
+    from server.ipc.client import DaemonError
+    from server.sessions.remote import RemoteOrchestrator
+    caplog.set_level(logging.INFO, logger="server.sessions.remote")
+
+    class _Old:
+        def __init__(self): self.calls = []
+        async def call(self, method, **params):
+            self.calls.append((method, params))
+            if "display_target" in params:
+                raise DaemonError("TypeError", "create_session() got an unexpected keyword "
+                                               "argument 'display_target'")
+            return {"session": {"id": "s1", "name": "n", "account": "a",
+                                "engine": "claude_code", "engineSessionId": "", "cols": 80,
+                                "rows": 24, "cwd": "/tmp"}}
+    c = _Old()
+    rec = await RemoteOrchestrator(c).create_session(name="n", client_node="phone",
+                                                     display_target="dobby")
+    assert rec.id == "s1"
+    assert len(c.calls) == 2
+    assert "display_target" not in c.calls[1][1] and c.calls[1][1]["client_node"] == "phone"
+    assert "predates the display bridge" in caplog.text
