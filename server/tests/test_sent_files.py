@@ -10,10 +10,14 @@ never the request.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import tempfile
+import time
 import struct
 import zlib
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -28,8 +32,11 @@ from server.sessions.fleet_orchestrator import _MOVE_BLOCKED, _PER_SESSION, Flee
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.remote import RemoteOrchestrator
 from server.sessions.replay import ReplayWindow
-from server.sessions.sent_files import (MAX_SENT_FILES, TOOL_CALL_NOT_FOUND, SentFileError,
-                                        sent_file_paths)
+from server.sessions import sent_files as sent_files_mod
+from server.sessions.sent_files import (HISTORY_UNAVAILABLE, MAX_SENT_FILES,
+                                        TOOL_CALL_NOT_FOUND, SentFileError,
+                                        _clear_index_cache, scan_send_user_file_calls,
+                                        send_user_file_calls, sent_file_paths)
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.test_sessions_actions_api import _ENV, _H, _make_client
 
@@ -58,19 +65,53 @@ def _factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None,
     return FakeSDKClient([], on_can_use_tool=can_use_tool)
 
 
-async def _orch(events, *, cwd: str | None, archived: bool = True) -> SessionOrchestrator:
+def _jsonl(events, path) -> str:
+    """The CLI's transcript shape for these calls: one assistant entry per call, a
+    sub-agent's flagged ``isSidechain`` (Layout A), plus unrelated noise lines."""
+    lines = ['{"type":"user","uuid":"u0","message":{"content":"hi"}}', "not json SendUserFile"]
+    for i, e in enumerate(events):
+        lines.append(json.dumps({
+            "type": "assistant", "uuid": f"a{i}", "isSidechain": e.parent_tool_use_id is not None,
+            "message": {"content": [{"type": "text", "text": "sending"},
+                                    {"type": "tool_use", "id": e.tool_id, "name": e.name,
+                                     "input": e.input}]}}))
+    Path(path).write_text("\n".join(lines) + "\n")
+    return str(path)
+
+
+async def _orch(events, *, cwd: str | None, archived: bool = True,
+                replay: bool = False) -> SessionOrchestrator:
+    """An orchestrator whose session SID has these calls in its JSONL — or, with
+    ``replay=True``, no transcript file and these events from the replay fallback
+    (``None``: no readable history at all)."""
     async with db_session() as db:
         db.add(DbSession(id=SID, name="s", account_name="acct1", engine_session_id="cabc",
                          status="archived" if archived else "idle", cwd=cwd or "",
                          archived_at=datetime(2026, 11, 25) if archived else None))
     orch = SessionOrchestrator(sdk_factory=_factory)
+    transcript = None
+    if not replay:
+        transcript = _jsonl(events, Path(tempfile.mkdtemp(prefix="sent-files-")) / "t.jsonl")
+
+    async def resolve_transcript_path(session_id):
+        assert session_id == SID
+        return transcript
 
     async def transcript_window(session_id, **kw):
+        assert replay, "the JSONL scan must not fall back to a full replay"
         assert session_id == SID and kw.get("limit") is None
         return None if events is None else ReplayWindow(events=list(events), total_turns=1)
 
+    orch.resolve_transcript_path = resolve_transcript_path  # type: ignore[method-assign]
     orch.transcript_window = transcript_window  # type: ignore[method-assign]
     return orch
+
+
+@pytest.fixture(autouse=True)
+def _fresh_index():
+    _clear_index_cache()
+    yield
+    _clear_index_cache()
 
 
 async def _attachment_count() -> int:
@@ -181,19 +222,93 @@ async def test_the_ingest_is_idempotent(isolated_db, home):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("replay", [False, True])
 @pytest.mark.parametrize("events", [
     [_call(["/tmp/x.png"], parent="toolu_task")],       # a sub-agent's call
     [_call(["/tmp/x.png"], name="Write")],              # another tool's id
     [_call(["/tmp/x.png"], tool_id="toolu_other")],     # an unknown id
-    None,                                               # no readable history
 ])
 async def test_no_main_thread_send_user_file_call_is_a_tool_call_not_found(isolated_db, home,
-                                                                          events):
-    orch = await _orch(events, cwd=None)
+                                                                          events, replay):
+    orch = await _orch(events, cwd=None, replay=replay)
     with pytest.raises(SentFileError) as err:
         await orch.sent_files(SID, TOOL)
     assert err.value.code == TOOL_CALL_NOT_FOUND
     assert err.value.error_data == {"code": TOOL_CALL_NOT_FOUND}
+
+
+@pytest.mark.asyncio
+async def test_an_engine_without_a_transcript_file_falls_back_to_the_replay(isolated_db, home):
+    shot = home / "shot.png"
+    shot.write_bytes(_png())
+    orch = await _orch([_call([str(shot)])], cwd=None, replay=True)
+    [entry] = (await orch.sent_files(SID, TOOL))["files"]
+    assert entry["url"].startswith("/api/attachments/")
+
+
+@pytest.mark.asyncio
+async def test_no_readable_history_is_retryable_not_a_missing_call(isolated_db, home):
+    orch = await _orch(None, cwd=None, replay=True)
+    with pytest.raises(SentFileError) as err:
+        await orch.sent_files(SID, TOOL)
+    assert err.value.code == HISTORY_UNAVAILABLE
+
+
+# ── the transcript scan ──────────────────────────────────────────────────────
+
+
+def test_the_scan_indexes_main_thread_send_user_file_calls_only(tmp_path):
+    path = _jsonl([_call(["/tmp/a.png", "", 3]), _call(["/tmp/s.png"], tool_id="t_sub",
+                                                         parent="toolu_task"),
+                   _call(["/tmp/w.png"], tool_id="t_write", name="Write"),
+                   _call(["b.png"], tool_id="t2")], tmp_path / "t.jsonl")
+    assert scan_send_user_file_calls(path) == {TOOL: ["/tmp/a.png"], "t2": ["b.png"]}
+
+
+@pytest.mark.asyncio
+async def test_a_slow_scan_is_history_unavailable_and_the_retry_joins_it(tmp_path, monkeypatch):
+    path = _jsonl([_call(["/tmp/a.png"])], tmp_path / "t.jsonl")
+    real, runs = scan_send_user_file_calls, []
+
+    def slow(p):
+        runs.append(p)
+        time.sleep(0.3)
+        return real(p)
+
+    monkeypatch.setattr(sent_files_mod, "scan_send_user_file_calls", slow)
+    with pytest.raises(SentFileError) as err:
+        await send_user_file_calls(path, ceiling_s=0.05)
+    assert err.value.code == HISTORY_UNAVAILABLE
+    assert (await send_user_file_calls(path, ceiling_s=5))[TOOL] == ["/tmp/a.png"]
+    assert len(runs) == 1  # the retry joined the scan in flight
+
+
+@pytest.mark.asyncio
+async def test_concurrent_lookups_share_one_scan_cached_until_the_file_changes(tmp_path,
+                                                                             monkeypatch):
+    path = _jsonl([_call(["/tmp/a.png"])], tmp_path / "t.jsonl")
+    real, runs = scan_send_user_file_calls, []
+
+    def counted(p):
+        runs.append(p)
+        return real(p)
+
+    monkeypatch.setattr(sent_files_mod, "scan_send_user_file_calls", counted)
+    results = await asyncio.gather(*(send_user_file_calls(path) for _ in range(5)))
+    assert all(r == {TOOL: ["/tmp/a.png"]} for r in results) and len(runs) == 1
+    await send_user_file_calls(path)
+    assert len(runs) == 1
+    # The live race: the call lands on disk after the first lookup.
+    _jsonl([_call(["/tmp/a.png"]), _call(["/tmp/b.png"], tool_id="t_late")], path)
+    assert (await send_user_file_calls(path))["t_late"] == ["/tmp/b.png"]
+    assert len(runs) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_transcript_is_history_unavailable(tmp_path):
+    with pytest.raises(SentFileError) as err:
+        await send_user_file_calls(str(tmp_path / "gone.jsonl"))
+    assert err.value.code == HISTORY_UNAVAILABLE
 
 
 @pytest.mark.asyncio
@@ -243,6 +358,14 @@ def test_route_404s_a_missing_call_and_logs_info(caplog):
     assert hits and all(rec.levelname == "INFO" for rec in hits)
 
 
+def test_route_503s_unavailable_history_so_the_client_retries():
+    client, _ = _route_client(error=SentFileError(HISTORY_UNAVAILABLE))
+    with patch.dict(os.environ, _ENV), client:
+        r = client.post(f"/api/sessions/{SID}/sent-files/{TOOL}", headers=_H)
+    assert r.status_code == 503
+    assert r.json()["detail"] == {"code": HISTORY_UNAVAILABLE}
+
+
 def test_route_404s_an_unknown_session():
     client, _ = _route_client(error=KeyError(SID))
     with patch.dict(os.environ, _ENV), client:
@@ -285,6 +408,11 @@ async def test_remote_forwards_and_rebuilds_its_refusals():
         await RemoteOrchestrator(_RecordingClient(error=DaemonError(
             "SentFileError", TOOL_CALL_NOT_FOUND,
             data={"code": TOOL_CALL_NOT_FOUND}))).sent_files(SID, TOOL)
+    with pytest.raises(SentFileError) as err:
+        await RemoteOrchestrator(_RecordingClient(error=DaemonError(
+            "SentFileError", HISTORY_UNAVAILABLE,
+            data={"code": HISTORY_UNAVAILABLE}))).sent_files(SID, TOOL)
+    assert err.value.code == HISTORY_UNAVAILABLE
     with pytest.raises(DaemonError):
         await RemoteOrchestrator(_RecordingClient(
             error=DaemonError("UnknownMethod", "sent_files"))).sent_files(SID, TOOL)

@@ -90,6 +90,13 @@ describe('SendUserFile card', () => {
     expect(await screen.findByText('Loading image…')).toBeInTheDocument()
   })
 
+  it('does not ask the daemon while the call is still pending (its line may not be on disk)', async () => {
+    renderCard(call('SendUserFile', { files: ['/tmp/chart.png'], status: 'normal' }))
+    expect(await screen.findByText('Sending…')).toBeInTheDocument()
+    expect(useSentFiles).toHaveBeenCalledWith('s1', 'u1', { enabled: false })
+    expect(screen.queryByText('Loading image…')).toBeNull()
+  })
+
   it('does not ask the daemon when every file is in the worktree', async () => {
     renderCard(call('SendUserFile', SHOT, delivered('ok')))
     await screen.findByTestId('send-user-file-card')

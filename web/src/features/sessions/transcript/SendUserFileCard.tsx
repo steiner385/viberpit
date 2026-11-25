@@ -27,9 +27,12 @@ export function SendUserFileCard({ sent: { files, caption, display }, call, tool
   const archivedId = useContext(TranscriptSessionContext)
   const sessionId = actions?.sessionId ?? archivedId
   const needsPublish = files.some((path) => !actions || worktreeRelativePath(path, actions.cwd) === null)
-  const published = useSentFiles(sessionId, toolId, { enabled: needsPublish })
+  // Only once the call has a result: before that, a live session's tool_use line may
+  // not be on disk yet, and the lookup would answer "no such call".
+  const settled = call.status !== 'pending'
+  const published = useSentFiles(sessionId, toolId, { enabled: needsPublish && settled })
   const publishedFiles: PublishedFiles = {
-    pending: needsPublish && !!sessionId && published.isPending,
+    pending: needsPublish && settled && !!sessionId && published.isPending,
     byPath: new Map((published.data?.files ?? []).map((f) => [f.path, f])),
   }
   const count = files.length === 0 ? 'No files' : files.length === 1 ? 'Shared a file' : `Shared ${files.length} files`

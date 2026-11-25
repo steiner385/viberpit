@@ -1133,18 +1133,19 @@ class RemoteOrchestrator:
     async def sent_files(self, session_id, tool_use_id: str) -> dict:
         """Proxy sent_files (#3487) to the daemon that owns the session — its replay
         and the files its ``SendUserFile`` call named are that host's. An unknown
-        session is re-raised as KeyError and a missing call as SentFileError; an old
-        daemon's UnknownMethod stays a DaemonError, which the route maps."""
-        from server.sessions.sent_files import TOOL_CALL_NOT_FOUND, SentFileError
+        session is re-raised as KeyError and a missing call or unreadable history as
+        SentFileError; an old daemon's UnknownMethod stays a DaemonError, which the
+        route maps."""
+        from server.sessions.sent_files import SENT_FILE_ERROR_CODES, SentFileError
         try:
             return await self._client.call("sent_files", timeout=WORKTREE_RPC_TIMEOUT,
                                            session_id=session_id, tool_use_id=tool_use_id)
         except DaemonError as exc:
             if exc.err_type == "KeyError":
                 raise KeyError(exc.message) from exc
-            if (exc.err_type == "SentFileError"
-                    and (exc.data or {}).get("code") == TOOL_CALL_NOT_FOUND):
-                raise SentFileError(TOOL_CALL_NOT_FOUND) from exc
+            code = (exc.data or {}).get("code")
+            if exc.err_type == "SentFileError" and code in SENT_FILE_ERROR_CODES:
+                raise SentFileError(code) from exc
             raise
 
     async def memory_file(self, session_id, *, path: str) -> dict:

@@ -2518,15 +2518,17 @@ async def session_sent_files(
     short ``reason``. The paths come only from that call in the session's own
     transcript — the request names a tool call, never a file. Idempotent (a stable,
     content-addressed row per file). No such call (an unknown id, another tool's, a
-    sub-agent's) 404 ``TOOL_CALL_NOT_FOUND``; unknown session 404; an old daemon 409
-    ``daemon_outdated``."""
-    from server.sessions.sent_files import SentFileError
+    sub-agent's) 404 ``TOOL_CALL_NOT_FOUND``; history not readable in time 503
+    ``SENT_FILES_HISTORY_UNAVAILABLE`` (retryable); unknown session 404; an old daemon
+    409 ``daemon_outdated``."""
+    from server.sessions.sent_files import HISTORY_UNAVAILABLE, SentFileError
     try:
         return await _get_orchestrator(request).sent_files(session_id, tool_use_id)
     except SentFileError as exc:
         log.info("sent files refused for %s tool %s: %s", session_id, tool_use_id, exc.code)
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail={"code": exc.code}) from exc
+        code = (status.HTTP_503_SERVICE_UNAVAILABLE if exc.code == HISTORY_UNAVAILABLE
+                else status.HTTP_404_NOT_FOUND)
+        raise HTTPException(status_code=code, detail={"code": exc.code}) from exc
     except KeyError:
         log.info("sent files refused for %s: session not found", session_id)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
