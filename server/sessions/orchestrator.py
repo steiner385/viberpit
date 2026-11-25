@@ -2624,7 +2624,9 @@ class SessionOrchestrator:
             # message that carried the call, read off the live driver (lazily — the
             # driver is built after this overlay). None when there is none to ask.
             signal_prose=functools.partial(self._signal_message_prose, session_id),
-            note_shared_pr=functools.partial(self._note_shared_pr, session_id),
+            # replay=False: the tool answers promptly; recovery replays it fully later.
+            note_shared_pr=functools.partial(self._note_shared_pr, session_id,
+                                             replay=False),
             # Read-only view: `request_draft_ready` reports the grant the registry
             # recorded when the user allowed its card (draft_hold_guard).
             draft_ready_granted=self._ready_grants(session_id).has,
@@ -2656,11 +2658,18 @@ class SessionOrchestrator:
         return bool(caps is not None and caps.durable_tool_surface)
 
     async def _note_shared_pr(self, session_id: str, repo: str, number: int, *,
-                              refresh: bool = True) -> bool:
-        """Associate a session's explicit artifact or successful PR creation result.
+                              refresh: bool = True, created: bool = False,
+                              replay: bool = True) -> bool:
+        """Associate a PR this session shared, created or was dispatched to work.
 
-        Resolve GitHub's head branch and route own-repo evidence through the
-        canonical persisted authored_branches; foreign links use artifact replay.
+        Resolve GitHub's head branch and, when ``_shared_pr_is_ours`` finds authorship
+        evidence (``created=True``: the caller already holds this session's paired
+        ``gh pr create``), route own-repo PRs through the canonical persisted
+        authored_branches; foreign links use artifact replay. A shared link alone is
+        never authorship (#3485). ``replay=False`` (the share_artifact tool, which must
+        answer promptly) reads only already-cached creations; the artifact is replayed
+        with the full check by ``_recover_session_pr_links`` later. Returns False only
+        when the head is unresolved (retry-worthy); a declined link is resolved: True.
         """
         from server.github.pr_poller import pr_head_ref
         rec = self._records.get(session_id)
@@ -2671,16 +2680,169 @@ class SessionOrchestrator:
         branch = linked.get(key) or await asyncio.to_thread(pr_head_ref, repo, number)
         if not branch:
             return False
-        if repo.lower() == (rec.repo or "").lower():
-            await self._note_authored_branch(session_id, branch)
-        elif (repo, branch) not in rec.foreign_pr_refs:
-            rec.foreign_pr_refs.append((repo, branch))
         linked[key] = branch
         self._session_pr_links = linked
+        same_repo = repo.lower() == (rec.repo or "").lower()
+        linked_already = (branch in (rec.authored_branches or []) if same_repo
+                          else (repo, branch) in rec.foreign_pr_refs)
+        if not (linked_already or created
+                or await self._shared_pr_is_ours(rec, repo, number, branch, replay=replay)):
+            log.info("completion.shared_pr_not_adopted sid=%s pr=%s#%s", session_id,
+                     repo, number)
+            return True
+        if same_repo:
+            await self._note_authored_branch(session_id, branch)
+        elif not linked_already:
+            rec.foreign_pr_refs.append((repo, branch))
         poller = getattr(self, "_pr_poller", None)
         if refresh and poller is not None and not poller.in_cooldown:
             await poller.refresh_once([(repo, branch)])
         return True
+
+    async def _shared_pr_is_ours(self, rec, repo: str, number: int, branch: str, *,
+                                 replay: bool = True) -> bool:
+        """Does *rec*'s session have authorship evidence for ``repo#number`` (head
+        *branch*)? Sharing a link is not authorship (#3485): a session that shared a PR
+        another live session owns was nudged to "fix the failing CI" and force-pushed
+        that session's branch. Evidence: the PR is this session's dispatch origin; or,
+        only while no other live session owns the PR, its head is the session's branch
+        or (same repo) one its worktree's HEAD has checked out or pushes to; or its own
+        ``gh pr create`` opened it (checked last — the replay is the costly probe).
+        Best-effort: a failed probe is no evidence."""
+        origin = self._origin_pr_ref(rec)
+        if origin is not None and (origin[0].lower(), origin[1]) == (repo.lower(), number):
+            return True
+        owner = (await self._branch_owners_elsewhere(rec.id, repo, [branch])).get(branch)
+        if owner is None and repo.lower() == (rec.repo or "").lower():
+            if branch == rec.branch:
+                return True
+            if rec.cwd and await self._worktree_ties_branch(rec, branch):
+                return True
+        if await self._session_created_any(rec.id, repo, {number}, replay=replay):
+            return True
+        if owner is not None:
+            log.info("completion.shared_pr_owned_elsewhere sid=%s pr=%s#%s owner=%s",
+                     rec.id, repo, number, owner)
+        return False
+
+    async def _session_created_any(self, session_id: str, repo: str, numbers: set[int], *,
+                                   replay: bool) -> bool:
+        """Did this session's own ``gh pr create`` open any of ``repo#numbers``? With
+        ``replay=False`` only the already-cached creations are read (no transcript
+        export). Failure → False."""
+        if not numbers:
+            return False
+        if replay:
+            try:
+                created = await self._session_created_prs(session_id)
+            except Exception:
+                log.debug("completion.created_prs_failed sid=%s", session_id, exc_info=True)
+                created = None
+        else:
+            created = set(getattr(self, "_created_pr_cache", {})
+                          .get(session_id, (None, frozenset()))[1])
+        return any(r.lower() == repo.lower() and n in numbers for r, n in created or ())
+
+    def _pr_numbers_on(self, repo: str, branch: str) -> set[int]:
+        """Numbers of the PRs known (no I/O) to have head *branch* in *repo*: the
+        population cache plus heads already resolved by ``_note_shared_pr``."""
+        numbers = {n for (_sid, r, n), b in getattr(self, "_session_pr_links", {}).items()
+                   if r == repo.lower() and b == branch}
+        population = getattr(self, "_pr_population", None)
+        if population is not None:
+            numbers |= {i.number for i in population.cached(repo) if i.head_ref == branch}
+        return numbers
+
+    def _origin_head(self, repo: str, number: int) -> str | None:
+        """Head branch of ``repo#number`` from the no-I/O caches, else None."""
+        for (_sid, r, n), b in getattr(self, "_session_pr_links", {}).items():
+            if r == repo.lower() and n == number:
+                return b
+        population = getattr(self, "_pr_population", None)
+        if population is not None:
+            for i in population.cached(repo):
+                if i.number == number and i.head_ref:
+                    return i.head_ref
+        return None
+
+    async def _worktree_ties_branch(self, rec, branch: str) -> bool:
+        """Has *rec*'s worktree HEAD checked out *branch* (its per-worktree reflog) or
+        does it push to it (``origin`` upstream, #2909)? Off the loop; failure → False."""
+        def _branches(cwd: str) -> set[str]:
+            upstream, _sha = worktrees.push_evidence(cwd)
+            return set(worktrees.authored_branches(cwd)) | ({upstream} if upstream else set())
+        try:
+            return branch in await asyncio.to_thread(_branches, rec.cwd)
+        except Exception:
+            log.debug("completion.worktree_tie_failed sid=%s", rec.id, exc_info=True)
+            return False
+
+    async def _branch_owners_elsewhere(self, session_id: str, repo: str,
+                                       branches: list[str]) -> dict[str, str]:
+        """``{branch: owner id}`` for each of *branches* (PR heads in *repo*) that another
+        live (non-archived) session has AUTHORED: its ``branch`` / ``authored_branches``
+        (DB rows, so sessions on other hosts count) or an in-memory ``foreign_pr_refs``
+        entry. A PR Doctor's claim on the head of its own dispatch-origin PR is not
+        authorship and never blocks the PR's author (#3485); when that origin's head is
+        not cached it counts, the safe side. One DB query; a failed lookup marks every
+        branch as owned by ``"unknown"``."""
+        from sqlalchemy import func as sa_func, select as sa_select
+        wanted = set(branches)
+        if not wanted:
+            return {}
+        repo_l = repo.lower()
+
+        def _claims(row) -> set[str]:
+            if (row.repo or "").lower() != repo_l:
+                return set()
+            claimed = (set(row.authored_branches or ()) | {row.branch}) & wanted
+            origin = self._origin_pr_ref(row)
+            if origin is not None and origin[0].lower() == repo_l:
+                # A PR Doctor is often spawned ONTO its origin PR's branch.
+                claimed.discard(self._origin_head(*origin) or "")
+            return claimed
+
+        owners: dict[str, str] = {}
+        for r in self._records.values():
+            if r.id == session_id or r.status == "archived":
+                continue
+            for b in _claims(r) | {fb for fr, fb in getattr(r, "foreign_pr_refs", None) or ()
+                                   if fr.lower() == repo_l and fb in wanted}:
+                owners.setdefault(b, r.id)
+        try:
+            async with db_session() as db:
+                rows = (await db.execute(
+                    sa_select(DbSession.id, DbSession.repo, DbSession.branch,
+                              DbSession.authored_branches, DbSession.origin,
+                              DbSession.origin_ref)
+                    .where(DbSession.id != session_id, DbSession.status != "archived",
+                           sa_func.lower(DbSession.repo) == repo_l))).all()
+        except Exception:
+            log.debug("completion.pr_owner_lookup_failed sid=%s", session_id, exc_info=True)
+            return {b: "unknown" for b in wanted}
+        for row in rows:
+            for b in _claims(row):
+                owners.setdefault(b, row.id)
+        return owners
+
+    async def _adoptable_branches(self, rec, branches: list[str], *,
+                                  replay: bool) -> list[str]:
+        """*branches* (new worktree evidence for *rec*) minus those another live
+        session authored, unless this session's own ``gh pr create`` opened a PR on
+        one (#3485). ``replay=False`` reads only cached creations."""
+        if not rec.repo or not branches:
+            return list(branches)
+        owners = await self._branch_owners_elsewhere(rec.id, rec.repo, branches)
+        keep = []
+        for br in branches:
+            owner = owners.get(br)
+            if owner is not None and not await self._session_created_any(
+                    rec.id, rec.repo, self._pr_numbers_on(rec.repo, br), replay=replay):
+                log.info("completion.branch_owned_elsewhere sid=%s branch=%s owner=%s",
+                         rec.id, br, owner)
+                continue
+            keep.append(br)
+        return keep
 
     async def _note_authored_branch(self, session_id: str, branch: str) -> None:
         """Persist independently verified authored-branch evidence in its one ledger."""
@@ -2712,7 +2874,8 @@ class SessionOrchestrator:
         window = await self.transcript_window(
             session_id, limit=None if previous is None else 1, background=True,
             timeout_s=TRANSCRIPT_EXPORT_CEILING_S if previous is None else None)
-        refs: set[tuple[str, int]] = set()
+        refs: set[tuple[str, int]] = set()      # shared artifacts: need evidence
+        created: set[tuple[str, int]] = set()   # this session's own `gh pr create`
         total = None
         if window is not None:
             total = window.total_turns
@@ -2723,7 +2886,7 @@ class SessionOrchestrator:
                     timeout_s=TRANSCRIPT_EXPORT_CEILING_S if previous is None else None)
             if window is None:
                 return False
-            refs.update(created_pr_refs(window.events))
+            created.update(created_pr_refs(window.events))
             rec = self._records.get(session_id)
             if rec is not None and rec.cwd:
                 for path, branch, started, finished in created_worktree_candidates(window.events):
@@ -2741,7 +2904,11 @@ class SessionOrchestrator:
                 ref = github_pr_ref(detail.get("value", ""))
                 if ref is not None:
                     refs.add(ref)
-        for repo, number in sorted(refs):
+        for repo, number in sorted(created):
+            if not await self._note_shared_pr(session_id, repo, number, refresh=False,
+                                              created=True):
+                return False
+        for repo, number in sorted(refs - created):
             if not await self._note_shared_pr(session_id, repo, number, refresh=False):
                 return False
         if total is not None:
@@ -18465,7 +18632,11 @@ class SessionOrchestrator:
             branches += [i.head_ref for i in population.cached(rec.repo)
                          if i.head_sha == head_sha and i.head_ref
                          and i.state in ("open", "draft")]
-        for br in branches:
+        # `git checkout -B x origin/<b>` tracks <b> by default: inspecting another
+        # live session's PR branch must not adopt it (#3485).
+        fresh = [br for br in dict.fromkeys(branches)
+                 if br not in (rec.authored_branches or [])]
+        for br in await self._adoptable_branches(rec, fresh, replay=True):
             await self._note_authored_branch(session_id, br)
 
     async def _autopilot_resolve_pr_intent(self, rec, goal_text, goal_source,
@@ -23761,9 +23932,15 @@ class SessionOrchestrator:
             except Exception:
                 log.debug("authored_branches.resolve_failed id=%s", rec.id, exc_info=True)
                 continue
+            known = set(getattr(rec, "authored_branches", None) or [])
+            # A `gh pr checkout` of another live session's PR leaves its head in this
+            # reflog; that is inspection, not authorship (#3485). Cached creations
+            # only: this sweeps every session each minute.
+            fresh = await self._adoptable_branches(
+                rec, [b for b in fresh if b not in known], replay=False)
             if not fresh:
                 continue
-            merged = sorted(set(getattr(rec, "authored_branches", None) or []) | set(fresh))
+            merged = sorted(known | set(fresh))
             if merged != (rec.authored_branches or []):
                 rec.authored_branches = merged
                 changed[rec.id] = merged

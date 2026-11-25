@@ -84,10 +84,12 @@ async def test_refresh_authored_branches_unions_and_keeps_existing(monkeypatch):
     # No DB write should be required to update the in-memory set; stub db_session
     # so the persistence branch is exercised without a real engine.
     import contextlib
+    import types
 
     class _FakeDb:
         async def execute(self, *a, **k):
-            return None
+            # The ownership lookup (#3485) reads rows: no other session owns anything.
+            return types.SimpleNamespace(all=lambda: [])
 
     @contextlib.asynccontextmanager
     async def _fake_session():

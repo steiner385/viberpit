@@ -576,8 +576,9 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
             await record_audit(db, "session.artifact", ctx.identity, detail, via="session")
         ref = github_pr_ref(parsed["value"]) if parsed["kind"] == "url" else None
         if ref is not None and ctx.note_shared_pr is not None:
-            # A PR in another repo is this session's deliverable (#2663): tell the
-            # completion bar, which only looks at the session's own repo. Best-effort.
+            # A shared PR may be this session's deliverable, even in another repo
+            # (#2663): offer it to the completion bar, which adopts it only on
+            # authorship evidence — a bare link is never ownership (#3485). Best-effort.
             try:
                 await ctx.note_shared_pr(*ref)
             except Exception:  # noqa: BLE001 - the card already landed
