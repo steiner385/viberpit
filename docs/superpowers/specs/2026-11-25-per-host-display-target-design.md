@@ -77,8 +77,8 @@ Every program a rocky session starts then shows up as a real, separate window on
   - dobby is GNOME/mutter on Wayland. Its Xwayland `:0` listens on local sockets only (`-listenfd`, no
     TCP) and needs the rotating per-login cookie. `desktop_session.resolve_desktop_session` already
     resolves both the cookie and the `WAYLAND_DISPLAY`.
-  - dobby → rocky SSH works non-interactively, and rocky's sshd has `X11Forwarding yes`. Neither host has
-    waypipe installed yet.
+  - dobby → rocky SSH works non-interactively, and rocky's sshd has `X11Forwarding yes`. waypipe 0.11.0
+    is installed on both hosts (2026-11-25).
   - rocky uses `/tmp/.X11-unix/X99`, `X101` and `X109`: Xvfb pool and VM displays.
 
 ## Approaches considered
@@ -127,16 +127,22 @@ the SSH trust to the session host. Per (target, source) pair there is at most on
 process group run by a new `DisplayBridge` component on the target daemon. It is the sibling of
 `NativeDisplay` and reuses its resolver, so there is no second desktop discovery.
 
+> **Superseded by §8:** the exact argv, socket paths, SSH flags, prep step and teardown are defined in
+> §8, "Verified invocation". The leg descriptions below are the pre-spike sketch and are kept for
+> rationale only. Where they differ, §8 wins.
+> - One `waypipe server` multiplexes many clients, so no per-session fallback is needed.
+> - The source socket is `$XDG_RUNTIME_DIR/wayland-viberpit-bridge`, not `wayland-viberpit-<target>`.
+>   There is one target per source host.
+> - The SSH leg also needs a prep ssh, because the client-side `StreamLocalBindUnlink` does not apply
+>   to `-R`.
+
 - **Wayland leg:**
   - On the target, run `waypipe client` listening on a private socket.
   - Run `ssh -R <source-side socket>:<client socket>` to the source host, which runs `waypipe server`.
-    That creates a Wayland socket on the source, e.g. `$XDG_RUNTIME_DIR/wayland-viberpit-<target>`, for
-    any number of clients.
-  - **Builder:** verify with the real waypipe 0.11 how to run the server side as a long-lived
-    multi-client socket rather than per-command (`waypipe server -- cmd`). Some modes need one waypipe
-    per client process. If 0.11 cannot multiplex, the fallback is a per-session waypipe server launched
-    by the *source* daemon at session spawn over the same forwarded client socket. Record what was found
-    in this doc.
+    That creates a Wayland socket on the source for any number of clients. The socket is
+    `$XDG_RUNTIME_DIR/wayland-viberpit-bridge` (see §8).
+  - *Resolved by §8:* waypipe 0.11 serves many clients from one long-lived server. Running it as
+    `server -- cat`, with ssh's stdin held open, ties its lifetime to the ssh connection.
 - **X11 leg:**
   - In the same SSH connection, run `-R /tmp/.X11-unix/X<N>:<target X socket>`, with N from a reserved
     range outside the Xvfb pool (new setting `VIBERPIT_DISPLAY_BRIDGE_X_START`, default 150; validated
@@ -254,7 +260,9 @@ process group run by a new `DisplayBridge` component on the target daemon. It is
 Verified against the real binaries (Principle III). Target = dobby (GNOME/mutter Wayland, `wayland-0`,
 Xwayland `:0`); source = rocky (Ubuntu 26.04, OpenSSH 10.2p1, uid 1000 on both hosts). `DisplayBridge`
 builds its argv from this section verbatim. `<T_XRD>` is the target daemon's `XDG_RUNTIME_DIR` and
-`<S_XRD>` is the source user's (`/run/user/1000` on both today); `<src>` is the source host name.
+`<S_XRD>` is the source user's (`/run/user/1000` on both today); `<src>` is the source host name;
+`<N>` is the forwarded X display number = `display_bridge_x_start` (`VIBERPIT_DISPLAY_BRIDGE_X_START`,
+default 150 — the spike ran with `<N>` = 150).
 
 **Answer: one `waypipe server` serves many concurrent clients — yes.** The server's Wayland socket
 accepts any number of connections. Both server and client fork one worker per connection (`client-conn`
@@ -274,7 +282,7 @@ on dobby at the same time, each its own window. No per-session fallback from §2
    (both verified). Live remote clients die with the bridge, which is expected.
 3. **The client-side `StreamLocalBindUnlink=yes` does not apply to `-R` listeners.** rocky's sshd has
    `streamlocalbindunlink no`, so a stale remote socket from the last run makes ssh fail with
-   `remote port forwarding failed for listen path …`. sshd never removes `/tmp/.X11-unix/X150` itself.
+   `remote port forwarding failed for listen path …`. sshd never removes `/tmp/.X11-unix/X<N>` itself.
    The bridge therefore runs a **prep** ssh before every start that removes both remote sockets. The
    alternative is to set `StreamLocalBindUnlink yes` in the source's sshd_config, but that is an
    operator step and not relied on. On the target side, `waypipe client` also leaves its socket on
@@ -283,22 +291,27 @@ on dobby at the same time, each its own window. No per-session fallback from §2
 **Step 1 — prep (source side, one ssh, cookie on stdin, never argv):**
 
 ```
-ssh -o BatchMode=yes <ssh_host> '<PREP>'          # stdin: "add :150 MIT-MAGIC-COOKIE-1 <hex>\n"
+ssh -o BatchMode=yes <ssh_host> '<PREP>'          # stdin: "add :<N> MIT-MAGIC-COOKIE-1 <hex>\n"
 ```
 `<PREP>` (one argv string):
 ```
+[ -d /tmp/.X11-unix ] || { echo 'viberpit-bridge: /tmp/.X11-unix missing' >&2; exit 3; }
 umask 077
 d="$XDG_RUNTIME_DIR/viberpit-bridge"
 mkdir -p "$d" && chmod 700 "$d"
-rm -f "$d/waypipe.sock" /tmp/.X11-unix/X150
+rm -f "$d/waypipe.sock" /tmp/.X11-unix/X<N>
 : > "$d/xauth" && chmod 600 "$d/xauth"
 xauth -q -f "$d/xauth" source -
 printf '%s\n' "$XDG_RUNTIME_DIR"
 ```
+- Assumes `/tmp/.X11-unix` already exists (root-owned, mode 1777, created at boot by systemd-tmpfiles
+  `x11.conf`; present on rocky). Prep deliberately does **not** `mkdir` it: a user-created
+  `/tmp/.X11-unix` would be user-owned, and X servers started later refuse or warn on it. A missing
+  directory fails prep with exit 3, and the session falls back to virtual (`bridge_unavailable`).
 - It prints `<S_XRD>`, which is needed because the `-R` remote path is not shell-expanded.
 - The cookie line is built from the resolver's `xauthority` file (`xauth -f <file> list`, field 3).
   mutter's file holds `dobby/unix:` and a FamilyWild entry with the same cookie.
-- `add :150` is stored as `<src>/unix:150`, which matches what clients on the source look up.
+- `add :<N>` is stored as `<src>/unix:<N>`, which matches what clients on the source look up.
 - The same command re-run is the cookie re-push on rotation; it is idempotent.
 
 **Step 2 — target side (dobby), env from `resolve_desktop_session` (`WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`):**
@@ -312,7 +325,7 @@ waypipe --socket <T_XRD>/viberpit-bridge/<src>-waypipe.sock client
 ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -o StreamLocalBindUnlink=yes \
     -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
     -R <S_XRD>/viberpit-bridge/waypipe.sock:<T_XRD>/viberpit-bridge/<src>-waypipe.sock \
-    -R /tmp/.X11-unix/X150:/tmp/.X11-unix/X0 \
+    -R /tmp/.X11-unix/X<N>:/tmp/.X11-unix/X0 \
     <ssh_host> \
     'exec waypipe --socket <S_XRD>/viberpit-bridge/waypipe.sock --display wayland-viberpit-bridge --unlink-socket server -- cat'
 ```
@@ -324,13 +337,24 @@ ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -o StreamLocalBindUnlink=yes \
   waypipe display socket is `0775` inside the `0700` `<S_XRD>`. Same-uid only, as §2 requires.
 
 **Session env on the source** (verified): `WAYLAND_DISPLAY=wayland-viberpit-bridge`,
-`XDG_RUNTIME_DIR=<S_XRD>`, `DISPLAY=:150`, `XAUTHORITY=<S_XRD>/viberpit-bridge/xauth`. Without the
-cookie file, `:150` refuses with `Authorization required`.
+`XDG_RUNTIME_DIR=<S_XRD>`, `DISPLAY=:<N>`, `XAUTHORITY=<S_XRD>/viberpit-bridge/xauth`. Without the
+cookie file, `:<N>` refuses with `Authorization required`.
 
 **Teardown:** close the bridge ssh's stdin or kill it. The remote server exits by itself (finding 2).
-Then kill `waypipe client` and `rm -f` its socket. The stale remote `X150` is removed by the next
-start's prep, or by a cleanup ssh that also removes `xauth` when the bridge is torn down for good
-(Anti-goal 1: no cookie left behind).
+Then kill `waypipe client` and `rm -f` its socket. The stale remote `X<N>` is removed by the next
+start's prep. On final teardown (the desired set no longer lists the source), a cleanup ssh removes
+`X<N>`, `waypipe.sock` and the `xauth` file (Anti-goal 1: no cookie left behind):
+```
+ssh -o BatchMode=yes -o ConnectTimeout=10 <ssh_host> 'rm -f /tmp/.X11-unix/X<N> "$XDG_RUNTIME_DIR/viberpit-bridge/waypipe.sock" "$XDG_RUNTIME_DIR/viberpit-bridge/xauth"'
+```
+**Known limit: source unreachable at teardown.** If the cleanup ssh cannot reach the source, the 0600
+`xauth` file (the target's cookie) stays on the source until a later cleanup or the next prep, which
+truncates and rewrites it. The forwarded `X<N>` is already dead once ssh drops, and the target's Xwayland
+listens on local sockets only (no TCP), so the leftover cookie grants nothing by itself. It is still a
+secret at rest, though, and it goes stale when the target's login rotates it. Recommended policy for
+`DisplayBridge`: retry the cleanup with backoff (for example 3 attempts at 5 s, 30 s and 120 s), then keep
+the source flagged `cleanup_pending`. Retry it on the next fleet probe tick that finds the host reachable,
+and log only the host name, never the path contents.
 
 **Liveness/log notes for the builder:**
 - A Wayland window is confirmed mapped when the target's `waypipe client -d` log shows
@@ -352,8 +376,9 @@ start's prep, or by a cleanup ssh that also removes `xauth` when the bridge is t
 
 ## Left to the builder
 
-- Exact waypipe 0.11 invocation and multi-client behaviour (§2, verify first, before other work).
-- Socket paths and directory layout on the source host.
+- ~~Exact waypipe 0.11 invocation and multi-client behaviour~~: **resolved by §8** (one server
+  multiplexes many clients).
+- ~~Socket paths and directory layout on the source host~~: **resolved by §8**.
 - Grace period and backoff constants.
 - Whether mid-session bridge loss emits a session event (§2).
 - Splitting into PRs. Suggested order: (1) waypipe spike/verification notes; (2) policy + columns +
