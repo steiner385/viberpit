@@ -171,7 +171,7 @@ class SessionRecord:
     # 2026-09-06-native-display-routing). Mirrors DB Session.display_mode; None on
     # pre-feature rows and reads as virtual everywhere.
     display_mode: str | None = None
-    # Why a would-be-native session went virtual (display_policy.native_fallback);
+    # Why a would-be-native session went virtual (display_policy.resolve_display_decision);
     # mirrors DB Session.display_fallback_reason. None = no fallback.
     display_fallback_reason: str | None = None
     # Move to host (D-17). ``moving_to``: the target host while a move is in flight

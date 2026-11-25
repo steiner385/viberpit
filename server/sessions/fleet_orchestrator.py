@@ -649,7 +649,7 @@ class FleetOrchestrator:
         if prefer is None and kwargs.get("display") != DISPLAY_VIRTUAL:
             # The tailnet node name and the runner-registry name are one host spelled
             # by two independent sources, so match case-insensitively — the same
-            # comparison resolve_display_mode makes, or a "Dobby" client would be
+            # comparison resolve_display_decision makes, or a "Dobby" client would be
             # routed as native by the policy and placed elsewhere by the router. The
             # registry's OWN spelling becomes `prefer`: it is the key every downstream
             # FleetRouter.get() lookup uses.

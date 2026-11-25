@@ -957,7 +957,7 @@ class AutomationContext:
         # e.g. behind `tailscale serve` fronting, see
         # docs/product/features/remote-desktop-vnc-x11.md), None here always means
         # "no browser, ever" — a request-level "native" needs no locality proof
-        # (display_policy.resolve_display_mode), so this is safe without touching
+        # (display_policy.resolve_display_decision), so this is safe without touching
         # that shared decision. ``native_available`` still gates it per-host: a
         # runner with no desktop attached still gets virtual. A caller that already
         # has an opinion (none does today) keeps it.

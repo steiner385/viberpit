@@ -174,8 +174,7 @@ from server.sessions.display_policy import (
     DISPLAY_NATIVE,
     DISPLAY_VIRTUAL,
     DisplayDecision,
-    native_fallback,
-    resolve_display_mode,
+    resolve_display_decision,
 )
 from server.sessions.background_tasks import (
     EMPTY_BACKGROUND_WORK, OpenBgTask, background_work_snapshot, build_rearm_prompt,
@@ -5086,7 +5085,7 @@ class SessionOrchestrator:
             await self._native.refresh()
 
     def _resolve_display_mode_for(self, display: str | None, client_node: str | None) -> DisplayDecision:
-        """The one call to ``resolve_display_mode`` for this daemon — used by the
+        """The one call to ``resolve_display_decision`` for this daemon — used by the
         spawn, enqueue and hold paths so the decision is made identically wherever a
         session is born, not just where it happens to start a driver. A queued or
         held session must persist this NOW, on the daemon that owns the request: the
@@ -5098,15 +5097,14 @@ class SessionOrchestrator:
         locked/logged out/refusing, or native display is not configured here).
         """
         available = self._native is not None and self._native.available()
-        runner = self_host_name()
-        mode = resolve_display_mode(requested=display, client_node=client_node,
-                                    runner=runner, native_available=available)
-        reason = None
-        if native_fallback(requested=display, client_node=client_node,
-                           runner=runner, native_available=available):
-            reason = (self._native.unavailable_reason() if self._native is not None
-                      else "native_disabled")
-        return DisplayDecision(mode, reason)
+        native_reason = None
+        if not available:
+            native_reason = (self._native.unavailable_reason() if self._native is not None
+                             else "native_disabled")
+        return resolve_display_decision(
+            requested=display, client_node=client_node, runner=self_host_name(),
+            native_available=available, native_unavailable_reason=native_reason,
+            remote_target=None, remote_available=False, remote_unavailable_reason=None)
 
     def _display_decision(self, prior, display: str | None,
                           client_node: str | None) -> DisplayDecision:

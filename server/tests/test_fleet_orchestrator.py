@@ -1026,7 +1026,7 @@ async def test_non_fleet_client_node_does_not_nudge(monkeypatch):
 @pytest.mark.asyncio
 async def test_client_node_match_is_case_insensitive(monkeypatch):
     """The tailnet node name and the runner-registry name are one host spelled by
-    two independent sources, so the nudge must match the way resolve_display_mode
+    two independent sources, so the nudge must match the way resolve_display_decision
     does — case-insensitively. Otherwise a "Dobby" client is routed native by the
     policy and placed on some other host by the router, and the window opens on a
     desktop nobody is sitting at. `prefer` must carry the REGISTRY's spelling,

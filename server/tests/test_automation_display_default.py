@@ -1,6 +1,6 @@
 """AutomationContext.spawn_session requests the native display by default (#1899).
 
-An automation dispatch has no creating browser, so resolve_display_mode can never
+An automation dispatch has no creating browser, so resolve_display_decision can never
 prove locality for it. The default lives here rather than in that shared policy
 because there ``client_node is None`` also means "a browser whose locality is
 unknown" — which must stay virtual.
