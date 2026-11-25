@@ -853,11 +853,17 @@ def _remote_control_view(record: Any) -> dict[str, Any]:
     # The CLI refused this session's account (e.g. an inference-only login): not live,
     # whatever the override or default say.
     reason = getattr(record, "remote_control_unavailable_reason", None)
+    url = getattr(record, "remote_control_url", None)
+    on = available and reason is None and remote_control_mod.effective(
+        override, remote_control_mod.cached_default())
     return {
-        "remoteControl": available and reason is None and remote_control_mod.effective(
-            override, remote_control_mod.cached_default()),
+        # Back-compat: the EFFECTIVE choice. `remoteControlState` says whether a bridge
+        # is actually open.
+        "remoteControl": on,
+        "remoteControlState": remote_control_mod.display_state(
+            available=available, reason=reason, effective_on=on, url=url),
         "remoteControlOverride": override,
-        "remoteControlUrl": getattr(record, "remote_control_url", None),
+        "remoteControlUrl": url,
         "remoteControlAvailable": available,
         "remoteControlUnavailableReason": reason,
     }

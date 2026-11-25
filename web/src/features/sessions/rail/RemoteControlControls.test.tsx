@@ -56,6 +56,31 @@ describe('RemoteControlControls', () => {
     expect(screen.getByTestId('remote-control-state')).toHaveTextContent('On · Following the default')
   })
 
+  it('says Connecting… (never plain On) while on without a bridge yet', () => {
+    mount({ enabled: true, override: null, state: 'connecting' })
+    expect(toggle()).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('remote-control-state')).toHaveTextContent(
+      'Connecting… · Following the default')
+    expect(screen.getByTestId('remote-control-connecting')).toHaveTextContent(
+      'Not in the Claude apps yet')
+    expect(screen.queryByRole('link', { name: /Open in Claude app/ })).toBeNull()
+  })
+
+  it.each([
+    ['on', 'On · Following the default'],
+    [null, 'On · Following the default'],   // an older server sends no state
+  ] as const)('reads On for state %s', (state, label) => {
+    mount({ enabled: true, override: null, url: URL, state })
+    expect(screen.getByTestId('remote-control-state')).toHaveTextContent(label)
+    expect(screen.queryByTestId('remote-control-connecting')).toBeNull()
+  })
+
+  it('an unavailable session never reads as connecting', () => {
+    mount({ enabled: true, state: 'connecting', unavailableReason: 'login_needed' })
+    expect(screen.getByTestId('remote-control-state')).toHaveTextContent('Unavailable')
+    expect(screen.queryByTestId('remote-control-connecting')).toBeNull()
+  })
+
   it.each([
     [true, 'On · Set for this session'],
     [false, 'Off · Set for this session'],

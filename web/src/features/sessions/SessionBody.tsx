@@ -228,6 +228,7 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
               override: sessionRecord.remoteControlOverride ?? null,
               url: sessionRecord.remoteControlUrl ?? null,
               unavailableReason: sessionRecord.remoteControlUnavailableReason ?? null,
+              state: sessionRecord.remoteControlState ?? null,
             }
             : undefined,
           prs: sessionRecord?.prs,

@@ -445,6 +445,11 @@ export interface Session {
   /** Remote Control: whether this session also shows in the Claude apps (claude.ai web,
    *  desktop, mobile) — the EFFECTIVE value, the override else the Settings default. */
   remoteControl?: boolean
+  /** What is actually true: `on` only once a bridge answered with its link;
+   *  `connecting` while effectively on without one (the enable is in flight, or the
+   *  session waits to reopen on the account's claude.ai login); `off`; `unavailable`.
+   *  Absent from an older server. */
+  remoteControlState?: 'on' | 'connecting' | 'off' | 'unavailable'
   /** The session's own choice; null = following the Settings default
    *  (`remoteControlDefault`). `POST /sessions/{id}/remote-control {enabled}` sets it. */
   remoteControlOverride?: boolean | null

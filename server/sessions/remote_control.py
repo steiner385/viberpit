@@ -136,6 +136,26 @@ def refusal_message(reason: str) -> str:
     return _REASON_MESSAGES.get(reason, REFUSED_MESSAGE)
 
 
+#: ``remoteControlState`` in the session payload — what the UI may honestly claim.
+STATE_ON = "on"                    # effectively on AND the bridge answered with its URL
+STATE_CONNECTING = "connecting"    # effectively on, no bridge yet: the enable is in
+                                   # flight, or the session still runs on the setup-token
+                                   # and waits to be respawned onto the login
+STATE_OFF = "off"                  # effectively off
+STATE_UNAVAILABLE = "unavailable"  # not eligible, or a known reason it cannot open one
+
+
+def display_state(*, available: bool, reason: str | None, effective_on: bool,
+                  url: str | None) -> str:
+    """The session's Remote Control state as the payload reports it. "on" only with a
+    bridge URL — an effectively-on session without one is "connecting", never "on"."""
+    if not available or reason is not None:
+        return STATE_UNAVAILABLE
+    if not effective_on:
+        return STATE_OFF
+    return STATE_ON if url else STATE_CONNECTING
+
+
 def session_url(reply: Mapping[str, Any] | None) -> str | None:
     """The claude.ai session URL from an enable reply, or None."""
     if not isinstance(reply, Mapping):

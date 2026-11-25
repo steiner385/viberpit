@@ -10067,6 +10067,42 @@ class SessionOrchestrator:
         for sid in [s for s in pending if s not in self._drivers]:
             pending.discard(sid)
 
+    async def _upgrade_setup_launches(self) -> None:
+        """Sweep mirror of revocation: every local session that runs on the setup-token
+        although Remote Control is effectively on for it (it launched while its account
+        had no usable claude.ai login) is respawned onto the login once the account is
+        ready (``_rc_login_readiness`` — a ``login_busy`` pin waits) and the session is
+        idle — the toggle-on's idle-respawn helper, so the conversation resumes and the
+        spawn-time enable opens the bridge. A busy session is simply retried next sweep;
+        never during a turn. Logs ``session.remote_control_upgraded``."""
+        default = await _remote_control.refresh_default()
+        readiness: dict[str, str | None] = {}
+        for sid in list(self._drivers):
+            rec = self._records.get(sid)
+            if (rec is None or not rec.account
+                    or rec.launch_credential != _account_auth.LAUNCH_SETUP
+                    or self._remote_control_driver(sid) is None
+                    or not self._remote_control_on(sid, default)):
+                continue
+            known = self._known_remote_control_refusal(sid)
+            if known not in (None, _remote_control.REASON_LOGIN_NEEDED,
+                             _remote_control.REASON_LOGIN_BUSY):
+                continue    # runner, or a refusal learned on the login itself
+            if rec.account not in readiness:
+                readiness[rec.account] = await self._rc_login_readiness(rec.account)
+            if readiness[rec.account] is not None:
+                continue
+            if await self._worktree_control_busy(sid, rec):
+                continue    # mid-turn (or waiting on a person): the next sweep retries
+            try:
+                await self._respawn_for_remote_control(sid)
+            except Exception as exc:  # noqa: BLE001 — retried by the next sweep
+                log.info("session.remote_control_upgrade_deferred id=%s code=%s", sid,
+                         getattr(exc, "code", None) or type(exc).__name__)
+                continue
+            log.info("session.remote_control_upgraded id=%s account=%s launch=%s", sid,
+                     rec.account, rec.launch_credential)
+
     async def _maintain_remote_control_logins(self) -> None:
         """The refresh authority's per-sweep Remote Control upkeep (after the slots were
         refreshed): push each live slot session the account's current access token when it
@@ -10076,6 +10112,7 @@ class SessionOrchestrator:
             await self._revoke_pending_slot_launches()
             await self._push_slot_tokens()
             await self._recheck_remote_control_logins()
+            await self._upgrade_setup_launches()
         except Exception:  # noqa: BLE001 — upkeep must never break the token sweep
             log.warning("remote control: login upkeep failed", exc_info=True)
 

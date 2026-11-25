@@ -13,6 +13,11 @@ export const REMOTE_CONTROL_ACCESS_NOTE =
 export const REMOTE_CONTROL_DEFAULT_COPY =
   `On by default. Sessions also appear in the Claude web, desktop and mobile apps under the account running them. ${REMOTE_CONTROL_ACCESS_NOTE}`
 
+/** `remoteControlState: "connecting"` — on, but no bridge has answered yet. */
+export const REMOTE_CONTROL_CONNECTING = 'Connecting…'
+export const REMOTE_CONTROL_CONNECTING_NOTE =
+  "Not in the Claude apps yet. It appears there once the session connects; a busy session connects when it's idle."
+
 export const REMOTE_CONTROL_TOGGLE_FALLBACK = "Couldn't change Remote Control"
 
 /** Why an eligible session still can't use it, keyed by `remoteControlUnavailableReason`:

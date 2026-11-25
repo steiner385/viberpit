@@ -1475,3 +1475,83 @@ async def test_push_oauth_token_needs_a_live_client() -> None:
     with pytest.raises(rc.RemoteControlError) as ei:
         await d.push_oauth_token("tok")
     assert ei.value.code == rc.REMOTE_CONTROL_NOT_LIVE
+
+
+# ── upgrade: a session launched before the login was usable moves onto it ──────────────
+
+
+async def _make_on_setup_token(env, name: str = "RC") -> SessionRecord:
+    """A session that launched (Remote Control on) while its account had no usable
+    claude.ai login: on the setup-token, ``login_needed``."""
+    with patch(f"{_ORCH}.remote_control_env_for", return_value=None), \
+            patch(f"{_ORCH}.remote_control_readiness", return_value="login_needed"), \
+            patch("server.sessions.account_auth.crypto") as crypto:
+        crypto.read_oauth_token.return_value = "sk-ant-oat01-SETUP"
+        rec = await env.make(name)
+    assert rec.launch_credential == "setup"
+    assert rec.remote_control_unavailable_reason == rc.REASON_LOGIN_NEEDED
+    return rec
+
+
+@pytest.mark.asyncio
+async def test_an_idle_session_is_upgraded_onto_the_login_once_it_is_ready(env) -> None:
+    rec = await _make_on_setup_token(env)
+    first = env.orch._drivers[rec.id]
+    assert _payload(rec)["remoteControlState"] == "unavailable"
+    env.control.replies = [ON_REPLY]
+    await env.orch._maintain_remote_control_logins()     # the sign-in completed
+    await env.settle(rec.id)
+    assert env.orch._drivers[rec.id] is not first          # respawned, resumed
+    assert rec.launch_credential == "slot"
+    assert rec.remote_control_unavailable_reason is None
+    assert rec.remote_control_url == URL
+    assert _rc_sent(env.control) == [{"subtype": "remote_control", "enabled": True}]
+    assert _payload(rec)["remoteControlState"] == "on"
+
+
+@pytest.mark.asyncio
+async def test_a_busy_session_is_upgraded_only_once_idle(env) -> None:
+    rec = await _make_on_setup_token(env)
+    first = env.orch._drivers[rec.id]
+    rec.status = "working"
+    await env.orch._maintain_remote_control_logins()
+    assert env.orch._drivers[rec.id] is first and rec.launch_credential == "setup"
+    p = _payload(rec)
+    assert p["remoteControl"] is True and p["remoteControlState"] == "connecting"
+    rec.status = "idle"
+    env.control.replies = [ON_REPLY]
+    await env.orch._maintain_remote_control_logins()
+    await env.settle(rec.id)
+    assert env.orch._drivers[rec.id] is not first and rec.launch_credential == "slot"
+
+
+@pytest.mark.asyncio
+async def test_a_session_with_remote_control_off_is_not_upgraded(env) -> None:
+    rec = await _make_on_setup_token(env)
+    await env.orch.set_remote_control(rec.id, False)
+    first = env.orch._drivers[rec.id]
+    await env.orch._maintain_remote_control_logins()
+    assert env.orch._drivers[rec.id] is first and rec.launch_credential == "setup"
+    assert _payload(rec)["remoteControlState"] == "off"
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_login_is_not_upgraded(env) -> None:
+    rec = await _make_on_setup_token(env)
+    first = env.orch._drivers[rec.id]
+    with patch(f"{_ORCH}.remote_control_readiness", return_value="login_busy"):
+        await env.orch._maintain_remote_control_logins()
+    assert env.orch._drivers[rec.id] is first and rec.launch_credential == "setup"
+
+
+@pytest.mark.parametrize("available,reason,on,url,state", [
+    (False, None, False, None, "unavailable"),
+    (True, "login_needed", False, None, "unavailable"),
+    (True, None, False, None, "off"),
+    (True, None, False, URL, "off"),
+    (True, None, True, None, "connecting"),
+    (True, None, True, URL, "on"),
+])
+def test_display_state_matrix(available, reason, on, url, state) -> None:
+    assert rc.display_state(available=available, reason=reason, effective_on=on,
+                            url=url) == state
