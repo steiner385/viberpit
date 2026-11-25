@@ -15,6 +15,8 @@ function defaultProps(overrides: Partial<Parameters<typeof Composer>[0]> = {}): 
     onPrompt: vi.fn(),
     onInterrupt: vi.fn(),
     suggestions: [],
+    // The session composer always supplies a generator; the sparkle needs one.
+    onRequestSuggestions: vi.fn().mockResolvedValue([]),
     ...overrides,
   }
 }
@@ -101,6 +103,12 @@ describe('Composer sparkle button', () => {
     expect(screen.getByRole('button', { name: /resume/i })).toBeInTheDocument()
     rerender(<Composer {...defaultProps({ status: { state: 'in_progress', count: 0 }, suggestions: ['x'] })} />)
     expect(screen.queryByRole('button', { name: /resume/i })).not.toBeInTheDocument()
+  })
+
+  it('has no sparkle without a generator, but keeps the quick-reply menu', () => {
+    renderComposer({ status: { state: 'done', count: 0 }, onRequestSuggestions: undefined })
+    expect(screen.queryByRole('button', { name: /resume/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /quick replies/i })).toBeInTheDocument()
   })
 
   it('renders the AI sparkle glyph (not the old play triangle)', () => {

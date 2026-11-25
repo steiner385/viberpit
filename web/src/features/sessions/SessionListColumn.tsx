@@ -33,6 +33,7 @@
 // on the focused session id, so every click remounted the list and reset its
 // scrollTop. With the provider scoped to the session pane, the list never
 // remounts and the position survives on its own.
+import { Suspense, lazy } from 'react'
 import { Plus } from 'lucide-react'
 import { useArchivedSessions } from '@/api/hooks'
 import { SessionListControls } from '@/features/sessions/list/SessionListControls'
@@ -53,6 +54,11 @@ import { ScopeSegment } from './ScopeSegment'
 import {
   useBackgroundListState, type ListPipelineState, type SessionListState,
 } from './useSessionListState'
+
+/** The Remote group (Remote Control sessions ViberPit does not run). Lazy, with its
+ *  hooks module and poll, so it adds nothing to the initial chunk; it renders
+ *  nothing at all unless the feature is on and a remote session exists. */
+const RemoteSessionsSection = lazy(() => import('./remote').then((m) => ({ default: m.RemoteSessionsSection })))
 
 export interface SessionListColumnProps {
   /** Which scope the ROUTE is in (`listScopeForPath`, read once in the shell).
@@ -326,6 +332,9 @@ function LiveScopeBody({
       />
       {/* Below the list, collapsed: snoozed rows are out of sight on purpose.
           Like the pre-spawn sections, not narrowed by filters or search. */}
+      <Suspense fallback={null}>
+        <RemoteSessionsSection />
+      </Suspense>
       <SnoozedSection sessions={snoozed} onOpen={onOpen} />
       {adoptionEnabled && <AdoptPanel />}
     </ScopeBody>

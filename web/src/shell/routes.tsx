@@ -62,7 +62,7 @@ import {
   SESSIONS_PATH, ARCHIVED_PATH, BACKGROUND_PATH,
   SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_SESSION_ROUTE,
   BACKGROUND_SESSION_ROUTE, BACKGROUND_SUBAGENT_ROUTE,
-  LEGACY_ARCHIVED_PATH, LEGACY_ARCHIVED_SESSION_ROUTE,
+  LEGACY_ARCHIVED_PATH, LEGACY_ARCHIVED_SESSION_ROUTE, REMOTE_SESSION_ROUTE,
   sessionPath, subAgentPath, archivedSessionPath, listScopeForPath,
 } from '@/session/sessionNavState'
 import { MainPaneSession } from '@/features/sessions/MainPaneSession'
@@ -114,6 +114,10 @@ const DeliveryPage = lazy(() => import('@/features/delivery/DeliveryPage')
   .then((m) => ({ default: m.DeliveryPage })))
 const SettingsPage = lazy(() => import('@/features/settings/SettingsPage')
   .then((m) => ({ default: m.SettingsPage })))
+/** A Remote Control session ViberPit does not run. Split like the pages above: it is
+ *  opened rarely, and `initialJs` has no headroom for it. */
+const RemoteSessionPage = lazy(() => import('@/features/sessions/remote')
+  .then((m) => ({ default: m.RemoteSessionPage })))
 const SettingsIndexPage = lazy(() => import('@/features/settings/SettingsIndexPage')
   .then((m) => ({ default: m.SettingsIndexPage })))
 
@@ -208,6 +212,15 @@ function ReviewPage() {
   const { archivedId } = useParams()
   if (!archivedId) return <Navigate to={ARCHIVED_PATH} replace />
   return <ArchivedReviewPage sessionId={archivedId} />
+}
+
+/** `/sessions/remote/:remoteId` — a Remote Control session's live page. Never gets a
+ *  ViberPit runtime (the param is not `id`); the page attaches its own. Keyed so a
+ *  switch between two remote sessions remounts it with a fresh reducer and attach. */
+function RemotePage() {
+  const { remoteId } = useParams()
+  if (!remoteId) return <Navigate to={SESSIONS_PATH} replace />
+  return <DeferredPage><RemoteSessionPage key={remoteId} remoteId={remoteId} /></DeferredPage>
 }
 
 // ── redirects ────────────────────────────────────────────────────────────────
@@ -328,6 +341,9 @@ const PAGES: RouteObject[] = [
   { path: ARCHIVED_SESSION_ROUTE, element: <ReviewPage /> },
   // Same static-above-dynamic dependency for `/sessions/background`. Its detail
   // routes reuse the live pages on purpose: a background session IS live.
+  // Same again for `/sessions/remote/:remoteId`: a remote session is not a
+  // ViberPit session, so it must never resolve as `/sessions/:id`.
+  { path: REMOTE_SESSION_ROUTE, element: <RemotePage /> },
   { path: BACKGROUND_PATH, element: <SessionsPage /> },
   { path: BACKGROUND_SESSION_ROUTE, element: <SessionsPage /> },
   { path: BACKGROUND_SUBAGENT_ROUTE, element: <SubAgentPage /> },
