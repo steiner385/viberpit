@@ -225,6 +225,9 @@ _PR_DOCTOR_FOREIGN_HOLDER_CACHE_S = 30.0
 _PR_DOCTOR_MECHANICAL_DEADLINE_S = 1800.0
 
 _DRIVER_CONTROL_TIMEOUT_S = 5.0
+# Inference-only launch credentials a Remote Control session is upgraded off once its
+# account's login is ready: the setup-token (primary) and the inference envelope (runner).
+_UPGRADABLE_LAUNCHES = frozenset({_account_auth.LAUNCH_SETUP, _account_auth.LAUNCH_ENVELOPE})
 
 
 # Statuses that mean a session is mid-turn or awaiting user input — restarting now
@@ -10132,8 +10135,11 @@ class SessionOrchestrator:
         readiness: dict[str, str | None] = {}
         for sid in list(self._drivers):
             rec = self._records.get(sid)
+            # Both inference-only launches upgrade: the setup-token on the primary, and
+            # the broker's inference envelope on a runner (rocky) — a runner session that
+            # started before its first Remote Control envelope arrived is "envelope".
             if (rec is None or not rec.account
-                    or rec.launch_credential != _account_auth.LAUNCH_SETUP
+                    or rec.launch_credential not in _UPGRADABLE_LAUNCHES
                     or self._remote_control_driver(sid) is None
                     or not self._remote_control_on(sid, default)):
                 continue

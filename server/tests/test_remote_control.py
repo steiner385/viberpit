@@ -1645,6 +1645,21 @@ async def test_an_idle_session_is_upgraded_onto_the_login_once_it_is_ready(env) 
 
 
 @pytest.mark.asyncio
+async def test_a_runner_session_on_the_inference_envelope_is_upgraded_too(env) -> None:
+    # Regression (prod, rocky 2026-11-25): a runner session that started before its first
+    # Remote Control envelope arrived is stamped "envelope", not "setup", and the upgrade
+    # skipped it, so it never reached the Claude apps.
+    rec = await _make_on_setup_token(env)
+    rec.launch_credential = "envelope"
+    first = env.orch._drivers[rec.id]
+    env.control.replies = [ON_REPLY]
+    await env.orch._maintain_remote_control_logins()
+    await env.settle(rec.id)
+    assert env.orch._drivers[rec.id] is not first
+    assert rec.launch_credential == "slot" and rec.remote_control_url == URL
+
+
+@pytest.mark.asyncio
 async def test_a_busy_session_is_upgraded_only_once_idle(env) -> None:
     rec = await _make_on_setup_token(env)
     first = env.orch._drivers[rec.id]
