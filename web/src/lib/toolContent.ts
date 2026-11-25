@@ -205,3 +205,15 @@ export function toolResultStatus(
   if (!result.ok) return { status: 'error', error: text || fallbackError }
   return { status: 'ok', text }
 }
+
+/** The raster image subtypes the transcript shows inline — the set the file read
+ *  sniffs and the attachment server accepts. The one list; derive, don't copy. */
+const RASTER = 'png|jpeg|gif|webp'
+
+/** `image/png` etc. — a sniffed media type the transcript can show. */
+export const RASTER_MEDIA_TYPE_RE = RegExp(`^image/(?:${RASTER})$`)
+/** An inline `data:` URL of one of those types. */
+export const RASTER_DATA_URL_RE = RegExp(`^data:image/(?:${RASTER});base64,[a-zA-Z0-9+/=\\s]+$`)
+
+/** A host path named like one of those types (by extension, `.jpg` too; the read still sniffs). */
+export const isRasterImagePath = (path: string): boolean => RegExp(`\\.(?:${RASTER}|jpg)$`, 'i').test(path)

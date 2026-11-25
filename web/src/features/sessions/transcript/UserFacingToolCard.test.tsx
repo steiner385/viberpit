@@ -61,6 +61,13 @@ describe('SendUserFile card', () => {
     expect(await screen.findByRole('button', { name: 'Open docs/notes.md in Files' })).toBeInTheDocument()
   })
 
+  it('says "No files" for a call that names none', async () => {
+    renderCard(call('SendUserFile', { files: [], status: 'normal' }, delivered('0 files delivered to user.')))
+    const card = await screen.findByTestId('send-user-file-card')
+    expect(card).toHaveTextContent('No files')
+    expect(card).not.toHaveTextContent('Shared 0 files')
+  })
+
   it('shows a pending state until the result lands', async () => {
     renderCard(call('SendUserFile', SHOT))
     expect(await screen.findByText('Sending…')).toBeInTheDocument()

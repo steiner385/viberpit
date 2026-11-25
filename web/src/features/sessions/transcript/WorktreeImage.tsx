@@ -1,4 +1,5 @@
 import { useSessionFile } from '@/api/hooks'
+import { RASTER_MEDIA_TYPE_RE } from '@/lib/toolContent'
 import { CopyablePath } from './CopyablePath'
 import { worktreeRelativePath } from './filePathRef'
 import { useFileRefActions, type FileRefActions } from './fileRefContext'
@@ -11,9 +12,6 @@ interface Props {
   /** Inside a link: the bare image, no control of its own — one click target. */
   linked?: boolean
 }
-
-/** The raster types the file read sniffs — the same set `ResultImage` loads from a `data:` URL. */
-const RASTER = /^image\/(?:png|jpeg|gif|webp)$/
 
 /**
  * An image that is a FILE on the session host — a markdown `![](shot.png)`, not
@@ -43,7 +41,7 @@ function InWorktreeImage({ actions, rel, path, alt, linked }: Required<Props> & 
   const file = useSessionFile(actions.sessionId, rel)
   if (file.isPending) return <span className={IMAGE_NOTICE_CLASS}>Loading image…</span>
   const image = file.data?.image
-  if (!image || !RASTER.test(image.mediaType)) {
+  if (!image || !RASTER_MEDIA_TYPE_RE.test(image.mediaType)) {
     return <span className={IMAGE_NOTICE_CLASS}>Image unavailable: <code>{path}</code> could not be read from the worktree as an image.</span>
   }
   const img = <img src={`data:${image.mediaType};base64,${image.data}`} alt={alt || path} className={RESULT_IMAGE_CLASS} />

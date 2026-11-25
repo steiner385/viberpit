@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { ToolCallStatus } from '@/lib/toolContent'
+import { isRasterImagePath, type ToolCallStatus } from '@/lib/toolContent'
 import { CopyablePath } from './CopyablePath'
 import { PathRef } from './PathRef'
 import { WorktreeImage } from './WorktreeImage'
@@ -22,11 +22,6 @@ export function CallNotice({ call, pending }: { call: ToolCallStatus; pending: s
   if (call.status === 'pending') return <p className="mt-1 text-ink-muted">{pending}</p>
   if (call.status === 'error') return <p className="mt-1 text-danger" role="status">Not delivered: {call.error}</p>
   return null
-}
-
-/** The raster types `WorktreeImage` can show, by extension (the read sniffs content). */
-function isRasterImagePath(path: string): boolean {
-  return /\.(?:png|jpe?g|gif|webp)$/i.test(path)
 }
 
 function basename(path: string): string {

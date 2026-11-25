@@ -12,7 +12,6 @@ import { cn } from '@/lib/utils'
 import { Turn } from './Turn'
 import { modelName } from '@/session/modelName'
 import { toolSummary } from '@/session/toolSummary'
-import { userFacingDisplayName } from '@/session/userFacingTools'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -53,9 +52,8 @@ function kindIcon(kind: ToolKind) {
 
 // App-action rows read as a completed action ("Listed sessions"), not the raw
 // mcp__viberpit__ name — the operator shouldn't have to know the MCP plumbing.
-// A CLI user-facing tool (a sub-agent's, nested in its Task) reads by its label.
 function toolDisplayName(kind: ToolKind, name: string): string {
-  if (kind !== 'app_action') return userFacingDisplayName(name) ?? name
+  if (kind !== 'app_action') return name
   return appActionTitle(name) ?? name
 }
 
@@ -91,7 +89,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
   const detailRegionId = useId()
   const subRegionId = useId()
 
-  const summary = toolSummary(block.toolKind, block.input, block.name)
+  const summary = toolSummary(block.toolKind, block.input)
   const displayName = toolDisplayName(block.toolKind, block.name)
   // Completed tools dim to grey (Claude-Code style); a running tool stays prominent.
   const complete = block.result !== undefined
