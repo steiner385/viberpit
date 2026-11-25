@@ -9,6 +9,10 @@ vi.mock('@/api/assistant', () => ({
 vi.mock('@/features/sessions/SessionRuntimeProvider', () => ({
   useSessionRuntimeContext: vi.fn(() => ({ sessionId: 'sess-1' })),
 }))
+// The SendUserFile card asks the owning daemon to publish out-of-worktree files (#3487).
+vi.mock('@/api/sentFilesHooks', () => ({
+  useSentFiles: vi.fn(() => ({ isPending: false, data: undefined })),
+}))
 
 import { Turn } from './Turn'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'

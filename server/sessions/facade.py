@@ -218,6 +218,7 @@ class InProcessOrchestratorAdapter:
     async def session_file_search(self, *a, **k): return await _maybe_await(self._orch.session_file_search(*a, **k))
     async def session_recovery_refs(self, *a, **k): return await _maybe_await(self._orch.session_recovery_refs(*a, **k))
     async def memory_file(self, *a, **k): return await _maybe_await(self._orch.memory_file(*a, **k))
+    async def sent_files(self, *a, **k): return await _maybe_await(self._orch.sent_files(*a, **k))
     async def dev_servers(self, *a, **k): return await _maybe_await(self._orch.dev_servers(*a, **k))
     async def open_dev_server(self, *a, **k): return await _maybe_await(self._orch.open_dev_server(*a, **k))
     async def worktree_preflight(self, *a, **k): return await _maybe_await(self._orch.worktree_preflight(*a, **k))

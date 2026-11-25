@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react'
+import type { IngestedSentFile } from '@/api/types'
 import { isRasterImagePath, type ToolCallStatus } from '@/lib/toolContent'
 import { CopyablePath } from './CopyablePath'
 import { PathRef } from './PathRef'
+import { IMAGE_NOTICE_CLASS, ResultImage } from './ResultImages'
 import { WorktreeImage } from './WorktreeImage'
 export { CARD_FRAME_CLASS } from './ResultImages'
 import { worktreeRelativePath } from './filePathRef'
@@ -28,26 +30,41 @@ function basename(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1) || path
 }
 
+/** What the owning daemon published of a `SendUserFile` call (#3487), by path as written. */
+export interface PublishedFiles {
+  /** The publish request is still in flight. */
+  pending: boolean
+  byPath: ReadonlyMap<string, IngestedSentFile>
+}
+
 /**
  * Files a session sent the user (`SendUserFile` files, `SendUserMessage`
  * attachments), each where the browser can reach it: an image under the live
  * session's worktree inline (when `inline`), any other worktree file a Files
- * link, and anything else — outside the worktree, or no worktree provider at
- * all — named plainly as a file on the session host.
+ * link, a file the owning daemon `published` (an image outside the worktree) from
+ * its attachment URL, and anything else — outside the worktree, or no worktree
+ * provider at all — named plainly as a file on the session host.
  */
-export function SentFileList({ files, inline }: { files: string[]; inline: boolean }) {
+export function SentFileList({ files, inline, published }: { files: string[]; inline: boolean; published?: PublishedFiles }) {
   if (files.length === 0) return null
   return (
     <ul className="mt-2 space-y-2">
-      {files.map((path, i) => <li key={`${i}:${path}`}><SentFile path={path} inline={inline} /></li>)}
+      {files.map((path, i) => <li key={`${i}:${path}`}><SentFile path={path} inline={inline} published={published} /></li>)}
     </ul>
   )
 }
 
-function SentFile({ path, inline }: { path: string; inline: boolean }) {
+function SentFile({ path, inline, published }: { path: string; inline: boolean; published?: PublishedFiles }) {
   const actions = useFileRefActions()
   const rel = actions ? worktreeRelativePath(path, actions.cwd) : null
   if (rel === null) {
+    const url = published?.byPath.get(path)?.url
+    if (url) {
+      return inline
+        ? <ResultImage url={url} name={basename(path)} />
+        : <a href={url} download={basename(path)} className="font-medium text-accent hover:underline">{basename(path)}</a>
+    }
+    if (published?.pending && isRasterImagePath(path)) return <span className={IMAGE_NOTICE_CLASS}>Loading image…</span>
     return (
       <p className="text-ink-muted">
         <CopyablePath text={path} /> is {actions ? 'on the session host, outside its worktree' : 'a file on the session host'} — it can't be opened here.

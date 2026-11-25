@@ -6,7 +6,6 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import SdkMcpTool, tool
@@ -14,7 +13,7 @@ from claude_agent_sdk import SdkMcpTool, tool
 from viberpit import brand
 from server.mcp_spec import Summarized, ToolArgError, ToolSpec, annotations_for, tool_err
 from server.obs.metrics import session_tool_calls_total
-from server.sessions.artifacts import ARTIFACT_KINDS, github_pr_ref, parse_share_artifact, read_image
+from server.sessions.artifacts import ARTIFACT_KINDS, github_pr_ref, ingest_image, parse_share_artifact
 from server.sessions.child_sessions import ChildSessionLimit
 from server.sessions.completion import (FINISHED_STATE_CLAUSE, HAND_BACK_TURN_NOTE,
                                         NO_PR_RESOLUTIONS,
@@ -554,7 +553,6 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
     async def share_artifact(args: dict[str, Any]) -> Any:
         from server.audit import record_audit
         from server.db import db_session
-        from server.sessions.attachments import store_attachment
         parsed = parse_share_artifact(args)
         detail: dict[str, Any] = {**parsed, "session_id": ctx.session_id}
         if parsed["kind"] == "image":
@@ -562,14 +560,11 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
             # it into the content-addressed store (host-shared) under a row bound to
             # THIS session, so the card can render the edge URL and
             # `delete_for_session` reclaims it with the session's other attachments.
-            import asyncio
-            data, media_type = await asyncio.to_thread(read_image, parsed["value"])
             async with db_session() as db:
-                row = await store_attachment(
-                    db, data, media_type, session_id=ctx.session_id,
-                    filename=Path(parsed["value"]).name[:255], identity=ctx.identity)
+                row = await ingest_image(db, parsed["value"], session_id=ctx.session_id,
+                                         identity=ctx.identity)
                 parsed["url"] = f"/api/attachments/{row.id}"
-                detail.update(url=parsed["url"], attachmentId=row.id, bytes=len(data))
+                detail.update(url=parsed["url"], attachmentId=row.id, bytes=row.byte_size)
                 await record_audit(db, "session.artifact", ctx.identity, detail, via="session")
             return parsed
         async with db_session() as db:

@@ -219,6 +219,9 @@ _PER_SESSION: frozenset[str] = frozenset({
     "session_recovery_refs",
     # The D-13 memory-file read: the loaded set, worktree and config dir are its host's.
     "memory_file",
+    # #3487 SendUserFile ingest: the replay and the files it names are its host's (an
+    # archived row routes by its stamp, as the recovery refs).
+    "sent_files",
     # D-18: a session's dev servers are its host's processes, and the preview opens on
     # its host's virtual display.
     "dev_servers", "open_dev_server",

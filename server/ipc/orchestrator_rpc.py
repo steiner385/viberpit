@@ -350,6 +350,10 @@ def register_orchestrator_rpc(app, orch) -> None:
         # daemon that owns the session's loaded set. A refusal raises MemoryFileError,
         # whose error_data carries its code.
         "memory_file",
+        # #3487 SendUserFile ingest: {files: [{path, url, mediaType, reason}]}, from the
+        # replay and files on the owning daemon. A missing call raises SentFileError,
+        # whose error_data carries its code.
+        "sent_files",
         # D-18 dev servers: {host, servers} detected from this daemon's /proc, and the
         # preview open on this daemon's virtual display ({ok, port, url}). A refusal
         # raises DevServerError, whose error_data carries the code.

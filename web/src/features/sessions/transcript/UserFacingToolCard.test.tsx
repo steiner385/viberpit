@@ -2,12 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { UserFacingToolCard } from './UserFacingToolCard'
-import { FileRefContext, type FileRefActions } from './fileRefContext'
+import { FileRefContext, TranscriptSessionContext, type FileRefActions } from './fileRefContext'
 import type { ToolBlock } from '@/session/artifacts'
 import type { UserFacingToolName } from '@/session/userFacingTools'
 
-const { useSessionFile } = vi.hoisted(() => ({ useSessionFile: vi.fn() }))
+const { useSessionFile, useSentFiles } = vi.hoisted(() => ({ useSessionFile: vi.fn(), useSentFiles: vi.fn() }))
 vi.mock('@/api/hooks', () => ({ useSessionFile }))
+vi.mock('@/api/sentFilesHooks', () => ({ useSentFiles }))
 vi.mock('./MermaidDiagram', () => ({ MermaidDiagram: () => null }))
 
 const PNG = 'iVBORw0KGgo='
@@ -18,21 +19,29 @@ function call(name: UserFacingToolName, input: Record<string, unknown>, result?:
 
 const delivered = (text: string): ToolBlock['result'] => ({ ok: true, payload: { content: [{ type: 'text', text }] } })
 
-function renderCard(block: ToolBlock, actions: Partial<FileRefActions> | null = {}) {
+function renderCard(block: ToolBlock, actions: Partial<FileRefActions> | null = {}, transcriptSessionId: string | null = null) {
   const value = actions ? { sessionId: 's1', cwd: '/home/x/repo', openFile: vi.fn(), ...actions } : null
   render(
-    <FileRefContext.Provider value={value}>
-      <UserFacingToolCard block={block} name={block.name as UserFacingToolName} />
-    </FileRefContext.Provider>,
+    <TranscriptSessionContext.Provider value={transcriptSessionId}>
+      <FileRefContext.Provider value={value}>
+        <UserFacingToolCard block={block} name={block.name as UserFacingToolName} />
+      </FileRefContext.Provider>
+    </TranscriptSessionContext.Provider>,
   )
   return value
 }
+
+const published = (...files: Array<{ path: string; url: string | null; reason?: string }>) => ({
+  isPending: false,
+  data: { files: files.map((f) => ({ mediaType: f.url ? 'image/png' : null, reason: null, ...f })) },
+})
 
 // A real-shaped call, as the CLI emitted it in a ViberPit session.
 const SHOT = { files: ['/home/x/repo/.rendertest/shot.png'], caption: 'Settings page', status: 'normal' }
 
 beforeEach(() => {
   useSessionFile.mockReset().mockReturnValue({ isPending: false, data: { image: { mediaType: 'image/png', data: PNG } } })
+  useSentFiles.mockReset().mockReturnValue({ isPending: false, data: undefined })
 })
 
 describe('SendUserFile card', () => {
@@ -48,12 +57,58 @@ describe('SendUserFile card', () => {
     expect(ctx.openFile).toHaveBeenCalledWith('.rendertest/shot.png', null)
   })
 
-  it('says plainly a file outside the worktree is on the session host', async () => {
+  it('says plainly a file outside the worktree the daemon could not publish is on the session host', async () => {
+    useSentFiles.mockReturnValue(published({ path: '/tmp/report.pdf', url: null, reason: 'not_image' }))
     renderCard(call('SendUserFile', { files: ['/tmp/report.pdf'], status: 'normal' }, delivered('1 files delivered to user.')))
     const card = await screen.findByTestId('send-user-file-card')
     expect(within(card).getByText(/on the session host, outside its worktree/)).toBeInTheDocument()
     expect(within(card).getByRole('button', { name: '/tmp/report.pdf' })).toBeInTheDocument()
     expect(useSessionFile).not.toHaveBeenCalled()
+    expect(useSentFiles).toHaveBeenCalledWith('s1', 'u1', { enabled: true })
+  })
+
+  it('renders an image outside the worktree from the attachment the daemon published', async () => {
+    useSentFiles.mockReturnValue(published({ path: '/tmp/jobs/chart.png', url: '/api/attachments/a1' }))
+    renderCard(call('SendUserFile', { files: ['/tmp/jobs/chart.png'], status: 'normal' }, delivered('ok')))
+    const card = await screen.findByTestId('send-user-file-card')
+    expect(within(card).getByRole('img', { name: 'chart.png' })).toHaveAttribute('src', '/api/attachments/a1')
+    expect(within(card).queryByText(/on the session host/)).toBeNull()
+    expect(useSessionFile).not.toHaveBeenCalled()
+  })
+
+  it('offers a published attach-mode file as a download, not inline', async () => {
+    useSentFiles.mockReturnValue(published({ path: '/tmp/chart.png', url: '/api/attachments/a1' }))
+    renderCard(call('SendUserFile', { files: ['/tmp/chart.png'], display: 'attach', status: 'normal' }, delivered('ok')))
+    const card = await screen.findByTestId('send-user-file-card')
+    expect(within(card).getByRole('link', { name: 'chart.png' })).toHaveAttribute('href', '/api/attachments/a1')
+    expect(within(card).queryByRole('img')).toBeNull()
+  })
+
+  it('shows a loading state while an outside image is being published', async () => {
+    useSentFiles.mockReturnValue({ isPending: true, data: undefined })
+    renderCard(call('SendUserFile', { files: ['/tmp/chart.png'], status: 'normal' }, delivered('ok')))
+    expect(await screen.findByText('Loading image…')).toBeInTheDocument()
+  })
+
+  it('does not ask the daemon while the call is still pending (its line may not be on disk)', async () => {
+    renderCard(call('SendUserFile', { files: ['/tmp/chart.png'], status: 'normal' }))
+    expect(await screen.findByText('Sending…')).toBeInTheDocument()
+    expect(useSentFiles).toHaveBeenCalledWith('s1', 'u1', { enabled: false })
+    expect(screen.queryByText('Loading image…')).toBeNull()
+  })
+
+  it('does not ask the daemon when every file is in the worktree', async () => {
+    renderCard(call('SendUserFile', SHOT, delivered('ok')))
+    await screen.findByTestId('send-user-file-card')
+    expect(useSentFiles).toHaveBeenCalledWith('s1', 'u1', { enabled: false })
+  })
+
+  it('in the archived reader (no worktree) publishes through the transcript session id', async () => {
+    useSentFiles.mockReturnValue(published({ path: SHOT.files[0], url: '/api/attachments/a2' }))
+    renderCard(call('SendUserFile', SHOT, delivered('ok')), null, 'archived-1')
+    const card = await screen.findByTestId('send-user-file-card')
+    expect(useSentFiles).toHaveBeenCalledWith('archived-1', 'u1', { enabled: true })
+    expect(within(card).getByRole('img', { name: 'shot.png' })).toHaveAttribute('src', '/api/attachments/a2')
   })
 
   it('links a non-image worktree file to Files (cwd-relative too)', async () => {
@@ -78,11 +133,12 @@ describe('SendUserFile card', () => {
     expect(await screen.findByText('Not delivered: File not found')).toBeInTheDocument()
   })
 
-  it('without a worktree provider names the file as host-only', async () => {
+  it('without a worktree provider or a session id names the file as host-only', async () => {
     renderCard(call('SendUserFile', SHOT, delivered('ok')), null)
     const card = await screen.findByTestId('send-user-file-card')
     expect(within(card).getByText(/a file on the session host/)).toBeInTheDocument()
     expect(within(card).queryByRole('img')).toBeNull()
+    expect(useSentFiles).toHaveBeenCalledWith(null, 'u1', { enabled: true })
   })
 })
 

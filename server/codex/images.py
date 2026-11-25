@@ -9,13 +9,12 @@ import asyncio
 import base64
 import binascii
 from dataclasses import dataclass, replace
-from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 from server.db import db_session
 from server.db.models import Attachment
 from server.mcp_spec import ToolArgError
-from server.sessions.artifacts import read_image
+from server.sessions.artifacts import ingest_image
 from server.sessions.attachments import IMAGE_MEDIA_TYPES, MAX_BYTES, sniff_media_type, store_attachment
 from server.sessions.events import ToolResult
 
@@ -26,9 +25,7 @@ class PendingToolImages:
     sources: tuple[tuple[str, str], ...]
 
 
-def _read_source(kind: str, value: str) -> tuple[bytes, str]:
-    if kind == 'path':
-        return read_image(value)
+def _read_data_url(value: str) -> tuple[bytes, str]:
     if len(value) > (MAX_BYTES * 4 // 3) + 1024:
         raise ValueError('image too large')
     header, separator, encoded = value.partition(',')
@@ -54,13 +51,17 @@ async def materialize_images(event: object, *, session_id: str | None,
             if session_id is None:
                 raise ValueError('session unavailable')
             async with db_session() as db:
-                row = await db.get(Attachment, aid)
-                if row is None:
-                    data, media_type = await asyncio.to_thread(_read_source, kind, value)
-                    row = await store_attachment(
-                        db, data, media_type, session_id=session_id, identity=identity,
-                        filename=Path(value).name[:255] if kind == 'path' else 'image',
-                        attachment_id=aid)
+                if kind == 'path':
+                    # THE session-image ingest, as share_artifact and SendUserFile.
+                    row = await ingest_image(db, value, session_id=session_id,
+                                             identity=identity, attachment_id=aid)
+                else:
+                    row = await db.get(Attachment, aid)
+                    if row is None:
+                        data, media_type = await asyncio.to_thread(_read_data_url, value)
+                        row = await store_attachment(
+                            db, data, media_type, session_id=session_id,
+                            identity=identity, filename='image', attachment_id=aid)
                 content.append({'type': 'image', 'source': {
                     'type': 'url', 'url': f'/api/attachments/{row.id}'}})
         except (ToolArgError, OSError, ValueError, binascii.Error):

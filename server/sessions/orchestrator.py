@@ -24456,6 +24456,48 @@ class SessionOrchestrator:
         root = await self._effective_repo_root() if repo else ""
         return await asyncio.to_thread(_recovery_refs_wire, session_id, cwd or "", repo, root)
 
+    async def sent_files(self, session_id: str, tool_use_id: str) -> dict:
+        """``{files: [{path, url, mediaType, reason}]}`` — the files the session's
+        main-thread ``SendUserFile`` call *tool_use_id* named, each raster image
+        ingested into the attachment store on this — the owning — host (#3487; see
+        ``sent_files``). The paths come from the session's own replay, never the
+        caller. Live or archived. ``KeyError`` (an expected refusal) for an unknown
+        session; ``SentFileError``: ``TOOL_CALL_NOT_FOUND`` when the history has no
+        such call, ``HISTORY_UNAVAILABLE`` when it could not be read in time.
+
+        A Claude session's JSONL is scanned for the call alone
+        (``send_user_file_calls``: filtered, deduplicated, cached) — never a full
+        replay per card. Only an engine with no transcript file falls back to the
+        replay."""
+        from server.sessions.sent_files import (HISTORY_UNAVAILABLE, TOOL_CALL_NOT_FOUND,
+                                                SentFileError, ingest_sent_files,
+                                                send_user_file_calls, sent_file_paths)
+
+        rec = self._records.get(session_id)
+        if rec is not None:
+            cwd = rec.cwd
+        else:
+            row = await self._read_session_row(session_id)
+            if row is None:
+                exc = KeyError(f"No session with id {session_id}")
+                exc.error_data = {"code": worktree_files.SESSION_NOT_FOUND}  # type: ignore[attr-defined]
+                raise exc
+            cwd = row.cwd
+        transcript = await self.resolve_transcript_path(session_id)
+        if transcript is not None:
+            files = (await send_user_file_calls(transcript)).get(tool_use_id)
+        else:
+            # background=True: a replay timeout logs at INFO, not a WARNING the error
+            # sink files; it is history unavailable, retryable — never "no such call".
+            window = await self.transcript_window(session_id, limit=None, background=True)
+            if window is None:
+                log.info("session.sent_files id=%s no readable history", session_id)
+                raise SentFileError(HISTORY_UNAVAILABLE)
+            files = sent_file_paths(window.events, tool_use_id)
+        if files is None:
+            raise SentFileError(TOOL_CALL_NOT_FOUND)
+        return await ingest_sent_files(files, tool_use_id, session_id=session_id, cwd=cwd)
+
     async def memory_file(self, session_id: str, *, path: str) -> dict:
         """``{path, type, text, truncated, editable}`` of one of the session's loaded
         memory files (D-13 viewer), read on this — the owning — host. ``KeyError`` for an
