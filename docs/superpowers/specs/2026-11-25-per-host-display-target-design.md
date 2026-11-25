@@ -144,9 +144,10 @@ process group run by a new `DisplayBridge` component on the target daemon. It is
   - *Resolved by §8:* waypipe 0.11 serves many clients from one long-lived server. Running it as
     `server -- cat`, with ssh's stdin held open, ties its lifetime to the ssh connection.
 - **X11 leg:**
-  - In the same SSH connection, run `-R /tmp/.X11-unix/X<N>:<target X socket>`, with N from a reserved
-    range outside the Xvfb pool (new setting `VIBERPIT_DISPLAY_BRIDGE_X_START`, default 150; validated
-    against the pool at startup like `native_display` does).
+  - In the same SSH connection, run `-R <S_XRD>/viberpit-bridge/X11:<target X socket>`: the X
+    forward lands in the source user's private 0700 dir, never in `/tmp/.X11-unix` (*superseded by
+    §8, fix round 1*: `DISPLAY=:N` lets any local user impersonate the bridge through the abstract
+    socket `@/tmp/.X11-unix/X<N>`). Sessions get the socket's path as `DISPLAY`.
   - Write the target's live cookie into a bridge-private `XAUTHORITY` file on the source over the SSH
     session, never as an argv value.
   - Re-push the cookie when the target's login rotates it. The resolver already notices this within its
@@ -260,9 +261,25 @@ process group run by a new `DisplayBridge` component on the target daemon. It is
 Verified against the real binaries (Principle III). Target = dobby (GNOME/mutter Wayland, `wayland-0`,
 Xwayland `:0`); source = rocky (Ubuntu 26.04, OpenSSH 10.2p1, uid 1000 on both hosts). `DisplayBridge`
 builds its argv from this section verbatim. `<T_XRD>` is the target daemon's `XDG_RUNTIME_DIR` and
-`<S_XRD>` is the source user's (`/run/user/1000` on both today); `<src>` is the source host name;
-`<N>` is the forwarded X display number = `display_bridge_x_start` (`VIBERPIT_DISPLAY_BRIDGE_X_START`,
-default 150 — the spike ran with `<N>` = 150).
+`<S_XRD>` is the source user's (`/run/user/1000` on both today); `<src>` is the source host name.
+The X11 forward is the socket `<S_XRD>/viberpit-bridge/X11` and the session's `DISPLAY` is that path
+(fix round 1, below); there is no forwarded display number any more.
+
+**X11 leg: no `/tmp/.X11-unix` on the source (fix round 1, 2026-11-25, verified dobby → rocky).**
+The first spike forwarded to `/tmp/.X11-unix/X<N>` with `DISPLAY=:<N>`. With that form libxcb connects
+to the **abstract** socket `@/tmp/.X11-unix/X<N>` *before* the filesystem path (strace on rocky:
+`connect(… sun_path=@"/tmp/.X11-unix/X150")` first). Any local user can bind an abstract name, and no
+filesystem owner or sticky-bit check applies to it, so session X clients could hand the target's cookie
+to an impostor. The forward therefore lands inside the private 0700 dir and `DISPLAY` is the socket's
+absolute path, `DISPLAY=<S_XRD>/viberpit-bridge/X11`. libxcb (≥1.13; rocky has 1.17) treats a `DISPLAY`
+starting with `/` as a socket path: it connects to that filesystem path only (strace: one `connect` to
+`/run/user/1000/viberpit-bridge/X11`, zero abstract attempts across `xdpyinfo`, `xeyes` and
+`google-chrome --ozone-platform=x11`) and authenticates as display 0, so the cookie entry is
+`add :0 …` (stored as `<src>/unix:0`). The `"<path>:0"` form does **not** work (`unable to open
+display`). Evidence: `xeyes` and a headed Chrome started on rocky with that env were listed by
+`xwininfo -root -tree` on dobby's `:0`; without the cookie file the display refuses with
+`Authorization required`. `/tmp/.X11-unix` existence, sticky-bit and squat checks are gone from prep,
+and the forwarded display number (`display_bridge_x_start`) no longer matters.
 
 **Answer: one `waypipe server` serves many concurrent clients — yes.** The server's Wayland socket
 accepts any number of connections. Both server and client fork one worker per connection (`client-conn`
@@ -282,7 +299,7 @@ on dobby at the same time, each its own window. No per-session fallback from §2
    (both verified). Live remote clients die with the bridge, which is expected.
 3. **The client-side `StreamLocalBindUnlink=yes` does not apply to `-R` listeners.** rocky's sshd has
    `streamlocalbindunlink no`, so a stale remote socket from the last run makes ssh fail with
-   `remote port forwarding failed for listen path …`. sshd never removes `/tmp/.X11-unix/X<N>` itself.
+   `remote port forwarding failed for listen path …`. sshd never removes the X11 forward itself.
    The bridge therefore runs a **prep** ssh before every start that removes both remote sockets. The
    alternative is to set `StreamLocalBindUnlink yes` in the source's sshd_config, but that is an
    operator step and not relied on. On the target side, `waypipe client` also leaves its socket on
@@ -291,39 +308,27 @@ on dobby at the same time, each its own window. No per-session fallback from §2
 **Step 1 — prep (source side, one ssh, cookie on stdin, never argv):**
 
 ```
-ssh -o BatchMode=yes <ssh_host> '<PREP>'          # stdin: "add :<N> MIT-MAGIC-COOKIE-1 <hex>\n"
+ssh -o BatchMode=yes <ssh_host> '<PREP>'          # stdin: "add :0 MIT-MAGIC-COOKIE-1 <hex>\n"
 ```
 `<PREP>` (one argv string):
 ```
-[ -d /tmp/.X11-unix ] || { echo 'viberpit-bridge: /tmp/.X11-unix missing' >&2; exit 3; }
 umask 077
 case "$XDG_RUNTIME_DIR" in /*) ;; *) echo 'viberpit-bridge: XDG_RUNTIME_DIR unset' >&2; exit 5;; esac
 [ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ] || { echo 'viberpit-bridge: XDG_RUNTIME_DIR invalid' >&2; exit 5; }
 d="$XDG_RUNTIME_DIR/viberpit-bridge"
 mkdir -p "$d" && chmod 700 "$d"
 [ -d "$d" ] && [ -O "$d" ] && [ ! -L "$d" ] || { echo 'viberpit-bridge: private dir not owned' >&2; exit 4; }
-rm -f "$d/waypipe.sock" /tmp/.X11-unix/X<N>
-[ ! -L /tmp/.X11-unix ] && [ -k /tmp/.X11-unix ] && [ "$(stat -c %u /tmp/.X11-unix)" = 0 ] || { echo 'viberpit-bridge: /tmp/.X11-unix not root-owned and sticky' >&2; exit 4; }   # X11 leg only
-if [ -e /tmp/.X11-unix/X<N> ] || [ -L /tmp/.X11-unix/X<N> ]; then echo 'viberpit-bridge: /tmp/.X11-unix/X<N> held by another user' >&2; exit 4; fi   # X11 leg only
+rm -f "$d/waypipe.sock" "$d/X11"
 : > "$d/xauth" && chmod 600 "$d/xauth"
 xauth -q -f "$d/xauth" source -
 printf '%s\n' "$XDG_RUNTIME_DIR"
 ```
-- Assumes `/tmp/.X11-unix` already exists (root-owned, mode 1777, created at boot by systemd-tmpfiles
-  `x11.conf`; present on rocky). Prep deliberately does **not** `mkdir` it: a user-created
-  `/tmp/.X11-unix` would be user-owned, and X servers started later refuse or warn on it. A missing
-  directory fails prep with exit 3, and the session falls back to virtual (`bridge_unavailable`).
-- **Socket squatting (exit 4, added after review):** `/tmp/.X11-unix` is world-writable and sticky, so
-  `rm -f` silently fails on a `X<N>` another local user pre-created. Session clients would then send
-  the target's cookie to an impostor X server. With the X11 leg on, prep therefore fails if `X<N>`
-  still exists after the `rm` (any survivor is foreign: the bridge user's own file was just removed).
-  The bridge logs `rc=4` at INFO with the source name only and the source shows `failed`. A squat
-  that appears after prep is caught by the bridge ssh itself: the `-R` bind fails and
-  `ExitOnForwardFailure=yes` ends the connection. Once bound, the socket is the ssh user's, and the
-  source daemon's liveness check (Task 5) verifies that owner uid before exporting `DISPLAY`. The
-  same exit code covers a private dir that is not a real directory owned by the bridge user. With the
-  X11 leg on, it also covers a `/tmp/.X11-unix` that is a symlink, not sticky, or not root-owned: that
-  directory's owner could unlink the bound socket and put an impostor in its place.
+- **Exit 4** means the private dir is not a real directory owned by the bridge user (a symlink or
+  another user's dir): nothing is removed and no cookie is written. Every file the bridge binds or
+  writes on the source is inside that 0700 dir or the 0700 `$XDG_RUNTIME_DIR`, so no other local user
+  can pre-create, squat or unlink them. (The earlier exit 3, "no `/tmp/.X11-unix`", and the
+  `/tmp/.X11-unix` squat/sticky checks were removed in fix round 1 with the directory itself.)
+  The source daemon's liveness check still verifies each socket's owner uid before exporting it.
 - **Exit 5** means the source login has no usable `$XDG_RUNTIME_DIR` (unset, relative, missing, or not
   its own). It is a configuration problem, logged as such and never as a squat.
 - **Cleanup never races a live bridge.** No cleanup ssh runs while the source has a running or
@@ -333,13 +338,13 @@ printf '%s\n' "$XDG_RUNTIME_DIR"
   included) the bridge re-checks that the source is not live. (Re)starting a bridge cancels every
   in-flight cleanup for that source. The prep for the live dest rewrites everything its own cleanup
   would remove.
-  `DISPLAY=:<N>` forces the `/tmp/.X11-unix` location, so the X socket cannot move into the
-  private dir. The Wayland sockets (`$d/waypipe.sock` and `$XDG_RUNTIME_DIR/wayland-viberpit-bridge`)
-  and the cookie file (`$d/xauth`) live only in the 0700 private dir or the 0700 `$XDG_RUNTIME_DIR`.
+  The Wayland sockets (`$d/waypipe.sock` and `$XDG_RUNTIME_DIR/wayland-viberpit-bridge`), the X11
+  forward (`$d/X11`) and the cookie file (`$d/xauth`) live only in the 0700 private dir or the 0700
+  `$XDG_RUNTIME_DIR`.
 - It prints `<S_XRD>`, which is needed because the `-R` remote path is not shell-expanded.
 - The cookie line is built from the resolver's `xauthority` file (`xauth -f <file> list`, field 3).
   mutter's file holds `dobby/unix:` and a FamilyWild entry with the same cookie.
-- `add :<N>` is stored as `<src>/unix:<N>`, which matches what clients on the source look up.
+- `add :0` is stored as `<src>/unix:0`, which is what libxcb looks up for a path `DISPLAY`.
 - The same command re-run is the cookie re-push on rotation; it is idempotent.
 
 **Step 2 — target side (dobby), env from `resolve_desktop_session` (`WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`):**
@@ -353,7 +358,7 @@ waypipe --socket <T_XRD>/viberpit-bridge/<src>-waypipe.sock client
 ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -o StreamLocalBindUnlink=yes \
     -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
     -R <S_XRD>/viberpit-bridge/waypipe.sock:<T_XRD>/viberpit-bridge/<src>-waypipe.sock \
-    -R /tmp/.X11-unix/X<N>:/tmp/.X11-unix/X0 \
+    -R <S_XRD>/viberpit-bridge/X11:/tmp/.X11-unix/X0 \
     <ssh_host> \
     'exec waypipe --socket <S_XRD>/viberpit-bridge/waypipe.sock --display wayland-viberpit-bridge --unlink-socket server -- cat'
 ```
@@ -365,19 +370,21 @@ ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -o StreamLocalBindUnlink=yes \
   waypipe display socket is `0775` inside the `0700` `<S_XRD>`. Same-uid only, as §2 requires.
 
 **Session env on the source** (verified): `WAYLAND_DISPLAY=wayland-viberpit-bridge`,
-`XDG_RUNTIME_DIR=<S_XRD>`, `DISPLAY=:<N>`, `XAUTHORITY=<S_XRD>/viberpit-bridge/xauth`. Without the
-cookie file, `:<N>` refuses with `Authorization required`.
+`XDG_RUNTIME_DIR=<S_XRD>`, `DISPLAY=<S_XRD>/viberpit-bridge/X11` (the socket path; never `:N`),
+`XAUTHORITY=<S_XRD>/viberpit-bridge/xauth`. Without the cookie file the display refuses with
+`Authorization required`. A leg that is not live has its variables exported as empty strings, so an
+inherited `DISPLAY`/`WAYLAND_DISPLAY` can never put a session's window on the source's own screen.
 
 **Teardown:** close the bridge ssh's stdin or kill it. The remote server exits by itself (finding 2).
-Then kill `waypipe client` and `rm -f` its socket. The stale remote `X<N>` is removed by the next
+Then kill `waypipe client` and `rm -f` its socket. The stale remote `X11` socket is removed by the next
 start's prep. On final teardown (the desired set no longer lists the source), a cleanup ssh removes
-`X<N>`, `waypipe.sock` and the `xauth` file (Anti-goal 1: no cookie left behind):
+`X11`, `waypipe.sock` and the `xauth` file (Anti-goal 1: no cookie left behind):
 ```
-ssh -o BatchMode=yes -o ConnectTimeout=10 <ssh_host> 'rm -f /tmp/.X11-unix/X<N> "$XDG_RUNTIME_DIR/viberpit-bridge/waypipe.sock" "$XDG_RUNTIME_DIR/viberpit-bridge/xauth"'
+ssh -o BatchMode=yes -o ConnectTimeout=10 <ssh_host> 'rm -f "$XDG_RUNTIME_DIR/viberpit-bridge/X11" "$XDG_RUNTIME_DIR/viberpit-bridge/waypipe.sock" "$XDG_RUNTIME_DIR/viberpit-bridge/xauth"'
 ```
 **Known limit: source unreachable at teardown.** If the cleanup ssh cannot reach the source, the 0600
 `xauth` file (the target's cookie) stays on the source until a later cleanup or the next prep, which
-truncates and rewrites it. The forwarded `X<N>` is already dead once ssh drops, and the target's Xwayland
+truncates and rewrites it. The forwarded `X11` socket is already dead once ssh drops, and the target's Xwayland
 listens on local sockets only (no TCP), so the leftover cookie grants nothing by itself. It is still a
 secret at rest, though, and it goes stale when the target's login rotates it. Recommended policy for
 `DisplayBridge`: retry the cleanup with backoff (for example 3 attempts at 5 s, 30 s and 120 s), then keep

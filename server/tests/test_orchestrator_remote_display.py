@@ -18,13 +18,16 @@ from server.tests.test_orchestrator_native_display import FakeNative, FakeX11, _
 from server.tests.test_orchestrator_native_display import spawn_env as spawn_env  # noqa: F401 — fixture
 
 LIVE_ENV = {"WAYLAND_DISPLAY": "wayland-viberpit-bridge", "XDG_RUNTIME_DIR": "/run/user/1000",
-            "DISPLAY": ":150", "XAUTHORITY": "/run/user/1000/viberpit-bridge/xauth"}
+            "DISPLAY": "/run/user/1000/viberpit-bridge/X11",
+            "XAUTHORITY": "/run/user/1000/viberpit-bridge/xauth"}
 
 
 class _Bridge:
-    """Stands in for display_bridge_env.remote_env; records every probe."""
+    """Stands in for display_bridge_env.remote_env (records every probe) and for this
+    host's configured target (``current``, read by ``_current_display_target``)."""
     def __init__(self, state):
         self.state = state
+        self.current: str | None = "dobby"
         self.calls: list[dict] = []
 
     def __call__(self, **kw):
@@ -34,8 +37,13 @@ class _Bridge:
 
 @pytest.fixture
 def bridge():
+    from server.sessions.orchestrator import SessionOrchestrator
     b = _Bridge(dict(LIVE_ENV))
-    with patch("server.sessions.orchestrator.remote_env", b):
+
+    async def _current(self):
+        return b.current
+    with patch("server.sessions.orchestrator.remote_env", b), \
+            patch.object(SessionOrchestrator, "_current_display_target", _current):
         yield b
 
 
@@ -54,7 +62,7 @@ async def test_create_session_with_target_and_live_bridge_is_remote_and_persists
         row = await _row(rec.id)
         assert row.display_mode == "remote" and row.display_target_host == "dobby"
         assert bridge.calls and bridge.calls[0]["uid"] == os.getuid()
-        assert bridge.calls[0]["x_display"] == 150
+        assert bridge.calls[0]["x11"] is True
     finally:
         await orch.stop()
 
@@ -210,7 +218,8 @@ class _Proc:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state,platform", [
     (dict(LIVE_ENV), "wayland"),
-    ({"DISPLAY": ":150", "XAUTHORITY": "/x"}, "x11"),
+    ({"WAYLAND_DISPLAY": "", "DISPLAY": "/run/user/1000/viberpit-bridge/X11",
+      "XAUTHORITY": "/x"}, "x11"),
 ])
 async def test_open_browser_remote_uses_bridge_env_and_ozone_wayland(
         spawn_env, bridge, tmp_path, state, platform):
@@ -235,7 +244,7 @@ async def test_open_browser_remote_uses_bridge_env_and_ozone_wayland(
         for k, v in state.items():
             assert kw["env"][k] == v
         if platform == "x11":
-            assert "WAYLAND_DISPLAY" not in kw["env"]
+            assert not kw["env"].get("WAYLAND_DISPLAY")
         bridge.state = "bridge_wrong_user"
         assert await orch.open_browser(rec.id, None) == {"ok": False,
                                                           "reason": "bridge_wrong_user"}
@@ -269,3 +278,56 @@ async def test_old_daemon_sheds_display_target_and_stays_local(caplog):
     assert len(c.calls) == 2
     assert "display_target" not in c.calls[1][1] and c.calls[1][1]["client_node"] == "phone"
     assert "predates the display bridge" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_target_moved_degrades_env_and_browser(spawn_env, bridge, tmp_path):
+    """The bridge's sockets on this host lead to whatever this host targets NOW. A
+    record born for another desktop (the target moved, or another host adopted the
+    queued row) must not get them — its windows would land on the wrong desktop."""
+    spawned: list = []
+
+    async def _spawn(*argv, **kw):
+        spawned.append(argv)
+        return _Proc()
+    native = NativeDisplay(run_dir=str(tmp_path), chromium_cmd="chromium", no_sandbox=False,
+                           max_browsers=2, spawn=_spawn,
+                           resolve=lambda: DesktopUnavailable(reason="no_graphical_session"))
+    orch = await _orch(spawn_env, FakeX11(), native)
+    try:
+        rec = await orch.create_session("n", account="acct", display_target="dobby")
+        assert rec.display_mode == "remote"
+        assert orch._display_env(rec.id) == LIVE_ENV
+        bridge.current = "zeta"                       # this host now targets another desktop
+        await orch._refresh_bridge()
+        assert orch._display_env(rec.id) == {}
+        assert await orch.open_browser(rec.id, None) == {"ok": False,
+                                                          "reason": "bridge_unavailable"}
+        bridge.current = None                         # target cleared (or kill switch)
+        await orch._refresh_bridge()
+        assert orch._display_env(rec.id) == {}
+        assert spawned == []
+        # A new session naming a target this host no longer has is not remote either.
+        bridge.current = "zeta"
+        late = await orch.create_session("m", account="acct", display_target="dobby")
+        assert late.display_mode == "virtual"
+        assert late.display_fallback_reason == "bridge_unavailable"
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_current_display_target_reads_this_hosts_row(spawn_env):
+    """The real reader behind the guard: this host's Host.display_target, parsed."""
+    from server.db import db_session
+    from server.db.models import Host
+    orch = await _orch(spawn_env, FakeX11(), FakeNative(available=False))
+    try:
+        assert await orch._current_display_target() is None          # no row: local
+        async with db_session() as db:
+            db.add(Host(name="dobby", endpoint="unix", display_target="host:rocky"))
+        assert await orch._current_display_target() == "rocky"
+        with patch.dict(os.environ, {"VIBERPIT_DISPLAY_BRIDGE_ENABLED": "false"}):
+            assert await orch._current_display_target() is None      # kill switch
+    finally:
+        await orch.stop()

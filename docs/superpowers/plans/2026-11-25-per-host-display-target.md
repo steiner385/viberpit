@@ -42,7 +42,9 @@ React + TS (Fleet settings).
   - `display_bridge_grace_s: float = 60.0` (`VIBERPIT_DISPLAY_BRIDGE_GRACE_S`).
 - Fixed paths on the source host (one target per source host, so no index is needed):
   - Wayland socket: `$XDG_RUNTIME_DIR/wayland-viberpit-bridge`.
-  - X11 display: `:{display_bridge_x_start}`.
+  - X11 forward: `$XDG_RUNTIME_DIR/viberpit-bridge/X11`, exported as the path display
+    `DISPLAY=$XDG_RUNTIME_DIR/viberpit-bridge/X11` (never `/tmp/.X11-unix` / `:N`: its abstract
+    `@/tmp/.X11-unix/X<N>` twin is bindable by any local user; spec §8 fix round 1).
   - Cookie file: `$XDG_RUNTIME_DIR/viberpit-bridge/xauth`, mode 0600, in a 0700 directory.
 - Fallback reasons (exact strings, stored in `display_fallback_reason`): `bridge_disabled`,
   `bridge_not_accepted`, `bridge_unavailable`, `bridge_wrong_user`, `target_desktop_unavailable`.
@@ -71,9 +73,9 @@ React + TS (Fleet settings).
 4. **Two sources target one desktop at once** (rocky and a future runner both → dobby). They need
    independent bridges and target-side socket names keyed by source, and tearing one down must not touch
    the other. (Task 4 `test_two_sources_are_independent`.)
-5. **`display_bridge_x_start` lands inside the Xvfb pool range.** The X11 leg must be disabled with one
-   warning, not collide with the pool's orphan sweep. The Wayland leg still works. (Task 5
-   `test_x_start_inside_pool_disables_x11_leg`.)
+5. ~~**`display_bridge_x_start` lands inside the Xvfb pool range.**~~ Moot since spec §8 fix round 1:
+   the X11 forward is a path display in the private dir, with no display number to collide. (Task 5
+   `test_x11_leg_follows_only_its_setting`.)
 
 ---
 

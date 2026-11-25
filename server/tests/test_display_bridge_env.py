@@ -1,8 +1,7 @@
 """The SOURCE host's view of the display bridge (spec §8 "Session env on the source").
 
-Real AF_UNIX listeners in a short temp dir stand in for the forwarded sockets the target's
-bridge ssh creates; ``x11_dir`` points the X socket lookup at tmp_path instead of
-/tmp/.X11-unix.
+Real AF_UNIX listeners stand in for the forwarded sockets the target's bridge ssh
+creates inside the source user's private dir.
 """
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ import pytest
 
 from server.sessions.display_bridge_env import (
     BRIDGE_DIR, REASON_BRIDGE_UNAVAILABLE, REASON_BRIDGE_WRONG_USER, SOURCE_WAYLAND_DISPLAY,
-    bridge_x_display, remote_env)
+    X11_SOCKET, bridge_x11_enabled, remote_env, x11_socket_path)
 
 
 def _listen(path) -> socket.socket:
@@ -33,9 +32,8 @@ def layout():
     root = Path(tempfile.mkdtemp(prefix="vpbe-", dir="/tmp"))
     xrd = root / "xrd"; xrd.mkdir(mode=0o700)
     (xrd / BRIDGE_DIR).mkdir(mode=0o700)
-    x11 = root / "x11"; x11.mkdir()
     socks: list[socket.socket] = []
-    yield xrd, x11, socks
+    yield xrd, socks
     for s in socks:
         s.close()
     shutil.rmtree(root, ignore_errors=True)
@@ -48,78 +46,80 @@ def _cookie(xrd):
     return p
 
 
+def _x11(xrd):
+    return xrd / BRIDGE_DIR / X11_SOCKET
+
+
 def test_remote_env_both_legs_live(layout):
-    xrd, x11, socks = layout
+    xrd, socks = layout
     socks.append(_listen(xrd / SOURCE_WAYLAND_DISPLAY))
-    socks.append(_listen(x11 / "X150"))
+    socks.append(_listen(_x11(xrd)))
     cookie = _cookie(xrd)
-    env = remote_env(runtime_dir=str(xrd), x_display=150, uid=os.getuid(), x11_dir=str(x11))
+    env = remote_env(runtime_dir=str(xrd), x11=True, uid=os.getuid())
+    # DISPLAY is the socket's absolute path, never ":N": with ":N" libxcb tries the
+    # abstract @/tmp/.X11-unix/X<N> first, which any local user can bind.
     assert env == {"WAYLAND_DISPLAY": SOURCE_WAYLAND_DISPLAY, "XDG_RUNTIME_DIR": str(xrd),
-                   "DISPLAY": ":150", "XAUTHORITY": str(cookie)}
+                   "DISPLAY": str(_x11(xrd)), "XAUTHORITY": str(cookie)}
+    assert x11_socket_path(str(xrd)) == str(_x11(xrd))
+    assert "/tmp/.X11-unix" not in env["DISPLAY"] and not env["DISPLAY"].startswith(":")
 
 
 def test_remote_env_wayland_only_when_x11_absent(layout):
-    xrd, x11, socks = layout
+    xrd, socks = layout
     socks.append(_listen(xrd / SOURCE_WAYLAND_DISPLAY))
     _cookie(xrd)
-    env = remote_env(runtime_dir=str(xrd), x_display=150, uid=os.getuid(), x11_dir=str(x11))
-    assert env == {"WAYLAND_DISPLAY": SOURCE_WAYLAND_DISPLAY, "XDG_RUNTIME_DIR": str(xrd)}
+    blank_x = {"WAYLAND_DISPLAY": SOURCE_WAYLAND_DISPLAY, "XDG_RUNTIME_DIR": str(xrd),
+               "DISPLAY": "", "XAUTHORITY": ""}
+    # No X socket: the X keys are blanked, so an inherited DISPLAY cannot leak through.
+    assert remote_env(runtime_dir=str(xrd), x11=True, uid=os.getuid()) == blank_x
     # X socket live but no cookie file: the X leg is still not exported.
-    socks.append(_listen(x11 / "X150"))
+    socks.append(_listen(_x11(xrd)))
     (xrd / BRIDGE_DIR / "xauth").unlink()
-    env = remote_env(runtime_dir=str(xrd), x_display=150, uid=os.getuid(), x11_dir=str(x11))
-    assert "DISPLAY" not in env
+    assert remote_env(runtime_dir=str(xrd), x11=True, uid=os.getuid()) == blank_x
     # The X11 leg switched off: never exported, even when live.
     _cookie(xrd)
-    env = remote_env(runtime_dir=str(xrd), x_display=None, uid=os.getuid(), x11_dir=str(x11))
-    assert "DISPLAY" not in env and "XAUTHORITY" not in env
+    assert remote_env(runtime_dir=str(xrd), x11=False, uid=os.getuid()) == blank_x
 
 
-def test_remote_env_x11_only_when_wayland_absent(layout):
-    xrd, x11, socks = layout
-    socks.append(_listen(x11 / "X150"))
+def test_remote_env_x11_only_blanks_wayland(layout):
+    xrd, socks = layout
+    socks.append(_listen(_x11(xrd)))
     cookie = _cookie(xrd)
-    env = remote_env(runtime_dir=str(xrd), x_display=150, uid=os.getuid(), x11_dir=str(x11))
-    assert env == {"DISPLAY": ":150", "XAUTHORITY": str(cookie)}
+    env = remote_env(runtime_dir=str(xrd), x11=True, uid=os.getuid())
+    assert env == {"WAYLAND_DISPLAY": "", "DISPLAY": str(_x11(xrd)), "XAUTHORITY": str(cookie)}
 
 
 def test_remote_env_dead_socket_is_bridge_unavailable(layout):
-    xrd, x11, socks = layout
+    xrd, socks = layout
     dead = _listen(xrd / SOURCE_WAYLAND_DISPLAY)
     dead.close()                                  # the file stays, nobody accepts
     assert (xrd / SOURCE_WAYLAND_DISPLAY).exists()
-    assert remote_env(runtime_dir=str(xrd), x_display=150, uid=os.getuid(),
-                      x11_dir=str(x11)) == REASON_BRIDGE_UNAVAILABLE
+    assert remote_env(runtime_dir=str(xrd), x11=True, uid=os.getuid()) == REASON_BRIDGE_UNAVAILABLE
     # Nothing there at all reads the same.
     (xrd / SOURCE_WAYLAND_DISPLAY).unlink()
-    assert remote_env(runtime_dir=str(xrd), x_display=150, uid=os.getuid(),
-                      x11_dir=str(x11)) == REASON_BRIDGE_UNAVAILABLE
+    assert remote_env(runtime_dir=str(xrd), x11=True, uid=os.getuid()) == REASON_BRIDGE_UNAVAILABLE
     # A regular file where the socket should be is not a bridge either.
     (xrd / SOURCE_WAYLAND_DISPLAY).write_text("")
-    assert remote_env(runtime_dir=str(xrd), x_display=None, uid=os.getuid(),
-                      x11_dir=str(x11)) == REASON_BRIDGE_UNAVAILABLE
+    assert remote_env(runtime_dir=str(xrd), x11=False, uid=os.getuid()) == REASON_BRIDGE_UNAVAILABLE
 
 
 def test_remote_env_foreign_uid_is_wrong_user(layout):
-    xrd, x11, socks = layout
+    xrd, socks = layout
     socks.append(_listen(xrd / SOURCE_WAYLAND_DISPLAY))
-    socks.append(_listen(x11 / "X150"))
+    socks.append(_listen(_x11(xrd)))
     _cookie(xrd)
-    assert remote_env(runtime_dir=str(xrd), x_display=150, uid=os.getuid() + 1,
-                      x11_dir=str(x11)) == REASON_BRIDGE_WRONG_USER
+    assert remote_env(runtime_dir=str(xrd), x11=True,
+                      uid=os.getuid() + 1) == REASON_BRIDGE_WRONG_USER
 
 
 class _S:
-    display_bridge_x_start = 150
     display_bridge_x11 = True
     enable_xvfb = True
     display_start = 100
-    display_count = 12
+    display_count = 100
 
 
-def test_x_start_inside_pool_disables_x11_leg():
-    assert bridge_x_display(_S()) == 150
-    assert bridge_x_display(type("S", (_S,), {"display_count": 60})()) is None
-    # Outside the pool when Xvfb is off, whatever the range says.
-    assert bridge_x_display(type("S", (_S,), {"display_count": 60, "enable_xvfb": False})()) == 150
-    assert bridge_x_display(type("S", (_S,), {"display_bridge_x11": False})()) is None
+def test_x11_leg_follows_only_its_setting():
+    # The path display carries no display number, so the Xvfb pool can never collide.
+    assert bridge_x11_enabled(_S()) is True
+    assert bridge_x11_enabled(type("S", (_S,), {"display_bridge_x11": False})()) is False

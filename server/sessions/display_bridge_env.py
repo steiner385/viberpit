@@ -2,18 +2,23 @@
 
 The target daemon's :mod:`server.sessions.display_bridge` forwards its desktop onto this
 host over ssh (spec §8 "Verified invocation"). On the source that leaves, per source host
-(one target at a time):
+(one target at a time), everything inside the session user's private 0700 dirs:
 
 * the waypipe server's Wayland socket ``$XDG_RUNTIME_DIR/wayland-viberpit-bridge``;
-* the X11 forward ``/tmp/.X11-unix/X<display_bridge_x_start>``;
-* the target's cookie ``$XDG_RUNTIME_DIR/viberpit-bridge/xauth`` (0600 in a 0700 dir).
+* the X11 forward ``$XDG_RUNTIME_DIR/viberpit-bridge/X11``;
+* the target's cookie ``$XDG_RUNTIME_DIR/viberpit-bridge/xauth`` (0600).
+
+The X11 leg deliberately avoids ``/tmp/.X11-unix``: with ``DISPLAY=:N`` libxcb connects to
+the ABSTRACT socket ``@/tmp/.X11-unix/X<N>`` first, which any local user can bind (no
+filesystem ownership applies), and session clients would hand the target's cookie to an
+impostor. ``DISPLAY`` is the socket's absolute path instead — libxcb (≥1.13) then connects
+to that filesystem path only, and authenticates as display 0 (verified on rocky, libxcb
+1.17, with strace: one ``connect`` to the path, no abstract attempt).
 
 This module owns that layout (the target side imports the names from here) and the one
 liveness check: a socket counts only when it exists, is a socket, is owned by the
-session user and accepts ``connect()`` — a stale socket file left by a dead bridge, or
-one another user squatted in the world-writable ``/tmp/.X11-unix``, must never reach a
-session's env. The check blocks for up to ``_CONNECT_TIMEOUT_S`` per leg, so async
-callers run it in a worker thread.
+session user and accepts ``connect()``. The check blocks for up to ``_CONNECT_TIMEOUT_S``
+per leg, so async callers run it in a worker thread.
 """
 from __future__ import annotations
 
@@ -24,7 +29,10 @@ from typing import Any
 
 SOURCE_WAYLAND_DISPLAY = "wayland-viberpit-bridge"
 BRIDGE_DIR = "viberpit-bridge"
-X11_SOCKET_DIR = "/tmp/.X11-unix"
+X11_SOCKET = "X11"
+XAUTH_FILE = "xauth"
+# A path DISPLAY carries no display number; libxcb looks its cookie up as display 0.
+X11_AUTH_DISPLAY = 0
 
 # Fallback reasons (spec Global Constraints; exact strings).
 REASON_BRIDGE_UNAVAILABLE = "bridge_unavailable"
@@ -38,31 +46,19 @@ _DEAD = "dead"
 _FOREIGN = "foreign"
 
 
-def bridge_x11_disabled_reason(settings: Any) -> str | None:
-    """Why this host runs the bridge without its X11 leg, or None when the leg is on.
-    The X11 leg is off by setting, or when its display number sits inside the Xvfb pool
-    (X11Manager would lease, and its orphan sweep reap, that display)."""
-    if not getattr(settings, "display_bridge_x11", True):
-        return "VIBERPIT_DISPLAY_BRIDGE_X11=false"
-    if getattr(settings, "enable_xvfb", False):
-        x_start = int(getattr(settings, "display_bridge_x_start", 150))
-        start = int(getattr(settings, "display_start", 100))
-        count = int(getattr(settings, "display_count", 12))
-        if start <= x_start < start + count:
-            return f":{x_start} is inside the Xvfb pool [{start}, {start + count})"
-    return None
-
-
-def bridge_x_display(settings: Any) -> int | None:
-    """The forwarded X display number, or None when the X11 leg is off on this host."""
-    if bridge_x11_disabled_reason(settings) is not None:
-        return None
-    return int(getattr(settings, "display_bridge_x_start", 150))
+def bridge_x11_enabled(settings: Any) -> bool:
+    """Whether this host runs (target) or exports (source) the bridge's X11 leg."""
+    return bool(getattr(settings, "display_bridge_x11", True))
 
 
 def source_runtime_dir(uid: int) -> str:
     """The session user's ``$XDG_RUNTIME_DIR`` (the daemon runs as that user)."""
     return os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
+
+
+def x11_socket_path(runtime_dir: str) -> str:
+    """The X11 forward on the source; also the session's ``DISPLAY`` (path form)."""
+    return os.path.join(runtime_dir, BRIDGE_DIR, X11_SOCKET)
 
 
 def _socket_state(path: str, uid: int) -> str:
@@ -95,27 +91,31 @@ def _cookie_ok(path: str, uid: int) -> bool:
     return stat.S_ISREG(st.st_mode) and st.st_uid == uid
 
 
-def remote_env(*, runtime_dir: str, x_display: int | None, uid: int,
-               x11_dir: str = X11_SOCKET_DIR) -> dict[str, str] | str:
+def remote_env(*, runtime_dir: str, x11: bool, uid: int) -> dict[str, str] | str:
     """The env that points a session at the bridge, or why it can't.
 
-    Returns ``WAYLAND_DISPLAY``/``XDG_RUNTIME_DIR`` when the Wayland socket is live, plus
-    ``DISPLAY``/``XAUTHORITY`` when *x_display* is set and both its socket and the cookie
-    file are live; at least one leg must be. Otherwise ``bridge_wrong_user`` when a
-    socket exists but belongs to another uid, else ``bridge_unavailable``. *x11_dir* is
-    a test seam (X clients always look in /tmp/.X11-unix).
+    A live Wayland leg gives ``WAYLAND_DISPLAY``/``XDG_RUNTIME_DIR``; a live X11 leg (*x11*
+    on, socket live, cookie file present) gives ``DISPLAY`` (the socket path) and
+    ``XAUTHORITY``. A leg that is not live has its keys set to "" so an inherited value
+    can never send a window to this host's own screen. At least one leg must be live;
+    otherwise ``bridge_wrong_user`` when a socket exists but belongs to another uid, else
+    ``bridge_unavailable``.
     """
-    env: dict[str, str] = {}
     states = [_socket_state(os.path.join(runtime_dir, SOURCE_WAYLAND_DISPLAY), uid)]
+    env = {"WAYLAND_DISPLAY": "", "DISPLAY": "", "XAUTHORITY": ""}
+    live = False
     if states[0] == _LIVE:
         env["WAYLAND_DISPLAY"] = SOURCE_WAYLAND_DISPLAY
         env["XDG_RUNTIME_DIR"] = runtime_dir
-    if x_display is not None:
-        states.append(_socket_state(os.path.join(x11_dir, f"X{x_display}"), uid))
-        cookie = os.path.join(runtime_dir, BRIDGE_DIR, "xauth")
+        live = True
+    if x11:
+        sock = x11_socket_path(runtime_dir)
+        states.append(_socket_state(sock, uid))
+        cookie = os.path.join(runtime_dir, BRIDGE_DIR, XAUTH_FILE)
         if states[-1] == _LIVE and _cookie_ok(cookie, uid):
-            env["DISPLAY"] = f":{x_display}"
+            env["DISPLAY"] = sock
             env["XAUTHORITY"] = cookie
-    if env:
+            live = True
+    if live:
         return env
     return REASON_BRIDGE_WRONG_USER if _FOREIGN in states else REASON_BRIDGE_UNAVAILABLE

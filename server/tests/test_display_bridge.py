@@ -165,7 +165,7 @@ def _wayland(tmp_path, cookie=COOKIE, display=":0") -> DesktopSession:
 def _bridge(native, spawn, clock=None, *, accept=("rocky",), x11=True, sleeps=None, **kw):
     return DisplayBridge(
         native=native, accept_from=frozenset(accept), ssh_dest=lambda s: None,
-        x11_enabled=x11, x_start=150, grace_s=60.0, silence_s=90.0,
+        x11_enabled=x11, grace_s=60.0, silence_s=90.0,
         spawn=spawn, clock=clock or Clock(), settle_s=0.01,
         sleep=sleeps or Sleeps(), wall=lambda: 1234.5, **kw)
 
@@ -201,7 +201,6 @@ async def test_ensure_starts_one_ssh_per_source_with_verified_argv(tmp_path):
     (prep,) = spawn.of("prep")
     assert prep.argv[:4] == ["ssh", "-o", "BatchMode=yes", "tony@rocky"]
     assert prep.argv[4] == (
-        "[ -d /tmp/.X11-unix ] || { echo 'viberpit-bridge: /tmp/.X11-unix missing' >&2; exit 3; }\n"
         "umask 077\n"
         'case "$XDG_RUNTIME_DIR" in /*) ;; *) '
         "echo 'viberpit-bridge: XDG_RUNTIME_DIR unset' >&2; exit 5;; esac\n"
@@ -211,16 +210,12 @@ async def test_ensure_starts_one_ssh_per_source_with_verified_argv(tmp_path):
         'mkdir -p "$d" && chmod 700 "$d"\n'
         '[ -d "$d" ] && [ -O "$d" ] && [ ! -L "$d" ] || '
         "{ echo 'viberpit-bridge: private dir not owned' >&2; exit 4; }\n"
-        'rm -f "$d/waypipe.sock" /tmp/.X11-unix/X150\n'
-        '[ ! -L /tmp/.X11-unix ] && [ -k /tmp/.X11-unix ] && '
-        '[ "$(stat -c %u /tmp/.X11-unix)" = 0 ] || '
-        "{ echo 'viberpit-bridge: /tmp/.X11-unix not root-owned and sticky' >&2; exit 4; }\n"
-        "if [ -e /tmp/.X11-unix/X150 ] || [ -L /tmp/.X11-unix/X150 ]; then "
-        "echo 'viberpit-bridge: /tmp/.X11-unix/X150 held by another user' >&2; exit 4; fi\n"
+        'rm -f "$d/waypipe.sock" "$d/X11"\n'
         ': > "$d/xauth" && chmod 600 "$d/xauth"\n'
         'xauth -q -f "$d/xauth" source -\n'
         "printf '%s\\n' \"$XDG_RUNTIME_DIR\"")
-    assert prep.stdin_data == f"add :150 MIT-MAGIC-COOKIE-1 {COOKIE_HEX}\n".encode()
+    # The source's DISPLAY is the socket path, which libxcb authenticates as display 0.
+    assert prep.stdin_data == f"add :0 MIT-MAGIC-COOKIE-1 {COOKIE_HEX}\n".encode()
 
     (client,) = spawn.of("client")
     assert client.argv == ["waypipe", "--socket", f"{t_xrd}/viberpit-bridge/rocky-waypipe.sock",
@@ -234,7 +229,7 @@ async def test_ensure_starts_one_ssh_per_source_with_verified_argv(tmp_path):
         "-o", "StreamLocalBindUnlink=yes", "-o", "ServerAliveInterval=15",
         "-o", "ServerAliveCountMax=3",
         "-R", f"{S_XRD}/viberpit-bridge/waypipe.sock:{t_xrd}/viberpit-bridge/rocky-waypipe.sock",
-        "-R", "/tmp/.X11-unix/X150:/tmp/.X11-unix/X0",
+        "-R", f"{S_XRD}/viberpit-bridge/X11:/tmp/.X11-unix/X0",
         "tony@rocky",
         f"exec waypipe --socket {S_XRD}/viberpit-bridge/waypipe.sock "
         "--display wayland-viberpit-bridge --unlink-socket server -- cat"]
@@ -331,7 +326,8 @@ async def test_unlisted_source_torn_down_after_grace(tmp_path):
     await _until(lambda: len(spawn.of("cleanup")) == 1)
     assert spawn.of("cleanup")[0].argv == [
         "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "tony@rocky",
-        'rm -f /tmp/.X11-unix/X150 "$XDG_RUNTIME_DIR/viberpit-bridge/waypipe.sock" '
+        'rm -f "$XDG_RUNTIME_DIR/viberpit-bridge/X11" '
+        '"$XDG_RUNTIME_DIR/viberpit-bridge/waypipe.sock" '
         '"$XDG_RUNTIME_DIR/viberpit-bridge/xauth"']
     assert bridge.info()["active"] == []
     await bridge.stop_all()
@@ -414,7 +410,7 @@ async def test_crash_restarts_with_backoff_while_desired(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("rc", [3, 4, 5])
+@pytest.mark.parametrize("rc", [4, 5])
 async def test_prep_failure_is_failed_and_retried(tmp_path, caplog, rc):
     caplog.set_level(logging.INFO, logger="server.sessions.display_bridge")
     sleeps = Sleeps()
@@ -426,7 +422,7 @@ async def test_prep_failure_is_failed_and_retried(tmp_path, caplog, rc):
     assert failed and all(r.levelno == logging.INFO for r in failed)
     assert "source=rocky leg=prep state=failed" in failed[0].getMessage()
     # Each exit code names its own cause: an unset runtime dir is not reported as a squat.
-    expected = {3: "no X11 socket dir", 4: "held by another user",
+    expected = {4: "private dir held by another user",
                 5: "XDG_RUNTIME_DIR unset or invalid"}[rc]
     assert expected in failed[0].getMessage()
     assert "/tmp" not in failed[0].getMessage()      # names the source, not paths
@@ -434,36 +430,28 @@ async def test_prep_failure_is_failed_and_retried(tmp_path, caplog, rc):
     await bridge.stop_all()
 
 
-def test_prep_refuses_a_squatted_x_socket_or_foreign_private_dir():
-    from server.sessions.display_bridge import PREP_RC_SQUATTED, _prep_script
+def test_prep_keeps_every_source_file_in_the_private_dir():
+    """Nothing the bridge binds or writes on the source lives in /tmp/.X11-unix: with
+    DISPLAY=:N libxcb tries the abstract @/tmp/.X11-unix/X<N> first, which any local user
+    can bind, so no filesystem check there can stop an impostor (fix round 1)."""
+    from server.sessions.display_bridge import (PREP_RC_NO_RUNTIME_DIR, PREP_RC_SQUATTED,
+                                                _cleanup_script, _prep_script)
 
-    script = _prep_script(150, x11=True)
+    script = _prep_script()
+    assert "/tmp/.X11-unix" not in script and "/tmp/.X11-unix" not in _cleanup_script()
     lines = script.splitlines()
     rm = next(i for i, ln in enumerate(lines) if ln.startswith("rm -f"))
-    check = next(i for i, ln in enumerate(lines) if "[ -e /tmp/.X11-unix/X150 ]" in ln)
-    # After the rm (which silently fails on another user's file in the sticky dir), before
-    # any cookie is written: a survivor means an impostor would get the cookie.
-    assert rm < check < next(i for i, ln in enumerate(lines) if "xauth" in ln)
-    assert f"exit {PREP_RC_SQUATTED}" in lines[check] and "[ -L /tmp/.X11-unix/X150 ]" in lines[check]
+    assert lines[rm] == 'rm -f "$d/waypipe.sock" "$d/X11"'
+    # The private dir must be a real dir owned by the bridge user, before anything is
+    # removed or the cookie is written.
     dir_check = next(i for i, ln in enumerate(lines) if '[ -O "$d" ]' in ln)
     assert dir_check < rm and f"exit {PREP_RC_SQUATTED}" in lines[dir_check]
-    # /tmp/.X11-unix itself must be root-owned and sticky, else its owner can unlink the
-    # bound socket; checked before any cookie is written.
-    sticky = next(i for i, ln in enumerate(lines) if "[ -k /tmp/.X11-unix ]" in ln)
-    assert '"$(stat -c %u /tmp/.X11-unix)" = 0' in lines[sticky]
-    assert "[ ! -L /tmp/.X11-unix ]" in lines[sticky]
-    assert f"exit {PREP_RC_SQUATTED}" in lines[sticky]
-    assert sticky < next(i for i, ln in enumerate(lines) if "xauth" in ln)
+    assert dir_check < next(i for i, ln in enumerate(lines) if "xauth" in ln)
     # An unset/invalid runtime dir has its own code, checked before $d is used.
-    from server.sessions.display_bridge import PREP_RC_NO_RUNTIME_DIR
     xrd = [i for i, ln in enumerate(lines) if f"exit {PREP_RC_NO_RUNTIME_DIR}" in ln]
     assert len(xrd) == 2 and max(xrd) < next(
         i for i, ln in enumerate(lines) if ln.startswith('d="'))
-    # The Wayland sockets and the cookie file live only under the private dir / runtime dir.
     assert '"$d/waypipe.sock"' in script and '"$d/xauth"' in script
-    # No X11 leg: an X squatter must not take the Wayland leg down.
-    assert "[ -e /tmp/.X11-unix/X150 ]" not in _prep_script(150, x11=False)
-    assert "[ -k /tmp/.X11-unix ]" not in _prep_script(150, x11=False)
 
 
 @pytest.mark.asyncio
@@ -599,7 +587,7 @@ def test_shutdown_cleanup_fits_the_daemon_shutdown_cap(tmp_path):
     from server.ipc.serve import _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S
 
     bridge = DisplayBridge(native=FakeNative(None), accept_from=frozenset(),
-                           ssh_dest=lambda s: None, x11_enabled=True, x_start=150,
+                           ssh_dest=lambda s: None, x11_enabled=True,
                            grace_s=60.0, silence_s=90.0)
     terminate_wait_s = 5.0   # x11manager._terminate's SIGTERM grace, per process group
     assert bridge._shutdown_cleanup_timeout_s + terminate_wait_s < _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S
@@ -618,7 +606,7 @@ async def test_cookie_rotation_repushes_and_restarts_x11_leg(tmp_path):
     assert first.terminated
     preps = spawn.of("prep")
     assert len(preps) == 2
-    assert preps[1].stdin_data == f"add :150 MIT-MAGIC-COOKIE-1 {ROTATED.hex()}\n".encode()
+    assert preps[1].stdin_data == f"add :0 MIT-MAGIC-COOKIE-1 {ROTATED.hex()}\n".encode()
     # Same desktop on the next tick: no further restart.
     await bridge.tick()
     await asyncio.sleep(0.02)
@@ -660,7 +648,7 @@ async def test_x11_leg_absent_when_disabled_or_target_is_x11_only_for_wayland_le
     bridge = _bridge(FakeNative(_wayland(tmp_path)), spawn, x11=False)
     await _up(bridge, dest="rocky")
     (ssh,) = spawn.of("bridge")
-    assert not any(a.startswith("/tmp/.X11-unix/") for a in ssh.argv)
+    assert not any("/viberpit-bridge/X11:" in a for a in ssh.argv)
     assert ssh.argv.count("-R") == 1
     assert spawn.of("prep")[0].stdin_data == b""
     assert bridge.info()["active"][0]["legs"] == ["wayland"]
@@ -675,7 +663,8 @@ async def test_x11_leg_absent_when_disabled_or_target_is_x11_only_for_wayland_le
     await _up(bridge, dest="rocky")
     assert spawn.of("client") == []
     (ssh,) = spawn.of("bridge")
-    assert ssh.argv[-3:] == ["/tmp/.X11-unix/X150:/tmp/.X11-unix/X1", "rocky", "exec cat"]
+    assert ssh.argv[-3:] == [f"{S_XRD}/viberpit-bridge/X11:/tmp/.X11-unix/X1", "rocky",
+                             "exec cat"]
     assert ssh.argv.count("-R") == 1
     assert bridge.info()["active"][0]["legs"] == ["x11"]
     await bridge.stop_all()
@@ -747,12 +736,8 @@ def test_native_display_current_session_accessor():
 class _Settings:
     display_bridge_enabled = True
     display_bridge_accept_from = "Rocky, zeta"
-    display_bridge_x_start = 150
     display_bridge_x11 = True
     display_bridge_grace_s = 60.0
-    enable_xvfb = True
-    display_start = 100
-    display_count = 12
 
 
 def test_build_display_bridge(caplog):
@@ -764,8 +749,10 @@ def test_build_display_bridge(caplog):
     assert b is not None and b.info() == {"accepts": ["rocky", "zeta"], "active": []}
     assert b._x11_enabled is True and b._silence_s == 90.0
     caplog.set_level(logging.INFO)
-    pooled = build_display_bridge(type("S", (_Settings,), {"display_bridge_x_start": 105})(), native)
-    assert pooled is not None and pooled._x11_enabled is False
+    # The X11 forward no longer uses a display number, so the Xvfb pool cannot collide.
+    pooled = build_display_bridge(type("S", (_Settings,), {
+        "enable_xvfb": True, "display_start": 100, "display_count": 100})(), native)
+    assert pooled is not None and pooled._x11_enabled is True
     off = build_display_bridge(type("S", (_Settings,), {"display_bridge_x11": False})(), native)
     assert off is not None and off._x11_enabled is False
     assert all(r.levelno < logging.WARNING for r in caplog.records)

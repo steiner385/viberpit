@@ -179,8 +179,7 @@ from server.sessions.display_policy import (
 )
 from server.sessions.display_bridge_env import (
     REASON_BRIDGE_UNAVAILABLE,
-    bridge_x11_disabled_reason,
-    bridge_x_display,
+    bridge_x11_enabled,
     remote_env,
     source_runtime_dir,
 )
@@ -3028,7 +3027,7 @@ class SessionOrchestrator:
                 return self._native.env()
             return {}
         if rec is not None and rec.display_mode == DISPLAY_REMOTE:
-            state = self._bridge_state()
+            state = self._bridge_state(rec.display_target_host)
             return dict(state) if isinstance(state, dict) else {}
         return self._x11.env_for(session_id) if self._x11 else {}
 
@@ -5135,30 +5134,49 @@ class SessionOrchestrator:
             return None
         return target
 
-    async def _refresh_bridge(self) -> dict[str, str] | str:
-        """Probe the display bridge's sockets on this (source) host in a worker thread
-        (each connect may wait up to 0.5 s) and cache the result for the sync readers
-        (``_display_env``, ``_resolve_display_mode_for``). Returns the env, or why not."""
+    async def _current_display_target(self) -> str | None:
+        """This host's configured display target right now (its ``Host.display_target``
+        row), or None: local, kill switch off, no row, or the registry unreadable. The
+        bridge's sockets on this host lead to THAT desktop, whatever a record says."""
         from server.config import get_settings
-        settings = get_settings()
-        x_display = bridge_x_display(settings)
-        if x_display is None and not getattr(self, "_bridge_x11_off_logged", False):
-            self._bridge_x11_off_logged = True
-            log.info("display bridge: X11 leg not exported to remote sessions: %s",
-                     bridge_x11_disabled_reason(settings))
-        uid = os.getuid()
-        state = await asyncio.to_thread(
-            remote_env, runtime_dir=source_runtime_dir(uid), x_display=x_display, uid=uid)
-        self._bridge_probe = (time.monotonic(), state)
-        return state
+        if not getattr(get_settings(), "display_bridge_enabled", True):
+            return None
+        from server.db.models import Host
+        from server.sessions.display_target import parse_display_target
+        try:
+            async with db_session() as db:
+                row = await db.get(Host, self_host_name())
+            return parse_display_target(row.display_target) if row is not None else None
+        except Exception as exc:  # noqa: BLE001 — unknown target reads as "no bridge here"
+            log.info("display bridge: host target unreadable (%s); remote env withheld",
+                     type(exc).__name__)
+            return None
 
-    def _bridge_state(self) -> dict[str, str] | str:
-        """The last bridge probe while it is fresh (``_BRIDGE_PROBE_TTL_S``), else
-        unavailable: a stale "live" must not outlive the sockets it saw."""
+    async def _refresh_bridge(self) -> None:
+        """Probe the display bridge's sockets on this (source) host in a worker thread
+        (each connect may wait up to 0.5 s), read which target they lead to, and cache
+        both for the sync readers (``_display_env``, ``_resolve_display_mode_for``)."""
+        from server.config import get_settings
+        x11 = bridge_x11_enabled(get_settings())
+        uid = os.getuid()
+        current = await self._current_display_target()
+        state = await asyncio.to_thread(
+            remote_env, runtime_dir=source_runtime_dir(uid), x11=x11, uid=uid)
+        self._bridge_probe = (time.monotonic(), state, current)
+
+    def _bridge_state(self, target_host: str | None) -> dict[str, str] | str:
+        """The bridge env for a session drawing on *target_host*, or why not. Unavailable
+        when the last probe is stale (``_BRIDGE_PROBE_TTL_S``: a stale "live" must not
+        outlive the sockets it saw), or when this host's target is no longer
+        *target_host* (the target moved, or another host adopted the row) — its sockets
+        would put the session's windows on the wrong desktop."""
         probe = getattr(self, "_bridge_probe", None)
         if probe is None or time.monotonic() - probe[0] > _BRIDGE_PROBE_TTL_S:
             return REASON_BRIDGE_UNAVAILABLE
-        return probe[1]
+        _ts, state, current = probe
+        if not target_host or (current or "").lower() != target_host.strip().lower():
+            return REASON_BRIDGE_UNAVAILABLE
+        return state
 
     async def _refresh_display(self, display_target: str | None) -> None:
         """Warm every input of ``_resolve_display_mode_for`` off the loop: the native
@@ -5197,7 +5215,7 @@ class SessionOrchestrator:
             native_reason = (self._native.unavailable_reason() if self._native is not None
                              else "native_disabled")
         target = self._effective_display_target(display_target)
-        bridge = self._bridge_state() if target is not None else None
+        bridge = self._bridge_state(target) if target is not None else None
         return resolve_display_decision(
             requested=display, client_node=client_node, runner=self_host_name(),
             native_available=available, native_unavailable_reason=native_reason,
@@ -7531,13 +7549,17 @@ class SessionOrchestrator:
             # Chromium runs HERE (the source host) and draws on the target desktop
             # through the bridge's forwarded sockets — Wayland-native when that leg is
             # live, else over the X11 leg.
-            state = await self._refresh_bridge()
+            await self._refresh_bridge()
+            state = self._bridge_state(rec.display_target_host)
             if not isinstance(state, dict):
                 return {"ok": False, "reason": state}
+            # The launcher is NativeDisplay's (one argv/cap/profile/close path), so a
+            # remote browser needs this host's NativeDisplay wired up even with no desktop
+            # of its own: with VIBERPIT_NATIVE_DISPLAY_ENABLED=false there is none.
             if self._native is None:
                 return {"ok": False, "reason": "no_display"}
             reason = await self._native.launch_browser_with_env(
-                session_id, url, env=state, wayland="WAYLAND_DISPLAY" in state)
+                session_id, url, env=state, wayland=bool(state.get("WAYLAND_DISPLAY")))
             return {"ok": reason is None, "reason": reason}
         if self._x11 is None or self._x11.display_for(session_id) is None:
             return {"ok": False, "reason": "no_display"}

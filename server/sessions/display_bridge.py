@@ -8,7 +8,9 @@ The argv is spec §8 "Verified invocation" (docs/superpowers/specs/
 
 1. **prep** — a short ssh that removes stale remote sockets, writes the target's X cookie
    into a 0600 file on the source (the cookie travels on ssh STDIN, never argv) and prints
-   the source's ``$XDG_RUNTIME_DIR``. Exit 3 = no ``/tmp/.X11-unix`` on the source.
+   the source's ``$XDG_RUNTIME_DIR``. Every source-side file lives in the source user's
+   private ``$XDG_RUNTIME_DIR/viberpit-bridge`` (0700) — the X11 forward included, never
+   ``/tmp/.X11-unix`` (its abstract-namespace twin is bindable by any local user).
 2. ``waypipe --socket <T_XRD>/viberpit-bridge/<src>-waypipe.sock client`` on the target.
 3. the bridge ssh, its stdin a pipe held open: ``exec waypipe … server -- cat`` on the
    source dies with the connection, so killing ssh leaves no live-but-dead socket.
@@ -41,7 +43,8 @@ from server.deploy.steps import SSH_HOST_RE
 from server.obs.tasks import supervise
 from server.sessions.desktop_session import DesktopSession, _cookie_for
 from server.sessions.display_bridge_env import (BRIDGE_DIR, SOURCE_WAYLAND_DISPLAY,
-                                                bridge_x11_disabled_reason)
+                                                X11_AUTH_DISPLAY, X11_SOCKET, XAUTH_FILE,
+                                                bridge_x11_enabled)
 from server.sessions.display_target import _HOST_NAME_RE, accepted_sources
 from server.sessions.native_display import _STALE_ENV, NativeDisplay, _display_number
 from server.sessions.x11manager import _terminate
@@ -73,21 +76,15 @@ _CLEANUP_RETRY_DELAYS_S = (5.0, 30.0, 120.0)
 Spawn = Callable[..., Awaitable[Any]]
 
 
-PREP_RC_NO_X11_DIR = 3
-# Something the bridge user does not own sits where the bridge must bind: the private dir,
-# or (X11 leg) /tmp/.X11-unix/X<N> — world-writable sticky dir, so `rm -f` silently fails on
-# another user's squatted socket and session clients would hand the cookie to an impostor.
+# Something the bridge user does not own sits where the bridge must bind: the private dir.
 PREP_RC_SQUATTED = 4
 # The source login has no usable $XDG_RUNTIME_DIR (unset, relative, missing or not its own):
 # a configuration problem, kept distinct so the log never points at a squat that did not happen.
 PREP_RC_NO_RUNTIME_DIR = 5
 
 
-def _prep_script(x_display: int, *, x11: bool) -> str:
-    x_sock = f"/tmp/.X11-unix/X{x_display}"
-    lines = [
-        "[ -d /tmp/.X11-unix ] || { echo 'viberpit-bridge: /tmp/.X11-unix missing' >&2; "
-        f"exit {PREP_RC_NO_X11_DIR}; }}",
+def _prep_script() -> str:
+    return "\n".join([
         "umask 077",
         'case "$XDG_RUNTIME_DIR" in /*) ;; *) '
         f"echo 'viberpit-bridge: XDG_RUNTIME_DIR unset' >&2; exit {PREP_RC_NO_RUNTIME_DIR};; esac",
@@ -97,29 +94,15 @@ def _prep_script(x_display: int, *, x11: bool) -> str:
         'mkdir -p "$d" && chmod 700 "$d"',
         '[ -d "$d" ] && [ -O "$d" ] && [ ! -L "$d" ] || '
         f"{{ echo 'viberpit-bridge: private dir not owned' >&2; exit {PREP_RC_SQUATTED}; }}",
-        f'rm -f "$d/waypipe.sock" {x_sock}',
-    ]
-    if x11:
-        # A user-owned or non-sticky /tmp/.X11-unix lets its owner unlink the bound socket.
-        lines.append(
-            '[ ! -L /tmp/.X11-unix ] && [ -k /tmp/.X11-unix ] && '
-            '[ "$(stat -c %u /tmp/.X11-unix)" = 0 ] || '
-            "{ echo 'viberpit-bridge: /tmp/.X11-unix not root-owned and sticky' >&2; "
-            f"exit {PREP_RC_SQUATTED}; }}")
-        lines.append(
-            f"if [ -e {x_sock} ] || [ -L {x_sock} ]; then "
-            f"echo 'viberpit-bridge: {x_sock} held by another user' >&2; "
-            f"exit {PREP_RC_SQUATTED}; fi")
-    lines += [
-        ': > "$d/xauth" && chmod 600 "$d/xauth"',
-        'xauth -q -f "$d/xauth" source -',
-        "printf '%s\\n' \"$XDG_RUNTIME_DIR\""]
-    return "\n".join(lines)
+        f'rm -f "$d/waypipe.sock" "$d/{X11_SOCKET}"',
+        f': > "$d/{XAUTH_FILE}" && chmod 600 "$d/{XAUTH_FILE}"',
+        f'xauth -q -f "$d/{XAUTH_FILE}" source -',
+        "printf '%s\\n' \"$XDG_RUNTIME_DIR\""])
 
 
-def _cleanup_script(x_display: int) -> str:
-    return (f'rm -f /tmp/.X11-unix/X{x_display} "$XDG_RUNTIME_DIR/{BRIDGE_DIR}/waypipe.sock" '
-            f'"$XDG_RUNTIME_DIR/{BRIDGE_DIR}/xauth"')
+def _cleanup_script() -> str:
+    d = f'"$XDG_RUNTIME_DIR/{BRIDGE_DIR}'
+    return f'rm -f {d}/{X11_SOCKET}" {d}/waypipe.sock" {d}/{XAUTH_FILE}"'
 
 
 def _client_socket(t_xrd: str, source: str) -> str:
@@ -198,7 +181,7 @@ class _Bridge:
 
 class DisplayBridge:
     def __init__(self, *, native: NativeDisplay, accept_from: frozenset[str],
-                 ssh_dest: Callable[[str], str | None], x11_enabled: bool, x_start: int,
+                 ssh_dest: Callable[[str], str | None], x11_enabled: bool,
                  grace_s: float, silence_s: float, spawn: Spawn = asyncio.create_subprocess_exec,
                  clock: Callable[[], float] = time.monotonic,
                  wall: Callable[[], float] = time.time,
@@ -211,7 +194,6 @@ class DisplayBridge:
         self._accept = frozenset(s.lower() for s in accept_from)
         self._ssh_dest = ssh_dest
         self._x11_enabled = x11_enabled
-        self._x_start = x_start
         self._grace_s = grace_s
         self._silence_s = silence_s
         self._spawn = spawn
@@ -472,7 +454,7 @@ class DisplayBridge:
         if LEG_WAYLAND in b.legs:
             argv += ["-R", f"{remote_sock}:{b.client_socket}"]
         if LEG_X11 in b.legs:
-            argv += ["-R", f"/tmp/.X11-unix/X{self._x_start}:"
+            argv += ["-R", f"{s_xrd}/{BRIDGE_DIR}/{X11_SOCKET}:"
                            f"/tmp/.X11-unix/X{_display_number(desk.display)}"]
         if LEG_WAYLAND in b.legs:
             remote = (f"exec waypipe --socket {remote_sock} --display {SOURCE_WAYLAND_DISPLAY} "
@@ -489,12 +471,15 @@ class DisplayBridge:
             number = _display_number(desk.display)
             cookie = await asyncio.to_thread(_cookie_for, desk.xauthority, str(number))
             if cookie:
-                cookie_line = f"add :{self._x_start} MIT-MAGIC-COOKIE-1 {cookie.hex()}\n".encode()
+                # The source's DISPLAY is the socket path, which libxcb authenticates as
+                # display 0: `add :0` stores <src>/unix:0 in the private cookie file.
+                cookie_line = (f"add :{X11_AUTH_DISPLAY} MIT-MAGIC-COOKIE-1 "
+                               f"{cookie.hex()}\n").encode()
         proc = None
         try:
             proc = await self._spawn(
                 "ssh", "-o", "BatchMode=yes", b.dest,
-                _prep_script(self._x_start, x11=LEG_X11 in b.legs),
+                _prep_script(),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
             out, _ = await asyncio.wait_for(proc.communicate(cookie_line),
@@ -506,8 +491,7 @@ class DisplayBridge:
             if proc is not None and proc.returncode is None:
                 await _terminate_group(proc)
         if proc.returncode != 0:
-            why = {PREP_RC_NO_X11_DIR: " (source has no X11 socket dir)",
-                   PREP_RC_SQUATTED: " (socket or dir held by another user)",
+            why = {PREP_RC_SQUATTED: " (private dir held by another user)",
                    PREP_RC_NO_RUNTIME_DIR: " (source XDG_RUNTIME_DIR unset or invalid)"}.get(
                        proc.returncode, "")
             log.info("display bridge: source=%s leg=prep state=failed rc=%s%s",
@@ -609,7 +593,7 @@ class DisplayBridge:
         try:
             proc = await self._spawn(
                 "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", dest,
-                _cleanup_script(self._x_start),
+                _cleanup_script(),
                 stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
             rc = await asyncio.wait_for(
@@ -630,16 +614,14 @@ def build_display_bridge(settings, native: NativeDisplay | None) -> DisplayBridg
     if native is None:
         log.info("display bridge: native display disabled on this host; bridge off")
         return None
-    x_start = int(getattr(settings, "display_bridge_x_start", 150))
-    x11_off = bridge_x11_disabled_reason(settings)
-    if x11_off is not None:
-        log.info("display bridge: X11 leg disabled: %s", x11_off)
-    x11 = x11_off is None
+    x11 = bridge_x11_enabled(settings)
+    if not x11:
+        log.info("display bridge: X11 leg disabled (VIBERPIT_DISPLAY_BRIDGE_X11=false)")
     from server.sessions.host_probe import PROBE_INTERVAL_S
     return DisplayBridge(
         native=native, accept_from=accepted_sources(settings),
         # The edge sends each source's ssh destination; the host name is the fallback alias.
         ssh_dest=lambda source: source,
-        x11_enabled=x11, x_start=x_start,
+        x11_enabled=x11,
         grace_s=float(getattr(settings, "display_bridge_grace_s", 60.0)),
         silence_s=3 * PROBE_INTERVAL_S)
