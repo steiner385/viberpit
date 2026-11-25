@@ -14,7 +14,7 @@ import { useConfirm } from '@/ui/useConfirm'
 // key does not error, it just silently stops refreshing — a host the operator
 // adds, enables or removes would sit there until a reload.
 import {
-  FLEET_HOSTS_KEY, engineReasonLabel, hostEngine, useFleetHosts, type FleetHost,
+  FLEET_HOSTS_KEY, displayTargetChip, displayTargetName, engineReasonLabel, hostEngine, useFleetHosts, type FleetHost,
 } from '@/api/fleet'
 
 /** Prefix match, not ===: hosts abbreviate the same commit to different
@@ -251,6 +251,7 @@ export function FleetSection() {
                 <th className="py-1 pr-2">Host</th>
                 <th className="pr-2">Status</th>
                 <th className="pr-2">Codex</th>
+                <th className="pr-2">Display</th>
                 <th className="pr-2">Sessions</th>
                 <th className="pr-2">Load</th>
                 <th className="pr-2">Free mem</th>
@@ -277,6 +278,25 @@ export function FleetSection() {
                   </Cell>
                   <Cell label="Status">{healthLabel(h)}</Cell>
                   <Cell label="Codex"><CodexCell host={h} /></Cell>
+                  <Cell label="Display">
+                    <select
+                      aria-label={`display target for ${h.name}`}
+                      value={displayTargetName(h) ? `host:${displayTargetName(h)}` : ''}
+                      className={cn(HOST_FIELD, 'w-full sm:w-36')}
+                      onChange={(e) =>
+                        // "local" clears; null on the wire would mean "not supplied".
+                        patch.mutate({ name: h.name, body: { displayTarget: e.target.value || 'local' } })
+                      }
+                    >
+                      <option value="">This host (default)</option>
+                      {hosts.filter((o) => o.name !== h.name).map((o) => (
+                        <option key={o.name} value={`host:${o.name}`}>{o.name}'s desktop</option>
+                      ))}
+                    </select>
+                    {displayTargetChip(h, hosts) && (
+                      <div className="text-xs text-ink-muted">{displayTargetChip(h, hosts)}</div>
+                    )}
+                  </Cell>
                   <Cell label="Sessions"><CapacityCell host={h} /></Cell>
                   <Cell label="Load">{h.loadAvg?.toFixed(2) ?? '—'}</Cell>
                   <Cell label="Free mem">
@@ -423,6 +443,10 @@ export function FleetSection() {
         <p className="text-xs text-ink-muted">
           Weight is a tiebreaker when several hosts have headroom; it is not a cap. Disabling a
           host removes it from dispatch without deleting it.
+        </p>
+        <p className="text-xs text-ink-muted">
+          Programs on this host open as windows on the chosen desktop. X11 programs can read that
+          desktop's input while connected; Wayland programs cannot.
         </p>
         {gc && (
           <p className="text-xs text-ink-muted">

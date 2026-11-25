@@ -135,6 +135,66 @@ describe('FleetSection — the Codex column', () => {
   })
 })
 
+describe('FleetSection — display target', () => {
+  it('selecting a target PUTs displayTarget host:dobby', async () => {
+    renderFleet([fleetHost({ name: 'rocky' }), fleetHost({ name: 'dobby' })])
+    fireEvent.change(screen.getByLabelText('display target for rocky'), { target: { value: 'host:dobby' } })
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith('/fleet/hosts/rocky', { displayTarget: 'host:dobby' })
+    })
+  })
+
+  it('choosing "This host (default)" clears the target with "local"', async () => {
+    renderFleet([fleetHost({ name: 'rocky', displayTarget: 'host:dobby' }), fleetHost({ name: 'dobby' })])
+    fireEvent.change(screen.getByLabelText('display target for rocky'), { target: { value: '' } })
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith('/fleet/hosts/rocky', { displayTarget: 'local' })
+    })
+  })
+
+  it('self is not offered', () => {
+    renderFleet([fleetHost({ name: 'rocky' }), fleetHost({ name: 'dobby' })])
+    const select = screen.getByLabelText('display target for rocky')
+    const opts = within(select).getAllByRole('option').map((o) => o.textContent)
+    expect(opts).toEqual(['This host (default)', "dobby's desktop"])
+  })
+
+  it('chip shows not accepted when target accepts lacks this host', () => {
+    renderFleet([
+      fleetHost({ name: 'rocky', displayTarget: 'host:dobby' }),
+      fleetHost({ name: 'dobby', displayBridge: { accepts: ['other'], active: [] } }),
+    ])
+    expect(within(row('rocky')).getByText('→ dobby: not accepted')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['up', '→ dobby: bridge up'],
+    ['desktop_unavailable', '→ dobby: desktop logged out'],
+    ['starting', '→ dobby: unavailable'],
+  ])('chip for an active %s bridge', (state, text) => {
+    renderFleet([
+      fleetHost({ name: 'rocky', displayTarget: 'host:dobby' }),
+      fleetHost({ name: 'dobby', displayBridge: {
+        accepts: ['rocky'], active: [{ source: 'rocky', state, legs: [], since: null }] } }),
+    ])
+    expect(within(row('rocky')).getByText(text)).toBeInTheDocument()
+  })
+
+  it('chip is unavailable when the target advertises nothing', () => {
+    renderFleet([
+      fleetHost({ name: 'rocky', displayTarget: 'host:dobby' }),
+      fleetHost({ name: 'dobby', displayBridge: null }),
+    ])
+    expect(within(row('rocky')).getByText('→ dobby: unavailable')).toBeInTheDocument()
+  })
+
+  it('shows no chip without a target, and shows the help text', () => {
+    renderFleet([fleetHost({ name: 'rocky' })])
+    expect(within(row('rocky')).queryByText(/→/)).not.toBeInTheDocument()
+    expect(screen.getByText(/Programs on this host open as windows on the chosen desktop/)).toBeInTheDocument()
+  })
+})
+
 // Task 9 (spec D9): two "weight" dials exist in this app — this one is the
 // per-host DISPATCH-share multiplier, the product policy card's is a
 // per-product CONTESTED-SLOT share. The label disambiguates them; the Cap

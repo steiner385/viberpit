@@ -209,6 +209,7 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
           onUnpin: () => setAccountPin.mutate({ id: rt.sessionId, pinned: false }),
           host: sessionRecord?.host,
           displayMode: sessionRecord?.displayMode,
+          displayTargetHost: sessionRecord?.displayTargetHost,
           displayFallbackReason: sessionRecord?.displayFallbackReason,
           branch: sessionRecord?.branch,
           cwd: sessionRecord?.cwd,
@@ -474,7 +475,8 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
               return (
                 <div id="tab-panel-browser" role="tabpanel" aria-labelledby="tab-browser" className="flex-1 min-h-0">
                   <DeferredBrowserTab sessionId={rt.sessionId} statusState={rt.state.status.state}
-                                      displayMode={sessionRecord?.displayMode} host={sessionRecord?.host}
+                                      displayMode={sessionRecord?.displayMode} displayTargetHost={sessionRecord?.displayTargetHost}
+                                      host={sessionRecord?.host}
                                       x11Enabled={browserEnabled} devServers={devServers} />
                 </div>
               )

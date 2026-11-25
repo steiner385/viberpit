@@ -62,6 +62,21 @@ export interface HostUpgrade {
   target: string | null
 }
 
+/** One source host's bridge to this host, as the TARGET advertises it
+ *  (`server/sessions/display_bridge.py` snapshot via `GET /fleet/hosts`). */
+export interface DisplayBridgeActive {
+  source: string
+  state: string
+  legs: unknown[]
+  since: string | null
+}
+
+/** A target host's advertised bridge snapshot: who it accepts, who is connected. */
+export interface DisplayBridgeSnapshot {
+  accepts: string[]
+  active: DisplayBridgeActive[]
+}
+
 export interface FleetHost {
   name: string
   endpoint: string
@@ -78,6 +93,12 @@ export interface FleetHost {
   lastProbeAt: string | null
   lastError: string | null
   sshHost: string | null
+  /** `host:<name>` — this host's GUI sessions open on that host's desktop; null = local.
+   *  A PUT sends `"local"` (or `""`) to clear; `null` there means "not supplied". */
+  displayTarget?: string | null
+  displaySshHost?: string | null
+  /** Read-only: THIS host's advertised bridge (as a target). Null = never advertised. */
+  displayBridge?: DisplayBridgeSnapshot | null
   repoPath: string | null
   upgrade: HostUpgrade | null
   /**
@@ -139,6 +160,34 @@ export const ENGINE_REASON_LABELS: Record<string, string> = {
 export function engineReasonLabel(token: string | null | undefined): string {
   if (!token) return 'unavailable'
   return ENGINE_REASON_LABELS[token] ?? token
+}
+
+/** The host name a `host:<name>` display target points at; null for local/unset. */
+export function displayTargetName(host: Pick<FleetHost, 'displayTarget'>): string | null {
+  const t = host.displayTarget
+  return t?.startsWith('host:') ? t.slice('host:'.length) : null
+}
+
+/**
+ * The status chip for `source`'s display target: what the TARGET host reports
+ * about its bridge from `source`. Null when `source` has no target. A target
+ * that advertises nothing (or has no entry for `source`) reads "unavailable".
+ * There is no "wrong user" state: the server exposes no host-side field for it
+ * (it only appears per session, as `displayFallbackReason`).
+ */
+export function displayTargetChip(source: FleetHost, hosts: FleetHost[]): string | null {
+  const name = displayTargetName(source)
+  if (!name) return null
+  const bridge = hosts.find((h) => h.name === name)?.displayBridge
+  let status = 'unavailable'
+  if (bridge && !bridge.accepts.includes(source.name)) {
+    status = 'not accepted'
+  } else if (bridge) {
+    const state = bridge.active.find((a) => a.source === source.name)?.state
+    if (state === 'up') status = 'bridge up'
+    else if (state === 'desktop_unavailable') status = 'desktop logged out'
+  }
+  return `→ ${name}: ${status}`
 }
 
 /** The query key, exported so invalidations cannot misspell it. */

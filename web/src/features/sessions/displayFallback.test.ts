@@ -13,6 +13,10 @@ describe('displayFallbackTitle', () => {
     ['display_in_xvfb_pool', 'native display is not configured'],
     ['invalid_display', 'native display is not configured'],
     ['native_disabled', 'native display is not configured'],
+    ['bridge_not_accepted', 'the target desktop does not accept this host'],
+    ['bridge_unavailable', 'the display bridge to the target is unavailable'],
+    ['bridge_wrong_user', "the target desktop belongs to a different user"],
+    ['target_desktop_unavailable', 'no one is logged in to the target desktop'],
   ])('maps %s', (reason, copy) => {
     expect(displayFallbackTitle(reason)).toBe(`Desktop unavailable — opened on a virtual display: ${copy}`)
   })
@@ -22,6 +26,9 @@ describe('displayFallbackTitle', () => {
 })
 
 describe('displayReadout', () => {
+  it('reads remote as the target desktop', () => {
+    expect(displayReadout('remote', null, 'dobby')).toEqual({ value: 'remote', title: "On dobby's desktop" })
+  })
   it('reads native as desktop', () => {
     expect(displayReadout('native', 'cookie_missing')).toEqual({ value: 'desktop', title: "Windows open on the host's desktop" })
   })

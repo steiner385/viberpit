@@ -15,7 +15,7 @@ const base = {
   onSelectAccount: () => {},
   onUnpin: () => {},
   host: null as string | null,
-  displayMode: null as 'native' | 'virtual' | null,
+  displayMode: null as 'native' | 'virtual' | 'remote' | null,
   displayFallbackReason: null as string | null,
   branch: null as string | null,
   cwd: null as string | null,
@@ -77,6 +77,11 @@ describe('EnvironmentCard', () => {
   it('shows a desktop display', () => {
     render(<EnvironmentCard {...base} displayMode="native" />)
     expect(screen.getByText('desktop')).toBeInTheDocument()
+  })
+
+  it('remote session shows "On dobby\'s desktop"', () => {
+    render(<EnvironmentCard {...base} displayMode="remote" displayTargetHost="dobby" />)
+    expect(screen.getByText("On dobby's desktop")).toBeInTheDocument()
   })
 
   it('shows a virtual display with its reason', () => {
