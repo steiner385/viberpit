@@ -45,6 +45,17 @@ export default function FileViewer({ sessionId, path, line }: {
     if (isError) return <FileError error={error} onRetry={() => void refetch()} />
     return <p className="p-4 text-sm text-ink-muted" aria-busy="true">Loading file…</p>
   }
+  if (data.image) {
+    return (
+      <div className="flex min-h-0 min-w-0 flex-1 items-start justify-center overflow-auto p-4">
+        <img
+          src={`data:${data.image.mediaType};base64,${data.image.data}`}
+          alt={data.path}
+          className="max-w-full object-contain"
+        />
+      </div>
+    )
+  }
   if (data.binary || data.text === null) {
     return <p className="p-4 text-sm text-ink-muted">Binary file — not shown</p>
   }

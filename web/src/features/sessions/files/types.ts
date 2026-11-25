@@ -19,6 +19,10 @@ export type SessionFileContent = {
   truncated: boolean
   /** The whole file's size in bytes. */
   size: number
+  /** A raster image (png/jpeg/gif/webp, sniffed from its content, never its extension)
+   *  within the attachment size cap: the WHOLE file, base64 — not cut at `MAX_READ_BYTES`.
+   *  Absent for anything else or an image over the cap (then `binary` is all there is). */
+  image?: { mediaType: string; data: string }
 }
 
 /** One line of a content search (D-20), `GET /api/sessions/{id}/files/search`. */
