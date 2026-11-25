@@ -289,6 +289,15 @@ try:
         # Host platforms this runner can run work for, beyond linux ("windows" = a VM
         # reachable at `windows_vm_ssh_host`). Advertised on the daemon's /info.
         host_platforms: str = Field(default="", alias="VIBERPIT_HOST_PLATFORMS")
+        # Per-host display target bridge (spec 2026-11-25-per-host-display-target). Kill
+        # switch: false => every host behaves as local. accept_from = comma-separated source
+        # host names allowed to bridge onto THIS host's desktop.
+        display_bridge_enabled: bool = Field(default=True, alias="VIBERPIT_DISPLAY_BRIDGE_ENABLED")
+        display_bridge_accept_from: str = Field(default="", alias="VIBERPIT_DISPLAY_BRIDGE_ACCEPT_FROM")
+        display_bridge_x11: bool = Field(default=True, alias="VIBERPIT_DISPLAY_BRIDGE_X11")
+        display_bridge_start_timeout_s: float = Field(
+            default=15.0, alias="VIBERPIT_DISPLAY_BRIDGE_START_TIMEOUT_S")
+        display_bridge_grace_s: float = Field(default=60.0, alias="VIBERPIT_DISPLAY_BRIDGE_GRACE_S")
         windows_vm_ssh_host: str = Field(default="win11", alias="VIBERPIT_WINDOWS_VM_SSH_HOST")
         # Path of the guide appended to a `windows` session's instructions
         # (server/sessions/platform_guide.py). Unset = no guide.
@@ -752,6 +761,21 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         host_platforms: str = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_HOST_PLATFORMS", "")
+        )
+        display_bridge_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_DISPLAY_BRIDGE_ENABLED", "true").lower() in ("1","true","yes","on")
+        )
+        display_bridge_accept_from: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_DISPLAY_BRIDGE_ACCEPT_FROM", "")
+        )
+        display_bridge_x11: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_DISPLAY_BRIDGE_X11", "true").lower() in ("1","true","yes","on")
+        )
+        display_bridge_start_timeout_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("VIBERPIT_DISPLAY_BRIDGE_START_TIMEOUT_S", "15.0"))
+        )
+        display_bridge_grace_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("VIBERPIT_DISPLAY_BRIDGE_GRACE_S", "60.0"))
         )
         windows_vm_ssh_host: str = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_WINDOWS_VM_SSH_HOST", "win11")

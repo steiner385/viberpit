@@ -1,4 +1,4 @@
-"""Native vs virtual display routing — the decision, and nothing else.
+"""Native / remote / virtual display routing — the decision, and nothing else.
 
 A session's GUI goes to the runner host's real X display when the browser that
 created it runs on that same host; otherwise to a pooled Xvfb display viewed over
@@ -12,6 +12,8 @@ from typing import NamedTuple
 
 DISPLAY_NATIVE = "native"
 DISPLAY_VIRTUAL = "virtual"
+# The session draws on another host's desktop through the display bridge.
+DISPLAY_REMOTE = "remote"
 # Request-only value ("decide for me"); never persisted.
 DISPLAY_AUTO = "auto"
 
@@ -29,36 +31,43 @@ def _is_local(client_node: str | None, runner: str) -> bool:
                 and client_node.strip().lower() == runner.strip().lower())
 
 
-def resolve_display_mode(
+def resolve_display_decision(
     *,
     requested: str | None,
     client_node: str | None,
     runner: str,
     native_available: bool,
-) -> str:
-    """Return DISPLAY_NATIVE or DISPLAY_VIRTUAL.
+    native_unavailable_reason: str | None,
+    remote_target: str | None,
+    remote_available: bool,
+    remote_unavailable_reason: str | None,
+) -> DisplayDecision:
+    """The one place the display mode (and any fallback reason) is decided.
 
-    Rules, in order: an explicit "virtual" always wins; no native display means
-    virtual; an explicit "native" needs no locality proof; otherwise native iff the
-    requesting client's tailnet node IS the runner host. Anything unrecognised in
-    ``requested`` (the API validates it, but daemons can be behind) reads as auto.
+    Rules, in order: an explicit "virtual" always wins; an explicit "native" with the
+    native display available is native; auto with the client local to the runner and
+    native available is native; a host display target (``remote_target``) whose bridge
+    is available is remote; anything else is virtual. A would-be-native session sent
+    virtual carries ``native_unavailable_reason``; a would-be-remote one carries
+    ``remote_unavailable_reason`` (which wins when both were wanted). Anything
+    unrecognised in ``requested`` — including "remote": a client cannot force remote,
+    only the host's configured target can — reads as auto.
     """
     # Normalise first, so the rules below only ever see one of the three constants.
-    # None and anything this daemon does not recognise — a newer edge may send a
-    # mode this build predates — collapse to DISPLAY_AUTO, "decide for me", which
-    # is exactly the locality rule at the bottom. Behaviour is unchanged; this only
-    # binds the request-only constant to the branch that consumes it.
     if requested not in (DISPLAY_NATIVE, DISPLAY_VIRTUAL):
         requested = DISPLAY_AUTO
     if requested == DISPLAY_VIRTUAL:
-        return DISPLAY_VIRTUAL
-    if not native_available:
-        return DISPLAY_VIRTUAL
-    if requested == DISPLAY_NATIVE:
-        return DISPLAY_NATIVE
-    if _is_local(client_node, runner):
-        return DISPLAY_NATIVE
-    return DISPLAY_VIRTUAL
+        return DisplayDecision(DISPLAY_VIRTUAL)
+    wanted_native = requested == DISPLAY_NATIVE or _is_local(client_node, runner)
+    if wanted_native and native_available:
+        return DisplayDecision(DISPLAY_NATIVE)
+    if remote_target:
+        if remote_available:
+            return DisplayDecision(DISPLAY_REMOTE)
+        return DisplayDecision(
+            DISPLAY_VIRTUAL,
+            remote_unavailable_reason or (native_unavailable_reason if wanted_native else None))
+    return DisplayDecision(DISPLAY_VIRTUAL, native_unavailable_reason if wanted_native else None)
 
 
 # D-18 dev-server preview: where "Open" sends THIS viewer, decided per request from the
@@ -94,20 +103,3 @@ def resolve_preview_route(
     if exposed and tailnet_reachable:
         return PREVIEW_TAILNET
     return PREVIEW_VNC if vnc_available else PREVIEW_NONE
-
-
-def native_fallback(
-    *,
-    requested: str | None,
-    client_node: str | None,
-    runner: str,
-    native_available: bool,
-) -> bool:
-    """True iff this session WOULD have gone native but the desktop is unavailable.
-
-    The caller then records why (``display_fallback_reason``) so the UI can explain
-    the silent virtual routing. An explicit "virtual" request is never a fallback.
-    """
-    if native_available or requested == DISPLAY_VIRTUAL:
-        return False
-    return requested == DISPLAY_NATIVE or _is_local(client_node, runner)

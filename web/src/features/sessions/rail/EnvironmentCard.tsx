@@ -31,7 +31,9 @@ interface Props {
   onUnpin?: () => void
   /** Fleet host executing the session; null = no host registry entry. */
   host?: string | null
-  displayMode?: 'native' | 'virtual' | null
+  displayMode?: 'native' | 'virtual' | 'remote' | null
+  /** The fleet host a `remote` session's windows open on. */
+  displayTargetHost?: string | null
   displayFallbackReason?: string | null
   /** `session.branch`; null when unknown. */
   branch?: string | null
@@ -56,13 +58,13 @@ export const PR_AUTOFIX_COPY = "PR Doctor fixes failing checks and conflicts on 
 
 export function EnvironmentCard({
   engine = null, account, accounts, accountPinned, onSelectAccount, onUnpin,
-  host = null, displayMode = null, displayFallbackReason = null, branch = null, cwd = null, worktree, prs = null,
+  host = null, displayMode = null, displayTargetHost = null, displayFallbackReason = null, branch = null, cwd = null, worktree, prs = null,
   prAutofix, sandbox, remoteControl,
 }: Props) {
   const autofixLabelId = useId()
   const autofixCopyId = useId()
   const agent = engineBadge(engine)
-  const display = displayReadout(displayMode, displayFallbackReason)
+  const display = displayReadout(displayMode, displayFallbackReason, displayTargetHost)
   return (
     <RailCard title="Environment">
       <RailFields>
@@ -82,7 +84,7 @@ export function EnvironmentCard({
         {display && (
           <RailField label="Display">
             <span title={display.title}>
-              <span className="font-medium">{display.value}</span>
+              <span className="font-medium">{display.value === 'remote' ? display.title : display.value}</span>
               {display.value === 'virtual' && <span className="block text-ink-muted">{display.title}</span>}
             </span>
           </RailField>

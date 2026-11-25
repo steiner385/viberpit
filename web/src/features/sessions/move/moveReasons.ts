@@ -43,7 +43,7 @@ export const MOVE_REASON_COPY: Record<MoveReasonCode, string> = {
   MOVE_NOT_FOUND: 'This session no longer exists.',
   MOVE_ENGINE_UNSUPPORTED: "This session's agent cannot move between hosts.",
   MOVE_ASSISTANT: 'The assistant session always runs on the primary host.',
-  MOVE_NATIVE_DISPLAY: "This session renders on its host's own screen, so it cannot move.",
+  MOVE_NATIVE_DISPLAY: "This session's windows are tied to its host's display, so it cannot move.",
   MOVE_IN_FLIGHT: 'A move is already running for this session.',
   MOVE_INACTIVE: 'Archived or ended sessions cannot move.',
   MOVE_NOT_STARTED: 'This session has not started yet (queued or awaiting approval).',

@@ -669,7 +669,10 @@ def test_every_remote_method_is_classified():
                 "reload_plugins_live", "reload_plugins_everywhere",
                 # Remote Control: the app default changed. FleetOrchestrator fans it out
                 # to EVERY host and names the ones that failed (a revocation).
-                "apply_remote_control_default"}
+                "apply_remote_control_default",
+                # Display bridge: the edge broker asserts each TARGET host's desired set
+                # by name (orch_for_host), never by a session's stamp.
+                "display_bridge_ensure"}
     # Global/primary-routed: everything not per-session, fan-out, merge-all, or
     # explicit. Listed so adding a NEW method forces a conscious classification here.
     GLOBAL = {
@@ -1026,7 +1029,7 @@ async def test_non_fleet_client_node_does_not_nudge(monkeypatch):
 @pytest.mark.asyncio
 async def test_client_node_match_is_case_insensitive(monkeypatch):
     """The tailnet node name and the runner-registry name are one host spelled by
-    two independent sources, so the nudge must match the way resolve_display_mode
+    two independent sources, so the nudge must match the way resolve_display_decision
     does — case-insensitively. Otherwise a "Dobby" client is routed native by the
     policy and placed on some other host by the router, and the window opens on a
     desktop nobody is sitting at. `prefer` must carry the REGISTRY's spelling,

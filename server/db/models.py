@@ -279,6 +279,8 @@ class Session(Base):
     # (NativeDisplay.unavailable_reason(), or "native_disabled" when this host has no
     # native display). NULL = no fallback happened. Nullable so init_db backfills it.
     display_fallback_reason: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # The fleet host whose desktop a display_mode == "remote" session renders on. NULL otherwise.
+    display_target_host: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Snapshot of the decision features at AUTO-archive time ({repo, goal, goal_source,
     # pr_state, reason}); copied into an `archive_reversed` autopilot event on unarchive so
     # the auto-archive algorithm can learn which sessions it wrongly archived. none_as_null
@@ -1600,6 +1602,16 @@ class Host(Base):
     # Last-seen `/info.platforms` (see server/sessions/host_platforms.py). NULL = never
     # probed, or a daemon predating the advertisement; the one parser reads it as Linux only.
     platforms: Mapped[list | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None)
+    # Per-host display target (server/sessions/display_target.py): ``host:<name>`` sends this
+    # host's GUI sessions to that fleet host's desktop; NULL = local. ``display_ssh_host`` is
+    # the ssh destination ON THIS (source) host, logging in as the user its sessions run as,
+    # that the TARGET's bridge ssh's into (falls back to ``ssh_host``; the edge broker sends
+    # it as ``sshDests``); ``display_bridge`` is the probe's snapshot of this host's bridge
+    # ({accepts, active}).
+    display_target: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    display_ssh_host: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    display_bridge: Mapped[dict | None] = mapped_column(
         JSON(none_as_null=True), nullable=True, default=None)
 
 

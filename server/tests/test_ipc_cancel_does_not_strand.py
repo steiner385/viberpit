@@ -299,6 +299,7 @@ async def test_ws_resume_deadline_does_not_orphan_daemon_sockets(blackhole, blac
 # from outside with wait_for. Changing this set changes how a deadline is applied, so it
 # is pinned here: add or remove an @rpc_deadline and this test tells you to say why.
 _DEADLINE_CAPABLE_RPCS = frozenset({
+    "display_bridge_ensure",
     "ensure_driver",
     "latest_suggestions",
     "latest_suggestions_many",

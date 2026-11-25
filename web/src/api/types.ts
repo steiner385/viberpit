@@ -391,7 +391,9 @@ export interface Session {
   /** Where the session's GUI renders: 'native' = the runner host's real desktop,
    *  'virtual' = a pooled Xvfb display viewed over VNC. Null for pre-feature rows
    *  (read as virtual). */
-  displayMode?: 'native' | 'virtual' | null
+  displayMode?: 'native' | 'virtual' | 'remote' | null
+  /** The fleet host whose desktop a `remote` session's windows open on; null otherwise. */
+  displayTargetHost?: string | null
   /** Why a would-be-native session went virtual (desktop locked / logged out / not
    *  configured); null when no fallback happened. */
   displayFallbackReason?: string | null

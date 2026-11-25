@@ -207,7 +207,7 @@ async def test_dispatched_session_without_a_desktop_stays_virtual(spawn_env):
 
 @pytest.mark.asyncio
 async def test_browser_session_with_unknown_locality_stays_virtual(spawn_env):
-    """The guard for why the fix is NOT in resolve_display_mode: a browser request whose
+    """The guard for why the fix is NOT in resolve_display_decision: a browser request whose
     locality could not be resolved (client_node None — e.g. behind `tailscale serve`)
     is possibly remote, and must keep the documented safe default."""
     x11, native = FakeX11(), FakeNative()
@@ -312,7 +312,7 @@ async def test_rehydrate_keeps_native_and_skips_lease(spawn_env):
 # DIRECT spawn. A session that instead queues (_enqueue_session) or parks for model
 # approval (_hold_for_approval) had its request silently dropped — the eventual
 # promotion spawn (_spawn_session(preexisting_row=True, **params/**spawn_kwargs))
-# ran with client_node=None, display=None, so resolve_display_mode always returned
+# ran with client_node=None, display=None, so resolve_display_decision always returned
 # "virtual". Per the controller's ruling, the fix resolves and persists the decision
 # at enqueue/hold time (on THIS daemon), never by widening the shared queue params
 # blob — a daemon whose _spawn_session predates a new params key would TypeError and

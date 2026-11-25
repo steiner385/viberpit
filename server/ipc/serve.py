@@ -16,6 +16,7 @@ from server.ipc.daemon import create_daemon_app
 from server.ipc.drain_on_signal import install_drain_on_sigterm
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.ipc.creds_rpc import register_creds
+from server.ipc.display_bridge_rpc import register_display_bridge
 from server.ipc.reauth_rpc import register_reauth
 from server.ipc.x11_rpc import register_x11
 from server.obs.jsonlog import configure_logging
@@ -127,6 +128,11 @@ def build_daemon(orchestrator=None):
     app.state.orchestrator = orchestrator
     app.state.x11 = orchestrator._x11
     register_x11(app, app.state.x11, orchestrator=orchestrator)
+    # The target half of the per-host display target: bridges accepted source hosts onto
+    # this host's desktop. Reads the desktop through the same NativeDisplay (one resolver).
+    from server.sessions.display_bridge import build_display_bridge
+    app.state.display_bridge = build_display_bridge(get_settings(), orchestrator._native)
+    register_display_bridge(app, app.state.display_bridge)
     app.state.reauth = ReauthManager(
         timeout_s=get_settings().reauth_timeout_s,
         x11=lambda: app.state.x11,
@@ -340,6 +346,9 @@ async def daemon_lifespan(app, orchestrator):
     # the deploy's 180 s verify. Placed after install_drain_on_sigterm so a stop that
     # lands mid-pass still drains the turns it started; a cancelled pass keeps its
     # unsent snapshots for the next boot or attach (`_maybe_rearm_on_attach`).
+    display_bridge = getattr(app.state, "display_bridge", None)
+    if display_bridge is not None:
+        display_bridge.start()
     app.state.boot_resume_task = supervise(
         asyncio.create_task(_boot_resume_pass(orchestrator), name="daemon-boot-resume"),
         name="daemon-boot-resume",
@@ -380,6 +389,19 @@ async def daemon_lifespan(app, orchestrator):
                 await asyncio.wait_for(x11.stop_all(), timeout=_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
             except Exception:
                 log.warning("daemon shutdown: x11 teardown failed", exc_info=True)
+        # Bridges first: they draw on the native desktop, and their teardown removes the
+        # target's cookie from each source (a bounded cleanup ssh per source).
+        if display_bridge is not None:
+            try:
+                await asyncio.wait_for(
+                    display_bridge.stop_all(), timeout=_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                # An unreachable source is an expected degrade (its cookie cleanup is
+                # the §8 known limit), not an incident: INFO, never an auto-filed issue.
+                log.info("daemon shutdown: display bridge teardown hit the %.0fs cap",
+                         _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
+            except Exception:
+                log.warning("daemon shutdown: display bridge teardown failed", exc_info=True)
         native = getattr(orchestrator, "_native", None)
         if native is not None:
             try:

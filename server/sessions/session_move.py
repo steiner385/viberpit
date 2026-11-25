@@ -259,7 +259,7 @@ def movable(subject: MoveSubject, target: str, candidate: Any, *, caps: Any, ena
     ``{ok, reason}`` sandbox readiness (D-23), read only for a sandboxed session; a
     sandboxed session with none is refused (fail closed).
     """
-    from server.sessions.display_policy import DISPLAY_NATIVE
+    from server.sessions.display_policy import DISPLAY_NATIVE, DISPLAY_REMOTE
     from server.sessions.fleet import engine_rejection, platform_rejection
     from server.sessions.status import MID_TURN_STATUSES
     from server.sessions.types import is_assistant_kind
@@ -274,6 +274,12 @@ def movable(subject: MoveSubject, target: str, candidate: Any, *, caps: Any, ena
     if subject.display_mode == DISPLAY_NATIVE:
         return _no(MOVE_NATIVE_DISPLAY,
                    "This session renders on its host's own screen, so it cannot move.")
+    if subject.display_mode == DISPLAY_REMOTE:
+        # Its windows ride this host's display bridge to another desktop; elsewhere
+        # they would have no bridge (and the broker stops wanting one for it).
+        return _no(MOVE_NATIVE_DISPLAY,
+                   "This session draws on another host's desktop through its host's "
+                   "display bridge, so it cannot move.")
     if subject.moving_to:
         return _no(MOVE_IN_FLIGHT, f"Already moving to {subject.moving_to}.",
                    movingTo=subject.moving_to)

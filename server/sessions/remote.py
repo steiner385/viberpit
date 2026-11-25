@@ -191,6 +191,12 @@ _CREATE_FALLBACKS: tuple[tuple[tuple[str, ...], str], ...] = (
     # Display routing: the session is virtual there, which it would have been anyway.
     (("client_node", "display"),
      "predates display routing (session will use a virtual display)"),
+    # Per-host display target: that daemon has no bridge env; the session stays local.
+    (("display_target",),
+     "predates the display bridge (session will not open on the target desktop)"),
+    # The edge's observed target state: without it the daemon records its own reason.
+    (("display_fallback_hint",),
+     "predates the bridge fallback hint (the session records its own fallback reason)"),
     # The per-session dispatch toggles: the autopilot pause is re-applied after create;
     # the auto-archive opt-out has no pre-existing setter, so that daemon cannot honour it.
     (("autopilot_paused", "auto_archive_opt_out_reason"),
@@ -1876,6 +1882,16 @@ class RemoteOrchestrator:
 
     def subscribe(self, session_id: str):
         return self._client.subscribe(session_id)
+
+    @rpc_deadline
+    async def display_bridge_ensure(self, sources: list[str], ssh_dests: dict[str, str],
+                                    *, timeout: float | None = None) -> list[dict]:
+        """Assert this (target) daemon's full set of bridged source hosts; returns each
+        bridge's state (server/ipc/display_bridge_rpc.py)."""
+        r = await self._client.call("display_bridge_ensure", sources=list(sources),
+                                    sshDests=dict(ssh_dests), timeout=timeout)
+        bridges = (r or {}).get("bridges") if isinstance(r, dict) else None
+        return bridges if isinstance(bridges, list) else []
 
     async def x11_metrics(self) -> dict:
         return await self._client.call("x11_metrics")

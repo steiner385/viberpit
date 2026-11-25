@@ -34,7 +34,9 @@ interface Props {
   sessionId: string
   statusState: string
   initialState?: VncState
-  displayMode?: 'native' | 'virtual' | null
+  displayMode?: 'native' | 'virtual' | 'remote' | null
+  /** The fleet host a `remote` session's windows open on. */
+  displayTargetHost?: string | null
   host?: string | null
   /** Whether the edge reports X11 on (`/api/x11/metrics`). Off, the tab is listed
    *  only for its dev servers, and a viewer shows only once a preview opens. */
@@ -45,9 +47,11 @@ interface Props {
 }
 
 export function BrowserTab({
-  sessionId, statusState, initialState, displayMode, host, x11Enabled = true, devServers,
+  sessionId, statusState, initialState, displayMode, displayTargetHost, host, x11Enabled = true, devServers,
 }: Props) {
-  const native = displayMode === 'native'
+  // `remote` (windows on another fleet host's desktop) hides the stream exactly like
+  // `native`: there is no virtual display here to view.
+  const native = displayMode === 'native' || displayMode === 'remote'
   // A display that exists only for a dev-server preview (D-18): a native session's
   // on-demand one, or any display on a host the edge reports without X11. Nothing
   // streams until an Open lands, and its display going away means no preview open.
@@ -270,7 +274,8 @@ export function BrowserTab({
   )
 
   if (!streaming) {
-    const where = host ? `${host}'s desktop` : "the server's desktop"
+    const owner = displayMode === 'remote' ? displayTargetHost : host
+    const where = owner ? `${owner}'s desktop` : "the server's desktop"
     return (
       <div className="flex h-full w-full flex-col">
         {section}

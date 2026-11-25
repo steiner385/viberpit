@@ -448,9 +448,27 @@ async def _lifespan(app: FastAPI):
             from server.sessions.host_probe import probe_loop
             from server.sessions.fleet_orchestrator import FleetOrchestrator, build_fleet_router
 
+            from server.sessions.display_bridge_broker import DisplayBridgeBroker
+
             app.state.host_name = await ensure_default_host(str(_endpoint))
+
+            def _bridge_client(name: str):
+                # Lazy: app.state.sessions becomes the FleetOrchestrator only below,
+                # after the probe loop has started (core.md: never capture it early).
+                orch_for_host = getattr(app.state.sessions, "orch_for_host", None)
+                if orch_for_host is None:
+                    return None
+                try:
+                    return orch_for_host(name)
+                except Exception:  # UnknownHost: enabled after this edge started
+                    return None
+
+            app.state.display_bridge_broker = DisplayBridgeBroker(
+                clients=_bridge_client,
+                timeout_s=_s.display_bridge_start_timeout_s)
             app.state.fleet_probe_task = asyncio.create_task(
-                probe_loop(), name="fleet-host-probe")
+                probe_loop(display_bridge=app.state.display_bridge_broker),
+                name="fleet-host-probe")
             _logging.getLogger("server").info(
                 "fleet: this edge talks to host %r", app.state.host_name)
 
@@ -459,7 +477,9 @@ async def _lifespan(app: FastAPI):
             # reuses the already-built primary client.
             _primary_name = app.state.host_name or "local"
             _router = await build_fleet_router(_primary_name, app.state.remote_primary)
-            app.state.sessions = FleetOrchestrator(_router, primary=_primary_name)
+            app.state.sessions = FleetOrchestrator(
+                _router, primary=_primary_name,
+                display_bridge=app.state.display_bridge_broker)
             app.state.fleet_creds_task = asyncio.create_task(
                 app.state.sessions.creds_push_loop(), name="fleet-creds-push")
             # A session queued because every host was full starts on whichever host
@@ -686,6 +706,12 @@ async def _lifespan(app: FastAPI):
             await bounded_wait(_t, timeout=_SHUTDOWN_PHASE_TIMEOUT_S,
                                phase=f"shutdown:{_phase}")
     from server.aio import cancel_and_reap
+    # Archive-kicked display-bridge reasserts (FleetOrchestrator only; the class
+    # attribute is read so a non-fleet orchestrator's __getattr__ is never consulted).
+    _fleet = getattr(app.state, "sessions", None)
+    _reassert_close = getattr(type(_fleet), "aclose_display_reasserts", None)
+    if _reassert_close is not None:
+        await _reassert_close(_fleet)
     await cancel_and_reap(getattr(app.state, "trusted_author_bind_task", None),
                           phase="shutdown:trusted-author-bind",
                           timeout=_SHUTDOWN_PHASE_TIMEOUT_S)
@@ -1285,6 +1311,8 @@ def create_app(
         "no_display": "no display for session",
         "cap": "browser cap reached",
         "native_unavailable": "native display unavailable",
+        "bridge_unavailable": "display bridge unavailable",
+        "bridge_wrong_user": "display bridge owned by another user",
         "launch_failed": "browser failed to start",
     }
 

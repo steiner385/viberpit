@@ -24,13 +24,15 @@ from server.sessions.host_engines import (
     expected_contract_sha256,
     parse_engines_info,
 )
+from server.sessions.display_target import parse_display_target
 from server.sessions.host_platforms import parse_platforms_info
 
 router = APIRouter(prefix="/api/fleet", tags=["fleet"])
 
 # wire name -> column name. Everything else on Host is probe-written.
 _PATCHABLE = {"enabled": "enabled", "weight": "weight", "maxSessions": "max_sessions",
-              "sshHost": "ssh_host", "repoPath": "repo_path"}
+              "sshHost": "ssh_host", "repoPath": "repo_path",
+              "displayTarget": "display_target", "displaySshHost": "display_ssh_host"}
 _WEIGHT_MIN, _WEIGHT_MAX = 1, 1000
 
 
@@ -61,6 +63,8 @@ class HostPatch(BaseModel):
     maxSessions: int | None = None
     sshHost: str | None = None
     repoPath: str | None = None
+    displayTarget: str | None = None
+    displaySshHost: str | None = None
 
 
 class UpgradeBody(BaseModel):
@@ -114,6 +118,11 @@ def host_to_wire(h: Host) -> dict:
         "lastError": h.last_error,
         "sshHost": h.ssh_host,
         "repoPath": h.repo_path,
+        # Where this host's GUI sessions render (null = local), the ssh destination of that
+        # desktop, and the probe's read-only snapshot of this host's bridge.
+        "displayTarget": h.display_target,
+        "displaySshHost": h.display_ssh_host,
+        "displayBridge": h.display_bridge,
         # Per-engine availability as the runner advertised it, plus the edge's own
         # verdict on whether it would DISPATCH there. The two differ when a runner
         # is happily running Codex against a contract this edge is not pinned to —
@@ -161,12 +170,22 @@ def sanitize_patch(body: dict, fields_set: set[str] | None = None) -> dict:
         val = body[wire]
         if col == "weight":
             val = max(_WEIGHT_MIN, min(_WEIGHT_MAX, int(val)))
-        elif col in ("ssh_host", "repo_path"):
+        elif col == "display_target":
+            try:
+                target = parse_display_target(str(val))
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "invalid_display_target", "message": str(exc)}) from exc
+            val = f"host:{target}" if target else None
+        elif col in ("ssh_host", "display_ssh_host", "repo_path"):
             val = str(val).strip() or None
-            if val is not None and col == "ssh_host" and not SSH_HOST_RE.match(val):
+            if val is not None and col in ("ssh_host", "display_ssh_host") \
+                    and not SSH_HOST_RE.match(val):
+                code = "invalid_ssh_host" if col == "ssh_host" else "invalid_display_ssh_host"
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={"code": "invalid_ssh_host",
+                    detail={"code": code,
                             "message": f"{val!r} is not a valid [user@]host value"})
             if val is not None and col == "repo_path" and not SSH_REPO_RE.match(val):
                 raise HTTPException(
@@ -246,6 +265,25 @@ async def update_host(name: str, body: HostPatch, request: Request,
                                     "message": "nothing settable in this request"})
     async with db_session() as db:
         before = await read_global_cap(db)
+        target = parse_display_target(values.get("display_target"))
+        if target is not None:
+            if target == name:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "invalid_display_target",
+                            "message": "a host cannot display on itself; use 'local'"})
+            enabled = (await db.execute(
+                sa_select(Host.enabled).where(Host.name == target))).scalar_one_or_none()
+            if enabled is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "invalid_display_target",
+                            "message": f"unknown host {target!r}"})
+            if not enabled:   # spec §1: "another enabled Host row"
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "invalid_display_target",
+                            "message": f"host {target!r} is disabled"})
         await db.execute(sa_update(Host).where(Host.name == name).values(**values))
         row = (await db.execute(
             sa_select(Host).where(Host.name == name))).scalars().first()

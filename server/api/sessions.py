@@ -299,6 +299,7 @@ def _record_to_dict(
         # Browser tab offers a VNC canvas at all.
         "displayMode": getattr(record, "display_mode", None),
         "displayFallbackReason": getattr(record, "display_fallback_reason", None),
+        "displayTargetHost": getattr(record, "display_target_host", None),
         "origin": getattr(record, "origin", None),
         "originRef": getattr(record, "origin_ref", None),
         "assistedBy": getattr(record, "assisted_by", None),

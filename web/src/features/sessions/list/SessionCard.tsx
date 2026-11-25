@@ -676,7 +676,17 @@ export function SessionCard({ session, account, selected = false, open = false, 
             </span>
           </>
         )}
-        {session.displayMode !== 'native' && displayFallbackTitle(session.displayFallbackReason) && (
+        {session.displayMode === 'remote' && (
+          <>
+            <Sep />
+            <span data-testid="card-desktop-remote" className="flex-shrink-0 inline-flex items-center gap-1 text-ink-muted"
+                  title={`Windows open on ${session.displayTargetHost ?? 'another host'}'s desktop`}>
+              <Monitor size={12} aria-hidden="true" />
+              <span>{session.displayTargetHost ? `on ${session.displayTargetHost}` : 'remote desktop'}</span>
+            </span>
+          </>
+        )}
+        {session.displayMode !== 'native' && session.displayMode !== 'remote' && displayFallbackTitle(session.displayFallbackReason) && (
           <>
             <Sep />
             <span data-testid="card-display-fallback" className="flex-shrink-0 inline-flex items-center gap-1 text-ink-muted"
