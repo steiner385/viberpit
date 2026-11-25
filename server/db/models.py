@@ -1605,8 +1605,10 @@ class Host(Base):
         JSON(none_as_null=True), nullable=True, default=None)
     # Per-host display target (server/sessions/display_target.py): ``host:<name>`` sends this
     # host's GUI sessions to that fleet host's desktop; NULL = local. ``display_ssh_host`` is
-    # the ssh destination of the target desktop (falls back to ``ssh_host``); ``display_bridge``
-    # is the probe's snapshot of this host's bridge ({accepts, active}).
+    # the ssh destination ON THIS (source) host, logging in as the user its sessions run as,
+    # that the TARGET's bridge ssh's into (falls back to ``ssh_host``; the edge broker sends
+    # it as ``sshDests``); ``display_bridge`` is the probe's snapshot of this host's bridge
+    # ({accepts, active}).
     display_target: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     display_ssh_host: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     display_bridge: Mapped[dict | None] = mapped_column(

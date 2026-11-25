@@ -1880,6 +1880,15 @@ class RemoteOrchestrator:
     def subscribe(self, session_id: str):
         return self._client.subscribe(session_id)
 
+    async def display_bridge_ensure(self, sources: list[str], ssh_dests: dict[str, str],
+                                    *, timeout: float | None = None) -> list[dict]:
+        """Assert this (target) daemon's full set of bridged source hosts; returns each
+        bridge's state (server/ipc/display_bridge_rpc.py)."""
+        r = await self._client.call("display_bridge_ensure", sources=list(sources),
+                                    sshDests=dict(ssh_dests), timeout=timeout)
+        bridges = (r or {}).get("bridges") if isinstance(r, dict) else None
+        return bridges if isinstance(bridges, list) else []
+
     async def x11_metrics(self) -> dict:
         return await self._client.call("x11_metrics")
 

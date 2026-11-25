@@ -4,8 +4,8 @@ Revision ID: 0115_display_target
 Revises: 0114_session_launch_credential
 
 ``display_target`` (``local`` | ``host:<name>``; NULL = local) is where a host's sessions open
-GUI windows; ``display_ssh_host`` is the ssh destination of the target desktop (falls back to
-``ssh_host``); ``display_bridge`` is the probe snapshot of the host's bridge; and
+GUI windows; ``display_ssh_host`` is the ssh destination ON the source host (as its session
+user) that the target's bridge logs into (falls back to ``ssh_host``); ``display_bridge`` is the probe snapshot of the host's bridge; and
 ``sessions.display_target_host`` records the target a remote-display session was spawned for.
 All nullable: ``init_db``'s reconcile adds them on both dialects; this revision is the
 reviewable record.
