@@ -249,6 +249,107 @@ process group run by a new `DisplayBridge` component on the target daemon. It is
   the `windows:` prefix without a migration. No placeholder code, enum value or disabled flag is added
   (Principle VI).
 
+### 8. Verified invocation (spike, 2026-11-25, dobby → rocky, waypipe 0.11.0 on both)
+
+Verified against the real binaries (Principle III). Target = dobby (GNOME/mutter Wayland, `wayland-0`,
+Xwayland `:0`); source = rocky (Ubuntu 26.04, OpenSSH 10.2p1, uid 1000 on both hosts). `DisplayBridge`
+builds its argv from this section verbatim. `<T_XRD>` is the target daemon's `XDG_RUNTIME_DIR` and
+`<S_XRD>` is the source user's (`/run/user/1000` on both today); `<src>` is the source host name.
+
+**Answer: one `waypipe server` serves many concurrent clients — yes.** The server's Wayland socket
+accepts any number of connections. Both server and client fork one worker per connection (`client-conn`
+children of `waypipe client`). Seen live: foot + Chrome (`--ozone-platform=wayland`) + xeyes (X11 leg)
+on dobby at the same time, each its own window. No per-session fallback from §2 is needed.
+
+**Three findings that change the §2 sketch:**
+
+1. **Global options go before the mode.** `waypipe … server --display X -- cmd` fails (waypipe tries to
+   exec `--display`). Every option (`--socket`, `--display`, `--unlink-socket`, `-d`) precedes
+   `client`/`server`.
+2. **Killing ssh does NOT stop the remote server.** There is no pty, so with `-- sleep infinity` the
+   remote `waypipe server` was orphaned. It kept a live Wayland socket that led nowhere (Anti-goal 2).
+   The fix is to run `-- cat` as the server's child and hold ssh's stdin open as a pipe. When ssh dies,
+   sshd closes the channel, `cat` gets EOF and exits, and `waypipe server` exits too. It unlinks its own
+   `wayland-viberpit-bridge` socket, and `--unlink-socket` makes it unlink the forwarded `waypipe.sock`
+   (both verified). Live remote clients die with the bridge, which is expected.
+3. **The client-side `StreamLocalBindUnlink=yes` does not apply to `-R` listeners.** rocky's sshd has
+   `streamlocalbindunlink no`, so a stale remote socket from the last run makes ssh fail with
+   `remote port forwarding failed for listen path …`. sshd never removes `/tmp/.X11-unix/X150` itself.
+   The bridge therefore runs a **prep** ssh before every start that removes both remote sockets. The
+   alternative is to set `StreamLocalBindUnlink yes` in the source's sshd_config, but that is an
+   operator step and not relied on. On the target side, `waypipe client` also leaves its socket on
+   SIGTERM, so `rm -f` it before each start.
+
+**Step 1 — prep (source side, one ssh, cookie on stdin, never argv):**
+
+```
+ssh -o BatchMode=yes <ssh_host> '<PREP>'          # stdin: "add :150 MIT-MAGIC-COOKIE-1 <hex>\n"
+```
+`<PREP>` (one argv string):
+```
+umask 077
+d="$XDG_RUNTIME_DIR/viberpit-bridge"
+mkdir -p "$d" && chmod 700 "$d"
+rm -f "$d/waypipe.sock" /tmp/.X11-unix/X150
+: > "$d/xauth" && chmod 600 "$d/xauth"
+xauth -q -f "$d/xauth" source -
+printf '%s\n' "$XDG_RUNTIME_DIR"
+```
+- It prints `<S_XRD>`, which is needed because the `-R` remote path is not shell-expanded.
+- The cookie line is built from the resolver's `xauthority` file (`xauth -f <file> list`, field 3).
+  mutter's file holds `dobby/unix:` and a FamilyWild entry with the same cookie.
+- `add :150` is stored as `<src>/unix:150`, which matches what clients on the source look up.
+- The same command re-run is the cookie re-push on rotation; it is idempotent.
+
+**Step 2 — target side (dobby), env from `resolve_desktop_session` (`WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`):**
+```
+rm -f <T_XRD>/viberpit-bridge/<src>-waypipe.sock      # dir <T_XRD>/viberpit-bridge, 0700
+waypipe --socket <T_XRD>/viberpit-bridge/<src>-waypipe.sock client
+```
+
+**Step 3 — the bridge ssh (target side; stdin = a pipe the bridge holds open and never writes):**
+```
+ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -o StreamLocalBindUnlink=yes \
+    -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+    -R <S_XRD>/viberpit-bridge/waypipe.sock:<T_XRD>/viberpit-bridge/<src>-waypipe.sock \
+    -R /tmp/.X11-unix/X150:/tmp/.X11-unix/X0 \
+    <ssh_host> \
+    'exec waypipe --socket <S_XRD>/viberpit-bridge/waypipe.sock --display wayland-viberpit-bridge --unlink-socket server -- cat'
+```
+- `/tmp/.X11-unix/X0` is the target's resolved display number (`:0`). Build it from
+  `DesktopSession.display`.
+- `StreamLocalBindUnlink=yes` is harmless and kept per §2, but finding 3 above is what makes restarts
+  work.
+- The forwarded sockets come up `0600`, owned by the ssh user (sshd `StreamLocalBindMask 0177`). The
+  waypipe display socket is `0775` inside the `0700` `<S_XRD>`. Same-uid only, as §2 requires.
+
+**Session env on the source** (verified): `WAYLAND_DISPLAY=wayland-viberpit-bridge`,
+`XDG_RUNTIME_DIR=<S_XRD>`, `DISPLAY=:150`, `XAUTHORITY=<S_XRD>/viberpit-bridge/xauth`. Without the
+cookie file, `:150` refuses with `Authorization required`.
+
+**Teardown:** close the bridge ssh's stdin or kill it. The remote server exits by itself (finding 2).
+Then kill `waypipe client` and `rm -f` its socket. The stale remote `X150` is removed by the next
+start's prep, or by a cleanup ssh that also removes `xauth` when the bridge is torn down for good
+(Anti-goal 1: no cookie left behind).
+
+**Liveness/log notes for the builder:**
+- A Wayland window is confirmed mapped when the target's `waypipe client -d` log shows
+  `xdg_toplevel#N.configure(w>0, h>0, …)` and `wl_keyboard.enter` from mutter. GNOME refuses
+  `org.gnome.Shell.Screenshot` to non-allowlisted callers, so this is the non-disruptive evidence. X11
+  windows show in `xwininfo -root -tree` on the target's `:0`.
+- The remote server logs benign `ERR … Received degenerate damage rectangle` lines for foot, even
+  without `-d`. Do not treat stderr `ERR` lines as bridge failure; use process exit.
+- Not tested: gedit (`GDK_BACKEND=wayland`) connected but never created a toplevel within ~10 s. This is
+  likely an app-side stall, since foot and Chrome on the same bridge at the same time were fine.
+  `--xwls` (xwayland-satellite) exists in 0.11 as a Wayland-only alternative to the X11 leg, but it is
+  not installed on rocky and was not tested.
+- Spike evidence, not committed, is under `/tmp/display-bridge-spike/` on dobby:
+  - `final-wayland.txt`: toplevel and configure lines.
+  - `final-x11.txt` and `x11-xwininfo.txt`: xwininfo output.
+  - `x11-xeyes.png`: a capture of the forwarded xeyes window.
+  - `final-client-conns.txt`: three concurrent `client-conn` workers.
+  - `client.log`: the full client debug log.
+
 ## Left to the builder
 
 - Exact waypipe 0.11 invocation and multi-client behaviour (§2, verify first, before other work).
