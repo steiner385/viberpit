@@ -420,12 +420,27 @@ async def test_up_bridge_sends_no_hint(isolated_db, monkeypatch):
     assert "display_fallback_hint" not in rocky.created[0]
 
 
-async def test_cascade_after_refusal_does_not_wait_again_for_the_same_target(
+class _PerSource(_FakeTarget):
+    """A target whose answer depends on the SOURCE (bridges are per target+source)."""
+
+    def __init__(self, states: dict[str, str]):
+        super().__init__()
+        self.states = states
+
+    async def display_bridge_ensure(self, sources, ssh_dests, *, timeout=None):
+        self.calls.append((list(sources), dict(ssh_dests)))
+        return [{"source": s, "state": self.states.get(s, "starting")} for s in sources]
+
+
+async def test_cascade_to_a_different_source_gets_its_own_ensure_and_hint(
         isolated_db, monkeypatch):
+    """rocky and pi both target dobby, but each has its own bridge: after rocky's spawn
+    is refused, pi must be asked for (and waited on) itself, and must not inherit
+    rocky's per-source refusal as its fallback hint."""
     await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"),
                 _host("pi", target="host:dobby", ssh="tony@pi"), _host("dobby"))
-    dobby = _FakeTarget("starting")
-    broker = _broker({"dobby": dobby}, timeout_s=0.4)
+    dobby = _PerSource({"rocky": "not_accepted", "pi": "up"})
+    broker = _broker({"dobby": dobby}, timeout_s=2.0)
     rocky, pi = _SourceOrch("rocky"), _SourceOrch("pi")
 
     async def _refuse(**kw):
@@ -438,11 +453,58 @@ async def test_cascade_after_refusal_does_not_wait_again_for_the_same_target(
     async def _stamp(sid, host):
         return None
     monkeypatch.setattr(fo, "_stamp_host", _stamp)
-    t0 = time.monotonic()
     rec = await fo.create_session(account="a")
     assert rec.id == "sess-pi"
-    assert time.monotonic() - t0 < 0.8              # one wait, not two
-    assert rocky.created[0]["display_target"] == pi.created[0]["display_target"] == "dobby"
+    assert rocky.created[0]["display_fallback_hint"] == "bridge_not_accepted"
+    assert pi.created[0]["display_target"] == "dobby"
+    assert "display_fallback_hint" not in pi.created[0]
+    assert any("pi" in sources for sources, _ in dobby.calls)
+
+
+async def test_same_target_and_source_retried_does_not_wait_again(isolated_db, monkeypatch):
+    await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"), _host("dobby"))
+    dobby = _FakeTarget("desktop_unavailable")
+    fo, _rocky = _fleet(monkeypatch, _broker({"dobby": dobby}, timeout_s=2.0))
+    ctx: dict = {}
+    async with fo._display_spawn("rocky", {"account": "a"}, ctx) as first:
+        pass
+    asked = len(dobby.calls)
+    async with fo._display_spawn("rocky", {"account": "a"}, ctx) as second:
+        pass
+    assert len(dobby.calls) == asked                 # no second ensure / wait
+    assert first == second == {"account": "a", "display_target": "dobby",
+                               "display_fallback_hint": "target_desktop_unavailable"}
+
+
+async def test_outcome_unknown_create_keeps_the_claim_for_a_grace(isolated_db, monkeypatch):
+    """The daemon may still be writing the row after an outcome-unknown create: the
+    claim is kept for the start timeout, then released."""
+    from server.ipc.client import DaemonUnavailable
+    await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"), _host("dobby"))
+    broker = _broker({"dobby": _FakeTarget("up")}, timeout_s=0.3)
+    fo, rocky = _fleet(monkeypatch, broker)
+
+    async def _lost(**kw):
+        raise DaemonUnavailable("read timed out", outcome_unknown=True)
+    rocky.create_session = _lost
+    with pytest.raises(DaemonUnavailable):
+        await fo.create_session(account="a")
+    assert await broker.desired() == {"dobby": ["rocky"]}
+    await asyncio.sleep(0.5)
+    assert await broker.desired() == {}
+
+
+async def test_known_failure_releases_the_claim_at_once(isolated_db, monkeypatch):
+    await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"), _host("dobby"))
+    broker = _broker({"dobby": _FakeTarget("up")}, timeout_s=5.0)
+    fo, rocky = _fleet(monkeypatch, broker)
+
+    async def _boom(**kw):
+        raise RuntimeError("spawn failed")
+    rocky.create_session = _boom
+    with pytest.raises(RuntimeError):
+        await fo.create_session(account="a")
+    assert await broker.desired() == {}
 
 
 async def test_registry_read_once_per_spawn(isolated_db, monkeypatch):

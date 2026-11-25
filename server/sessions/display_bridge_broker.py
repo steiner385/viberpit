@@ -16,7 +16,8 @@ The desired set is
   source daemon re-resolves their remote leg when they start;
 * spawns in flight: :meth:`DisplayBridgeBroker.prepare` holds a claim from before
   the first ``ensure`` until the source daemon's ``create_session`` has returned
-  (and so written the row that keeps the source desired).
+  (and so written the row that keeps the source desired) — or, when that RPC's
+  outcome is unknown, for one more start timeout.
 
 Every ensure for one target — a prepare poll or a reassert — computes the set and
 sends it under that target's lock, so an older full set can never land after a
@@ -41,6 +42,7 @@ from sqlalchemy import or_, select as sa_select
 
 from server.db import db_session
 from server.db.models import INACTIVE_SESSION_STATUSES, Host, Session as DbSession
+from server.ipc.client import DaemonUnavailable
 from server.obs.logdedupe import LogThrottle, log_event_throttled
 from server.sessions.display_bridge import STATE_UP, TARGET_STATE_HINTS
 from server.sessions.display_bridge_env import BRIDGE_FALLBACK_REASONS
@@ -246,18 +248,36 @@ class DisplayBridgeBroker:
             self._dests_for([source], by_name)
             yield PreparedBridge(target)
             return
-        counter = self._inflight.setdefault(target, Counter())
-        counter[source] += 1
+        self._inflight.setdefault(target, Counter())[source] += 1
+        outcome_unknown = False
         try:
             result = (await self._wait_up(target, client, source, hosts) if wait
                       else PreparedBridge(target))
             yield result
+        except DaemonUnavailable as exc:
+            outcome_unknown = exc.outcome_unknown
+            raise
         finally:
-            counter[source] -= 1
-            if counter[source] <= 0:
-                del counter[source]
-            if not counter:
-                self._inflight.pop(target, None)
+            if outcome_unknown:
+                # The create RPC reached the source daemon and lost its answer: it may
+                # still be writing the row that keeps *source* desired. Keep the claim
+                # for one start timeout (a fixed grace — simpler than watching for the
+                # row), then release; a row written by then is what the tick sees.
+                asyncio.get_running_loop().call_later(
+                    self._timeout_s, self._release, target, source)
+            else:
+                self._release(target, source)
+
+    def _release(self, target: str, source: str) -> None:
+        """Drop one spawn's claim on (*target*, *source*)."""
+        counter = self._inflight.get(target)
+        if counter is None:
+            return
+        counter[source] -= 1
+        if counter[source] <= 0:
+            del counter[source]
+        if not counter:
+            self._inflight.pop(target, None)
 
     async def _wait_up(self, target: str, client: BridgeClient, source: str,
                        hosts: list[Host]) -> PreparedBridge:

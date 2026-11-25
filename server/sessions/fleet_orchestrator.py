@@ -753,9 +753,10 @@ class FleetOrchestrator:
         passed even when the wait failed — the source daemon's own socket check decides,
         naming the edge's hint as the reason when it fails too.
 
-        *ctx* is per ``_dispatch``: the host registry is read once, and a target already
-        waited on for an earlier candidate host is not waited on again (the cascade
-        after a refused spawn must not cost another full timeout). A queued row does not
+        *ctx* is per ``_dispatch``: the host registry is read once, and the wait's outcome
+        is remembered per (target, source) — a bridge is per pair, so each candidate
+        host gets its own ensure, wait and hint; only a retry of the SAME pair skips the
+        wait and reuses its hint. A queued row does not
         wait (nothing spawns yet; the source daemon re-resolves it at actual spawn). An
         explicit virtual request, the assistant drawer, a missing broker and the kill
         switch leave the request byte-identical.
@@ -776,16 +777,16 @@ class FleetOrchestrator:
         if hosts is None:
             yield kwargs
             return
-        waited: dict[str, str | None] = ctx.setdefault("waited", {})
-        target = broker.target_for(host, hosts)
-        wait = not kwargs.get("queue_only") and target not in waited
+        waited: dict[tuple[str, str], str | None] = ctx.setdefault("waited", {})
+        pair = (broker.target_for(host, hosts) or "", host)
+        wait = not kwargs.get("queue_only") and pair not in waited
         async with broker.prepare(host, hosts=hosts, wait=wait) as prep:
             if prep.target is None:
                 yield kwargs
                 return
             if wait:
-                waited[prep.target] = None if prep.up else prep.hint
-            hint = waited.get(prep.target)
+                waited[pair] = None if prep.up else prep.hint
+            hint = waited.get(pair)
             extra: dict = {"display_target": prep.target}
             if hint is not None:
                 extra["display_fallback_hint"] = hint
