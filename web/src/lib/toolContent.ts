@@ -187,3 +187,21 @@ export function sizeHint(
 
   return ''
 }
+
+export type ToolCallStatus =
+  | { status: 'pending' }
+  | { status: 'ok'; text: string }
+  | { status: 'error'; error: string }
+
+/** Where a card-rendered tool call stands (`share_artifact`, the CLI's user-facing
+ *  tools): no result yet, refused (its result text, else `fallbackError`), or done
+ *  (its result text). */
+export function toolResultStatus(
+  result: { ok: boolean; payload?: Record<string, unknown> } | undefined,
+  fallbackError: string,
+): ToolCallStatus {
+  if (!result) return { status: 'pending' }
+  const text = (extractText(result.payload?.content) ?? '').trim()
+  if (!result.ok) return { status: 'error', error: text || fallbackError }
+  return { status: 'ok', text }
+}

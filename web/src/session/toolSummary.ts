@@ -19,13 +19,16 @@
  * tool name, which is truthful. Guessing from an unknown payload is not.
  */
 import type { ToolKind } from '@/session/events'
+import { isUserFacingToolName, userFacingToolSummary } from '@/session/userFacingTools'
 
 /** Bash commands are summarised, not quoted in full. */
 const MAX_COMMAND_CHARS = 60
 
 const FILE_KINDS: ReadonlySet<ToolKind> = new Set<ToolKind>(['edit', 'write', 'read'])
 
-export function toolSummary(kind: ToolKind, input: Record<string, unknown>): string {
+export function toolSummary(kind: ToolKind, input: Record<string, unknown>, name?: string): string {
+  // The CLI's user-facing tools arrive as `unknown` kind — matched by name.
+  if (name !== undefined && isUserFacingToolName(name)) return userFacingToolSummary(name, input)
   if (kind === 'bash' && typeof input.command === 'string') {
     return input.command.slice(0, MAX_COMMAND_CHARS)
   }
@@ -43,7 +46,7 @@ export function toolSummary(kind: ToolKind, input: Record<string, unknown>): str
 /** "Tool: summary" — the one-line name a card, an aria-label or a decision echo
  *  uses for a tool call; the bare tool name when there is nothing to summarise. */
 export function toolLabel(tool: string, kind: ToolKind, input: Record<string, unknown>): string {
-  const summary = toolSummary(kind, input)
+  const summary = toolSummary(kind, input, tool)
   return summary ? `${tool}: ${summary}` : tool
 }
 

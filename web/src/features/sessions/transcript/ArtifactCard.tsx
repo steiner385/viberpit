@@ -2,7 +2,7 @@ import { lazy, Suspense } from 'react'
 import { FileText, Image as ImageIcon, Link2 } from 'lucide-react'
 import { artifactFromBlock, type Artifact, type ToolBlock } from '@/session/artifacts'
 import { CopyablePath } from './CopyablePath'
-import { ResultImage } from './ResultImages'
+import { CARD_FRAME_CLASS, ResultImage } from './ResultImages'
 import { isSafeHttpUrl } from '@/lib/safeUrl'
 
 interface Props {
@@ -32,7 +32,7 @@ function ArtifactPath({ text }: { text: string }) {
 export function ArtifactCard({ block }: Props) {
   const a = artifactFromBlock(block)
   return (
-    <div className="my-2 rounded-lg border border-edge bg-surface-raised p-3 text-sm" data-testid="artifact-card">
+    <div className={CARD_FRAME_CLASS} data-testid="artifact-card">
       <div className="flex items-start gap-2">
         <span className="mt-0.5 shrink-0 text-ink-muted" aria-hidden="true"><KindIcon kind={a.kind} /></span>
         <div className="min-w-0 flex-1">
