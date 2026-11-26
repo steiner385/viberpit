@@ -57,7 +57,7 @@ Placeholders: `<host>` = the new runner's short hostname (e.g. `rocky`), `<cap>`
 
 - [ ] ViberPit repo checked out on `<host>` at a known path; venv built.
 - [ ] `claude`, `node`, `git`, `python3` are on `PATH`.
-- [ ] Xvfb is installed (`which Xvfb`).
+- [ ] Xvfb, x11vnc and xauth are installed (`which Xvfb x11vnc xauth` — all three must resolve; `build_x11_manager()` disables the virtual display when any is missing).
 - [ ] `deploy/viberpit-daemon-remote.service` is copied / symlinked to `/etc/systemd/system/viberpit-daemon.service`.
 
   ```bash
@@ -624,7 +624,7 @@ collision must be avoided:
 - [x] Postgres is local (dobby hosts the shared PG instance — no `/32` rule needed for self).
 - [x] `VIBERPIT_MASTER_KEY` is present in the edge's `viberpit.env`.
 - [x] Account store is canonical on dobby — **no mount needed** (dobby is the source).
-- [ ] Verify Xvfb is available: `which Xvfb` — it should be present; ensure `VIBERPIT_ENABLE_XVFB=true` is in `daemon.env`.
+- [ ] Verify Xvfb, x11vnc and xauth are available: `which Xvfb x11vnc xauth` — all three should be present (`apt install xvfb x11vnc xauth`); ensure `VIBERPIT_ENABLE_XVFB=true` is in `daemon.env`.
 
 ### What is missing on dobby
 
