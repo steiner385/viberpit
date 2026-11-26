@@ -541,11 +541,26 @@ async def test_same_target_and_source_retried_does_not_wait_again(isolated_db, m
 
 async def test_outcome_unknown_create_keeps_the_claim_for_a_grace(isolated_db, monkeypatch):
     """The daemon may still be writing the row after an outcome-unknown create: the
-    claim is kept for the start timeout, then released."""
+    claim is kept for the start timeout, then released.
+
+    The grace timer is captured rather than slept through: a real 0.3 s timer raced the
+    DB reads in ``desired()`` on a loaded CI runner and released the claim before the
+    first assertion (#3519)."""
     from server.ipc.client import DaemonUnavailable
     await _seed(_host("rocky", target="host:dobby", ssh="tony@rocky"), _host("dobby"))
-    broker = _broker({"dobby": _FakeTarget("up")}, timeout_s=0.3)
+    broker = _broker({"dobby": _FakeTarget("up")}, timeout_s=7.5)
     fo, rocky = _fleet(monkeypatch, broker)
+
+    loop = asyncio.get_running_loop()
+    real_call_later = loop.call_later
+    graces: list[tuple[float, object, tuple]] = []
+
+    def _spy(delay, callback, *args, **kw):
+        if getattr(callback, "__func__", None) is DisplayBridgeBroker._release:
+            graces.append((delay, callback, args))
+            return None
+        return real_call_later(delay, callback, *args, **kw)
+    monkeypatch.setattr(loop, "call_later", _spy)
 
     async def _lost(**kw):
         raise DaemonUnavailable("read timed out", outcome_unknown=True)
@@ -553,7 +568,9 @@ async def test_outcome_unknown_create_keeps_the_claim_for_a_grace(isolated_db, m
     with pytest.raises(DaemonUnavailable):
         await fo.create_session(account="a")
     assert await broker.desired() == {"dobby": ["rocky"]}
-    await asyncio.sleep(0.5)
+    assert [(d, a) for d, _cb, a in graces] == [(7.5, ("dobby", "rocky"))]
+    _delay, release, args = graces[0]
+    release(*args)  # the grace elapses
     assert await broker.desired() == {}
 
 
