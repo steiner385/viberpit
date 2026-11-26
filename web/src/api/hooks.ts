@@ -85,6 +85,7 @@ import { getPendingSessions, subscribePending, addPendingSession, removePendingS
 import { reconcileFlight } from '@/lib/promptFlight'
 import { isSessionsViewing, setSessionsViewing } from './sessionsViewing'
 import { reconcileSessions } from '@/session/reconcile'
+import { isAnySocketOpen } from '@/ws/socketState'
 import { toast } from 'sonner'
 
 // Plugin detail/browse prefixes: the parametrised keys below spread from these, so an
@@ -256,9 +257,13 @@ export function useSessions() {
     // the slow fields (summaries, suggestions, PR chips, queue positions).
     staleTime: 10_000,
     refetchInterval: 15_000,
-    // Version-guarded merge: a stale in-flight poll must not overwrite a session the WS
-    // patched to a newer revAt. reconcileSessions keeps the newer of cache vs poll per id.
-    structuralSharing: (prev, next) => reconcileSessions(prev as Session[] | undefined, next as Session[]),
+    // Version-guarded merge by trust order (FR-403, session/reconcile.ts TRUST_ORDER): while
+    // any channel's socket is open (route or assistant — both patch this cache), a stale
+    // in-flight poll must not overwrite a session the WS patched to a newer revAt; once every
+    // socket is closed/stale the poll is the only surface still fed and wins outright. Read
+    // at merge time, not render time: a socket may drop between the poll's request and response.
+    structuralSharing: (prev, next) =>
+      reconcileSessions(prev as Session[] | undefined, next as Session[], { socketOpen: isAnySocketOpen() }),
   })
   // The poll is the durable second signal for the "Sent — starting…" list pill: a
   // socket that was down while a turn ran never sees it start, and the resting

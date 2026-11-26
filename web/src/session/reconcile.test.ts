@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { revIsNewer, shouldApplyRev, reconcileSessions } from './reconcile'
+import { revIsNewer, shouldApplyRev, reconcileSessions, pollOutranksCache } from './reconcile'
 import type { Session } from '@/api/types'
 
 const s = (id: string, over: Partial<Session> = {}): Session =>
@@ -42,6 +42,67 @@ describe('reconcileSessions', () => {
     const next = [s('a', { revAt: T1 })]
     const out = reconcileSessions(prev, next)
     expect(out.map((x) => x.id)).toEqual(['a'])
+  })
+})
+
+// FR-403 trust order: an OPEN socket's WS-patched row outranks the poll when its token is
+// newer; once the socket is closed/stale the cache may hold a frame the socket can no
+// longer refresh, so the poll outranks it unconditionally.
+describe('pollOutranksCache', () => {
+  describe('socket open', () => {
+    it('cache wins when its token is newer', () => expect(pollOutranksCache(true, T2, T1)).toBe(false))
+    it('poll wins when its token is newer', () => expect(pollOutranksCache(true, T1, T2)).toBe(true))
+    it('poll wins on an equal token', () => expect(pollOutranksCache(true, T1, T1)).toBe(true))
+    it('cache wins when only the cache carries a token', () => expect(pollOutranksCache(true, T1, undefined)).toBe(false))
+    it('poll wins when only the poll carries a token', () => expect(pollOutranksCache(true, undefined, T1)).toBe(true))
+    it('poll wins when neither carries a token', () => expect(pollOutranksCache(true, undefined, undefined)).toBe(true))
+  })
+  describe('socket closed', () => {
+    it('poll wins even when the cache token is newer', () => expect(pollOutranksCache(false, T2, T1)).toBe(true))
+    it('poll wins when it is newer', () => expect(pollOutranksCache(false, T1, T2)).toBe(true))
+    it('poll wins when only the cache carries a token', () => expect(pollOutranksCache(false, T1, undefined)).toBe(true))
+  })
+})
+
+describe('reconcileSessions — socket trust order (FR-403)', () => {
+  const wsNewerCache = () => [s('a', { status: 'done', accountName: 'new', revAt: T2 })]
+  const stalePoll = () => [s('a', { status: 'in_progress', accountName: 'old', revAt: T1 })]
+
+  it('defaults to an open socket (existing behaviour: WS-newer cache wins)', () => {
+    expect(reconcileSessions(wsNewerCache(), stalePoll())[0].status).toBe('done')
+  })
+  it('socketOpen: true — WS-newer cache wins over the stale poll', () => {
+    const out = reconcileSessions(wsNewerCache(), stalePoll(), { socketOpen: true })[0]
+    expect(out.status).toBe('done')
+    expect(out.accountName).toBe('new')
+    expect(out.revAt).toBe(T2)
+  })
+  it('socketOpen: false — the poll wins even over a WS-newer cached row', () => {
+    const out = reconcileSessions(wsNewerCache(), stalePoll(), { socketOpen: false })[0]
+    expect(out.status).toBe('in_progress')
+    expect(out.accountName).toBe('old')
+    expect(out.revAt).toBe(T1)
+  })
+  it('socketOpen: false — a newer poll still wins (no change from today)', () => {
+    const prev = [s('a', { status: 'in_progress', revAt: T1 })]
+    const next = [s('a', { status: 'done', revAt: T2 })]
+    expect(reconcileSessions(prev, next, { socketOpen: false })[0].status).toBe('done')
+  })
+  it('socketOpen: false — the poll stays authoritative for existence', () => {
+    const prev = [s('a', { revAt: T2 }), s('b', { revAt: T2 })]
+    const out = reconcileSessions(prev, [s('a', { revAt: T1 })], { socketOpen: false })
+    expect(out.map((x) => x.id)).toEqual(['a'])
+  })
+  it('socketOpen: false — a poll row without unread still keeps the cached unread (D-10)', () => {
+    const prev = [s('a', { status: 'done', revAt: T2, unread: true })]
+    const next = [s('a', { status: 'in_progress', revAt: T1 })]
+    const out = reconcileSessions(prev, next, { socketOpen: false })[0]
+    expect(out.status).toBe('in_progress')
+    expect(out.unread).toBe(true)
+  })
+  it('socketOpen: false — returns the poll row itself (same reference) when nothing needs merging', () => {
+    const fresh = s('a', { status: 'in_progress', revAt: T1, unread: false })
+    expect(reconcileSessions(wsNewerCache(), [fresh], { socketOpen: false })[0]).toBe(fresh)
   })
 })
 

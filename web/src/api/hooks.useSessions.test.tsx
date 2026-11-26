@@ -1,12 +1,13 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { useSessions } from './hooks'
+import { useSessions, QK } from './hooks'
 import { api } from './client'
 import type { Session } from './types'
 import { addPendingSession, __resetPending } from '@/lib/pendingSessions'
 import { noteSent, getFlight, __resetFlight } from '@/lib/promptFlight'
+import { setChannelOpen } from '@/ws/socketState'
 
 vi.mock('./client', () => ({ api: { get: vi.fn() }, ApiRequestError: class extends Error {} }))
 
@@ -61,5 +62,43 @@ describe('useSessions — reconciles the prompt-flight store against the poll', 
     const { result } = renderHook(() => useSessions(), { wrapper })
     await waitFor(() => expect(result.current.data).toHaveLength(1))
     expect(getFlight()['sess-1']).toBe('sent')
+  })
+})
+
+// FR-403: the poll merges by trust order. A WS-patched cached row (newer revAt) survives
+// a stale poll only while the route socket is open; a closed socket cannot refresh that
+// row, so the poll outranks it.
+describe('useSessions — socket trust order (FR-403)', () => {
+  const T1 = '2026-09-08T02:40:00+00:00'
+  const T2 = '2026-09-08T02:40:05+00:00'
+  const wsPatched: Session = { ...real, status: 'done', revAt: T2 }
+  const stalePoll: Session = { ...real, status: 'in_progress', revAt: T1 }
+  let qc: QueryClient
+  beforeEach(() => {
+    vi.clearAllMocks(); __resetPending(); __resetFlight()
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    // Seed the cache as a WS patch would have left it, already stale so the mount refetches.
+    qc.setQueryData<Session[]>(QK.sessions, [wsPatched], { updatedAt: 0 })
+    vi.mocked(api.get).mockResolvedValue([stalePoll])
+  })
+  afterEach(() => setChannelOpen('route', false))
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  )
+
+  it('keeps the WS-newer cached row over a stale poll while the socket is open', async () => {
+    setChannelOpen('route', true)
+    const { result } = renderHook(() => useSessions(), { wrapper })
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    expect(result.current.data?.[0].status).toBe('done')
+    expect(result.current.data?.[0].revAt).toBe(T2)
+  })
+
+  it('lets the poll overwrite the WS-newer cached row once the socket is closed', async () => {
+    setChannelOpen('route', false)
+    const { result } = renderHook(() => useSessions(), { wrapper })
+    await waitFor(() => expect(result.current.data?.[0].status).toBe('in_progress'))
+    expect(result.current.data?.[0].revAt).toBe(T1)
   })
 })

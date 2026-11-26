@@ -23,18 +23,51 @@ export function shouldApplyRev(incoming: string | null | undefined, cached: stri
 }
 
 /**
- * Merge a fresh poll result (`next`) against the current cache (`prev`), keeping a cached
- * session whose rev token is newer than the poll's — i.e. a live WS patch that outran the
- * in-flight poll. `next` remains authoritative for existence: a session absent from it is
- * dropped. Intended as TanStack Query `structuralSharing` for the sessions query.
+ * TRUST_ORDER (FR-403) — which surface a session row in the list cache is taken from:
+ *
+ *   1. an OPEN WebSocket's patch (the cached row) when its rev token is newer than the
+ *      poll's — a live frame that outran an in-flight poll;
+ *   2. the polled DB shadow otherwise — a newer or equal token, or
+ *   3. ANY poll while the socket is NOT open (closed, reconnecting, or judged stale): the
+ *      cache may hold a frame the socket can no longer refresh, so the poll is the only
+ *      surface still being fed and outranks it unconditionally.
+ *
+ * Deterministic by construction: the same (socketOpen, cachedRevAt, freshRevAt) triple
+ * always resolves the same way. Returns true when the poll's row should replace the cache.
  */
-export function reconcileSessions(prev: Session[] | undefined, next: Session[]): Session[] {
+export function pollOutranksCache(
+  socketOpen: boolean,
+  cachedRevAt: string | null | undefined,
+  freshRevAt: string | null | undefined,
+): boolean {
+  if (!socketOpen) return true
+  return !revIsNewer(cachedRevAt, freshRevAt)
+}
+
+export interface ReconcileOptions {
+  /** Whether the route socket is currently `connected`. Defaults to true — the pre-FR-403
+   *  behaviour, where a WS-newer cached row always survives the poll. */
+  socketOpen?: boolean
+}
+
+/**
+ * Merge a fresh poll result (`next`) against the current cache (`prev`) by TRUST_ORDER:
+ * keep a cached session whose rev token is newer than the poll's while the socket is open
+ * (a live WS patch that outran the in-flight poll); take the poll otherwise. `next` remains
+ * authoritative for existence: a session absent from it is dropped. Intended as TanStack
+ * Query `structuralSharing` for the sessions query.
+ */
+export function reconcileSessions(
+  prev: Session[] | undefined,
+  next: Session[],
+  { socketOpen = true }: ReconcileOptions = {},
+): Session[] {
   if (!prev) return next
   const prevById = new Map(prev.map((s) => [s.id, s]))
   return next.map((fresh) => {
     const cached = prevById.get(fresh.id)
     if (!cached) return fresh
-    if (revIsNewer(cached.revAt, fresh.revAt)) {
+    if (!pollOutranksCache(socketOpen, cached.revAt, fresh.revAt)) {
       // `unread` is per-viewer read state, not part of the record the rev token
       // versions (D-10): the poll's value is the fresher one even when the WS
       // patch won on the record.
