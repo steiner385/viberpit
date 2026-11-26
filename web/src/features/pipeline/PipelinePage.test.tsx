@@ -263,4 +263,24 @@ describe('PipelinePage (Workspace variant)', () => {
     const content = banner!.parentElement!
     expect(content.firstElementChild).toBe(banner)
   })
+  it('a stalled feed with last-good data shows the dedicated .pipeline-stale indicator with the last-update time (#1417)', () => {
+    vi.useFakeTimers()
+    mount()
+    deliver()
+    expect(document.querySelector('.pipeline-stale')).not.toBeInTheDocument()
+    act(() => { vi.advanceTimersByTime(90_000) })
+    const ind = document.querySelector('.pipeline-stale')!
+    expect(ind).toBeInTheDocument()
+    expect(ind).toHaveTextContent(/showing the last data \(updated \d{2}:\d{2}\)/)
+    expect(screen.getByTestId('pipeline-as-of')).toBeInTheDocument()
+  })
+
+  it('a dropped connection with last-good data says disconnected, not stalled (#1417)', () => {
+    vi.useFakeTimers()
+    mount()
+    deliver()
+    act(() => { FakeEventSource.instances.at(-1)!.onerror?.(new Event('error')) })
+    act(() => { vi.advanceTimersByTime(90_000) })
+    expect(document.querySelector('.pipeline-stale')).toHaveTextContent(/Pipeline feed disconnected/)
+  })
 })

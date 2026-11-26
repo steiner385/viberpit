@@ -25,6 +25,10 @@ export interface DashboardHook {
   /** Connected but no fresh frame within STALE_AFTER_MS — the data on screen is
    *  aging even though the socket is up. Drives the spine's three-state indicator. */
   stale: boolean;
+  /** Epoch ms of the last good data of any kind — a live frame OR the warm
+   *  /snapshot — so the page can say how old the content on screen is. Null
+   *  until the first success. */
+  lastSuccessAt: number | null;
   /** Whether this browser supports Web Notifications (bell hidden otherwise). */
   notifySupported: boolean;
   /** Bell state: notifications are shown only when true AND permission granted. */
@@ -37,6 +41,7 @@ export function useDashboard(): DashboardHook {
   const [state, setState] = useState<DashboardState | null>(null);
   const [connected, setConnected] = useState(false);
   const [stale, setStale] = useState(false);
+  const [lastSuccessAt, setLastSuccessAt] = useState<number | null>(null);
   const staleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const supported = notifySupported();
   const { apiUrl, withCredentials, fetch: apiFetch } = useApiBase();
@@ -60,7 +65,24 @@ export function useDashboard(): DashboardHook {
     // /events erroring) still trips `stale` instead of leaving the page on its
     // loading skeleton forever.
     armStale();
-    const onFrame = (data: string) => { sseArrived = true; setConnected(true); setStale(false); armStale(); setState(JSON.parse(data) as DashboardState); };
+    // Parse BEFORE touching freshness: a malformed frame is not a success, so it
+    // must neither clear `stale` nor re-arm the watchdog (and must not throw out
+    // of the EventSource handler).
+    const onFrame = (data: string) => {
+      let frame: DashboardState;
+      try { frame = JSON.parse(data) as DashboardState; } catch { return; }
+      sseArrived = true; setConnected(true); setStale(false); armStale();
+      lastGoodAt = Date.now(); setLastSuccessAt(lastGoodAt);
+      setState(frame);
+    };
+    // Timers are throttled or frozen in a backgrounded tab, so on resume re-judge
+    // freshness against the wall clock instead of trusting the watchdog to fire.
+    const mountedAt = Date.now();
+    let lastGoodAt = mountedAt;
+    const recheck = () => {
+      if (document.visibilityState === 'hidden') return;
+      if (Date.now() - lastGoodAt >= STALE_AFTER_MS) setStale(true);
+    };
 
     // Fast first paint: pull the warm cached frame from /snapshot and render it
     // immediately, but ONLY if the live stream hasn't already delivered a
@@ -71,7 +93,14 @@ export function useDashboard(): DashboardHook {
     try {
       void apiFetch(apiUrl('/snapshot'), withCredentials ? { credentials: 'include' } : undefined)
         .then((r) => (r.ok ? r.json() : null))
-        .then((snap) => { if (!cancelled && !sseArrived && snap) setState(snap as DashboardState); })
+        .then((snap) => {
+          if (cancelled || sseArrived || !snap) return;
+          // Warm data is real data: it counts as the last success (the watchdog
+          // keeps running from mount, so a silent stream still trips `stale`).
+          lastGoodAt = Date.now();
+          setLastSuccessAt(lastGoodAt);
+          setState(snap as DashboardState);
+        })
         .catch(() => { /* snapshot is optional — SSE is the source of truth */ });
     } catch { /* fetch unavailable — ignore */ }
 
@@ -96,7 +125,13 @@ export function useDashboard(): DashboardHook {
         });
       } catch { /* malformed frame — ignore */ }
     });
-    return () => { cancelled = true; es.close(); if (staleTimer.current) clearTimeout(staleTimer.current); };
+    document.addEventListener('visibilitychange', recheck);
+    window.addEventListener('online', recheck);
+    return () => {
+      cancelled = true; es.close(); if (staleTimer.current) clearTimeout(staleTimer.current);
+      document.removeEventListener('visibilitychange', recheck);
+      window.removeEventListener('online', recheck);
+    };
   }, [apiUrl, withCredentials, apiFetch]);
 
   const toggleNotify = useCallback(() => {
@@ -112,5 +147,5 @@ export function useDashboard(): DashboardHook {
     void Notification.requestPermission().then((p) => { if (p === 'granted') enable(); });
   }, []);
 
-  return { state, connected, stale, notifySupported: supported, notifyEnabled, toggleNotify };
+  return { state, connected, stale, lastSuccessAt, notifySupported: supported, notifyEnabled, toggleNotify };
 }
