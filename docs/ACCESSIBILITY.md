@@ -154,9 +154,18 @@ at `index.css:266` that stops the working-shimmer animation. This matches `web/R
   393×852 to reproduce the Android keyboard squeeze, and `rotation-reconnect.spec.ts` sets no
   viewport at all. So phone is near-universal and **820×1180 appears in exactly one spec**; there is
   no "every spec covers three widths" guarantee to rely on.
-  `playwright.config.ts:17-22` defines one project — `chromium` on `devices['Desktop Chrome']`,
-  whose viewport is what a spec that sets none inherits. What does not exist is a viewport *matrix*:
-  the per-spec widths cover what one would, without multiplying specs that already loop on their own.
+  `playwright.config.ts` defines three projects: `chromium` (`devices['Desktop Chrome']`, whose
+  viewport is what a spec that sets none inherits) runs every spec; `firefox` and `webkit` run only
+  `web/e2e/cross-browser/` (the whole suite when `PW_BROAD=1`, as the nightly does).
+- **Cross-browser gate (#1412)**: `web/e2e/cross-browser/shell-modes.spec.ts` IS the viewport
+  matrix — four layout modes (desktop, tablet-landscape, phone-portrait, phone-landscape) × the five
+  top-level routes, on all three engines, each cell asserting layout geometry (no sideways scroll,
+  44px touch / 24px AA targets, nothing off-screen) and an **axe scan in the real browser**. That scan
+  is the only one in the repo that can see colour contrast: the `jest-axe` assertions above run in
+  jsdom, which applies no stylesheet (`web/src/__tests__/contrast.test.ts` says why). No rule is
+  disabled — see [`docs/product/ui-a11y-analyzer-limitations.md`](product/ui-a11y-analyzer-limitations.md)
+  for the five classified entries — and `seeded-defects.spec.ts` proves each gate can fail. The
+  record is [`docs/audits/ui-conformance-scorecard.md`](audits/ui-conformance-scorecard.md).
 - **Touch targets**: `touch-targets.spec.ts` is the one spec that additionally sets
   `hasTouch`/`isMobile` (393×852) rather than only a phone-sized viewport — the default `Desktop
   Chrome` device reports `hover: hover`/`pointer: fine` regardless of viewport width, so a

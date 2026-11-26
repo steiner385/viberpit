@@ -42,7 +42,7 @@ export function BrowsePanel({ marketplaces, onInstall }: {
   return (
     <section aria-labelledby="plugin-browse" className="mt-8">
       <h3 id="plugin-browse" className="text-sm font-semibold mb-2">Browse</h3>
-      <p className="text-xs opacity-60 mb-2">
+      <p className="text-xs text-ink-muted mb-2">
         From marketplaces you confirmed, plus plugins Anthropic reviewed in its directory.
       </p>
       <div className="flex gap-2 flex-wrap">
@@ -66,7 +66,7 @@ export function BrowsePanel({ marketplaces, onInstall }: {
         </Select>
       </div>
       {browse.isError && <p role="alert" className="mt-2 text-xs text-danger">Couldn’t load plugins.</p>}
-      {browse.isLoading && <div className="mt-3 text-sm opacity-70">Loading…</div>}
+      {browse.isLoading && <div className="mt-3 text-sm text-ink-muted">Loading…</div>}
       <ul className="mt-3 space-y-2" aria-busy={browse.isFetching || undefined}>
         {entries.map((e) => (
           <BrowseRow
@@ -85,14 +85,14 @@ export function BrowsePanel({ marketplaces, onInstall }: {
           />
         ))}
         {data && entries.length === 0 && (
-          <li className="text-sm opacity-70">{debouncedQ ? 'No plugins match.' : 'No plugins available.'}</li>
+          <li className="text-sm text-ink-muted">{debouncedQ ? 'No plugins match.' : 'No plugins available.'}</li>
         )}
       </ul>
       {total > PAGE && (
         <div className="mt-2 flex items-center gap-2 text-xs">
           <Button size="sm" variant="secondary" disabled={offset === 0}
             onClick={() => setOffset(Math.max(0, offset - PAGE))}>Previous</Button>
-          <span className="opacity-70">{offset + 1}–{Math.min(offset + PAGE, total)} of {total}</span>
+          <span className="text-ink-muted">{offset + 1}–{Math.min(offset + PAGE, total)} of {total}</span>
           <Button size="sm" variant="secondary" disabled={offset + PAGE >= total}
             onClick={() => setOffset(offset + PAGE)}>Next</Button>
         </div>
@@ -110,11 +110,11 @@ function BrowseRow({ entry: e, onInstall }: { entry: PluginBrowseEntry; onInstal
           <div className="flex items-baseline gap-2 min-w-0 flex-wrap">
             <span className="font-medium truncate min-w-0"><bdi>{clip(e.name, 120)}</bdi></span>
             {e.reviewed && <Badge tone="info">Reviewed</Badge>}
-            {e.version && <span className="text-xs opacity-60">{clip(e.version, 40)}</span>}
+            {e.version && <span className="text-xs text-ink-muted">{clip(e.version, 40)}</span>}
           </div>
-          <div className="text-xs opacity-60 truncate"><bdi>{clip(e.marketplace, 120)}</bdi></div>
-          {e.description && <p className="text-sm opacity-70 truncate"><bdi>{clip(e.description, 500)}</bdi></p>}
-          <p className="text-xs opacity-50 mt-0.5">
+          <div className="text-xs text-ink-muted truncate"><bdi>{clip(e.marketplace, 120)}</bdi></div>
+          {e.description && <p className="text-sm text-ink-muted truncate"><bdi>{clip(e.description, 500)}</bdi></p>}
+          <p className="text-xs text-ink-muted mt-0.5">
             {runs ?? CONTENTS_UNKNOWN}
           </p>
         </div>

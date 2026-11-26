@@ -43,18 +43,18 @@ export function ConsentDialog({ target, onClose }: { target: ConsentTarget; onCl
       <div className="space-y-3 text-sm min-w-0">
         <div className="min-w-0">
           <div className="font-medium break-all"><bdi>{clip(target.name, 120)}</bdi></div>
-          <div className="text-xs opacity-70 break-all">
+          <div className="text-xs text-ink-muted break-all">
             <bdi>{clip(target.pluginId, 200)}</bdi>{target.version ? ` · ${clip(target.version, 40)}` : ''}
             {target.reviewed ? ' · Reviewed by Anthropic' : ''}
           </div>
         </div>
         <dl className="space-y-2">
           <div>
-            <dt className="text-xs opacity-60">What it can run</dt>
+            <dt className="text-xs text-ink-muted">What it can run</dt>
             <dd>{target.runs ?? CONTENTS_UNKNOWN}</dd>
           </div>
           <div>
-            <dt className="text-xs opacity-60">Marketplace source</dt>
+            <dt className="text-xs text-ink-muted">Marketplace source</dt>
             <dd className="break-all">
               <code><bdi>{target.source ?? `${clip(target.marketplace, 80)} (source not shown by this host)`}</bdi></code>
             </dd>

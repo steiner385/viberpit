@@ -73,7 +73,7 @@ export function HostOutcomes({ record, retrying = false, onDismiss }: {
             <span className="font-medium break-all"><bdi>{clip(h.host, 80)}</bdi></span>
             <Badge tone={LABEL[h.outcome]?.tone ?? 'neutral'}>{LABEL[h.outcome]?.text ?? h.outcome}</Badge>
             {(h.failureCode || h.message) && (
-              <span className="min-w-0 break-words opacity-70">
+              <span className="min-w-0 break-words text-ink-muted">
                 {h.failureCode && <code>{clip(h.failureCode, 80)}</code>}
                 {h.failureCode && h.message ? ' — ' : ''}
                 {h.message && <bdi>{clip(h.message, 500)}</bdi>}

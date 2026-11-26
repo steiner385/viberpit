@@ -517,7 +517,10 @@ export function SessionCard({ session, account, selected = false, open = false, 
                 label={`Quick replies for session ${session.name}`}
                 title="Quick replies — one tap sends"
                 icon={<ChevronDown size={14} aria-hidden="true" />}
-                triggerClassName={cn('w-7 [@media(hover:hover)]:w-5 text-success',
+                // 24px, not 20: WCAG 2.2 SC 2.5.8's floor for a hover-capable pointer
+                // (the dense desktop chevron was 20px wide — #1412, caught by the axe
+                // `target-size` gate in web/e2e/cross-browser/).
+                triggerClassName={cn('w-7 [@media(hover:hover)]:w-6 text-success',
                   'hover:bg-success-wash focus-visible:ring-success active:bg-success-wash')}
               >
                 {(close) => (
