@@ -197,20 +197,10 @@ def test_dirty_tree_rules(private, carry, code):
         assert v.extra["dirtyPaths"] == ["a", "b", "c"] and v.extra["dirtyCount"] == 3
 
 
-# Final review ruling: committed-but-unpushed work on a public repo never travels either.
-@pytest.mark.parametrize("private,code", [
-    (False, sm.MOVE_UNPUSHED_PUBLIC_REPO),
-    (None, sm.MOVE_UNPUSHED_PUBLIC_REPO),          # unknown visibility = public
-    (True, None),
-])
-def test_unpushed_commit_rules(private, code):
-    facts = sm.WorktreeFacts(unpushed_commits=2, repo_private=private)
-    v = _verdict(facts=facts)
-    assert v.code == code
-    if code is not None:
-        assert v.message == sm.UNPUSHED_PUBLIC_REPO_COPY
-        assert v.extra["unpushedCommits"] == 2
-    assert _verdict(facts=sm.WorktreeFacts(repo_private=private)).ok   # none: fine
+# #3321 (owner): committed work is not a refusal on any repo — only dirty bytes are.
+@pytest.mark.parametrize("private", [False, None, True])
+def test_committed_work_never_refuses(private):
+    assert _verdict(facts=sm.WorktreeFacts(repo_private=private)).ok
 
 
 def test_background_tasks_need_a_confirm_that_lists_them():
@@ -1146,26 +1136,13 @@ def _commit_in(cwd: Path, name: str = "feature.py") -> None:
     _git("commit", "-q", "-m", name, cwd=cwd)
 
 
-@pytest.mark.parametrize("answer", [False, None])
+@pytest.mark.parametrize("answer", [False, None, True])
 @pytest.mark.asyncio
-async def test_export_refuses_unpushed_commits_on_a_public_or_unknown_repo(
+async def test_export_carries_unpushed_commits_on_any_repo(
         monkeypatch, two_hosts, visibility, answer):
+    # #3321: a clean tree's commits travel on a public or unknown-visibility repo too.
     h = two_hosts
     visibility.answer = answer
-    o = await _source(monkeypatch, h)
-    _commit_in(h.cwd)
-    with pytest.raises(sm.MoveError) as ei:
-        await o.transfer_export(SID, target="rocky")
-    assert ei.value.code == sm.MOVE_UNPUSHED_PUBLIC_REPO
-    assert ei.value.extra == {"unpushedCommits": 1}
-    assert _origin_refs(h.origin) == "" and o.closed == []     # nothing touched
-    assert SID in o._drivers and o._records[SID].host == "dobby"
-
-
-@pytest.mark.asyncio
-async def test_export_carries_unpushed_commits_on_a_private_repo(
-        monkeypatch, two_hosts, visibility):
-    h = two_hosts
     o = await _source(monkeypatch, h)
     _commit_in(h.cwd)
     manifest = await o.transfer_export(SID, target="rocky")
@@ -1173,10 +1150,11 @@ async def test_export_carries_unpushed_commits_on_a_private_repo(
     assert _origin_refs(h.origin) != ""
 
 
-@pytest.mark.parametrize("answer,dirty", [(False, False), (None, True)])
+@pytest.mark.parametrize("answer,dirty", [(None, False), (False, True)])
 @pytest.mark.asyncio
-async def test_preflight_reports_unpushed_commits_and_visibility(
+async def test_preflight_asks_visibility_only_for_a_dirty_tree(
         monkeypatch, two_hosts, visibility, answer, dirty):
+    # #3321: committed work alone no longer needs the GitHub visibility lookup.
     h = two_hosts
     visibility.answer = answer
     o = await _source(monkeypatch, h)
@@ -1185,10 +1163,9 @@ async def test_preflight_reports_unpushed_commits_and_visibility(
     if dirty:
         (h.cwd / "wip.py").write_text("y\n")
     report = await o.transfer_preflight(SID)
-    assert report["unpushedCommits"] == 1
-    assert report["repoPrivate"] is answer
-    facts = sm.WorktreeFacts.from_preflight(report)
-    assert facts.unpushed_commits == 1
+    assert "unpushedCommits" not in report
+    assert report["repoPrivate"] is (answer if dirty else None)
+    assert report["dirtyCount"] == (1 if dirty else 0)
 
 
 @pytest.mark.asyncio

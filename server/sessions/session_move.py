@@ -72,11 +72,6 @@ MOVE_TARGET_FULL = "MOVE_TARGET_FULL"
 MOVE_TARGET_SANDBOX = "MOVE_TARGET_SANDBOX"
 MOVE_DIRTY_NEEDS_CONSENT = "MOVE_DIRTY_NEEDS_CONSENT"
 MOVE_DIRTY_PUBLIC_REPO = "MOVE_DIRTY_PUBLIC_REPO"
-#: Committed work no origin ref has, on a public (or unknown-visibility) repo: the
-#: transfer refs would leave it fetchable by SHA (D-17 final review ruling).
-MOVE_UNPUSHED_PUBLIC_REPO = "MOVE_UNPUSHED_PUBLIC_REPO"
-UNPUSHED_PUBLIC_REPO_COPY = ("This repository is public — push the session's commits to "
-                             "its branch before moving")
 MOVE_BACKGROUND_NEEDS_CONFIRM = "MOVE_BACKGROUND_NEEDS_CONFIRM"
 #: A Codex thread's history (rollout + sidecars) over :data:`HISTORY_MAX_BYTES` (#3347).
 MOVE_HISTORY_TOO_LARGE = "MOVE_HISTORY_TOO_LARGE"
@@ -205,7 +200,6 @@ class WorktreeFacts:
 
     dirty_count: int = 0
     dirty_paths: tuple[str, ...] = ()
-    unpushed_commits: int = 0
     repo_private: bool | None = None
     background_tasks: tuple[dict, ...] = ()
     #: A live permission / question / plan card (or a re-offered orphaned one) — not
@@ -219,7 +213,6 @@ class WorktreeFacts:
     def from_preflight(cls, d: dict) -> "WorktreeFacts":
         return cls(dirty_count=int(d.get("dirtyCount") or 0),
                    dirty_paths=tuple(d.get("dirtyPaths") or ()),
-                   unpushed_commits=int(d.get("unpushedCommits") or 0),
                    repo_private=d.get("repoPrivate"),
                    background_tasks=tuple(d.get("backgroundTasks") or ()),
                    pending_card=bool(d.get("pendingCard")),
@@ -343,9 +336,6 @@ def movable(subject: MoveSubject, target: str, candidate: Any, *, caps: Any, ena
                 return _no(MOVE_DIRTY_NEEDS_CONSENT,
                            "The worktree has uncommitted changes; confirm carrying them.",
                            **dirty)
-        if facts.unpushed_commits and facts.repo_private is not True:
-            return _no(MOVE_UNPUSHED_PUBLIC_REPO, UNPUSHED_PUBLIC_REPO_COPY,
-                       unpushedCommits=facts.unpushed_commits)
         if facts.background_tasks and not stop_background:
             return _no(MOVE_BACKGROUND_NEEDS_CONFIRM,
                        "Background tasks will stop and be re-armed on the new host; "

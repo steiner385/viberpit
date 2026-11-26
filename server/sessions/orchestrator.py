@@ -25607,8 +25607,8 @@ class SessionOrchestrator:
 
     async def transfer_preflight(self, session_id: str) -> dict:
         """Read-only: what a move of *session_id* off this host would carry — the dirty
-        paths (capped), the unpushed commits, the repo's GitHub visibility (asked only
-        when either would be pushed), the live
+        paths (capped), the repo's GitHub visibility (asked only when there are dirty
+        paths: committed work travels on any repo, #3321), the live
         background tasks that would stop — and whether its worktree is here at all
         (the crash reconcile's question)."""
         from viberpit import worktree_transfer as wtx
@@ -25626,7 +25626,7 @@ class SessionOrchestrator:
                      "present": present, "driverLive": driver is not None,
                      "turnActive": bool(getattr(driver, "turn_active", False)),
                      "pendingCard": self._has_live_card(session_id),
-                     "dirtyCount": 0, "dirtyPaths": [], "unpushedCommits": 0, "repo": None,
+                     "dirtyCount": 0, "dirtyPaths": [], "repo": None,
                      "repoPrivate": None, "backgroundTasks": [], "historyBytes": 0}
         thread = self._codex_thread_ref(rec, row)
         if thread is not None:
@@ -25643,10 +25643,10 @@ class SessionOrchestrator:
                 state = await asyncio.to_thread(wtx.inspect, str(cwd))
             except wtx.TransferError:
                 state = None
-            if state is not None and (state.dirty or state.unpushed_commits):
+            if state is not None and state.dirty:
                 repo = await asyncio.to_thread(gitrepos.repo_at_path, str(cwd))
                 out.update(dirtyCount=state.dirty_files, dirtyPaths=list(state.dirty_paths),
-                           unpushedCommits=state.unpushed_commits, repo=repo,
+                           repo=repo,
                            repoPrivate=await asyncio.to_thread(gitrepos.repo_is_private, repo))
         if rec is not None and driver is not None:
             tasks = await self._open_background_work(session_id)
@@ -25707,11 +25707,9 @@ class SessionOrchestrator:
                 state = await asyncio.to_thread(wtx.inspect, rec.cwd)
             except wtx.TransferError as exc:
                 raise sm.MoveError(sm.MOVE_NOT_MANAGED, str(exc)) from exc
-            private: bool | None = None
-            if state.dirty or state.unpushed_commits:
+            if state.dirty:
                 repo = await asyncio.to_thread(gitrepos.repo_at_path, rec.cwd)
                 private = await asyncio.to_thread(gitrepos.repo_is_private, repo)
-            if state.dirty:
                 dirty = {"dirtyCount": state.dirty_files, "dirtyPaths": list(state.dirty_paths)}
                 # Fail closed (revised D1): only GitHub's explicit "private" lets
                 # uncommitted bytes travel — a WIP commit on a public repo stays
@@ -25724,12 +25722,9 @@ class SessionOrchestrator:
                     raise sm.MoveError(sm.MOVE_DIRTY_NEEDS_CONSENT,
                                        "Uncommitted changes need consent to travel.",
                                        extra=dirty)
-            if state.unpushed_commits and private is not True:
-                # Same exposure as a WIP commit: a transfer ref's commits stay fetchable
-                # by SHA after it is deleted. The vetted state passed to export below
-                # then refuses any unpushed commit that appears after this check.
-                raise sm.MoveError(sm.MOVE_UNPUSHED_PUBLIC_REPO, sm.UNPUSHED_PUBLIC_REPO_COPY,
-                                   extra={"unpushedCommits": state.unpushed_commits})
+            # Committed-but-unpushed work travels on any repo (owner decision, #3321): it
+            # normally reaches the PR branch anyway, so the transfer ref only exposes it
+            # a little earlier. Uncommitted bytes stay refused on a public repo above.
             tasks = await self._open_background_work(session_id) if driver is not None else []
             if tasks and not stop_background:
                 raise sm.MoveError(sm.MOVE_BACKGROUND_NEEDS_CONFIRM,
@@ -25781,10 +25776,10 @@ class SessionOrchestrator:
                                        extra={"historyCode": exc.code}) from exc
                 codex_thread = exported.to_dict()
             try:
-                # Only the VETTED verdict may carry bytes (revised D1): a tree that got
-                # dirty — or gained unpushed commits — after the visibility/consent
-                # checks above is refused by export (dirty_worktree / unpushed_commits
-                # → MOVE_EXPORT_FAILED → restore), never pushed.
+                # Only the VETTED verdict may carry uncommitted bytes (revised D1): a
+                # tree that got dirty after the visibility/consent checks above is
+                # refused by export (dirty_worktree → MOVE_EXPORT_FAILED → restore),
+                # never pushed.
                 bundle = await asyncio.to_thread(
                     functools.partial(wtx.export, rec.cwd, session_id,
                                       carry_dirty=carry_dirty and state.dirty, vetted=state))
