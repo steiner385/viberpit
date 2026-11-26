@@ -3,22 +3,27 @@
 # Format: "<sha256>  <asset-name>", one per line — the same shape as
 # scripts/copilot2api.sha256 and `sha256sum` output.
 #
-# This file is INTENTIONALLY without a digest for the current pin. A digest can
-# only be established by fetching the artefact on a host that can reach the
-# network and confirming its provenance against the upstream release, so it is
-# recorded once and then enforced everywhere:
+# A digest is established once, on a trusted host, after confirming the artefact's
+# provenance against the upstream release, and then enforced everywhere:
 #
-#     bash scripts/fetch-codex.sh --record      # on a trusted host, once
+#     bash scripts/fetch-codex.sh --record      # on a trusted host, once per pin
 #     git add scripts/codex-cli.sha256 && commit
 #
-# Until then `scripts/fetch-codex.sh` FAILS CLOSED rather than installing an
-# unverified binary. That is deliberate: the point of the pin is that every runner
-# executes the same bytes — dobby and rocky sharing one ChatGPT account must not
-# disagree about what `codex` is — and a placeholder digest committed ahead of
-# time would only teach an operator to overwrite the expected value with whatever
-# they had just downloaded, which is not a check at all.
+# `scripts/fetch-codex.sh` FAILS CLOSED for any asset without an entry here. That is
+# deliberate: the point of the pin is that every runner executes the same bytes —
+# runners sharing one ChatGPT account must not disagree about what `codex` is — and
+# a placeholder digest committed ahead of time would only teach an operator to
+# overwrite the expected value with whatever they had just downloaded.
 #
 # Version drift is caught independently of this file: `fetch-codex.sh` refuses to
 # install a binary whose `--version` is not server/codex/schema.py's
 # PINNED_CLI_VERSION, and the daemon re-generates and hashes the app-server JSON
 # schema before offering Codex at all (server/codex/process.py:probe_availability).
+#
+# codex-cli 0.153.2 — recorded 2026-11-25 on dobby. Provenance: release rust-v0.153.2
+# in openai/codex (org-owned, not a fork), asset uploaded by github-actions[bot];
+# this digest equals GitHub's own asset digest and two independent downloads.
+# openai/codex publishes no build attestations (`gh attestation verify` → 404).
+# The npm package @openai/codex@0.153.2 vendors a byte-identical `codex` binary
+# (sha256 f8786262…), verified on dobby, rocky and thready.
+e8cd1160071f725d2a10cab81073dd6818fc8b096372125d27ef6e66fdf0979e  codex-x86_64-unknown-linux-musl.tar.gz
