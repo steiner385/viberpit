@@ -717,3 +717,18 @@ describe('isAppRoute', () => {
     expect(isAppRoute(p)).toBe(false)
   })
 })
+
+// #1408: a display link's exchange page renders OUTSIDE the layout (no shell
+// polling or `/ws` before the display session exists), and the layout's `*`
+// catch-all must not swallow it.
+describe('/kiosk', () => {
+  it('matches the exchange route, not the layout catch-all', () => {
+    const matched = matchRoutes(buildRoutes(<TestLayout />), '/kiosk')!
+    expect(matched).toHaveLength(1)
+    expect(matched[0].route.path).toBe('/kiosk')
+  })
+
+  it('is not an in-app page', () => {
+    expect(isAppRoute('/kiosk')).toBe(false)
+  })
+})

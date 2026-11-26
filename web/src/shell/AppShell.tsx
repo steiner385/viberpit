@@ -12,6 +12,8 @@ import {
   useRenameSession, useSendPrompt, useSessions,
 } from '@/api/hooks'
 import { useAssistantNoticeToasts } from '@/api/assistant'
+import { useAuthMe } from '@/api/auth'
+import { setSessionSocketsAllowed } from '@/ws/client'
 import { RenameDialog } from '@/features/sessions/RenameDialog'
 import { PermanentDeleteDialog } from '@/features/sessions/list/PermanentDeleteDialog'
 import type { DispatchRequest } from '@/features/sessions/list/DispatchBar'
@@ -193,7 +195,29 @@ export function AppShell() {
   // Read once at mount: a wall display changes its kiosk URL by reloading, and
   // re-reading on every render would let a mid-session `?kiosk=1` flip the whole
   // interaction model under a user's hands.
-  const [kiosk] = React.useState(readKioskConfig)
+  const [urlKiosk] = React.useState(readKioskConfig)
+  // The client follows the server (#1408 FR-G10.8): a display-scoped session is
+  // a kiosk even with `?kiosk=1` stripped from the URL. The reverse never
+  // holds — `?kiosk=1` on a full session is a layout, not a privilege change.
+  // `readKioskConfig` stays a URL parser; scope is folded in only here.
+  const me = useAuthMe()
+  const display = me.data?.scope === 'display'
+  const kiosk = React.useMemo(
+    () => (display && !urlKiosk.enabled ? { ...urlKiosk, enabled: true } : urlKiosk),
+    [display, urlKiosk],
+  )
+  // `/ws` is held until the scope is KNOWN, so a display whose URL lost
+  // `?kiosk=1` never opens it either (FR-G10.6, AC-G10.8). A failed `/auth/me`
+  // is "known" — it falls back to today's behaviour rather than a dead socket.
+  // The hold is applied during render: children call `getSessionSocket()` while
+  // rendering and their effects run before this component's, so nothing later
+  // is early enough. It emits nothing, so it is render-safe and idempotent.
+  // The release connects (and emits), so it waits for the layout effect.
+  const socketsAllowed = !kiosk.enabled && !me.isPending
+  if (!socketsAllowed) setSessionSocketsAllowed(false)
+  React.useLayoutEffect(() => {
+    if (socketsAllowed) setSessionSocketsAllowed(true)
+  }, [socketsAllowed])
   return (
     <ViewportProvider kiosk={kiosk}>
       <InteractionProvider interactive={!kiosk.enabled}>

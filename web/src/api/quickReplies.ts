@@ -1,16 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from './client'
+import { useAuthMe } from './auth'
 
 /** Personal replies span sessions and agent accounts, but never authenticated users. */
 export function useQuickReplies() {
-  const identity = useQuery({
-    queryKey: ['auth', 'me'],
-    queryFn: () => api.get<{ identity: string }>('/auth/me'),
-    staleTime: 0,
-    gcTime: 0,
-    refetchInterval: 60_000,
-    retry: false,
-  })
+  const identity = useAuthMe()
   const query = useQuery({
     queryKey: ['quick-replies', identity.data?.identity],
     queryFn: () => api.get<{ replies: string[] }>('/quick-replies'),

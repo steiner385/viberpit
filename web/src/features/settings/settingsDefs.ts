@@ -2,7 +2,7 @@ import { lazy, type ComponentType } from 'react'
 import {
   SlidersHorizontal, Palette, Bell, Play, Bookmark, FileText, ShieldCheck, ListChecks,
   Users, Server, Puzzle, Sparkles, SquareTerminal, Plug, Webhook, Camera, Info,
-  Rocket, Gauge, Send, Route, Brain, Type,
+  Rocket, Gauge, Send, Route, Brain, Type, Tv,
   type LucideIcon,
 } from 'lucide-react'
 import type { SettingsScope } from './scope'
@@ -27,6 +27,7 @@ import { PermissionRulesSection } from './sections/PermissionRulesSection'
 import { SkillsSection } from './sections/SkillsSection'
 import { CommandsSection } from './sections/CommandsSection'
 import { McpSection } from './sections/McpSection'
+import { DisplayLinksSection } from './sections/DisplayLinksSection'
 
 // Lazy (D-13): the memory editor is its own chunk. `HostedSection` holds the
 // Suspense boundary, so the chassis heading draws while it loads.
@@ -74,6 +75,7 @@ const PAGE: Record<SettingsSectionId, SettingsPageFields> = {
   notifications: { icon: Bell, scope: 'device',  component: NotificationsSection, ownsChassis: true },
   channels:      { icon: Send, scope: 'server',  component: NotificationChannelsSection, ownsChassis: true },
   rules:         { icon: Route, scope: 'server',  component: NotificationRulesSection, ownsChassis: true },
+  displays:      { icon: Tv, scope: 'server',  component: DisplayLinksSection, layout: 'wide' },
   sessions:      { icon: Play, scope: 'server',  component: SessionDefaultsSection, ownsChassis: true },
   presets:       { icon: Bookmark, scope: 'server',  component: PresetsSection, layout: 'wide' },
   templates:     { icon: FileText, scope: 'server',  component: TemplatesSection, layout: 'wide' },

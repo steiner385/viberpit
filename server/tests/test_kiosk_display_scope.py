@@ -60,6 +60,21 @@ def test_full_identity_mints_display_token_with_label_and_expiry(client):
     assert exp > datetime.now(timezone.utc).replace(tzinfo=exp.tzinfo) + timedelta(days=6)
 
 
+def test_token_timestamps_are_explicit_utc_on_mint_and_list(client):
+    """Settings › Display links renders these in the browser's zone; a bare naive
+    string would be parsed as LOCAL time and show every expiry hours off."""
+    minted = _mint(client)
+    listed = client.get("/api/assistant/tokens", headers=_OWNER).json()
+    for row in (minted, *listed):
+        for key in ("createdAt", "expiresAt"):
+            assert row[key].endswith("Z"), (key, row[key])
+            assert "+" not in row[key], (key, row[key])
+        assert row["revokedAt"] is None and row["lastUsedAt"] is None
+    client.delete(f"/api/assistant/tokens/{minted['id']}", headers=_OWNER)
+    revoked = client.get("/api/assistant/tokens", headers=_OWNER).json()[0]
+    assert revoked["revokedAt"].endswith("Z")
+
+
 def test_exchange_sets_display_cookie_and_strips_token_from_location(client):
     tok = _mint(client)
     r = _exchange(client, tok["token"])

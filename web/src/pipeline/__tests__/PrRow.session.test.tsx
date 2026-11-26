@@ -2,6 +2,7 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
+import { InteractionProvider } from '@/shell/InteractionContext'
 import { ApiBaseProvider } from '../ApiBaseContext'
 import { PrRow } from '../PrRow'
 import type { PrView } from '../types'
@@ -34,6 +35,20 @@ describe('PrRow ViberPit extras', () => {
   it('renders no session UI when session is null', () => {
     wrap(<PrRow pr={pr({ session: null })} hasDeploy={false} queueCulprit={null} />)
     expect(screen.queryByRole('link', { name: /fix-auth/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Fix' })).toBeNull()
+  })
+  // #1408 FR-G10.8: the row itself refuses Fix on a read-only display, so a
+  // caller that still threads `onFixPr` through cannot put a mutation on a wall.
+  it('does not render Fix when not interactive, even with onFixPr and a fixable session', () => {
+    const onFix = vi.fn()
+    wrap(
+      <InteractionProvider interactive={false}>
+        <PrRow pr={pr({ session: { id: 's1', name: 'fix-auth', fixable: true } })}
+               hasDeploy={false} queueCulprit={null} onFixPr={onFix} />
+      </InteractionProvider>,
+    )
+    // Lower bound: the row and its session label rendered.
+    expect(screen.getByRole('link', { name: /fix-auth/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Fix' })).toBeNull()
   })
 })

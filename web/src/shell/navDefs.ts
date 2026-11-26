@@ -46,6 +46,14 @@ interface NavDefShape {
    * a destructive one that opens a `Dialog` is worse than live — kiosk refuses
    * the dialog, so the button is silently inert.
    *
+   * For a display-scoped session (a `/kiosk?token=` link, #1408) the
+   * verification is no longer this component audit: the server admits only
+   * `DISPLAY_ROUTE_ALLOW` (`server/assistant/policy.py`) and 403s everything
+   * else, so a control missed here fails closed there. A section shown to a
+   * display must have every read it makes on that list, or it renders 403s.
+   * The audit still governs `?kiosk=1` on a full-scope browser, which keeps its
+   * full privileges.
+   *
    * One section qualifies today:
    * - `pipeline` — the only kiosk section before the AppShell cutover, and the
    *   only one whose action surface is gated (`StatusStrip` tiles render as
