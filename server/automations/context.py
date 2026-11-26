@@ -974,6 +974,15 @@ class AutomationContext:
             return None, False
         if ownership_token is not None:
             create_kwargs["ownership_token"] = ownership_token
+        # A managed-clone ``cwd`` was resolved on THIS (primary) host, but the fleet
+        # router may place the session on a worker whose clone lives elsewhere (or
+        # nowhere yet) — shipping it raises "cwd does not exist" there (#3506, the
+        # same rule as #712 for the HTTP path). With ``repo`` set, drop it and let
+        # the target daemon resolve its own clone. A non-clone cwd stays.
+        if create_kwargs.get("repo") and create_kwargs.get("cwd"):
+            from viberpit import gitrepos
+            if gitrepos.is_clone_path(str(create_kwargs["cwd"])):
+                create_kwargs["cwd"] = None
         from server.pm.product_repos import RepoRetired
         from server.sessions.fleet_router import NoHostAvailable
         from server.sessions.host_platforms import PlatformDispatchRefused

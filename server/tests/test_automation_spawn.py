@@ -216,3 +216,34 @@ def test_spawn_still_raises_unrelated_create_errors(tmp_path):
         assert not any(e["kind"] == "spawn_deferred" for e in await ctx.list_events())
 
     asyncio.run(run())
+
+
+def test_spawn_drops_primary_clone_cwd_when_repo_set(tmp_path):
+    """#3506: a clone ``cwd`` resolved on the primary must not ride along with
+    ``repo=`` to a fleet worker that lacks it ("cwd does not exist"); a non-clone
+    cwd, or a repo-less launch, keeps its cwd."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'spawn_cwd.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        from server.db.models import Automation
+        from server.automations.context import AutomationContext
+        from viberpit import gitrepos
+        async with db_session() as db:
+            db.add(Automation(id="pr-doctor"))
+        seen = []
+
+        async def capture(**kw):
+            seen.append(kw)
+            return await _fake_create_session(**kw)
+
+        ctx = AutomationContext("pr-doctor", create_session=capture)
+        clone = str(gitrepos.clones_base("/home/x/GitHub") / "o" / "r")
+        await ctx.spawn_session(origin_ref="o/r#1", repo="o/r", cwd=clone)
+        await ctx.spawn_session(origin_ref="o/r#2", repo="o/r", cwd="/tmp/elsewhere")
+        await ctx.spawn_session(origin_ref="o/r#3", cwd=clone)
+        assert seen[0]["cwd"] is None and seen[0]["repo"] == "o/r"
+        assert seen[1]["cwd"] == "/tmp/elsewhere"
+        assert seen[2]["cwd"] == clone
+
+    asyncio.run(run())
