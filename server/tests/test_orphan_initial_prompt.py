@@ -21,10 +21,15 @@ a rehydrated session that never ran a turn must get its prompt back.
 from __future__ import annotations
 
 import asyncio
+import tempfile
 
 from server.db.models import Session as DbSession
 from server.db.models import SessionQueue
 from server.sessions.engine import AgentEngine
+
+# The queue drain leaves an entry whose cwd is missing on this host for a host
+# that has it (#3516), so a drained row must name a directory that exists.
+_CWD = tempfile.gettempdir()
 
 
 async def _init(db_url: str) -> None:
@@ -35,7 +40,7 @@ async def _init(db_url: str) -> None:
 def _params(**over) -> dict:
     p = {
         "name": "queued one", "account": "acct", "initial_prompt": "do the thing",
-        "cols": 80, "rows": 24, "cwd": "/tmp/q", "branch": None, "repo": None,
+        "cols": 80, "rows": 24, "cwd": _CWD, "branch": None, "repo": None,
         "identity": "system", "permission_mode": "interactive",
         "attachment_ids": None, "name_is_auto": True,
         "origin": "backlog-runner", "origin_ref": "acme/repo#1", "model": None,

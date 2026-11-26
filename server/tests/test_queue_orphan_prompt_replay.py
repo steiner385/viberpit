@@ -24,11 +24,16 @@ Three windows are pinned here:
 from __future__ import annotations
 
 import asyncio
+import tempfile
 
 import pytest
 
 from server.db.models import Session as DbSession
 from server.db.models import SessionQueue
+
+# The queue drain leaves an entry whose cwd is missing on this host for a host
+# that has it (#3516), so a drained row must name a directory that exists.
+_CWD = tempfile.gettempdir()
 
 
 async def _seed_orphan(db_url: str | None = None, *, session_id: str,
@@ -42,7 +47,7 @@ async def _seed_orphan(db_url: str | None = None, *, session_id: str,
     values = dict(
         id=session_id, name="backlog acme/repo#1", account_name="acct",
         engine_session_id=engine_session_id, status=status, pid=None,
-        cwd="/tmp/clone", repo="acme/repo", branch=None,
+        cwd=_CWD, repo="acme/repo", branch=None,
         permission_mode="full-auto", name_is_auto=True,
         origin="backlog-runner", origin_ref="acme/repo#1", model="opus",
         initial_prompt=initial_prompt)
@@ -92,7 +97,7 @@ def test_orphan_with_an_undelivered_prompt_is_requeued_not_ended(tmp_path):
         assert params["initial_prompt"] == "Implement the following GitHub issue"
         # Rebuilt from the row, so the replayed spawn lands in the right clone with
         # the right account/model/permission mode rather than guessed defaults.
-        assert params["cwd"] == "/tmp/clone"
+        assert params["cwd"] == _CWD
         assert params["repo"] == "acme/repo"
         assert params["account"] == "acct"
         assert params["model"] == "opus"
@@ -226,7 +231,7 @@ def test_start_failure_persists_ended_before_removing_the_queue_entry(tmp_path):
         await _seed_orphan(session_id="fail-order")
         await sq.enqueue("fail-order", {
             "name": "backlog acme/repo#1", "account": "acct",
-            "initial_prompt": "do it", "cols": 80, "rows": 24, "cwd": "/tmp/clone",
+            "initial_prompt": "do it", "cols": 80, "rows": 24, "cwd": _CWD,
             "branch": None, "repo": "acme/repo", "identity": "system",
             "permission_mode": "full-auto", "attachment_ids": None,
             "name_is_auto": True, "origin": "backlog-runner",
@@ -264,7 +269,7 @@ def test_start_failure_persists_ended_before_removing_the_queue_entry(tmp_path):
 def _orphan_shaped_params() -> dict:
     return {
         "name": "backlog acme/repo#1", "account": "acct",
-        "initial_prompt": "do it", "cols": 80, "rows": 24, "cwd": "/tmp/clone",
+        "initial_prompt": "do it", "cols": 80, "rows": 24, "cwd": _CWD,
         "branch": None, "repo": "acme/repo", "identity": "system",
         "permission_mode": "full-auto", "attachment_ids": None,
         "name_is_auto": True, "origin": "backlog-runner",
@@ -377,8 +382,11 @@ async def _runner(tmp_path, *, ran: bool | None, calls: dict, target: str,
     from server.automations.backlog_runner import BacklogRunnerLoop
     from server.automations.context import AutomationContext
     from server.automations.ownership import (
-        CanonicalTarget, acquire, begin_session_execution,
-        attest_session_stopped, session_execution,
+        CanonicalTarget,
+        acquire,
+        attest_session_stopped,
+        begin_session_execution,
+        session_execution,
     )
     from server.db import db_session, init_db
     from server.db.models import Automation, Session

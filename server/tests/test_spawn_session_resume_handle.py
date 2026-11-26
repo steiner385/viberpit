@@ -15,15 +15,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
 
 from server.db.models import Session as DbSession
 from server.sessions.engine import AgentEngine
+
+# The queue drain leaves an entry whose cwd is missing on this host for a host
+# that has it (#3516), so a drained row must name a directory that exists.
+_CWD = tempfile.gettempdir()
 
 
 def _params(**over) -> dict:
     p = {
         "name": "resumed one", "account": "acct", "initial_prompt": None,
-        "cols": 80, "rows": 24, "cwd": "/tmp/q", "branch": None, "repo": None,
+        "cols": 80, "rows": 24, "cwd": _CWD, "branch": None, "repo": None,
         "identity": "system", "permission_mode": "interactive",
         "attachment_ids": None, "name_is_auto": True,
         "origin": None, "origin_ref": None, "model": None,
