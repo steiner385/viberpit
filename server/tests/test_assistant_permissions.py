@@ -15,9 +15,12 @@ honours a standing rule, or must always surface a card:
   MUTATION     -> a card each time; "always" allows that one call, and only a
                   standing rule auto-allows later calls (even in "interactive"
                   mode).
-  DESTRUCTIVE  -> ALWAYS a card, even in "full-auto"; "always allow" permits
-                  that one call but writes no grant, so the next call asks
-                  again (``always_allowed=False`` on the pending record).
+  DESTRUCTIVE  -> ALWAYS a card, even in "full-auto" (so is MUTATION: the app's
+                  own tools sit above every mode shortcut).
+
+Whether a standing rule may answer a MUTATION or DESTRUCTIVE card is decided by
+``NEVER_RULED_TOOLS`` alone (#3527): a listed tool never consults rules and its card
+has ``always_allowed=False``; see test_assistant_always_allow.py.
 
 ``TOOL_SPECS`` has no MUTATION/DESTRUCTIVE entries yet (Task 3.3 adds the real
 ones), so these tests inject temporary fake specs via monkeypatch.
@@ -153,15 +156,19 @@ def test_destructive_viberpit_tool_always_decision_does_not_grant(fake_specs):
     _run(run())
 
 
-@pytest.mark.parametrize("name", ["trigger_automation_action", "dispatch_backlog",
-                                  "consolidate_prs", "file_feedback_cluster",
-                                  "dismiss_feedback_cluster", "attach_feedback_to_issue",
-                                  "attach_feedback_to_session"])
-def test_automation_fan_out_tools_prompt_in_full_auto_with_the_real_specs(name):
-    """No `fake_specs` here on purpose (plan Task 6.4): these three are registered
+@pytest.mark.parametrize("name,grantable", [
+    ("trigger_automation_action", False), ("dispatch_backlog", False),
+    ("consolidate_prs", False),
+    # Reviewed eligible for a standing rule (#3527) — still a card in full-auto.
+    ("file_feedback_cluster", True), ("dismiss_feedback_cluster", True),
+    ("attach_feedback_to_issue", True), ("attach_feedback_to_session", True),
+])
+def test_automation_fan_out_tools_prompt_in_full_auto_with_the_real_specs(name, grantable):
+    """No `fake_specs` here on purpose (plan Task 6.4): these are registered
     DESTRUCTIVE in the REAL TOOL_SPECS, so the card in full-auto — the only thing
     standing between an injected "trigger everything" and an unattended session — is
-    asserted against what ships, not against an injected spec."""
+    asserted against what ships, not against an injected spec. The fan-outs that start
+    unattended sessions are on NEVER_RULED_TOOLS, so they never offer "Always allow"."""
     reg = PermissionRegistry()
 
     async def run():
@@ -171,7 +178,7 @@ def test_automation_fan_out_tools_prompt_in_full_auto_with_the_real_specs(name):
 
     pid, _fut, always_allowed = _run(run())
     assert pid is not None, f"{name} must prompt even in full-auto"
-    assert always_allowed is False, f"{name} must never offer 'Always allow'"
+    assert always_allowed is grantable
 
 
 # ---------------------------------------------------------------------------

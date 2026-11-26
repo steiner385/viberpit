@@ -272,29 +272,24 @@ class PermissionRegistry:
             # only ViberPit's view of THIS session and replaces an ungated marker.
             if ann is not None and ann.tool_class in (ToolClass.READ, ToolClass.SIGNAL):
                 return None, _resolved(True), True
-            if ann is not None and ann.tool_class == ToolClass.DESTRUCTIVE:
-                # Never consults standing rules, in ANY mode — a destructive
-                # ViberPit action always surfaces a card, and that card never
-                # offers "Always allow" (always_allowed=False on the pending
-                # record; resolve() below refuses to persist a grant for it).
-                pid, fut = self._pend(session_id, turn_id, tool, input, mode=mode,
-                                      identity=identity, always_allowed=False, items=items,
-                                      parent_tool_use_id=parent_tool_use_id)
-                return pid, fut, False
-            # MUTATION, or an unknown/not-yet-registered ViberPit tool (treated
-            # conservatively as mutation-like rather than raising on a None
-            # annotation — forward-compatible with tools Task 3.3 adds later).
-            # Standing rules are honoured in EVERY mode, INCLUDING "interactive": a rule
+            # MUTATION, DESTRUCTIVE, or an unknown/not-yet-registered ViberPit tool
+            # (treated conservatively as mutation-like rather than raising on a None
+            # annotation). Every one is a card in EVERY mode, full-auto included — this
+            # branch sits above the mode shortcuts. Whether a standing rule may answer
+            # it is NEVER_RULED_TOOLS' call alone (#3527): a listed tool (irreversible,
+            # high-blast-radius, or settling a human decision) never consults rules and
+            # its card never offers "Always allow" (always_allowed=False); any other is
+            # eligible. Rules are honoured in EVERY mode, INCLUDING "interactive": a rule
             # is an explicit human decision (spec 2026-10-11 §3.1).
-            # Tools that widen what sessions may do unasked (NEVER_RULED_TOOLS) skip it.
-            allowed = (await self._rule_allows(session_id, tool, input)
-                       if tool not in NEVER_RULED_TOOLS else False)
-            if allowed is not False:  # True: a rule covers it; None: denied meanwhile
-                return None, _resolved(allowed is True), True
+            grantable = tool not in NEVER_RULED_TOOLS
+            if grantable:
+                allowed = await self._rule_allows(session_id, tool, input)
+                if allowed is not False:  # True: a rule covers it; None: denied meanwhile
+                    return None, _resolved(allowed is True), True
             pid, fut = self._pend(session_id, turn_id, tool, input, mode=mode,
-                                  identity=identity, always_allowed=True, items=items,
+                                  identity=identity, always_allowed=grantable, items=items,
                                   parent_tool_use_id=parent_tool_use_id)
-            return pid, fut, True
+            return pid, fut, grantable
         if mode in ("full-auto", "bypassPermissions"):
             # Full auto / bypass-permissions — incl. shell: approve everything
             # without a prompt. ``bypassPermissions`` mirrors the SDK's own name

@@ -90,8 +90,9 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     # ``idempotent=False``: a second call sends a second message.
     ToolSpec("reply_to_child", ToolClass.SIGNAL, "Reply to a child session", idempotent=False),
     # DESTRUCTIVE, the only session tool that is: its card IS the feature. The class
-    # makes PermissionRegistry.request raise a card in EVERY mode (full-auto included),
-    # skip standing rules and never offer "Always allow"; the registry records the
+    # makes PermissionRegistry.request raise a card in EVERY mode (full-auto included);
+    # NEVER_RULED_TOOLS makes it skip standing rules and never offer "Always allow"
+    # (permission_rules/patterns.py); the registry records the
     # grant when a human allows it, and `draft_hold_guard` honors it for that one PR
     # (cairnea/KinDash#15268).
     ToolSpec("request_draft_ready", ToolClass.DESTRUCTIVE,

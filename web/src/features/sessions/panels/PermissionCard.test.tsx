@@ -46,6 +46,46 @@ const ruleProps = () => ({
   onGrantRule: vi.fn().mockResolvedValue({}),
 })
 
+// The assistant drawer's variant (#3527): a mutating app tool the server marked grantable.
+const assistantPerm: PermBlock = {
+  ...bashPerm,
+  tool: 'mcp__viberpit__close_issue',
+  toolKind: 'app_action',
+  input: { refs: ['o/r#1'] },
+  ruleSuggestions: [{ pattern: 'mcp__viberpit__close_issue', description: 'The MCP tool', level: 'ok' }],
+}
+
+describe('PermissionCard — assistant drawer (#3527)', () => {
+  const assistantProps = () => ({ ...ruleProps(), hasRepo: false, assistant: true })
+
+  it('offers Allow for this conversation and Always allow… next to Allow / Deny', () => {
+    render(<PermissionCard block={assistantPerm} onDecision={vi.fn()} {...assistantProps()} />)
+    const group = screen.getByRole('group', { name: /Permission request/ })
+    const names = within(group).getAllByRole('button').map((b) => b.textContent)
+    expect(names).toEqual(['Allow once', 'Allow for this conversation', 'Always allow…', 'Deny'])
+  })
+
+  it('the chooser offers the two lifetimes, this conversation only by default, and no repo', async () => {
+    const user = userEvent.setup()
+    const props = assistantProps()
+    render(<PermissionCard block={assistantPerm} onDecision={vi.fn()} {...props} />)
+    await user.click(screen.getByRole('button', { name: /^Always allow/ }))
+    const radios = within(screen.getByRole('group', { name: 'Applies to' })).getAllByRole('radio')
+    expect(radios.map((r) => r.closest('label')?.textContent)).toEqual(['This conversation only', 'Always'])
+    expect(screen.getByRole('radio', { name: /This conversation only/ })).toBeChecked()
+    await user.click(screen.getByRole('radio', { name: /^Always/ }))
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Grant' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Grant' }))
+    expect(props.onGrantRule).toHaveBeenCalledWith('perm-1', 'mcp__viberpit__close_issue', 'global', false)
+  })
+
+  it('a never-list tool shows only Allow once and Deny', () => {
+    render(<PermissionCard block={destructiveAppActionPerm} onDecision={vi.fn()} {...assistantProps()} />)
+    const group = screen.getByRole('group', { name: /Permission request/ })
+    expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['Allow once', 'Deny'])
+  })
+})
+
 describe('PermissionCard — Always allow… chooser', () => {
   it('shows four buttons in order: Allow once, Allow for this session, Always allow…, Deny', () => {
     render(<PermissionCard block={sugPerm} onDecision={vi.fn()} {...ruleProps()} />)

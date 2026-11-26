@@ -2,6 +2,7 @@ import { Suspense, lazy, useEffect, useId, useRef, useState } from 'react'
 import type { Block } from '@/session/reducer'
 import type { RulePreview, RuleScope } from '@/api/types'
 import { AlwaysAllowDialog } from './AlwaysAllowDialog'
+import { ASSISTANT_RULE_SCOPE_LABEL } from '@/features/permissionRules/ruleScopeLabel'
 import { cn } from '@/lib/utils'
 import { useCardKeyboard } from '@/features/sessions/useCardKeyboard'
 import { toolLabel, toolDetail } from '@/session/toolSummary'
@@ -32,11 +33,14 @@ interface Props {
   onDecision: (permId: string, decision: Decision, message?: string) => void
   /** Standing-rule wiring. With both rule callbacks present (and a card that allows standing
    *  grants with rule suggestions) an "Always allow…" button opens the chooser, at "This repo" when
-   *  `hasRepo`. Without them (sub-agent page, assistant drawer) there is no Always allow… button;
+   *  `hasRepo`. Without them (sub-agent page) there is no Always allow… button;
    *  "Allow for this session" is always its own button and sends the `always` decision directly. */
   hasRepo?: boolean
   onPreviewRule?: (permId: string, pattern: string, scope: RuleScope) => Promise<RulePreview>
   onGrantRule?: (permId: string, pattern: string, scope: RuleScope, confirm: boolean) => Promise<unknown>
+  /** The assistant drawer (#3527): a session is a conversation there, and the chooser offers
+   *  its two lifetimes — this conversation only (the default) or always. */
+  assistant?: boolean
 }
 
 // Weighting is the message (2026-09-29 critique, P0): the ONE-TIME grant is the
@@ -65,7 +69,7 @@ const tertiaryBtn = cn(
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
 )
 
-export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGrantRule }: Props) {
+export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGrantRule, assistant = false }: Props) {
   const [chooserOpen, setChooserOpen] = useState(false)
   // Plan cards: Keep planning opens an inline, optional comment instead of answering at once.
   const [commenting, setCommenting] = useState(false)
@@ -81,9 +85,9 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
   // The whole request, not the 60-char gist: a command the operator cannot read
   // is a command they approve blind.
   const detail = toolDetail(block.toolKind, block.input)
-  // Destructive app-action tools (spec §4.4) never offer "Always allow", in
-  // every mode — the server marks this on the request rather than the client
-  // inferring it from toolKind, since a MUTATION app_action IS grantable.
+  // App-action tools on the server's never-list (NEVER_RULED_TOOLS, #3527) never
+  // offer "Always allow", in every mode — the server marks this on the request
+  // rather than the client inferring it from toolKind or class.
   const canAlwaysAllow = block.alwaysAllowed !== false && !block.plan
   // Server-proposed standing rules → the chooser. A grantable card with none (a Codex
   // edit-root approval, or rules off) keeps the direct session-wide accept.
@@ -95,6 +99,7 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
   // The server says whether "Allow for this session" would really grant; when it would only
   // degrade to allow-once, the button is hidden rather than promising a grant.
   const canSessionGrant = canAlwaysAllow && block.sessionGrantEffective !== false
+  const sessionNoun = assistant ? 'conversation' : 'session'
 
   // Ordered actions matching the rendered buttons; digit/arrow indices map here.
   // Plan cards keep their own two-button layout. A grantable permission card is
@@ -204,9 +209,9 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
             </button>
             {canSessionGrant && (
               <button type="button" {...kb.itemProps(1)} onClick={() => activate('session')}
-                aria-label={`Allow for this session: ${label}`} className={secondaryBtn}
-                title="Allow this for the rest of the session">
-                Allow for this session
+                aria-label={`Allow for this ${sessionNoun}: ${label}`} className={secondaryBtn}
+                title={`Allow this for the rest of the ${sessionNoun}`}>
+                Allow for this {sessionNoun}
               </button>
             )}
             {rules && (
@@ -275,7 +280,8 @@ export function PermissionCard({ block, onDecision, hasRepo, onPreviewRule, onGr
         open={chooserOpen}
         block={block}
         hasRepo={rules.hasRepo}
-        initialScope={rules.hasRepo ? 'repo' : 'session'}
+        initialScope={rules.hasRepo && !assistant ? 'repo' : 'session'}
+        scopeLabels={assistant ? ASSISTANT_RULE_SCOPE_LABEL : undefined}
         onPreview={(pattern, scope) => rules.onPreviewRule(block.permId, pattern, scope)}
         onGrant={(pattern, scope, confirm) => rules.onGrantRule(block.permId, pattern, scope, confirm)}
         onClose={() => setChooserOpen(false)}
