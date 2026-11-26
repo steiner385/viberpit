@@ -1201,6 +1201,34 @@ class FleetOrchestrator:
             self._overlay_moving(rec)
         return list(merged.values())
 
+    async def remote_sessions_list(self) -> dict:
+        """The primary's list of Remote Control sessions started outside ViberPit, with
+        ViberPit's own sessions removed FLEET-WIDE.
+
+        The primary excludes the sessions it knows (its own records' ``remote_control_url``),
+        but a session on a runner (rocky, thready…) lives on another daemon, so the primary
+        listed it as "external" and it showed twice. The fleet list knows every host's
+        records. If that list fails, the primary's answer stands: a duplicate row is
+        cosmetic, a missing list is not."""
+        from server.remote_sessions import listing
+        result = await self._primary_orch().remote_sessions_list()
+        sessions = result.get("sessions") if isinstance(result, dict) else None
+        if not sessions:
+            return result
+        try:
+            records = await self.list_sessions(include_assistant=True)
+        except Exception:
+            log.warning("fleet.remote_sessions_list: fleet list failed; "
+                        "ViberPit's runner sessions may also appear as remote", exc_info=True)
+            return result
+        owned = listing.owned_keys(getattr(r, "remote_control_url", None) for r in records)
+        if not owned:
+            return result
+        kept = [s for s in sessions
+                if s.get("id") not in owned
+                and not (s.get("url") and listing.session_key(s["url"]) in owned)]
+        return {**result, "sessions": kept}
+
     async def codex_invalidate_credentials(self, account: str) -> dict:
         """Revoke *account*'s Codex credentials on EVERY host, reporting per host.
 

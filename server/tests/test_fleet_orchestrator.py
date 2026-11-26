@@ -652,6 +652,9 @@ def test_every_remote_method_is_classified():
                 # Per-host credential-envelope push (#2629): only push_credentials
                 # calls it, addressing each runner by name through the router.
                 "creds_sync",
+                # Remote sessions: defined on FleetOrchestrator — the primary's list
+                # minus every host's own Remote Control sessions.
+                "remote_sessions_list",
                 # D-16c plugin ops: plugin_op_everywhere is defined on FleetOrchestrator
                 # and names EVERY host's outcome; it calls plugin_op per host by name.
                 "plugin_op", "plugin_op_everywhere",
@@ -711,7 +714,7 @@ def test_every_remote_method_is_classified():
         "refine_prompt_codex",
         # Remote sessions (plan 2026-11-25): only the primary may use the accounts'
         # claude.ai logins (constitution II), and its watchers' bus is the primary's.
-        "remote_sessions_list", "remote_session_open", "remote_session_prompt",
+        "remote_session_open", "remote_session_prompt",
         "remote_session_answer", "_remote_sessions_call",
         "subscribe_events", "unsubscribe_events", "x11_metrics", "adopt_session",
         "daemon_sha", "daemon_pool_stats", "daemon_epoch", "startup_report",
@@ -931,13 +934,14 @@ def test_api_orchestrator_reads_are_all_classified():
         # codex_* reads above — see the GLOBAL-set comment in the sibling test.
         "refine_prompt_codex",
         # Remote sessions: primary-only — see the GLOBAL-set comment in the sibling test.
-        "remote_sessions_list", "remote_session_prompt", "remote_session_answer",
+        "remote_session_prompt", "remote_session_answer",
     }
     EXPLICIT = {"create_session", "list_sessions", "codex_account_status",
                 "codex_invalidate_credentials", "automation_statuses",
                 "automation_overview", "plugin_op_everywhere",
                 "reload_plugins_everywhere",
-                "apply_remote_control_default"}  # fleet-wide on FleetOrchestrator
+                "apply_remote_control_default",  # fleet-wide on FleetOrchestrator
+                "remote_sessions_list"}  # primary's list minus fleet-wide own sessions
     classified = (_PER_SESSION | _FANOUT_BY_IDS | set(_MERGE_ALL_HOSTS)
                   | PRIMARY_LOCAL | EXPLICIT)
 
@@ -1466,3 +1470,62 @@ async def test_pr_detail_not_synced_marker_beats_a_plain_miss_and_unreachable_wo
     wk = _DetailOrch("rocky", fail=ConnectionError("down"))
     fo = FleetOrchestrator(_FakeRouter({"dobby": prim, "rocky": wk}), primary="dobby")
     assert await fo.pr_detail("o/r", 7) == marker
+
+
+# --- remote_sessions_list: ViberPit's own sessions are excluded fleet-wide ------------
+#
+# Regression (prod 2026-11-26): a ViberPit session running on a worker (thready) has its
+# Remote Control URL stored on the WORKER's record; the primary excludes only its own
+# records, so the session was listed as "remote" too and showed twice in the web list.
+
+class _RcRec:
+    def __init__(self, id, url=None, host=None):
+        self.id, self.remote_control_url, self.host = id, url, host
+        self.status, self.detached = "idle", False
+
+
+class _RsOrch(_FakeOrch):
+    def __init__(self, name, recs=(), listing=None, fail=None):
+        super().__init__(name)
+        self.recs, self.listing, self.fail = list(recs), listing, fail
+
+    async def list_sessions(self, **_kw):
+        if self.fail is not None:
+            raise self.fail
+        return list(self.recs)
+
+    async def remote_sessions_list(self):
+        return self.listing
+
+
+_RC = "https://claude.ai/code/"
+
+
+@pytest.mark.asyncio
+async def test_remote_sessions_list_drops_a_workers_own_session():
+    listing = {"enabled": True, "accounts": [],
+               "sessions": [{"id": "session_external", "url": _RC + "session_external"},
+                            {"id": "session_onworker", "url": _RC + "session_onworker"}]}
+    dobby = _RsOrch("dobby", recs=[_RcRec("vp-d1")], listing=listing)
+    thready = _RsOrch("thready", recs=[_RcRec("vp-t1", _RC + "session_onworker")])
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "thready": thready}), primary="dobby")
+    got = await fo.remote_sessions_list()
+    assert [s["id"] for s in got["sessions"]] == ["session_external"]
+    assert got["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_remote_sessions_list_keeps_the_primary_answer_when_the_fleet_list_fails():
+    listing = {"enabled": True, "accounts": [],
+               "sessions": [{"id": "session_external", "url": _RC + "session_external"}]}
+    dobby = _RsOrch("dobby", listing=listing, fail=RuntimeError("boom"))
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby}), primary="dobby")
+    assert await fo.remote_sessions_list() == listing
+
+
+@pytest.mark.asyncio
+async def test_remote_sessions_list_disabled_is_passed_through():
+    off = {"enabled": False, "sessions": [], "accounts": []}
+    dobby = _RsOrch("dobby", listing=off)
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby}), primary="dobby")
+    assert await fo.remote_sessions_list() == off
