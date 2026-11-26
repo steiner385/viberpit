@@ -77,6 +77,22 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
     expect(screen.getByText(/Merges next:/)).toHaveTextContent(/#42.*building 80%/);
   });
 
+  // Only the PR that merges next breathes; every other active track is still.
+  it('marks only the merges-next PR\'s track live', () => {
+    const st = state({ repos: [{ repo: 'acme/alpha', hasDeploy: false, prs: [
+      pr('acme/alpha', 42, 'front', 'queue'),
+      pr('acme/alpha', 7, 'other running', 'ci'),
+      pr('acme/alpha', 8, 'another running', 'ci'),
+    ], queue: {
+      groups: [{ oid: 'a', prNumbers: [42], percent: 80, etaSeconds: 120, failed: false }],
+      waiting: [], unmergeable: [], queueBlocked: [], unmergeableCulprit: null, batchSize: 1,
+    } }] } as never);
+    const { container } = render(<PipelineView state={st} focusedRepo={null} />);
+    const live = container.querySelectorAll('.pipeline-chart.track.live');
+    expect(live).toHaveLength(1);
+    expect(live[0]!.closest('[id]')!.id).toMatch(/42$/);
+  });
+
   it('collapses the awaiting-prod herd into one expandable row, keeping running PRs visible', () => {
     const st = state({ repos: [{ repo: 'acme/alpha', hasDeploy: true, queue: null, prs: [
       pr('acme/alpha', 1, 'running pr', 'ci'),
@@ -148,8 +164,8 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
       prs: [pr('acme/alpha', 1, 'running pr', 'ci')],
       deploy: { envs: [], awaitingQa: 2, awaitingProd: 10, chain: { entries: [], supersededCount: 0, inFlight: null } } }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
-    // deploy-backlog is a labeled content region, not a live announcement (#171)
-    const summary = screen.getByRole('region', { name: /deploy backlog/i });
+    // deploy-backlog is a labeled note, not a live announcement (#171) — and not a landmark
+    const summary = screen.getByRole('note', { name: /deploy backlog/i });
     expect(summary).toHaveTextContent(/2 awaiting QA/);
     expect(summary).toHaveTextContent(/10 awaiting prod/);
   });
@@ -159,8 +175,8 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
       prs: [pr('acme/alpha', 1, 'running pr', 'ci')],
       deploy: { envs: [], awaitingQa: 0, awaitingProd: 4, chain: { entries: [], supersededCount: 0, inFlight: null } } }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
-    // deploy-backlog is a labeled content region, not a live announcement (#171)
-    const summary = screen.getByRole('region', { name: /deploy backlog/i });
+    // deploy-backlog is a labeled note, not a live announcement (#171) — and not a landmark
+    const summary = screen.getByRole('note', { name: /deploy backlog/i });
     expect(summary).toHaveTextContent(/4 awaiting prod/);
     expect(summary).not.toHaveTextContent(/awaiting QA/);
   });
@@ -170,7 +186,7 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
       prs: [pr('cairnea/KinDash', 1, 'running pr', 'ci')],
       deployBacklog: { awaitingQa: 1, awaitingProd: 2, awaitingAdmin: 3 } }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
-    const summary = screen.getByRole('region', { name: /deploy backlog/i });
+    const summary = screen.getByRole('note', { name: /deploy backlog/i });
     expect(summary).toHaveTextContent(/1 awaiting QA/);
     expect(summary).toHaveTextContent(/2 awaiting prod/);
     expect(summary).toHaveTextContent(/3 awaiting admin/);
@@ -181,7 +197,7 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
       prs: [pr('cairnea/KinDash', 1, 'running pr', 'ci')],
       deployBacklog: { awaitingQa: 0, awaitingProd: 5, awaitingAdmin: 0 } }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
-    const summary = screen.getByRole('region', { name: /deploy backlog/i });
+    const summary = screen.getByRole('note', { name: /deploy backlog/i });
     expect(summary).toHaveTextContent(/5 awaiting prod/);
     expect(summary).not.toHaveTextContent(/awaiting admin/);
   });
@@ -192,7 +208,7 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
       deploy: { envs: [], awaitingQa: 9, awaitingProd: 9, chain: { entries: [], supersededCount: 0, inFlight: null } },
       deployBacklog: { awaitingQa: 1, awaitingProd: 2, awaitingAdmin: 3 } }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
-    const summary = screen.getByRole('region', { name: /deploy backlog/i });
+    const summary = screen.getByRole('note', { name: /deploy backlog/i });
     expect(summary).toHaveTextContent(/1 awaiting QA/);
     expect(summary).toHaveTextContent(/3 awaiting admin/);
     expect(summary).not.toHaveTextContent(/9 awaiting/);
@@ -205,8 +221,8 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
         entries: [], supersededCount: 1,
         inFlight: { prNumber: 7, sha: 'sha7', stage: 'qa' } } } }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
-    // deploy-chain is a labeled content region, not a live announcement (#171)
-    const chain = screen.getByRole('region', { name: /deploy chain/i });
+    // deploy-chain is a labeled note, not a live announcement (#171) — and not a landmark
+    const chain = screen.getByRole('note', { name: /deploy chain/i });
     expect(chain).toHaveTextContent(/Deploying #7 — at qa/);
     expect(chain).toHaveTextContent(/1 superseded/);
   });
@@ -216,7 +232,7 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
       prs: [pr('acme/alpha', 1, 'running pr', 'ci')],
       deploy: { envs: [], awaitingQa: 0, awaitingProd: 0, chain: { entries: [], supersededCount: 0, inFlight: null } } }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
-    expect(screen.queryByRole('region', { name: /deploy chain/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('note', { name: /deploy chain/i })).not.toBeInTheDocument();
   });
 
   // #1406 (G08): PR numbers are only unique per repo — row ids and queue jump

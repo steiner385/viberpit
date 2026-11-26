@@ -19,7 +19,10 @@
 // status filter are identical to the classic dashboard; only the framing (focused
 // repo first) is workspace-native. Data is the live Tier-1 state.
 import { useState, useMemo } from 'react';
+import { ArrowUpRight, ChevronDown, ChevronRight, Package, SkipForward } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { Button } from '@/ui/Button';
+import { TOUCH_FLOOR } from '@/ui/list/listControlStyles';
 import type { DashboardState } from './types';
 import { PrRow } from './PrRow';
 import { QueueTrain } from '@/features/pipeline/charts/QueueTrain';
@@ -59,7 +62,16 @@ function writeCollapsedSet(set: Set<string>): void {
 
 /** The board's one-line status notes (deploy backlog, merges next, deploy
  *  chain): muted, small, and spaced like the rows they sit between. */
-const NOTE = 'mb-1.5 text-xs text-ink-muted';
+const NOTE = 'mb-1.5 flex items-center gap-1.5 text-xs text-ink-muted';
+/** A note's leading drawn icon (was a colour emoji — 📦 ⏭ ⤴). */
+const NOTE_ICON = 'size-3.5 shrink-0';
+/** The fold toggles (repo, deploy cohort, merged ledger): 44px on a finger. */
+const FOLD = cn('gap-1.5 px-1 text-xs text-ink-muted hover:text-ink', TOUCH_FLOOR);
+
+function Fold({ open }: { open: boolean }) {
+  const Icon = open ? ChevronDown : ChevronRight;
+  return <Icon size={14} aria-hidden="true" className="shrink-0" />;
+}
 
 /** Compact ETA like "~5m" / "~1h"; null when unknown. */
 function eta(secs: number | null): string | null {
@@ -109,8 +121,8 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
   const toggle = (repo: string) => setCollapsed((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); writeCollapsedSet(n); return n; }); // eslint-disable-line @typescript-eslint/no-unused-expressions -- ternary-as-statement, verbatim from the plotroom source (port fidelity)
   const toggleCohort = (repo: string) => setOpenCohorts((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); return n; }); // eslint-disable-line @typescript-eslint/no-unused-expressions -- ternary-as-statement, verbatim from the plotroom source (port fidelity)
   const toggleLedger = (repo: string) => setOpenLedgers((p) => { const n = new Set(p); if (n.has(repo)) n.delete(repo); else n.add(repo); return n; });
-  const row = (pr: typeof allPrs[number], r: typeof repos[number]) => (
-    <PrRow key={pr.number} pr={pr} hasDeploy={r.hasDeploy} queueCulprit={r.queue?.unmergeableCulprit ?? null} onFixPr={onFixPr} />
+  const row = (pr: typeof allPrs[number], r: typeof repos[number], live = false) => (
+    <PrRow key={pr.number} pr={pr} hasDeploy={r.hasDeploy} queueCulprit={r.queue?.unmergeableCulprit ?? null} onFixPr={onFixPr} live={live} />
   );
 
   return (
@@ -134,11 +146,11 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="w-full justify-start gap-1.5 px-0 text-ink-muted hover:bg-transparent hover:text-ink"
+                className={cn('w-full justify-start gap-1.5 px-0 text-ink-muted hover:bg-transparent hover:text-ink', TOUCH_FLOOR)}
                 aria-expanded={!isCollapsed}
                 onClick={() => toggle(r.repo)}
               >
-                <span aria-hidden="true" className="text-2xs">{isCollapsed ? '▸' : '▾'}</span>
+                <Fold open={!isCollapsed} />
                 {r.repo}
                 {!isCollapsed && hiddenCount > 0 && <span className="text-xs font-normal text-ink-muted"> ({hiddenCount} hidden)</span>}
                 {isCollapsed && (
@@ -167,34 +179,42 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
               // config/timeline deploy block (qa/prod only) for configured repos.
               const backlog = r.deployBacklog
                 ?? (r.deploy ? { awaitingQa: r.deploy.awaitingQa, awaitingProd: r.deploy.awaitingProd, awaitingAdmin: 0 } : null);
+              const next = nextToMerge(r.queue);
+              const liveSet = new Set(next?.prNumbers ?? []);
+              // The notes are role="note", not "region": a region is a landmark,
+              // and three per repo flooded the landmark list with up to 21 entries.
               return (
                 <>
                   <QueueTrain repo={r.repo} queue={r.queue} />
                   {backlog && (backlog.awaitingQa > 0 || backlog.awaitingProd > 0 || backlog.awaitingAdmin > 0) && (
-                    <p className={NOTE} role="region" aria-label="Deploy backlog">
-                      📦 Deploy backlog:{' '}
-                      {[
-                        backlog.awaitingQa > 0 ? `${backlog.awaitingQa} awaiting QA` : null,
-                        backlog.awaitingProd > 0 ? `${backlog.awaitingProd} awaiting prod` : null,
-                        backlog.awaitingAdmin > 0 ? `${backlog.awaitingAdmin} awaiting admin` : null,
-                      ].filter(Boolean).join(' · ')}
+                    <p className={NOTE} role="note" aria-label="Deploy backlog">
+                      <Package className={NOTE_ICON} aria-hidden="true" />
+                      <span>
+                        Deploy backlog:{' '}
+                        {[
+                          backlog.awaitingQa > 0 ? `${backlog.awaitingQa} awaiting QA` : null,
+                          backlog.awaitingProd > 0 ? `${backlog.awaitingProd} awaiting prod` : null,
+                          backlog.awaitingAdmin > 0 ? `${backlog.awaitingAdmin} awaiting admin` : null,
+                        ].filter(Boolean).join(' · ')}
+                      </span>
                     </p>
                   )}
-                  {(() => {
-                    const next = nextToMerge(r.queue);
-                    if (!next) return null;
+                  {next && (() => {
                     const prs = next.prNumbers.map((n) => `#${n}`).join(', ');
                     const e = eta(next.etaSeconds);
                     return (
-                      <p className={NOTE} role="region" aria-label="Merges next">
-                        ⏭ Merges next: <strong>{prs}</strong>{' '}
-                        {next.building ? `building${next.percent != null ? ` ${next.percent}%` : ''}` : 'front of queue'}
-                        {e ? ` · ${e}` : ''}
+                      <p className={NOTE} role="note" aria-label="Merges next">
+                        <SkipForward className={NOTE_ICON} aria-hidden="true" />
+                        <span>
+                          Merges next: <strong className="font-semibold text-ink">{prs}</strong>{' '}
+                          {next.building ? `building${next.percent != null ? ` ${next.percent}%` : ''}` : 'front of queue'}
+                          {e ? ` · ${e}` : ''}
+                        </span>
                       </p>
                     );
                   })()}
                   {visiblePrs.length === 0 && hiddenCount === 0 && <p className="text-xs text-ink-muted">no active PRs</p>}
-                  {lead.map((pr) => row(pr, r))}
+                  {lead.map((pr) => row(pr, r, liveSet.has(pr.number)))}
                   {cohort.length > 0 && (() => {
                     // Disjoint deploy stages — never lump awaiting-QA into "awaiting prod".
                     const { awaitingQa, awaitingProd } = deployBreakdown(cohort);
@@ -209,11 +229,11 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
                           type="button"
                           variant="ghost"
                           size="sm"
-                          className="gap-1.5 px-1 text-xs text-ink-muted hover:text-ink"
+                          className={FOLD}
                           aria-expanded={cohortOpen}
                           onClick={() => toggleCohort(r.repo)}
                         >
-                          <span aria-hidden="true">{cohortOpen ? '▾' : '▸'}</span> {cohort.length} merged · {label}
+                          <Fold open={cohortOpen} /> {cohort.length} merged · {label}
                         </Button>
                         {cohortOpen && cohort.map((pr) => row(pr, r))}
                       </div>
@@ -230,27 +250,30 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="gap-1.5 px-1 text-xs text-ink-muted hover:text-ink"
+                        className={FOLD}
                         aria-expanded={ledgerOpen}
                         onClick={() => toggleLedger(r.repo)}
                       >
-                        <span aria-hidden="true">{ledgerOpen ? '▾' : '▸'}</span>
+                        <Fold open={ledgerOpen} />
                         {' '}{ledger.length} merged in the last 7 days{newest ? ` · last ${formatSince(newest)}` : ''}
                       </Button>
                       {ledgerOpen && ledger.map((pr) => row(pr, r))}
                     </div>
                   )}
                   {r.deploy?.chain && (r.deploy.chain.inFlight || r.deploy.chain.supersededCount > 0) && (
-                    <p className={NOTE} role="region" aria-label="Deploy chain">
-                      {r.deploy.chain.inFlight && (
-                        <>⤴ Deploying <strong>#{r.deploy.chain.inFlight.prNumber}</strong> — at {r.deploy.chain.inFlight.stage}, flowing to prod</>
-                      )}
-                      {r.deploy.chain.supersededCount > 0 && (
-                        <span>
-                          {r.deploy.chain.inFlight ? ' · ' : ''}
-                          {r.deploy.chain.supersededCount} superseded (rolled into a newer deploy)
-                        </span>
-                      )}
+                    <p className={NOTE} role="note" aria-label="Deploy chain">
+                      <ArrowUpRight className={NOTE_ICON} aria-hidden="true" />
+                      <span>
+                        {r.deploy.chain.inFlight && (
+                          <>Deploying <strong className="font-semibold text-ink">#{r.deploy.chain.inFlight.prNumber}</strong> — at {r.deploy.chain.inFlight.stage}, flowing to prod</>
+                        )}
+                        {r.deploy.chain.supersededCount > 0 && (
+                          <span>
+                            {r.deploy.chain.inFlight ? ' · ' : ''}
+                            {r.deploy.chain.supersededCount} superseded (rolled into a newer deploy)
+                          </span>
+                        )}
+                      </span>
                     </p>
                   )}
                 </>

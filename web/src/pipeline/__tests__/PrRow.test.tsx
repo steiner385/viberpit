@@ -453,23 +453,25 @@ describe('PrRow CI-change badge + impact card (issue #49)', () => {
     'required-check set grows by 1: 2 → 3 checks',
   ] };
 
-  it('renders the ⚙ CI change badge when the PR touches workflows', () => {
+  it('renders the CI change badge (drawn icon, not a ⚙ glyph) when the PR touches workflows', () => {
     render(<PrRow pr={pr({ touchesWorkflows: true, workflowImpact: IMPACT })} hasDeploy />);
-    const badge = screen.getByText('⚙ CI change');
+    const badge = screen.getByText('CI change');
     expect(badge).toBeInTheDocument();
+    expect(badge.textContent).not.toContain('⚙');
+    expect(badge.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
     // summary lines ride the title tooltip
     expect(badge).toHaveAttribute('title', IMPACT.summary.join('\n'));
   });
 
   it('badge falls back to a generic tooltip without a computed diff', () => {
     render(<PrRow pr={pr({ touchesWorkflows: true, workflowImpact: null })} hasDeploy />);
-    expect(screen.getByText('⚙ CI change')).toHaveAttribute('title',
+    expect(screen.getByText('CI change')).toHaveAttribute('title',
       'touches .github/workflows — CI behavior may change');
   });
 
   it('no badge when the PR does not touch workflows (or on pre-upgrade payloads)', () => {
     render(<PrRow pr={pr({})} hasDeploy />);
-    expect(screen.queryByText('⚙ CI change')).toBeNull();
+    expect(screen.queryByText('CI change')).toBeNull();
   });
 
   it('expanding shows the impact card above the gantt with one line per summary entry', () => {
@@ -638,22 +640,33 @@ describe('PrRow ready+auto-merge action', () => {
 });
 
 describe('PrRow keyboard expand (UX-H1)', () => {
-  it('the summary is a keyboard-operable button that toggles on Enter/Space', () => {
+  it('the disclosure is a real <button> that controls the detail panel', () => {
     const { container } = render(<PrRow pr={pr({})} hasDeploy />);
-    const main = container.querySelector('.pr-main')!;
-    expect(main).toHaveAttribute('role', 'button');
-    expect(main).toHaveAttribute('tabindex', '0');
-    expect(main).toHaveAttribute('aria-expanded', 'false');
+    const toggle = screen.getByRole('button', { name: /Expand PR #\d+ details/ });
+    expect(toggle.tagName).toBe('BUTTON');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
     // collapsed: expanded-only check gantt absent
     expect(screen.queryByText('fast-checks / ESLint')).toBeNull();
-    fireEvent.keyDown(main, { key: 'Enter' });
-    expect(main).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('fast-checks / ESLint')).toBeInTheDocument();
-    fireEvent.keyDown(main, { key: ' ' });
-    expect(main).toHaveAttribute('aria-expanded', 'false');
+    const panelId = toggle.getAttribute('aria-controls')!;
+    expect(container.querySelector(`[id="${panelId}"]`)).toContainElement(screen.getByText('fast-checks / ESLint'));
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('is inert (no role/tabindex) in non-expandable kiosk mode', () => {
+  it('the row wrapper is not itself a button, so the links inside it are not nested controls', () => {
+    const { container } = render(<PrRow pr={pr({})} hasDeploy />);
+    const main = container.querySelector('.pr-main')!;
+    expect(main).not.toHaveAttribute('role');
+    expect(main).not.toHaveAttribute('tabindex');
+    // a pointer click anywhere on the row still toggles (a convenience)
+    fireEvent.click(main);
+    expect(screen.getByRole('button', { name: /Collapse PR #\d+ details/ })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('is inert (no disclosure button, no click toggle) in non-expandable kiosk mode', () => {
     const { container } = render(
       <InteractionProvider interactive={false}>
         <PrRow pr={pr({})} hasDeploy />
@@ -662,6 +675,9 @@ describe('PrRow keyboard expand (UX-H1)', () => {
     const main = container.querySelector('.pr-main')!;
     expect(main).not.toHaveAttribute('role');
     expect(main).not.toHaveAttribute('tabindex');
+    expect(screen.queryByRole('button', { name: /Expand PR/ })).toBeNull();
+    fireEvent.click(main);
+    expect(screen.queryByText('fast-checks / ESLint')).toBeNull();
   });
 });
 

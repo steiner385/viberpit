@@ -66,11 +66,13 @@
   margin-top: 14px; min-width: 24px; }
 .seg.done { background: var(--t-success); }
 @media (prefers-reduced-motion: no-preference) {
-  /* Only a LIVE track pulses. The legend's "active" node is a static swatch
-     rendered in a bare `.pipeline-chart` (no `.track`), so scoping the
-     animation to the root is what keeps it still — it replaces the old
-     `.legend-panel .node.active .c { animation: none }` opt-out. */
-  &.track .node.active .c { animation: prdash-pulse 1.5s infinite; }
+  /* Only the LIVE track pulses — the PR that merges next (`MetroTrack live`).
+     Every other active node keeps the still halo: nineteen CI rows breathing at
+     once was ambient motion pointing at nothing, and nineteen box-shadow
+     repaints a frame on a wall display that never sleeps. The legend's
+     "active" node is a static swatch in a bare `.pipeline-chart`, so it never
+     matches either. */
+  &.track.live .node.active .c { animation: prdash-pulse 1.5s infinite; }
 }
 
 /* --- Check Gantt (expanded panel, V4) --- */
@@ -154,10 +156,11 @@
 /* advisory job rows: name recedes so required rows stay visually dominant */
 .g-advisory .g-name { font-style: italic; color: var(--t-ink-muted); }
 .g-advisory .g-name a { color: var(--t-ink-muted); }
-.divider { color: var(--t-ink-muted); text-transform: uppercase; font-size: var(--fs-base);
-  letter-spacing: 0.05em; padding: 6px 0 2px; }
+/* Workflow group headers: Graphite at the chart floor, sentence case. They were
+   uppercase and tracked at 16px — louder than the 14px PR title they sit under. */
+.divider { color: var(--t-ink-muted); font-size: var(--fs-base); padding: 6px 0 2px; }
 /* workflow header rows in a grouped panel (e.g. CI / Auto-merge PRs / other checks) */
-.g-workflow { font-weight: 600; padding-top: 8px; opacity: 0.85; }
+.g-workflow { font-weight: 600; padding-top: 8px; }
 
 /* --- Lead-time waterfall (issue #50) --- */
 /* Two scope roots, because the component is a padded box around a full-bleed

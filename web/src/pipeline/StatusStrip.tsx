@@ -60,18 +60,20 @@ export const TILE_TONE: Record<Bucket, Tone> = {
 interface TileConfig { bucket: Bucket; label: string; tone: Tone; title: string; }
 
 /** One-line bucket definitions — surfaced as the tile tooltip and reused by the
- *  legend panel so the two can never drift apart. */
+ *  legend panel so the two can never drift apart. Ordered the way the rest of
+ *  the app's tile strips are (DESIGN.md, Status Tile Strip): what needs the
+ *  operator first — Failed, then Ready — then work in motion, then inventory. */
 export const TILE_DEFINITIONS: TileConfig[] = [
+  { bucket: 'failed',  label: 'Failed',          tone: TILE_TONE.failed,
+    title: 'CI failed, merge-group build failed, or armed but stuck (not enqueued)' },
+  { bucket: 'ready',   label: 'Ready',           tone: TILE_TONE.ready,
+    title: 'Open, checks green — actionable (ready to arm auto-merge or merge directly)' },
   { bucket: 'running', label: 'CI running',     tone: TILE_TONE.running,
     title: 'CI running on the head commit' },
   { bucket: 'queued',  label: 'In queue',        tone: TILE_TONE.queued,
     title: 'In the merge queue — building or waiting for a slot' },
   { bucket: 'deploy',  label: 'Deploying',       tone: TILE_TONE.deploy,
     title: 'Merged — deploying to QA or awaiting production deploy' },
-  { bucket: 'failed',  label: 'Failed',          tone: TILE_TONE.failed,
-    title: 'CI failed, merge-group build failed, or armed but stuck (not enqueued)' },
-  { bucket: 'ready',   label: 'Ready',           tone: TILE_TONE.ready,
-    title: 'Open, checks green — actionable (ready to arm auto-merge or merge directly)' },
   { bucket: 'merged',  label: 'Merged / other',  tone: TILE_TONE.merged,
     title: 'Recently merged (7-day retention), draft, or conflicting — no action needed' },
 ];

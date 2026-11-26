@@ -237,6 +237,14 @@ describe('PipelinePage (Workspace variant)', () => {
     expect(document.querySelector('.pipeline-portrait')).toBeInTheDocument()
   })
 
+  // A portrait PHONE swipes the train; wrapping it stacked seven cars into
+  // ~470px above the first PR row. Only a pointer-less wall wraps.
+  it('a portrait phone (not kiosk) keeps the scrolling train (no .pipeline-portrait)', () => {
+    mount({ portrait: true })
+    deliver()
+    expect(document.querySelector('.pipeline-portrait')).not.toBeInTheDocument()
+  })
+
   it('landscape kiosk leaves the board in its default (no .pipeline-portrait) composition', () => {
     mount({ kiosk: { enabled: true, cycleSeconds: 10, pages: ['pipeline'] } })
     deliver()

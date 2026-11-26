@@ -200,12 +200,13 @@ describe('StatusStrip', () => {
       render(<StatusStrip prs={[pr('ci'), pr('queue'), pr('qa-deploy'),
         pr('parked', 'ci-failed'), pr('ready')]} activeFilter={null} onFilter={() => {}} />);
       const titles = screen.getAllByRole('button').map((b) => b.getAttribute('title'));
+      // Needs-the-operator buckets lead (Failed, Ready), then work in motion.
       expect(titles).toEqual([
+        'CI failed, merge-group build failed, or armed but stuck (not enqueued)',
+        'Open, checks green — actionable (ready to arm auto-merge or merge directly)',
         'CI running on the head commit',
         'In the merge queue — building or waiting for a slot',
         'Merged — deploying to QA or awaiting production deploy',
-        'CI failed, merge-group build failed, or armed but stuck (not enqueued)',
-        'Open, checks green — actionable (ready to arm auto-merge or merge directly)',
         'Recently merged (7-day retention), draft, or conflicting — no action needed',
       ]);
     });
