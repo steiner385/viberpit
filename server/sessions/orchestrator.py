@@ -1089,6 +1089,10 @@ DRIVER_START_TIMEOUT_S = env_float("VIBERPIT_DRIVER_START_TIMEOUT_S", 90.0, mini
 # midway could leave the old CLI running next to the new one (#1040). Also the bound
 # on _reassign's wait for a prior swap of the same session.
 DRIVER_SWAP_TIMEOUT_S = env_float("VIBERPIT_DRIVER_SWAP_TIMEOUT_S", 150.0, minimum=1.0)
+# How often _dirty_flush_loop retries the DB row for records whose last status
+# persist failed (spec 002 FR-307). Bounds how long the polled DB shadow can lag the
+# in-memory record after a DB blip: one interval.
+DIRTY_FLUSH_INTERVAL_S = env_float("VIBERPIT_DIRTY_FLUSH_INTERVAL_S", 10.0, minimum=0.1)
 # Worst case one ensure_driver resume legitimately takes (#3020): the wait for an
 # in-flight release, a start() that runs its whole budget, then the bounded close of
 # the half-built driver before DriverStartTimeout is raised. The bridge derives its
@@ -1529,6 +1533,10 @@ class SessionOrchestrator:
         # have become deletable (e.g. the sshfs mount recovered).
         self._archive_purge_strikes: dict[str, int] = {}
         self._archive_purge_poisoned: set[str] = set()
+        # Session ids whose last _persist_status DB write failed (FR-307): the record
+        # moved, the row did not. _flush_dirty_status re-writes them from the record
+        # every DIRTY_FLUSH_INTERVAL_S; a later successful persist clears the mark.
+        self._dirty_status: set[str] = set()
         # Single-flight for the archived-cap purge (#3458): every archive spawns an
         # _enforce_archive_limit pass, so a batch archive started N passes that each
         # counted the same excess and picked the same oldest ids. Serialising them
@@ -2255,6 +2263,7 @@ class SessionOrchestrator:
         self._goal_stat_sig: dict[str, tuple[int, int]] = {}
         self._goal_task: asyncio.Task | None = None
         self._stall_task: asyncio.Task | None = None
+        self._dirty_flush_task: asyncio.Task | None = None
         self._token_refresh_task: asyncio.Task | None = None
         self._sweep_task: asyncio.Task | None = None
         self._archive_limit_task: asyncio.Task | None = None
@@ -3774,6 +3783,11 @@ class SessionOrchestrator:
             self._goal_monitor(), name="goal-inference-monitor"
         )
         self._stall_task = asyncio.create_task(self._stall_loop(), name="stall-watchdog")
+        # Per-host, not primary-only: every daemon owns its own records, so each
+        # heals its own rows (FR-307).
+        self._dirty_flush_task = asyncio.create_task(
+            self._dirty_flush_loop(), name="dirty-status-flush"
+        )
         # Renew/release the per-session ownership leases this daemon holds (#1379).
         # Unconditional (not role-gated like the primary lease): the duplicate-CLI
         # bug is a WORKER-vs-primary race as much as a primary-vs-primary one.
@@ -4589,6 +4603,7 @@ class SessionOrchestrator:
         # suspect in the #846 teardown stalls). test_orchestrator_stop_completeness
         # pins the full set by task name.
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
+                     "_dirty_flush_task",
                      "_token_refresh_task", "_backlog_task", "_sdlc_intake_task",
                      "_pm_sync_task", "_pm_triage_task", "_gh_reconcile_task",
                      "_sdlc_synth_task", "_control_band_task", "_capacity_governor_task",
@@ -8522,6 +8537,86 @@ class SessionOrchestrator:
                 .values(name=name, name_is_auto=False)
             )
 
+    @staticmethod
+    def _status_row_values(status: str, rec: "SessionRecord | None", *,
+                           turn_at: "datetime | None",
+                           hand_back_reason: str | None,
+                           write_background_work: bool,
+                           background_work: dict | None,
+                           suspected_complete_reason: str | None,
+                           resolution: str | None,
+                           resolution_source: str | None,
+                           resolution_note: str | None) -> dict:
+        """The one mapping from a status persist's inputs to ``sessions`` columns.
+
+        Shared by ``_persist_status`` (inputs are what it just assigned to the record)
+        and ``_flush_dirty_status`` (inputs are read back off the record, FR-307), so
+        the two can never write a different column set for the same status."""
+        values: dict = {"status": status}
+        if turn_at is not None:
+            values["last_turn_at"] = turn_at
+        # Mirrors the in-memory assignment in _persist_status, and unconditional for
+        # the same reason: the row must clear the old ask, not just gain a new one.
+        values["hand_back_reason"] = hand_back_reason
+        if write_background_work:
+            values["background_work"] = background_work
+        values["suspected_complete_reason"] = suspected_complete_reason
+        if status in _STALLED_STATUSES:
+            if rec is not None:
+                values["paused_reason"] = rec.paused_reason
+                values["paused_until"] = rec.paused_until
+        else:
+            values["paused_reason"] = None
+            values["paused_until"] = None
+        # Write pr_resolution to DB when the in-memory record was just set by the
+        # caller; rec.pr_resolution == resolution guards idempotency (won't
+        # overwrite a pre-existing classifier value that differs from the
+        # session's own).
+        if (status == "complete" and resolution and rec is not None
+                and rec.pr_resolution == resolution):
+            values["pr_resolution"] = resolution
+            values["pr_resolution_source"] = resolution_source
+            # Under the SAME guard, so the note can never outlive or contradict
+            # the resolution it explains. Read by the Backlog Runner's
+            # investigation settle (by session id) and, via the record, by the
+            # completion bar (a reasoned no-PR claim is accepted, #2917).
+            values["pr_resolution_note"] = resolution_note
+        # Fold the in-memory slash-command catalog (cached during attach by
+        # command_catalog(), which must not write from the cancellable attach path)
+        # into this driver-loop write so it reaches the DB row for cross-restart
+        # replay. Written here rather than on attach because this callback runs in
+        # the turn loop, safe from client-disconnect cancellation.
+        if rec is not None and rec.command_catalog:
+            values["command_catalog"] = rec.command_catalog
+        return values
+
+    @staticmethod
+    def _record_row_values(rec: SessionRecord) -> dict:
+        """``_status_row_values`` fed entirely from the record: what the row MUST say
+        for the record to be its truth. Every other writer of these columns (the
+        background-work refresh, the completion judge, the PR classifier) assigns the
+        record in the same breath, so mirroring it is lossless."""
+        return SessionOrchestrator._status_row_values(
+            rec.status, rec,
+            turn_at=rec.last_turn_at,
+            hand_back_reason=rec.hand_back_reason,
+            write_background_work=True,
+            background_work=rec.background_work,
+            suspected_complete_reason=rec.suspected_complete_reason,
+            resolution=rec.pr_resolution,
+            resolution_source=rec.pr_resolution_source,
+            resolution_note=rec.pr_resolution_note,
+        )
+
+    async def _update_session_row(self, session_id: str, values: dict) -> None:
+        """One UPDATE of the session's row; raises on DB failure (FR-307 callers
+        decide what a failure means)."""
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(**values)
+            )
+
     async def _persist_status(self, session_id: str, status: str) -> str:
         """Driver ``on_status`` callback: persist the derived dashboard status.
 
@@ -8677,46 +8772,27 @@ class SessionOrchestrator:
             # exactly as long as the hand-back it judged: every status write clears
             # it, and the judge re-derives it (off the pump, below) for the new one.
             rec.suspected_complete_reason = None
-        async with db_session() as db:
-            from sqlalchemy import update as sa_update
-            values: dict = {"status": status}
-            if turn_at is not None:
-                values["last_turn_at"] = turn_at
-            # Mirrors the in-memory assignment above, and unconditional for the same
-            # reason: the row must clear the old ask, not just gain a new one.
-            values["hand_back_reason"] = hand_back_reason
-            if completed_turn:
-                values["background_work"] = background_work
-            values["suspected_complete_reason"] = None
-            if status in _STALLED_STATUSES:
-                if rec is not None:
-                    values["paused_reason"] = rec.paused_reason
-                    values["paused_until"] = rec.paused_until
-            else:
-                values["paused_reason"] = None
-                values["paused_until"] = None
-            # Write pr_resolution to DB when the in-memory record was just set above;
-            # rec.pr_resolution == resolution guards idempotency (won't overwrite a
-            # pre-existing classifier value that differs from the session's own).
-            if (status == "complete" and resolution and rec is not None
-                    and rec.pr_resolution == resolution):
-                values["pr_resolution"] = resolution
-                values["pr_resolution_source"] = resolution_source
-                # Under the SAME guard, so the note can never outlive or contradict
-                # the resolution it explains. Read by the Backlog Runner's
-                # investigation settle (by session id) and, via the record, by the
-                # completion bar (a reasoned no-PR claim is accepted, #2917).
-                values["pr_resolution_note"] = resolution_note
-            # Fold the in-memory slash-command catalog (cached during attach by
-            # command_catalog(), which must not write from the cancellable attach path)
-            # into this driver-loop write so it reaches the DB row for cross-restart
-            # replay. Written here rather than on attach because this callback runs in
-            # the turn loop, safe from client-disconnect cancellation.
-            if rec is not None and rec.command_catalog:
-                values["command_catalog"] = rec.command_catalog
-            await db.execute(
-                sa_update(DbSession).where(DbSession.id == session_id).values(**values)
-            )
+        try:
+            await self._update_session_row(session_id, self._status_row_values(
+                status, rec, turn_at=turn_at, hand_back_reason=hand_back_reason,
+                write_background_work=completed_turn, background_work=background_work,
+                # Cleared on every write (see the record assignment above); the judge
+                # re-derives and writes its own verdict off the pump.
+                suspected_complete_reason=None,
+                resolution=resolution, resolution_source=resolution_source,
+                resolution_note=resolution_note))
+        except Exception:  # noqa: BLE001 - the row is retried; the frame must not be lost
+            # FR-307: the record above already moved, so the dashboard's poll will
+            # read the right status; only the DB shadow lags. Mark it and carry on —
+            # the status publish below is what the open session and the card see
+            # live, and before this a DB blip here lost that frame along with the
+            # row (the driver logged `on_status failed` and nothing else happened).
+            # _flush_dirty_status re-writes the row within DIRTY_FLUSH_INTERVAL_S.
+            log.warning("persist.status_db_failed session=%s status=%s",
+                        session_id, status, exc_info=True)
+            self._dirty_status.add(session_id)
+        else:
+            self._dirty_status.discard(session_id)
         # Child sessions (spec §4.4): tell the parent about a stop transition. The
         # decision and the persisted guard live in child_sessions.notify_decision.
         if _cs.steering_parent(rec):
@@ -29111,6 +29187,60 @@ class SessionOrchestrator:
                 await self._check_disabled_account_sessions()
             except Exception:
                 log.exception("stall watchdog tick failed")
+
+    async def _flush_dirty_status(self) -> int:
+        """One flusher tick (FR-307): re-write the row of every record whose last
+        ``_persist_status`` DB write failed, mirroring the record's current values
+        for every column that write carries (``_record_row_values``). Returns how
+        many rows were healed.
+
+        An id with no live record (closed/archived since the failed write), or one
+        this daemon does not own, has nothing of ours to heal and is dropped. A retry
+        that fails again keeps the mark for the next tick and says so only at debug —
+        the original failure already warned, and a down DB would otherwise warn once
+        per record per interval.
+        """
+        if not self._dirty_status:
+            return 0
+        healed = 0
+        enabled_hosts = await self._enabled_host_names()
+        for session_id in list(self._dirty_status):
+            rec = self._records.get(session_id)
+            # No record, or a record this daemon no longer owns (the session moved
+            # to another host, whose daemon now writes that row): nothing of ours to
+            # heal. NOT `rec.detached` — that is just "no live driver here", which a
+            # completed session whose driver was released also reads, and its failed
+            # `complete` write is exactly what this loop exists to land.
+            if rec is None or not self._owns_record(rec, enabled_hosts):
+                self._dirty_status.discard(session_id)
+                continue
+            # Snapshot and write with no await between them, then re-check: a
+            # _persist_status that assigns the record while our UPDATE is in flight
+            # lands its own row write AFTER ours, so if the record no longer matches
+            # what we wrote, ours may be the stale one — keep the mark and let the next
+            # tick re-mirror the current record rather than declaring the row healed.
+            written = self._record_row_values(rec)
+            try:
+                await self._update_session_row(session_id, written)
+            except Exception:  # noqa: BLE001 - keep the mark, retry next tick
+                log.debug("persist.status_flush_failed session=%s", session_id, exc_info=True)
+                continue
+            if self._record_row_values(rec) != written:
+                continue
+            self._dirty_status.discard(session_id)
+            healed += 1
+        if healed:
+            log.info("persist.status_flushed healed=%d remaining=%d",
+                     healed, len(self._dirty_status))
+        return healed
+
+    async def _dirty_flush_loop(self) -> None:
+        while True:
+            await asyncio.sleep(DIRTY_FLUSH_INTERVAL_S)
+            try:
+                await self._flush_dirty_status()
+            except Exception:
+                log.exception("dirty-status flush tick failed")
 
     # ------------------------------------------------------------------
     # Rotation monitor (background task)
