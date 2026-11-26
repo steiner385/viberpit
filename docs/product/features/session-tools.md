@@ -276,7 +276,8 @@ tool the deny was absolute, so a session the user had explicitly told to "mark i
 get CI green" (cairnea/KinDash#15268) still had to hand back for one click. Now the deny names
 this tool. The session calls `request_draft_ready(repo, number, reason)`; being the only
 `DESTRUCTIVE` session tool, it raises a permission card in **every** mode (full-auto
-included), never consults standing rules and never offers "Always allow". When the user
+included); being on `NEVER_RULED_TOOLS`, it never consults standing rules and never offers
+"Always allow". When the user
 allows the card, `PermissionRegistry.resolve`, not the handler, records a grant for that
 session and that `repo#number`; the handler only reports `granted: true|false`. The guard
 then lets ONE `gh pr ready <number>` on that PR through and spends the grant.

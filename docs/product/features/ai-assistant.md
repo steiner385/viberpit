@@ -224,8 +224,21 @@ assistant mutation does not make subsequent harness cleanup safe.
   assistant's own tool call.
 - **Permission posture** — `mcp__viberpit__*` tools are the one exception to the blanket MCP
   auto-allow in `PermissionRegistry.request`; they're gated by MCP `ToolAnnotations` per tool class
-  (read / mutation / destructive), so mutations surface the same permission card a coding session
-  would, and destructive tools can never be marked "always allow".
+  (read / mutation / destructive), so every mutating tool surfaces the same permission card a
+  coding session would, in every mode.
+- **"Always allow" on the drawer's cards (#3527)** — a mutating tool's card offers *Allow for this
+  conversation* and *Always allow…*, whose chooser (`AlwaysAllowDialog`, the session page's own)
+  offers two lifetimes: *This conversation only* (the default; a session-scope rule) or *Always* (a
+  global rule, behind a confirm). The rule is the tool (`mcp__viberpit__close_issue`); a later call
+  of that tool runs with no card and writes a `permission.rule_allow` audit row naming the rule.
+  `NEVER_RULED_TOOLS` (`server/permission_rules/patterns.py`) alone decides eligibility: deletes,
+  `ready_merge_pr`, the fan-outs that start sessions, the whole operator tier and every
+  human-in-the-loop decision (`resolve_triage`, `resolve_decision`, `answer_question`, …) are on
+  it — their card never offers the option and a stored rule is ignored. A new DESTRUCTIVE tool
+  must be classified in `server/tests/test_assistant_always_allow.py`. Rules stay human-only: the
+  assistant's token reaches none of the rule routes, and `resolve_permission` refuses `always` from
+  it. Settings › General › AI assistant lists the assistant's rules with Revoke (effective on
+  the next call).
 - **Proactive notices (Pack N, spec §4.7) are never a model turn** — a fired watch or notification
   rule with an `assistant` channel reaches the drawer through `SessionOrchestrator.post_notice`
   (`server/sessions/orchestrator.py`), after `server/assistant/notices.py` has written a durable

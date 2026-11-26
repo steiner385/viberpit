@@ -26,6 +26,8 @@ vi.mock('@/api/hooks', () => ({
   useUpdateSettings: vi.fn(),
   useArchivedSessions: vi.fn(),
   useModels: vi.fn(),
+  usePermissionRules: vi.fn(),
+  useRevokePermissionRule: vi.fn(),
 }))
 
 function mount() {
@@ -47,6 +49,39 @@ describe('GeneralSection', () => {
     vi.mocked(hooks.useModels).mockReturnValue(queryResult([
       { id: 'sonnet', label: 'Sonnet' }, { id: 'opus', label: 'Opus' },
     ] as never))
+    vi.mocked(hooks.usePermissionRules).mockReturnValue(queryResult([] as never))
+    vi.mocked(hooks.useRevokePermissionRule).mockReturnValue(mutationResult({ mutateAsync: revoke }))
+  })
+
+  const revoke = vi.fn().mockResolvedValue(undefined)
+  const rule = (id: string, pattern: string, scope: 'session' | 'repo' | 'global') => ({
+    id, profileId: 'p', pattern, description: '', scope, scopeKey: scope === 'session' ? 'a1' : null,
+    position: 0, createdBy: 'me', createdVia: 'ui', createdAt: null, hitCount: 2, lastHitAt: null,
+  })
+
+  it('lists only the assistant\'s always-allow rules, with their lifetime, and revokes one (#3527)', async () => {
+    revoke.mockClear()
+    vi.mocked(hooks.usePermissionRules).mockReturnValue(queryResult([
+      rule('r1', 'mcp__viberpit__close_issue', 'global'),
+      rule('r2', 'mcp__viberpit__add_issue_labels', 'session'),
+      rule('r3', 'Bash(npm test:*)', 'repo'),
+    ] as never))
+    const { container } = mount()
+    const section = screen.getByRole('region', { name: 'Always-allow rules' })
+    expect(section).toHaveTextContent('close_issue')
+    expect(section).toHaveTextContent('Always · 2 hits')
+    expect(section).toHaveTextContent('One conversation · 2 hits')
+    expect(section).not.toHaveTextContent('npm test')
+    await userEvent.click(screen.getByRole('button', { name: 'Revoke always-allow for close_issue' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith('r1'))
+    expect(await axe(container)).toHaveNoViolations()
+  })
+
+  it('says every assistant action asks first when there is no rule', () => {
+    mount()
+    expect(screen.getByRole('region', { name: 'Always-allow rules' }))
+      .toHaveTextContent('None — every assistant action asks first.')
   })
 
   it('shows effective defaults as placeholders and a Reset that clears to default', async () => {

@@ -181,9 +181,16 @@ function AssistantSheetBody() {
           were pended and re-emitted by the daemon but had no surface here, so the
           operator saw nothing and their next message steer-denied each one. The
           gate is unchanged; this only gives it somewhere to be answered. */}
+      {/* "Always allow…" (#3527): the same standing-rule chooser a session page offers,
+          as the drawer's two lifetimes. The rule is created by the operator's tap through
+          the human-only rule routes — the assistant's token can reach none of them. */}
       <PendingPermissionPanel
         turns={rt.state.turns}
         onDecision={rt.onDecision}
+        hasRepo={false}
+        onPreviewRule={rt.onPreviewRule}
+        onGrantRule={rt.onGrantRule}
+        assistant
       />
       <PendingQuestionPanel
         turns={rt.state.turns}

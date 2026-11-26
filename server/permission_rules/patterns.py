@@ -48,8 +48,11 @@ PROTECTED_PATHS = frozenset(
 #: are conversations with the human; the app's own tools that widen what sessions may do
 #: without asking (resolve a permission card, change a permission mode, approve a parked model,
 #: unpause autopilot, enable an automation); and the ones that settle a human-in-the-loop
-#: decision. Under BOTH brand prefixes. The single list read by
-#: the matcher, ``suggest``, ``safety.assess`` and ``PermissionRegistry``.
+#: decision; and the irreversible or high-blast-radius app actions (#3527). Under BOTH brand
+#: prefixes. The single list read by the matcher, ``suggest``, ``safety.assess`` and
+#: ``PermissionRegistry`` — for the app's own MCP tools it alone decides whether a card may
+#: offer "Always allow" (a DESTRUCTIVE tool not listed here is eligible; a new one must be
+#: classified in ``server/tests/test_assistant_always_allow.py``).
 NEVER_RULED_TOOLS = frozenset(
     {"ExitPlanMode", "AskUserQuestion"}
     | {
@@ -64,6 +67,16 @@ NEVER_RULED_TOOLS = frozenset(
             "close_initiative",
             "roadmap_resolve", "roadmap_advance", "roadmap_milestone_advance",
             "roadmap_milestone_tick",
+            # Irreversible or high-blast-radius actions keep their card (#3527): deletes,
+            # merges, fan-outs that start unattended sessions, and the whole assistant
+            # operator tier (deploy, host upgrade, account and product changes).
+            "delete_session", "delete_sessions", "ready_merge_pr",
+            "trigger_automation_action", "dispatch_backlog", "consolidate_prs",
+            "start_deploy", "upgrade_host", "refresh_account", "set_account_enabled",
+            "start_reauth", "update_product_policy", "apply_owner_digest",
+            "update_product_repos", "map_moved_issues", "create_product",
+            # A coding session's owner-approval cards: the card IS the one-off grant.
+            "request_draft_ready", "request_unverified_deploy",
         )
     }
 )  # fmt: skip

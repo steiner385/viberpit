@@ -128,7 +128,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("create_issue", ToolClass.MUTATION, "File a GitHub issue"),
     # Triage writes on existing issues (Refs #2979). The comment and the board move are
     # the same class as comment_on_pr; closing someone's issue is DESTRUCTIVE (a card in
-    # every mode, never "Always allow"), like file_feedback_cluster.
+    # every mode), like file_feedback_cluster. Reopenable, so a standing rule may answer
+    # it (#3527) — the batch-close case the operator's "Always allow" exists for.
     ToolSpec("comment_on_issue", ToolClass.MUTATION, "Comment on an issue"),
     ToolSpec("set_board_status", ToolClass.MUTATION, "Set issues' board status"),
     ToolSpec("close_issue", ToolClass.DESTRUCTIVE, "Close issues"),
@@ -159,8 +160,9 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("request_product_sync", ToolClass.MUTATION, "Request product sync"),
     # Bulk (≤20) like the session batch tools: the card lists every "ref — title".
     ToolSpec("release_hold", ToolClass.MUTATION, "Release holds / parked labels on issues"),
-    # DESTRUCTIVE — irreversible. `PermissionRegistry.request` gives these a card in
-    # EVERY mode (including full-auto) and never offers "Always allow" (spec §4.4).
+    # DESTRUCTIVE. `PermissionRegistry.request` gives these a card in EVERY mode
+    # (including full-auto); the irreversible ones are also on NEVER_RULED_TOOLS
+    # (server/permission_rules/patterns.py), so their card never offers "Always allow".
     ToolSpec("delete_session", ToolClass.DESTRUCTIVE, "Permanently delete session"),
     ToolSpec("delete_sessions", ToolClass.DESTRUCTIVE, "Permanently delete sessions"),
     ToolSpec("cancel_queued_session", ToolClass.DESTRUCTIVE, "Cancel queued session"),

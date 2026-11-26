@@ -16,6 +16,9 @@ interface Props {
   hasRepo: boolean
   /** Scope the chooser opens on (the card passes 'repo' when the session has a repo). */
   initialScope: RuleScope
+  /** The scopes offered and their names, in order. Omitted: every scope, named by
+   *  `RULE_SCOPE_LABEL` (the assistant drawer passes its two lifetimes instead). */
+  scopeLabels?: Partial<Record<RuleScope, string>>
   onPreview: (pattern: string, scope: RuleScope) => Promise<RulePreview>
   /** Rejects with `ApiRequestError`; branch on its code. */
   onGrant: (pattern: string, scope: RuleScope, confirm: boolean) => Promise<unknown>
@@ -23,8 +26,9 @@ interface Props {
 }
 
 const PREVIEW_DEBOUNCE_MS = 300
+const SCOPE_ORDER: RuleScope[] = ['session', 'repo', 'global']
 
-function Chooser({ block, hasRepo, initialScope, onPreview, onGrant, onClose }: Omit<Props, 'open'>) {
+function Chooser({ block, hasRepo, initialScope, scopeLabels = RULE_SCOPE_LABEL, onPreview, onGrant, onClose }: Omit<Props, 'open'>) {
   const suggestions = block.ruleSuggestions ?? []
   const [pattern, setPattern] = useState(suggestions[0]?.pattern ?? '')
   const [scope, setScope] = useState<RuleScope>(initialScope)
@@ -124,13 +128,19 @@ function Chooser({ block, hasRepo, initialScope, onPreview, onGrant, onClose }: 
         legend="Applies to"
         value={scope}
         onChange={(s) => edit(() => setScope(s))}
-        options={[
-          { value: 'session', label: RULE_SCOPE_LABEL.session, disabled: busy },
-          { value: 'repo', label: RULE_SCOPE_LABEL.repo, disabled: !hasRepo || busy, disabledReason: hasRepo ? undefined : 'Scratch session — no repo' },
-          { value: 'global', label: RULE_SCOPE_LABEL.global, disabled: busy },
-        ]}
+        options={SCOPE_ORDER.flatMap((value) => {
+          const label = scopeLabels[value]
+          if (label === undefined) return []
+          const noRepo = value === 'repo' && !hasRepo
+          return [{ value, label, disabled: noRepo || busy,
+                    disabledReason: noRepo ? 'Scratch session — no repo' : undefined }]
+        })}
       />
-      <p className="text-xs text-ink-muted">Repo and All-sessions rules apply on every host and account.</p>
+      {scopeLabels.global !== undefined && (
+        <p className="text-xs text-ink-muted">
+          {scopeLabels.repo !== undefined ? 'Repo and All-sessions rules' : `“${scopeLabels.global}” rules`} apply on every host and account.
+        </p>
+      )}
 
       <div className="space-y-1 text-sm" aria-live="polite">
         {preview?.description && <p className="text-ink">{preview.description}</p>}

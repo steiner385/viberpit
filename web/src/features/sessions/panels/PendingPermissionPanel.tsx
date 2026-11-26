@@ -12,6 +12,7 @@ interface Props {
   hasRepo?: boolean
   onPreviewRule?: ComponentProps<typeof PermissionCard>['onPreviewRule']
   onGrantRule?: ComponentProps<typeof PermissionCard>['onGrantRule']
+  assistant?: boolean
 }
 
 /** First open permission across all turns (one-at-a-time pinning). */
@@ -31,7 +32,7 @@ function findFirstOpenPermission(turns: Turn[]): PermissionBlock | null {
  * pending permission below the fold left the user with a "Permission needed" status
  * and no reachable buttons.
  */
-export function PendingPermissionPanel({ turns, onDecision, hasRepo, onPreviewRule, onGrantRule }: Props) {
+export function PendingPermissionPanel({ turns, onDecision, hasRepo, onPreviewRule, onGrantRule, assistant }: Props) {
   const perm = findFirstOpenPermission(turns)
   if (!perm) return null
   return (
@@ -58,6 +59,7 @@ export function PendingPermissionPanel({ turns, onDecision, hasRepo, onPreviewRu
         hasRepo={hasRepo}
         onPreviewRule={onPreviewRule}
         onGrantRule={onGrantRule}
+        assistant={assistant}
       />
     </div>
   )

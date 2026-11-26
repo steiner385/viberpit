@@ -13,6 +13,7 @@ import { SettingRow } from '../chassis/SettingRow'
 import { SaveBar } from '../chassis/SaveBar'
 import { PathControl } from '../chassis/PathControl'
 import { useSettingsForm } from '../useSettingsForm'
+import { AssistantRulesList } from './AssistantRulesList'
 
 /**
  * Every field is a STRING so that blank can mean "server default" — the one
@@ -274,6 +275,7 @@ export function GeneralSection() {
             onChange={(v) => set('assistantOperatorTools', v)}
           />
         </SettingRow>
+        <AssistantRulesList />
       </SettingsGroup>
 
       <ConfirmDialog
