@@ -257,3 +257,41 @@ async def test_second_cancel_cannot_interrupt_spawn_rollback(tmp_path: Path) -> 
     assert manager.claimed == set()
     assert manager.detached == [session_id]
     assert not (repo_root / ".ccswitch" / "scratch" / session_id).exists()
+
+
+@pytest.mark.asyncio
+async def test_hung_driver_start_times_out_and_closes_once(tmp_path: Path) -> None:
+    """#947 G5: a fresh spawn's start is bounded by DRIVER_START_TIMEOUT_S; the hang
+    surfaces as DriverStartTimeout (typed ``start_timeout`` by the queue drain) and
+    the spawn's own rollback closes the half-built driver exactly once."""
+    from server.sessions.orchestrator import DriverStartTimeout
+    session_id = "codex-hung-start"
+    driver = _BlockingDriver()               # start() never returns on its own
+    manager = _AttachRaceManager()
+    registry = AgentDriverRegistry({AgentEngine.CODEX: _Factory(driver)})
+    repo_root = tmp_path / "repos"
+    repo_root.mkdir()
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    orchestrator = SessionOrchestrator(
+        codex=manager, driver_registry=registry, repo_root=str(repo_root),
+    )
+
+    with (
+        patch("server.sessions.orchestrator.compose", return_value=config_dir),
+        patch("server.sessions.orchestrator.configdir.trust_project"),
+        patch("server.sessions.orchestrator.DRIVER_START_TIMEOUT_S", 0.05),
+        patch.object(orchestrator, "_isolated_dir_for", side_effect=lambda cfg, kind: cfg),
+    ):
+        with pytest.raises(DriverStartTimeout):
+            await orchestrator._spawn_session(
+                session_id, name="Codex", account="openai-main", initial_prompt=None,
+                cols=80, rows=24, cwd=None, branch=None, repo=None,
+                identity="person@example.com", permission_mode="interactive",
+                attachment_ids=None, name_is_auto=False, origin=None, origin_ref=None,
+                model=None, engine=AgentEngine.CODEX)
+
+    assert driver.close_calls == 1
+    assert session_id not in orchestrator._drivers
+    assert session_id not in orchestrator._records
+    assert session_id not in orchestrator._spawning

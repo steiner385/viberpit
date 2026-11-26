@@ -54,3 +54,37 @@ describe('SessionCard PR resolution note', () => {
     expect(screen.queryByTestId('card-resolution')).toBeNull()
   })
 })
+
+describe('SessionCard typed spawn failure (#947)', () => {
+  const failure = (reason: string, message: string) => ({
+    reason, message, transient: reason === 'network', attempt: 2, requeued: false,
+  })
+
+  it('says why a queued session never started', () => {
+    renderCard(makeSession({
+      status: 'ended',
+      lastSpawnFailure: failure('network', 'Could not resolve host: github.com'),
+    }))
+    const chip = screen.getByTestId('card-spawn-failure')
+    expect(chip).toHaveTextContent('Failed to start: Could not resolve host: github.com')
+    expect(chip).toHaveAttribute('title', 'network: Could not resolve host: github.com')
+  })
+
+  it('leaves an obsolete start to the resolution note (said once)', () => {
+    renderCard(makeSession({
+      status: 'ended',
+      prResolution: 'obsolete: PR #12 merged before start',
+      lastSpawnFailure: failure('obsolete', 'PR #12 merged before start'),
+    }))
+    expect(screen.queryByTestId('card-spawn-failure')).toBeNull()
+    expect(screen.getByTestId('card-resolution')).toBeInTheDocument()
+  })
+
+  it('never shows it on a session that is running', () => {
+    renderCard(makeSession({
+      status: 'in_progress',
+      lastSpawnFailure: failure('start_error', 'boom'),
+    }))
+    expect(screen.queryByTestId('card-spawn-failure')).toBeNull()
+  })
+})

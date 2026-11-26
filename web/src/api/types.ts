@@ -363,6 +363,17 @@ export interface SubAgentSummary {
 export interface BackgroundWorkItem { toolUseId: string; kind: string; name: string; description: string; startedAt: string | null }
 export interface BackgroundWork { items: BackgroundWorkItem[]; wakeup: boolean; wakeupAt: string | null }
 
+/** A queued session's typed start failure (server/sessions/spawn_failure.py, #947). */
+export interface SpawnFailure {
+  /** network | start_timeout | auth | rate_limited | sandbox_refused | obsolete | start_error */
+  reason: string
+  /** Whether one more try could plausibly succeed (the drain re-enqueues those once). */
+  transient: boolean
+  attempt: number
+  requeued: boolean
+  message: string
+}
+
 export interface Session {
   id: string
   name: string
@@ -531,6 +542,9 @@ export interface Session {
   prResolution?: string | null
   /** Where prResolution came from: "tool" | "marker" | "queue-drain". */
   prResolutionSource?: string | null
+  /** Why the queue drain ended this session before it ever started (#947) —
+   *  server/sessions/spawn_failure.py. Null/absent = it started (or is still queued). */
+  lastSpawnFailure?: SpawnFailure | null
   /** The one sentence the session passed to `hand_back(reason)` — WHAT it needs from
    *  the user (#2321). Meaningful while `status === 'handed_back'`, and ALSO beside a
    *  busy status (#2647): a hand_back made mid-turn is written the moment it is read,
@@ -1483,6 +1497,21 @@ export interface RecoveryRef {
  *  `refs` when there is nothing (or no clone). */
 export interface SessionRecoveryRefs {
   refs: RecoveryRef[]
+}
+
+/** One entry of a session's lifecycle timeline (server/sessions/provenance.py, #947).
+ *  `detail`'s shape is per kind: `spawn_failed` → `SpawnFailure`; `auto_archived` →
+ *  `{by, reason}`. Unknown kinds are rendered by name, never dropped. */
+export interface SessionTimelineEvent {
+  id: string
+  kind: string
+  ts: string | null
+  detail: Record<string, unknown>
+}
+
+/** `GET /sessions/{id}/events` — newest first; empty when there is nothing. */
+export interface SessionEvents {
+  events: SessionTimelineEvent[]
 }
 
 /** One file of a `SendUserFile` call (#3487): `url` (`/api/attachments/{id}`) when the

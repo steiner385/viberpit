@@ -23,7 +23,7 @@ import type {
   LibrarySkill, LibraryCommand, PluginBrowseQuery,
   LibraryMcpServer, McpServerConfig, LibraryContent, MemoryFileContent, UserMemory, UserMemorySaved,
   SessionPreset, PromptTemplate, PermissionProfile, AssessResponse, RuleWire,
-  PrDetail, PrMutationResult, PrArmResult, SessionRecoveryRefs,
+  PrDetail, PrMutationResult, PrArmResult, SessionRecoveryRefs, SessionEvents,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import {
@@ -188,6 +188,7 @@ export const QK = {
   sessionFileSearch: (id: string, q: string, regex: boolean) => ['session-file-search', id, q, regex] as const,
   /** A session's recovery refs (D-21), live or archived. */
   sessionRecoveryRefs: (id: string) => ['session-recovery-refs', id] as const,
+  sessionEvents: (id: string) => ['session-events', id] as const,
   /** One PR's detail (D-15 PR tab): `repo` is `owner/name`. */
   prDetail: (repo: string, number: number) => ['pr-detail', repo, number] as const,
   /** One loaded memory file of a session (D-13). */
@@ -1661,6 +1662,21 @@ export function useSessionRecoveryRefs(id: string) {
   return useQuery<SessionRecoveryRefs>({
     queryKey: QK.sessionRecoveryRefs(id),
     queryFn: () => api.get<SessionRecoveryRefs>(`/sessions/${encodeURIComponent(id)}/recovery-refs`),
+    enabled: !!id,
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+/**
+ * A session's lifecycle timeline (#947, spec 002 FR-301): `{events}`, newest first,
+ * read from the shared DB — live, ended or archived. Supplementary, so a refusal is
+ * never retried and the caller just shows nothing. No refetch on window focus.
+ */
+export function useSessionEvents(id: string) {
+  return useQuery<SessionEvents>({
+    queryKey: QK.sessionEvents(id),
+    queryFn: () => api.get<SessionEvents>(`/sessions/${encodeURIComponent(id)}/events`),
     enabled: !!id,
     retry: false,
     refetchOnWindowFocus: false,
