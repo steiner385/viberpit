@@ -66,4 +66,45 @@ describe('SessionTimeline', () => {
       'moved host',
     ])
   })
+
+  it('words a lost hold, an account rotation and a delete retry (#947 phase 2)', () => {
+    respond(queryResult({
+      events: [
+        { id: 'e5', kind: 'delete_retry', ts: null, detail: { strike: 3, error: 'EBUSY: worktree locked', stuck: true } },
+        { id: 'e4', kind: 'delete_retry', ts: null, detail: { strike: 1, error: 'EBUSY: worktree locked', stuck: false } },
+        { id: 'e3', kind: 'rotated_account', ts: null, detail: { from: 'alice', reason: 'rate_limited', attempt: 2 } },
+        { id: 'e2', kind: 'hold_lost', ts: null,
+          detail: { kind: 'permission', holdId: 'h1', createdAt: null, content: { tool: 'Bash', input: { command: 'ls' } } } },
+        { id: 'e1', kind: 'hold_lost', ts: null, detail: { kind: 'question', holdId: 'h2', createdAt: null, content: {} } },
+        { id: 'e0', kind: 'hold_lost', ts: null, detail: { kind: 'plan', holdId: 'h3', createdAt: null, content: {} } },
+      ],
+    }))
+    render(<SessionTimeline sessionId="s-1" />)
+    const items = screen.getAllByRole('listitem', { hidden: true })
+    expect(items.map((li) => li.textContent)).toEqual([
+      'Delete retry #3 — stuck: EBUSY: worktree locked',
+      'Delete retry #1: EBUSY: worktree locked',
+      'Rotated off alice: rate_limited (attempt 2)',
+      'A pending permission request was lost in a restart',
+      'A pending question was lost in a restart',
+      'A pending plan approval was lost in a restart',
+    ])
+  })
+
+  it('still words each new kind when its detail is incomplete', () => {
+    respond(queryResult({
+      events: [
+        { id: 'e2', kind: 'rotated_account', ts: null, detail: { reason: 'quota exhausted' } },
+        { id: 'e1', kind: 'delete_retry', ts: null, detail: { strike: 'two', error: 'EBUSY', stuck: false } },
+        { id: 'e0', kind: 'hold_lost', ts: null, detail: { content: {} } },
+      ],
+    }))
+    render(<SessionTimeline sessionId="s-1" />)
+    const items = screen.getAllByRole('listitem', { hidden: true })
+    expect(items.map((li) => li.textContent)).toEqual([
+      'Rotated account: quota exhausted',
+      'Delete retry: EBUSY',
+      'A pending hold was lost in a restart',
+    ])
+  })
 })

@@ -374,6 +374,19 @@ export interface SpawnFailure {
   message: string
 }
 
+/** A hold whose waiter died with the daemon (spec 002 FR-406, #947): what the agent
+ *  was waiting on, so the user can see it and have the agent ask again. `content` is
+ *  per kind — permission / plan → `{ tool, input, items?, turnId, permId, truncated? }`
+ *  (plan = tool `ExitPlanMode`, `input.plan` the plan markdown); question →
+ *  `{ questions: [{ questionId, header, question, options, multiSelect }], turnId }`.
+ *  Untrusted text, never markup. The server never decides it (FR-306). */
+export interface LostHold {
+  kind: 'permission' | 'question' | 'plan' | string
+  content: Record<string, unknown>
+  createdAt?: string | null
+  holdId?: string
+}
+
 export interface Session {
   id: string
   name: string
@@ -536,6 +549,10 @@ export interface Session {
    *  orphaned-ask notice. Sent by server/api/sessions.py:_record_to_dict (the browser
    *  serializer — server/sessions/types.py:to_dict is the daemon→edge RPC one). */
   interruptedFromStatus?: string | null
+  /** The hold a daemon restart orphaned, with its content (FR-406). Set beside
+   *  `interruptedFromStatus`; when present the banner shows WHAT was pending, not just
+   *  that something was. Null/absent = no hold content survived (the notice fallback). */
+  lostHold?: LostHold | null
   /** Why a finished session produced no PR — the mark_no_pr/marker token on a
    *  'complete' session, or the queue drainer's "obsolete: PR #N merged before start"
    *  on a queued session ended without ever spawning. Null/absent = no resolution. */
@@ -1517,7 +1534,9 @@ export interface SessionRecoveryRefs {
 
 /** One entry of a session's lifecycle timeline (server/sessions/provenance.py, #947).
  *  `detail`'s shape is per kind: `spawn_failed` → `SpawnFailure`; `auto_archived` →
- *  `{by, reason}`. Unknown kinds are rendered by name, never dropped. */
+ *  `{by, reason}`; `hold_lost` → `LostHold`; `rotated_account` → `{from, reason, attempt}`;
+ *  `delete_retry` → `{strike, error, stuck}`. Unknown kinds are rendered by name, never
+ *  dropped. */
 export interface SessionTimelineEvent {
   id: string
   kind: string

@@ -50,6 +50,10 @@ const FilesTab = lazy(() => import('@/features/sessions/files/FilesTab'))
 const PrTab = lazy(() => import('@/features/sessions/pr/PrTab'))
 /** The rail's cards too (D-6): secondary to the transcript, so they load after it. */
 const SessionRail = lazy(() => import('./rail/SessionRail').then((m) => ({ default: m.SessionRail })))
+/** The lost-hold banner (FR-406) too: only a session a restart orphaned ever needs it,
+ *  and it shares its wording module with the lazy SessionTimeline — eager here would
+ *  have Vite preload that shared chunk for everyone. */
+const LostHoldBanner = lazy(() => import('@/features/sessions/transcript/LostHoldBanner'))
 
 /** Local alias: the shared gate now lives beside the hook that feeds it. */
 const can = canUseEngine
@@ -120,6 +124,8 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
   const sandboxHold = sessionRecord?.status === 'needs_attention' && pausedReason?.startsWith('sandbox_')
     ? { sessionId: sessionRecord.id, reason: sessionRecord.sandbox?.reason ?? null, escaped: pausedReason === SANDBOX_ESCAPE }
     : null
+  /** The hold a restart orphaned, with content (FR-406); null = the bare notice fallback. */
+  const lostHold = sessionRecord?.lostHold ?? null
   const fileRefActions = useMemo<FileRefActions | null>(
     () => (cwd ? { sessionId: rt.sessionId, cwd, openFile: setFile, attachMention } : null),
     [rt.sessionId, cwd, setFile, attachMention],
@@ -388,15 +394,26 @@ export function SessionBody({ rt, onClosed }: { rt: SessionRuntime; onClosed?: (
                     permission below the fold left the user with a "Permission needed" status
                     and no reachable buttons (just a "scroll up" banner). Pinning it above the
                     composer keeps the controls always visible. */}
-                <InterruptedAskNotice
-                  interruptedFromStatus={sessionRecord?.interruptedFromStatus}
-                  onAskAgain={() => rt.onPrompt(
-                    'The permission or plan approval you were waiting on was lost when the '
-                    + 'daemon restarted — I never saw it. Please re-request whatever you need '
-                    + 'approved, or tell me where things stand.',
-                    [], undefined, 'suggested',
-                  )}
-                />
+                {/* A hold the restart orphaned (FR-406): with its content when the server
+                    kept it, else the bare notice. Neither decides it — "Ask again" only. */}
+                {lostHold ? (
+                  <Suspense fallback={null}>
+                    <LostHoldBanner
+                      lostHold={lostHold}
+                      onAskAgain={(prompt) => rt.onPrompt(prompt, [], undefined, 'suggested')}
+                    />
+                  </Suspense>
+                ) : (
+                  <InterruptedAskNotice
+                    interruptedFromStatus={sessionRecord?.interruptedFromStatus}
+                    onAskAgain={() => rt.onPrompt(
+                      'The permission or plan approval you were waiting on was lost when the '
+                      + 'daemon restarted — I never saw it. Please re-request whatever you need '
+                      + 'approved, or tell me where things stand.',
+                      [], undefined, 'suggested',
+                    )}
+                  />
+                )}
 
                 <PendingPermissionPanel
                   turns={rt.state.turns}
