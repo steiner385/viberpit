@@ -273,7 +273,19 @@ Workers mount it via a systemd mount unit modelled on `viberpit-mounts.service` 
 - [ ] Mount each account's `cfg/<account>/` from dobby on `<host>`.
 - [ ] Mount the shared `.claude/` from dobby on `<host>`.
 - [ ] Mount unit has retry configured (or autofs); define daemon behavior if mount vanishes mid-turn.
+- [ ] Pre-create every mountpoint the script cannot make itself. `bin-viberpit-mounts.sh` runs as
+  `tony` and `mkdir`s missing mountpoints, which fails under root-owned `/mnt`:
+  `sudo install -d -o tony -g tony /mnt/hdd-storage` (otherwise: `sshfs: bad mount point
+  '/mnt/hdd-storage': No such file or directory` and the unit fails).
+- [ ] The host's own key (`tony@<host>`) is in dobby's `~/.ssh/authorized_keys`, and dobby's host
+  key is in `<host>`'s `known_hosts` — the mounts use `BatchMode`-style non-interactive ssh.
 - [ ] Verify mounts are live: `ls ~/.claude-accounts/cfg/` on `<host>` lists the same accounts as on dobby.
+
+> **A failed mounts unit leaves stale FUSE mounts.** Its `ExecStop` unmounts what it can, but a
+> mount that died mid-start lingers as `Transport endpoint is not connected`, and the next start
+> trips over it. Clear all four before retrying:
+> `for p in ~/.claude-accounts ~/.claude /mnt/hdd-storage ~/avd-golden; do fusermount3 -uz "$p"; done; sudo systemctl reset-failed viberpit-mounts.service`
+> (thready onboarding, 2026-11-25).
 
 > **If `<host>` IS dobby:** no mount needed — dobby is the source. Skip this step.
 
@@ -326,7 +338,9 @@ VIBERPIT_FLEET_HOSTS=rocky=https://rocky.tail0dd570.ts.net:9443,<host>=https://<
 - [ ] Host appears in `GET /api/fleet/hosts` response.
 - [ ] `max_sessions` is set to `<cap>` (protects the host from session starvation; the dispatcher respects it automatically).
 - [ ] Set `sshHost` (`[user@]host`) and `repoPath` via `PUT /api/fleet/hosts/{name}` or the Fleet UI
-  — a deploy refuses (`unconfigured`) an online runner without them.
+  — a deploy refuses (`unconfigured`) an online runner without them. They **cannot** go on the
+  create `POST`: `HostCreate` has no such fields, so pydantic silently drops them and the 201 echoes
+  `sshHost: null` — a separate `PUT` is required.
 
 ---
 
@@ -367,7 +381,10 @@ client CN this host must present, and the six-check preflight — is
 `docs/runbooks/codex-credential-authority.md` § 3. In outline:
 
 ```bash
-bash scripts/fetch-codex.sh                       # pinned + digest-verified
+# Install the pinned CLI — see codex-credential-authority.md § 3 step 1: until a
+# digest is recorded in scripts/codex-cli.sha256, fetch-codex.sh fails closed on
+# every host, and the fleet runs the npm package at the pinned version instead.
+sudo npm install -g @openai/codex@<PINNED_CLI_VERSION>   # → /usr/bin/codex
 # install codex-runner:<host>.pem/.key (0600) + server-ca.pem, add the CN to the
 # authority's VIBERPIT_CODEX_AUTHORITY_CLIENT_ALLOWLIST, restart the authority
 python -m server.codex.doctor                     # exits 0 when nothing failed

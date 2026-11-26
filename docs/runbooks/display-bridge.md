@@ -34,7 +34,12 @@ can be answered).
 
 ## 3. Accept the source on the target
 
-On the **target's** daemon env (`/etc/viberpit/viberpit.env`):
+On the **target's** daemon env — whichever file its `viberpit-daemon.service` actually loads
+(`systemctl show viberpit-daemon -p EnvironmentFiles`). On a worker that is
+`/etc/viberpit/viberpit.env`; on **dobby** (the usual target) it is **`/etc/viberpit/daemon.env`**,
+because dobby's daemon must not read the edge's `viberpit.env` (see
+`onboarding-a-session-runner.md` § "Env collision"). A value added to dobby's `viberpit.env` is
+silently ignored by its daemon.
 
 | Variable | Default | Meaning |
 |---|---|---|
