@@ -122,6 +122,69 @@ describe('ArchivedSessionCard', () => {
     expect(screen.getByTestId('card-account')).toHaveTextContent('alice')
   })
 
+  describe('delete state chip (FR-404)', () => {
+    it('renders no chip when the server reports nothing', () => {
+      render(<ArchivedSessionCard {...props()} />)
+      expect(screen.queryByTestId('delete-state-chip')).not.toBeInTheDocument()
+    })
+
+    it('shows "Deleting… (retrying)" in the info tier while the worktree is still being removed', () => {
+      render(<ArchivedSessionCard {...props({ session: archivedSession({ deleteState: 'pending' }) })} />)
+      const chip = screen.getByTestId('delete-state-chip')
+      expect(chip).toHaveTextContent('Deleting… (retrying)')
+      expect(chip).toHaveClass('bg-info-wash', 'text-info')
+    })
+
+    it('shows "Delete stuck — needs manual cleanup" in the danger tier once the removal is poisoned', () => {
+      render(<ArchivedSessionCard {...props({ session: archivedSession({ deleteState: 'stuck' }) })} />)
+      const chip = screen.getByTestId('delete-state-chip')
+      expect(chip).toHaveTextContent('Delete stuck — needs manual cleanup')
+      expect(chip).toHaveClass('bg-danger-wash', 'text-danger')
+    })
+  })
+
+  describe('auto-archive provenance (FR-405)', () => {
+    it.each(['autopilot', 'backlog-runner', 'completion'])('announces an archive by %s with the reason and an Undo', (by) => {
+      render(<ArchivedSessionCard {...props({
+        session: archivedSession({ archivedBy: by, archiveReason: 'PR #12 merged' }),
+      })} />)
+      const chip = screen.getByTestId('auto-archive-chip')
+      expect(chip).toHaveTextContent('Auto-archived · PR #12 merged')
+      expect(chip).toHaveAttribute('title', expect.stringContaining('PR #12 merged'))
+      expect(screen.getByTestId('auto-archive-undo')).toHaveTextContent('Undo')
+    })
+
+    it('falls back to "goal met" when the server recorded no reason', () => {
+      render(<ArchivedSessionCard {...props({ session: archivedSession({ archivedBy: 'completion', archiveReason: null }) })} />)
+      expect(screen.getByTestId('auto-archive-chip')).toHaveTextContent('Auto-archived · goal met')
+    })
+
+    it('shows nothing for a human archive or an unknown actor', () => {
+      const { unmount } = render(<ArchivedSessionCard {...props({ session: archivedSession({ archivedBy: null }) })} />)
+      expect(screen.queryByTestId('auto-archive-chip')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('auto-archive-undo')).not.toBeInTheDocument()
+      unmount()
+      render(<ArchivedSessionCard {...props({ session: archivedSession({ archivedBy: 'tony', archiveReason: 'done' }) })} />)
+      expect(screen.queryByTestId('auto-archive-chip')).not.toBeInTheDocument()
+    })
+
+    it('Undo goes through the same unarchive path as the menu item and does not open the card', () => {
+      const onUnarchive = vi.fn()
+      const onReview = vi.fn()
+      render(<ArchivedSessionCard {...props({
+        onUnarchive, onReview, session: archivedSession({ id: 'a1', archivedBy: 'autopilot' }),
+      })} />)
+      fireEvent.click(screen.getByTestId('auto-archive-undo'))
+      expect(onUnarchive).toHaveBeenCalledWith('a1')
+      expect(onReview).not.toHaveBeenCalled()
+    })
+
+    it('disables Undo while the row is already being restored', () => {
+      render(<ArchivedSessionCard {...props({ unarchiving: true, session: archivedSession({ archivedBy: 'autopilot' }) })} />)
+      expect(screen.getByTestId('auto-archive-undo')).toBeDisabled()
+    })
+  })
+
   describe('unarchiving', () => {
     it('shows the default enabled Unarchive label when not unarchiving', async () => {
       render(<ArchivedSessionCard {...props()} />)

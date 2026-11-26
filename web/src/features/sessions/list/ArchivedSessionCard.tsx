@@ -15,10 +15,19 @@ import { formatRepoLabel } from '@/lib/repoLabel'
 import { repoFromCwd } from '@/lib/repoFromCwd'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { useNow } from '@/hooks/useNow'
-import type { ArchivedSession } from '@/api/types'
+import { AUTO_ARCHIVE_PROVENANCE, type ArchivedSession } from '@/api/types'
 import { displayNameOf } from '@/session/displayName'
 import { CardFrame } from '@/ui/list/CardFrame'
 import { CardMenu, Sep, menuItem } from '@/ui/list/CardMenu'
+
+// Same chip shape as SessionCard's maintenance / lineage pills.
+const CHIP = 'flex-shrink-0 truncate rounded px-1.5 py-0.5 text-2xs font-medium leading-4'
+
+// FR-404: a 202 from the permanent delete kept the row; the chip says why.
+const DELETE_STATE_CHIP = {
+  pending: { label: 'Deleting… (retrying)', className: 'bg-info-wash text-info' },
+  stuck: { label: 'Delete stuck — needs manual cleanup', className: 'bg-danger-wash text-danger' },
+} as const
 
 interface ArchivedSessionCardProps {
   session: ArchivedSession
@@ -48,6 +57,14 @@ export function ArchivedSessionCard({
   // here would be 200 needless re-renders/sec for a label that never visibly
   // moves.
   const now = useNow(60_000)
+  const deleteChip = session.deleteState ? DELETE_STATE_CHIP[session.deleteState] : null
+  // FR-405: only a system actor earns the "Auto-archived" announcement + Undo. A
+  // person's archive is the default case and says nothing; an unknown actor is
+  // treated the same rather than guessed at.
+  const autoArchivedBy = session.archivedBy && AUTO_ARCHIVE_PROVENANCE.has(session.archivedBy)
+    ? session.archivedBy
+    : null
+  const archiveReason = session.archiveReason?.trim() || null
 
   return (
     <CardFrame
@@ -143,6 +160,40 @@ export function ArchivedSessionCard({
           <FolderGit2 size={12} aria-hidden="true" className="flex-shrink-0" />
           <span className="truncate">{repoLabel.text}</span>
         </span>
+        {deleteChip && (
+          <>
+            <Sep />
+            <span data-testid="delete-state-chip" className={cn(CHIP, 'max-w-[14rem]', deleteChip.className)} title={deleteChip.label}>
+              {deleteChip.label}
+            </span>
+          </>
+        )}
+        {autoArchivedBy && (
+          <>
+            <Sep />
+            <span
+              data-testid="auto-archive-chip"
+              className={cn(CHIP, 'min-w-0 max-w-[14rem] bg-info-wash text-info')}
+              title={`Auto-archived by ${autoArchivedBy}${archiveReason ? `: ${archiveReason}` : ''}`}
+            >
+              Auto-archived · {archiveReason ?? 'goal met'}
+            </span>
+            {/* Undo rides the SAME unarchive path as the menu item and the swipe
+                (`onUnarchive` → useUnarchiveSession), which pins the sticky
+                re-archive opt-out server-side. stopPropagation: CardFrame opens
+                the transcript on a card click. */}
+            <button
+              type="button"
+              data-testid="auto-archive-undo"
+              disabled={unarchiving}
+              onClick={(e) => { e.stopPropagation(); onUnarchive(session.id) }}
+              className="flex-shrink-0 rounded px-1 text-2xs font-medium text-accent hover:underline disabled:opacity-40 disabled:no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              aria-label={`Undo auto-archive of ${name}`}
+            >
+              {unarchiving ? 'Restoring…' : 'Undo'}
+            </button>
+          </>
+        )}
         {isValidTimestamp(session.archivedAt) && (
           <>
             <Sep />

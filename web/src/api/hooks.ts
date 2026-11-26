@@ -17,7 +17,7 @@ import {
 } from './automations'
 import { DEFAULT_AGENT_ENGINE } from './types'
 import type {
-  McpStatusRow, McpServerState, Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
+  McpStatusRow, McpServerState, Account, Session, ReauthState, ArchivedSession, DeleteState, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
   DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, CheckInsights,
   DaemonHealth, DeviceCodeState, McpAuthState, AgentEngine, AgentCapabilities, EngineOffer,
   LibrarySkill, LibraryCommand, PluginBrowseQuery,
@@ -1260,10 +1260,13 @@ export function useUnarchiveSession() {
   })
 }
 
+/** 204 → undefined; 202 → `{state}` because the server kept the row (FR-404). */
+type PermanentDeleteResult = { state?: DeleteState | string } | undefined
+
 export function usePermanentDeleteSession() {
   const qc = useQueryClient()
-  return useMutation<void, ApiRequestError, string, { prevArchived?: ArchivedSession[]; prevSessions?: Session[]; name?: string }>({
-    mutationFn: (id) => api.del<void>(`/sessions/${id}/permanent`),
+  return useMutation<PermanentDeleteResult, ApiRequestError, string, { prevArchived?: ArchivedSession[]; prevSessions?: Session[]; name?: string }>({
+    mutationFn: (id) => api.del<PermanentDeleteResult>(`/sessions/${id}/permanent`),
     onMutate: async (id) => {
       await qc.cancelQueries({ queryKey: QK.archived })
       await qc.cancelQueries({ queryKey: QK.sessions })
@@ -1279,8 +1282,25 @@ export function usePermanentDeleteSession() {
       if (ctx?.prevSessions) qc.setQueryData(QK.sessions, ctx.prevSessions)
       toast.error(`Couldn't delete ${ctx?.name ?? 'session'}`)
     },
-    // No success toast: the card leaves the list optimistically in onMutate,
-    // which is the acknowledgement. Only the failure needs a voice.
+    // No success toast on 204: the card leaves the list optimistically in onMutate,
+    // which is the acknowledgement. A 202 is the exception — the server KEPT the
+    // row (worktree still being removed, or the removal is poisoned), so the
+    // optimistic removal would lie. Put the row back from the snapshot with its
+    // `deleteState` so the card shows the chip, and say why it is still there.
+    onSuccess: (data, id, ctx) => {
+      const state = data?.state
+      if (state !== 'pending' && state !== 'stuck') return
+      const kept = ctx?.prevArchived?.find((x) => x.id === id)
+      if (ctx?.prevArchived) {
+        qc.setQueryData<ArchivedSession[]>(QK.archived,
+          ctx.prevArchived.map((x) => (x.id === id && kept ? { ...kept, deleteState: state } : x)))
+      }
+      // `Session` carries no deleteState; the live row just comes back as it was.
+      if (ctx?.prevSessions) qc.setQueryData(QK.sessions, ctx.prevSessions)
+      toast.info(state === 'stuck'
+        ? `Delete stuck — ${ctx?.name ?? 'session'} needs manual cleanup`
+        : `Deleting… the worktree for ${ctx?.name ?? 'session'} is still being removed`)
+    },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.archived })
       qc.invalidateQueries({ queryKey: QK.sessions })

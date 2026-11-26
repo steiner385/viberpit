@@ -615,7 +615,23 @@ export interface ArchivedSession {
   archivedAt: string
   /** Per-viewer read state (D-10), same rule as `Session.unread`. */
   unread?: boolean
+  /** Who archived the row: an `AUTO_ARCHIVE_PROVENANCE` actor, a person, or null/absent
+   *  on servers that predate the field (FR-405). */
+  archivedBy?: string | null
+  /** The archiver's one-line reason, when it recorded one. */
+  archiveReason?: string | null
+  /** Set when a permanent delete answered 202 and the row is kept server-side: the
+   *  worktree is still being removed (`pending`) or the removal is poisoned (`stuck`).
+   *  Null/absent for an ordinary archived row (FR-404). */
+  deleteState?: DeleteState | null
 }
+
+/** Body of a 202 from `DELETE /sessions/{id}/permanent` — see `ArchivedSession.deleteState`. */
+export type DeleteState = 'pending' | 'stuck'
+
+/** `archived_by` values that mean the system, not a person, archived the session.
+ *  Mirrors `AUTO_ARCHIVE_PROVENANCE` in `server/db/models.py`. */
+export const AUTO_ARCHIVE_PROVENANCE: ReadonlySet<string> = new Set(['autopilot', 'backlog-runner', 'completion'])
 
 /** Result of a best-effort batch operation over session ids. */
 export interface BatchResult {
