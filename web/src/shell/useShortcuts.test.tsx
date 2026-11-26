@@ -1032,7 +1032,10 @@ describe('⌘F / Ctrl+F opens the transcript search', () => {
     ;(document.activeElement as HTMLElement | null)?.blur()
     expect(document.activeElement).toBe(document.body)
     expect(find(document.body).defaultPrevented).toBe(true)
-    expect(await screen.findByRole('searchbox', { name: 'Search this transcript' })).toHaveFocus()
+    // The bar mounts, then focuses its input in an effect: findByRole can resolve in between
+    // on a loaded runner, so poll for the focus rather than asserting it once.
+    const input = await screen.findByRole('searchbox', { name: 'Search this transcript' })
+    await waitFor(() => expect(input).toHaveFocus())
   })
 
   it('from the session composer, on ⌘F as well as Ctrl+F', async () => {
