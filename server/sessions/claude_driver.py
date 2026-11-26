@@ -66,6 +66,7 @@ from .questions import QuestionRegistry
 from . import answered_elsewhere
 from .sdk_contract import is_turn_message
 from .status import SEEDABLE_STATUSES, StatusSignals, derive_status
+from .session_env_repair import repair_session_env
 from .transcript_repair import (INTERRUPT_TEXT, RESTART_INTERRUPT_TEXT, find_transcript,
                                 repair_resumed_transcript)
 from .types import ASSISTANT_KIND, is_assistant_kind
@@ -1411,6 +1412,15 @@ class ClaudeAgentDriver:
                     self.config_dir, self.resume)
             except Exception:
                 log.warning("driver.start: transcript repair failed session=%s",
+                            self.session_id, exc_info=True)
+        # A resumed CLI reuses the session id's SessionStart env file, which can be
+        # left holding NUL bytes; the CLI prepends it to every Bash call and each
+        # one would then fail (#3501). A fork runs under a new id: nothing to scrub.
+        if self.resume and not self._fork_resume_at:
+            try:
+                await asyncio.to_thread(repair_session_env, self.config_dir, self.resume)
+            except Exception:
+                log.warning("driver.start: session-env repair failed session=%s",
                             self.session_id, exc_info=True)
         fork_kw: dict = {}
         if self.resume and self._fork_resume_at:
