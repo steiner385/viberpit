@@ -465,3 +465,87 @@ def test_maybe_start_queued_tolerates_missing_lock_attribute(tmp_path):
             await _stop_orch(orch)
 
     asyncio.run(run())
+
+
+def test_drain_leaves_entry_whose_cwd_is_missing_on_this_host(tmp_path, caplog):
+    """Issue #3516: a queued entry whose host-local cwd does not exist on the
+    draining host must stay queued, never adopted, never marked ended, and never
+    reach the spawn (which used to fail with 'Working directory does not exist'
+    and end the session with a WARNING traceback)."""
+    import logging
+
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'd10.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            workdir = tmp_path / "moved-clone"
+            workdir.mkdir()
+            a = await orch.create_session("one")
+            b = await orch.create_session("two", cwd=str(workdir))   # queued
+            # The clone moves away after enqueue (namespace migration): the path
+            # is only checked at enqueue time, so it is stale by drain time.
+            workdir.rmdir()
+            from server.sessions import session_queue as sq
+
+            spawned: list[str] = []
+            real = orch._spawn_session
+            async def tracking(session_id, **kw):
+                spawned.append(session_id)
+                return await real(session_id, **kw)
+            orch._spawn_session = tracking
+
+            with caplog.at_level(logging.DEBUG, logger="server.sessions.orchestrator"):
+                await orch.close_session(a.id)
+                await asyncio.sleep(0)
+                started = await orch._maybe_start_queued()
+
+            assert started == 0
+            assert b.id not in spawned, "a missing-cwd entry must not reach the spawn"
+            assert (await sq.positions()) == {b.id: 1}, "entry must stay queued"
+            assert await _row_status(b.id) == "queued"
+            assert "session_queue.start_failed" not in caplog.text
+            assert "session_queue.cwd_unserved id=" in caplog.text
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_cwd_vanishing_during_spawn_leaves_entry_queued(tmp_path, caplog):
+    """The drain's cwd gate passes, but the directory is gone by the time the
+    spawn runs. That is a refusal to start on this host, not a start failure: the
+    entry stays queued (no ended row, no traceback warning)."""
+    import logging
+
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'd11.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            workdir = tmp_path / "vanishing-clone"
+            workdir.mkdir()
+            a = await orch.create_session("one")
+            b = await orch.create_session("two", cwd=str(workdir))   # queued
+            from server.sessions import session_queue as sq
+
+            real = orch._spawn_session
+            async def vanishing(session_id, **kw):
+                if session_id == b.id:
+                    workdir.rmdir()
+                    raise RuntimeError("Working directory does not exist")
+                return await real(session_id, **kw)
+            orch._spawn_session = vanishing
+
+            with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+                await orch.close_session(a.id)
+                await asyncio.sleep(0)
+                await orch._maybe_start_queued()
+
+            assert orch._records[b.id].status == "queued"
+            assert await _row_status(b.id) == "queued"
+            assert (await sq.positions()) == {b.id: 1}
+            assert "session_queue.start_failed" not in caplog.text
+            assert "session_queue.cwd_unserved_at_spawn" in caplog.text
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())

@@ -6088,6 +6088,17 @@ class SessionOrchestrator:
                     log.debug("session_queue.platform_unserved id=%s platform=%s — left "
                               "for a host advertising it", sid, row.platform)
                     continue
+                # The same rule for a host-local working directory: the queue row
+                # carries an absolute path that only exists on the host it was
+                # enqueued on (or on a host whose clone is still at that path). An
+                # adopting host without it can never start the entry — the spawn
+                # fails with "Working directory does not exist" — so leave it
+                # queued for the host that has the path, and never adopt it.
+                if params.get("cwd") and not os.path.isdir(params["cwd"]):
+                    foreign.add(sid)
+                    log.debug("session_queue.cwd_unserved id=%s cwd=%s — left for a "
+                              "host that has it", sid, params["cwd"])
+                    continue
                 # Ownership (#852 rule, same as every other acting loop): a worker
                 # drains only its own stamp; the primary drains NULL/own stamps and
                 # orphans whose host left the registry. Anything else has a live
@@ -6214,6 +6225,19 @@ class SessionOrchestrator:
                         log.info("session_queue.account_limited_at_spawn id=%s was=%s "
                                  "earliest_reset=%s — left queued", sid, queue_reason,
                                  exc.earliest_reset)
+                        continue
+                    if params.get("cwd") and not os.path.isdir(params["cwd"]):
+                        # The working directory vanished between the gate above and
+                        # this spawn (or the adopting host never had it): this host
+                        # cannot serve the entry, which is a refusal to start here,
+                        # not a failure of the session. Restore the queued state and
+                        # leave the entry for the host that has the path.
+                        if getattr(self._records.get(sid), "status", None) != "queued":
+                            in_mem.status = "queued"
+                            self._records[sid] = in_mem
+                        foreign.add(sid)
+                        log.info("session_queue.cwd_unserved_at_spawn id=%s cwd=%s — "
+                                 "left queued", sid, params["cwd"])
                         continue
                     # A real start failure (as opposed to the process dying): the
                     # session is about to be marked 'ended', so its entry must go —
