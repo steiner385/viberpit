@@ -31,6 +31,7 @@ from server.github.pr_status import PR_HUMAN_HOLD, PR_HUMAN_HOLD_UNKNOWN
 from server.pm.product_repos import require_active
 from server.pipeline.dashboard_state import dashboard_state
 from server.pipeline.deploy_status import compute_repo_deploy
+from server.api.display_projection import is_display, project_for_display
 from server.pipeline.lane_health import controller_deploy_snapshot, lane_health_ctx
 from server.pipeline.group_history import (
     _iso_seconds,
@@ -232,7 +233,8 @@ async def list_stage_models(
     models = orch.all_repos_stage_models()
     if inspect.isawaitable(models):
         models = await models
-    return {repo: m.to_dict() for repo, m in models.items()}
+    out = {repo: m.to_dict() for repo, m in models.items()}
+    return project_for_display(out) if is_display(request) else out
 
 
 DeployStatusFn = Callable[[], Awaitable[dict]]
@@ -469,9 +471,10 @@ async def pipeline_snapshot(
         state = poller.snapshot()
         if state is None:
             state = await poller.build_now()
-        return state
-    return await _build_state(request.app.state.sessions,
-                              deploy_status_fn=deploy_status_fn_for(request.app))
+    else:
+        state = await _build_state(request.app.state.sessions,
+                                   deploy_status_fn=deploy_status_fn_for(request.app))
+    return project_for_display(state) if is_display(request) else state
 
 
 @repos_router.get("/events")
@@ -483,11 +486,16 @@ async def pipeline_events(
     poller = getattr(request.app.state, "pipeline_state", None)
     notifier = TransitionNotifier()
 
+    display = is_display(request)
+
     def _frame(state: dict) -> str:
         # Full-state frame plus any transition notifications for this connection.
-        out = f"data: {json.dumps(state)}\n\n"
+        # A display connection gets both minimized (#1408): the notification events
+        # name the same PRs and sessions the frame does.
+        out = f"data: {json.dumps(project_for_display(state) if display else state)}\n\n"
         for ev in notifier.diff(state):
-            out += f"event: notification\ndata: {json.dumps(ev)}\n\n"
+            out += (f"event: notification\ndata: "
+                    f"{json.dumps(project_for_display(ev) if display else ev)}\n\n")
         return out
 
     async def gen_cached():
@@ -567,7 +575,7 @@ async def check_insights(
     result = orch.check_insights(repo, window)
     if inspect.isawaitable(result):
         result = await result
-    return result
+    return project_for_display(result) if is_display(request) else result
 
 
 # --------------------------------------------------------------------------- #

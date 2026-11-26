@@ -436,6 +436,11 @@ class AppSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # NULL means "full" (every row minted before kiosk scoping). "display" is a read-only
+    # wall-display principal minted by the kiosk exchange (server/api/kiosk.py); its
+    # `token_id` names the AssistantToken whose revocation/expiry ends the session.
+    scope: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    token_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class AuditEvent(Base):
@@ -469,7 +474,7 @@ class AssistantToken(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     identity: Mapped[str] = mapped_column(String, nullable=False)
-    scope: Mapped[str] = mapped_column(String, nullable=False)  # "read" | "act"
+    scope: Mapped[str] = mapped_column(String, nullable=False)  # "read" | "act" | "display"
     token_hash: Mapped[str] = mapped_column(String, nullable=False)  # sha256 hex digest
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)

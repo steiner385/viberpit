@@ -265,8 +265,10 @@ async def create_token(body: TokenCreateBody, request: Request,
     but the explicit check keeps that true even if a future allowlist edit forgets it."""
     if getattr(request.state, "via", None):
         return _err("ASSISTANT_RECURSION", "an assistant token cannot mint another token", 403)
-    if body.scope not in ("read", "act"):
-        return _err("INVALID_SCOPE", "scope must be 'read' or 'act'", 422)
+    if body.scope not in ("read", "act", "display"):
+        return _err("INVALID_SCOPE", "scope must be 'read', 'act' or 'display'", 422)
+    if getattr(request.state, "scope", None) == "display":
+        return _err("DISPLAY_SCOPE_FORBIDDEN", "a display session cannot mint tokens", 403)
     max_days = get_settings().assistant_token_max_days
     if not (0 < body.ttlDays <= max_days):
         return _err("INVALID_TTL", f"ttlDays must be between 1 and {max_days}", 422)

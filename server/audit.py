@@ -58,6 +58,10 @@ _REDACT_PATTERNS: list[re.Pattern[str]] = [
     ),
     # ViberPit envelope-encrypted token prefix
     re.compile(r"ccenc1:[A-Za-z0-9+/=]+"),
+    # Assistant / external / display bearer tokens (`ccas1:`, `ccas2:`): a signed,
+    # URL-safe serializer string. A display (kiosk) token travels in a link, so it is the
+    # one most likely to be pasted somewhere a log or audit row can see it (#1408).
+    re.compile(r"ccas[12]:[A-Za-z0-9._-]+"),
     # Generic long base64 blobs that are clearly padded secrets (≥60 chars + mandatory
     # padding `=`).  Requiring at least one `=` pad character avoids false-positive
     # matches on unpadded hex git SHAs, long identifiers, and minified code segments
