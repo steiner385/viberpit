@@ -125,9 +125,10 @@ def test_discover_handles_future_alias(tmp_path):
 # --------------------------------------------------------------------------- #
 
 @pytest.fixture(autouse=True)
-def reset_cache():
-    """Isolate each test from module-level _cache state."""
+def reset_cache(monkeypatch, tmp_path):
+    """Isolate each test from module-level _cache and the persisted probe result."""
     original = mc._cache
+    monkeypatch.setattr(mc, "_persist_path", lambda: tmp_path / "model-catalog.json")
     yield
     mc._cache = original
 

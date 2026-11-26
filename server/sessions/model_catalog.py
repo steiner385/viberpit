@@ -13,7 +13,9 @@ exactly what the binary does — no more, no less.
    reads the running ``claude`` binary as bytes and locates the alias JSON array
    in the embedded Bun JS bundle (anchored on ``"opusplan"``, a distinctive string
    that only appears in the picker array).  The probe result is cached for the
-   process lifetime; ``refresh()`` clears the cache (e.g. after a binary upgrade).
+   process lifetime and persisted under ``~/.cache/viberpit/`` keyed by the
+   binary's ``(realpath, size, mtime_ns)``, so a restart against an unchanged
+   binary skips the scan; ``refresh()`` clears both (e.g. after a binary upgrade).
 
 2. *Static fallback* (``ALIASES``) — used when the binary cannot be found or the
    array pattern is not present (e.g. a future Bun format change).  Keep this list
@@ -29,11 +31,13 @@ plus the special ``default`` row.  Order matches the picker.
 """
 from __future__ import annotations
 
+import io
 import json
 import logging
-import mmap
+import os
 import re
 import time
+from pathlib import Path
 
 from .claude_bin import resolve_claude_bin
 
@@ -74,7 +78,7 @@ _cache: list[str] | None = None
 _ALIAS_ARRAY_RE = re.compile(
     rb'\["(?:default|sonnet|opus|haiku|fable|best)[^"]*"(?:,"[^"]+")*\]')
 _ANCHOR = b'"opusplan"'
-# Bytes per GIL-holding find(); the binary is ~340 MB, so ~85 yields per scan.
+# Bytes per readinto() + in-memory find(); the binary is ~340 MB, so ~85 yields per scan.
 _SCAN_CHUNK = 4 * 1024 * 1024
 # Regex window either side of an anchor hit; grows ×4 up to _MAX_WINDOW behind it.
 _WINDOW = 4 * 1024
@@ -109,69 +113,157 @@ def _discover_from_binary(binary_path: str) -> list[str] | None:
     Returns the alias list on success, or ``None`` if the binary cannot be read
     or the pattern is not found.
 
-    Scans a read-only ``mmap`` rather than reading the ~340 MB binary into memory
-    and latin-1 decoding it into a str: under memory pressure the read+decode took
-    11.6 s (#3150). Callers on the event loop must still go through
-    ``asyncio.to_thread`` (see ``api/models.py``), but off-loop alone is NOT
-    enough: a thread only helps if it releases the GIL, and ``re`` never does. A
-    whole-file ``finditer`` stalled the loop 5–6 s after every edge restart
-    (#3300), so ``_scan_aliases`` locates the anchor chunk by chunk, yielding the
-    GIL between chunks, and runs the regex only on a small window around each hit.
+    Callers on the event loop must go through ``asyncio.to_thread`` (see
+    ``api/models.py``), but off-loop alone is NOT enough: the thread only helps
+    the loop while it does not hold the GIL. History of the ~340 MB scan:
+
+    - #3150: reading the whole file and latin-1 decoding it took 11.6 s.
+    - #3300: an ``mmap`` + whole-file ``re.finditer`` held the GIL 5–6 s.
+    - #3510: a chunked ``mmap.find`` still stalled the loop 5–10 s after every
+      restart, because ``find`` faults cold pages in with the GIL held — and a
+      deploy leaves the disk saturated, so one 4 MiB chunk took seconds.
+
+    So ``_scan_aliases`` reads the file with ``readinto`` (a syscall that drops
+    the GIL while it blocks on disk) and ``find``s only within that in-memory
+    buffer, which is pure CPU. ``_live_aliases`` also skips the scan entirely
+    when the binary is unchanged since the last probe (``_load_persisted``).
     """
     try:
-        with open(binary_path, "rb") as f, \
-                mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data:
-            return _scan_aliases(data)
-    except (OSError, ValueError):  # ValueError: mmap of an empty file
+        with open(binary_path, "rb") as f:
+            return _scan_aliases(f)
+    except OSError:
         return None
     except Exception as exc:
         log.debug("model_catalog: binary probe error: %s", exc)
     return None
 
 
-def _scan_aliases(data) -> list[str] | None:
-    """The picker alias array in ``data`` (bytes-like: ``bytes`` or ``mmap``), or None.
+def _read_at(f: io.BufferedIOBase, offset: int, buf: memoryview) -> int:
+    """Fill ``buf`` from ``f`` at ``offset``; the byte count read (short at EOF).
+
+    ``readinto`` releases the GIL while it blocks on disk; a short read before
+    EOF (raw files may return one) just loops.
+    """
+    f.seek(offset)
+    got = 0
+    while got < len(buf):
+        n = f.readinto(buf[got:])
+        if not n:
+            break
+        got += n
+    return got
+
+
+def _scan_aliases(src: io.BufferedIOBase | bytes) -> list[str] | None:
+    """The picker alias array in ``src`` (a seekable binary file, or bytes), or None.
 
     ``"opusplan"`` is the discriminating anchor — it only appears in the picker
-    alias array, not in the many other alias-like contexts. Each ``find`` covers
-    one ``_SCAN_CHUNK`` (≈1 ms even on cold pages) and ``time.sleep(0)`` between
-    chunks hands the GIL to the event loop thread (#3300).
+    alias array, not in the many other alias-like contexts. The file is read one
+    ``_SCAN_CHUNK`` at a time into a reused buffer; disk waits happen inside
+    ``readinto`` with the GIL released, and the ``find`` over the buffer never
+    touches the disk. ``time.sleep(0)`` between chunks hands the GIL to the
+    event loop thread (#3300, #3510).
     """
-    size = len(data)
+    f: io.BufferedIOBase = io.BytesIO(src) if isinstance(src, (bytes, bytearray)) else src
+    # Overlap by len(anchor)-1 so an anchor straddling a chunk edge is found; an
+    # anchor starting inside the overlap cannot fit, so no hit is seen twice.
+    buf = bytearray(_SCAN_CHUNK + len(_ANCHOR) - 1)
+    view = memoryview(buf)
     pos = 0
-    while pos < size:
-        # Overlap by len(anchor)-1 so an anchor straddling a chunk edge is found.
-        end = min(size, pos + _SCAN_CHUNK + len(_ANCHOR) - 1)
-        hit = data.find(_ANCHOR, pos, end)
-        if hit < 0:
-            pos += _SCAN_CHUNK
-            time.sleep(0)
-            continue
-        aliases = _array_around(data, hit)
-        if aliases is not None:
-            return aliases
-        pos = hit + 1
-    return None
+    while True:
+        n = _read_at(f, pos, view)
+        hit = buf.find(_ANCHOR, 0, n)
+        while hit >= 0:
+            aliases = _array_around(f, pos + hit)
+            if aliases is not None:
+                return aliases
+            hit = buf.find(_ANCHOR, hit + 1, n)
+        if n < len(buf):
+            return None
+        pos += _SCAN_CHUNK
+        time.sleep(0)
 
 
-def _array_around(data, hit: int) -> list[str] | None:
-    """The alias array containing the anchor at ``hit``, or None.
+def _array_around(f: io.BufferedIOBase, hit: int) -> list[str] | None:
+    """The alias array containing the anchor at file offset ``hit``, or None.
 
     Regexes a window around the hit rather than ``rfind``-ing the opening ``[``:
     ``"sonnet[1m]"`` puts brackets inside the array itself. The window grows
     while no match spans the hit, so an array longer than the first window (the
-    picker list only grows) is still found.
+    picker list only grows) is still found. Each window is re-read from ``f``, so
+    the hit may sit anywhere relative to the scan buffer.
     """
     back = _WINDOW
     while True:
         start = max(0, hit - back)
-        stop = min(len(data), hit + len(_ANCHOR) + _WINDOW)
-        for m in _ALIAS_ARRAY_RE.finditer(data[start:stop]):
+        window = bytearray(hit + len(_ANCHOR) + _WINDOW - start)
+        got = _read_at(f, start, memoryview(window))
+        for m in _ALIAS_ARRAY_RE.finditer(window, 0, got):
             if start + m.start() <= hit and start + m.end() >= hit + len(_ANCHOR):
                 return _parse_alias_array(m.group())
         if start == 0 or back >= _MAX_WINDOW:
             return None
         back *= 4
+
+
+def _persist_path() -> Path:
+    """Where the last probe result lives across restarts (#3510)."""
+    return Path.home() / ".cache" / "viberpit" / "model-catalog.json"
+
+
+def _binary_key(binary_path: str) -> list | None:
+    """``[realpath, st_size, st_mtime_ns]`` of the binary — the persisted cache key."""
+    try:
+        real = os.path.realpath(binary_path)
+        st = os.stat(real)
+    except OSError:
+        return None
+    return [real, st.st_size, st.st_mtime_ns]
+
+
+def _load_persisted(key: list) -> list[str] | None:
+    """The alias list persisted for exactly this binary ``key``, or None.
+
+    Most edge restarts are ViberPit deploys against the same ``claude`` binary,
+    so the cold scan only has to run after a CLI upgrade (#3510).
+    """
+    try:
+        data = json.loads(_persist_path().read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("key") != key:
+        return None
+    aliases = data.get("aliases")
+    if not isinstance(aliases, list) or not aliases \
+            or not all(isinstance(a, str) for a in aliases):
+        return None
+    return aliases
+
+
+def _store_persisted(key: list, aliases: list[str]) -> None:
+    """Persist ``aliases`` for ``key`` (atomic replace; failures only cost a rescan)."""
+    path = _persist_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"key": key, "aliases": aliases}))
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.debug("model_catalog: could not persist probe result: %s", exc)
+
+
+def _probe(binary_path: str) -> list[str] | None:
+    """The binary's alias list: the persisted result if the binary is unchanged,
+    else a fresh scan (persisted on success)."""
+    key = _binary_key(binary_path)
+    if key is not None:
+        cached = _load_persisted(key)
+        if cached is not None:
+            return cached
+    discovered = _discover_from_binary(binary_path)
+    if discovered is not None and key is not None:
+        _store_persisted(key, discovered)
+    return discovered
 
 
 def _parse_alias_array(match: bytes) -> list[str] | None:
@@ -197,7 +289,7 @@ def _live_aliases() -> list[str]:
         # Probe the SAME binary the SDK session factory runs (resolve_claude_bin,
         # the single source of truth) so the picker and the runtime can't diverge.
         path = resolve_claude_bin()
-        discovered = _discover_from_binary(path) if path else None
+        discovered = _probe(path) if path else None
         if discovered is not None:
             log.debug("model_catalog: probed %d aliases from %s", len(discovered), path)
             _cache = discovered
@@ -210,10 +302,15 @@ def _live_aliases() -> list[str]:
 def refresh() -> None:
     """Clear the cached alias list so the next ``catalog()`` call re-probes the binary.
 
-    Call this after a binary upgrade or via ``GET /api/models?refresh=1``.
+    Call this after a binary upgrade or via ``GET /api/models?refresh=1``. Also
+    drops the persisted probe result, so the re-probe really rescans the binary.
     """
     global _cache
     _cache = None
+    try:
+        _persist_path().unlink(missing_ok=True)
+    except OSError as exc:
+        log.debug("model_catalog: could not drop persisted probe result: %s", exc)
 
 
 def catalog() -> list[dict]:
