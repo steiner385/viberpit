@@ -458,14 +458,16 @@ class RemoteSessionsService:
             if w is None or w.task is None or w.task.done() or w.retired:
                 w = self._start_watcher(session_id, account)
         w.touched_at = self._clock()
-        # Before the snapshot: every later event reaches the viewers' stream.
-        w.publishing = True
         w.wake.set()          # a background watcher switches to the viewer cadence now
         if not w.ready.is_set():
             try:
                 await asyncio.wait_for(w.ready.wait(), FIRST_READ_WAIT_S)
             except asyncio.TimeoutError:
                 pass
+        # Events emitted while we waited are already in the snapshot, so publishing them too
+        # would burst the whole catch-up into the bounded subscriber queue. Flip with no
+        # ``await`` before the snapshot: every later event reaches the viewers' stream.
+        w.publishing = True
         return self._snapshot(w)
 
     def _snapshot(self, w: _Watcher) -> dict:
