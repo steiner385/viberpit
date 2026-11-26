@@ -58,26 +58,49 @@ def _load_protected_paths() -> frozenset[str]:
 _PROTECTED_EDIT_PATHS = _load_protected_paths()
 
 # Shell binaries that cannot modify a file they are pointed at. A command that
-# touches a protected path is allowed ONLY when every pipeline segment mentioning
-# that path leads with one of these — anything unrecognised (python, perl, tee,
-# cp, mv, truncate, dd, an unknown wrapper) is denied. Fail closed: the set of
-# ways a shell can write a file is unbounded, so an allowlist is the only side
-# that can be enumerated correctly.
+# touches a protected path is allowed ONLY when every segment mentioning that
+# path leads with one of these (or only annotates, see ``_MENTION_ONLY_*``) —
+# anything unrecognised (python, perl, tee, cp, mv, truncate, dd, an unknown
+# wrapper) is denied. Fail closed: the set of ways a shell can write a file is
+# unbounded, so an allowlist is the only side that can be enumerated correctly.
+# Deliberately absent because they CAN write (#3517): awk (`print > f`,
+# `system()`), sed (`w f`, `e cmd`, `-i`), sort (`-o f`), uniq/xxd (an output
+# operand), less (`-o logfile`), rg (`--pre cmd`).
 _READ_ONLY_BINS = frozenset({
-    "awk", "basename", "cat", "column", "comm", "cut", "diff", "dirname", "egrep",
-    "fgrep", "file", "fold", "git", "grep", "head", "jq", "less", "ls", "md5sum",
-    "more", "nl", "od", "realpath", "rg", "sed", "sha1sum", "sha256sum", "sort",
-    "stat", "tail", "tr", "uniq", "wc", "xxd",
+    "basename", "cat", "column", "comm", "cut", "diff", "dirname", "egrep",
+    "fgrep", "file", "fold", "git", "grep", "head", "jq", "ls", "md5sum",
+    "more", "nl", "od", "realpath", "sha1sum", "sha256sum", "stat", "tail",
+    "tr", "wc",
 })
-# `git` is broadly read-only, but these subcommands write to the working tree.
-_GIT_WRITE_SUBCOMMANDS = frozenset({
-    "apply", "checkout", "clean", "mv", "restore", "rm", "stash", "switch",
+# `git` subcommands that never write the working tree. An allowlist, like the
+# binaries above: a denylist of writers (checkout, restore, reset, merge, am,
+# checkout-index, …) can never be complete.
+_READ_ONLY_GIT = frozenset({
+    "annotate", "blame", "cat-file", "check-attr", "check-ignore", "describe",
+    "diff", "grep", "log", "ls-files", "ls-tree", "rev-parse", "shortlog",
+    "show", "status", "whatchanged",
 })
-# In-place edit flags for the stream editors that are otherwise read-only.
-_IN_PLACE_FLAG = re.compile(r"(?:^|\s)(?:-[a-zA-Z]*i|--in-place)")
-_STREAM_EDITORS = frozenset({"sed", "perl", "ruby"})
-# Splits a command line into pipeline/sequence segments.
-_SEGMENT_SPLIT = re.compile(r"\|\||&&|[|;&\n]")
+# Git global options that consume the next token as their value.
+_GIT_VALUE_OPTIONS = frozenset({
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+    "--config-env",
+})
+# Git options that run configured commands or write an output file, turning a
+# read subcommand into a writer (`git -c diff.external=sh diff`, `--output=f`,
+# `git grep -O<cmd>`). git accepts any unambiguous abbreviation of a long option
+# (`--out=f`) and bundles short flags (`-iO<cmd>`), so `_git_option_unsafe`
+# matches prefixes and letters, not spellings. A pager command can only arrive
+# via `-c` or an env prefix, both refused, so `-p`/`--paginate` stay allowed.
+_GIT_UNSAFE_LONG = (
+    "config-env", "exec-path", "ext-diff", "open-files-in-pager", "output", "textconv",
+)
+_GIT_UNSAFE_SHORT = frozenset("cO")
+# An output redirection inside a token (`>`, `>>`, `2>`, `x>f`), with its target
+# when written attached. Searched, not anchored: the lexer keeps `echo x>f` as
+# one word `x>f`. The target must follow without whitespace, so a quoted
+# `"a > b"` in prose is not a redirect. `>|` and `&>` reach the lexer as `>` + a
+# separator, which leaves the target leading a segment of its own — denied.
+_REDIRECT = re.compile(r">>?(\S*)$")
 
 
 # Commands that only read or annotate: the words in their arguments (a commit
@@ -132,10 +155,13 @@ def _strip_heredoc_bodies(command: str) -> str:
 def _segments(command: str) -> list[list[str]] | None:
     """Quote-aware split into command segments (token lists); None if unparseable.
 
-    Unlike ``_SEGMENT_SPLIT`` this does not cut inside quotes, so a ``;`` in an
-    issue body doesn't turn prose into a fake command.
+    It does not cut inside quotes, so a ``;`` in an issue body doesn't turn
+    prose into a fake command — but an unquoted newline separates commands just
+    as ``;`` does, so it is a separator too (``cat x\\ncp y z`` is two commands).
     """
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+    separators = ";&|()\n"
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=separators)
+    lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     try:
         tokens = list(lexer)
@@ -143,30 +169,54 @@ def _segments(command: str) -> list[list[str]] | None:
         return None
     segments: list[list[str]] = [[]]
     for token in tokens:
-        if token and all(ch in ";&|()" for ch in token):
+        if token and all(ch in separators for ch in token):
             segments.append([])
         else:
             segments[-1].append(token)
     return [s for s in segments if s]
 
 
-def _is_mention_only(tokens: list[str]) -> bool:
+def _git_subcommand(args: list[str]) -> str | None:
+    """The subcommand of ``git <args>``, skipping global options and their values.
+
+    ``git -C . checkout f`` must yield ``checkout``, not ``.`` (#3517).
+    """
+    it = iter(args)
+    for arg in it:
+        if arg in _GIT_VALUE_OPTIONS:
+            next(it, None)  # option value
+        elif not arg.startswith("-"):
+            return arg
+    return None
+
+
+def _git_option_unsafe(arg: str) -> bool:
+    """True when ``arg`` is (or abbreviates, or bundles) a git option in ``_GIT_UNSAFE_*``."""
+    if arg.startswith("--"):
+        name = arg[2:].split("=", 1)[0]
+        return bool(name) and any(full.startswith(name) for full in _GIT_UNSAFE_LONG)
+    if arg.startswith("-"):
+        return bool(_GIT_UNSAFE_SHORT & set(arg[1:]))
+    return False
+
+
+def _command_words(tokens: list[str]) -> list[str]:
+    """``tokens`` with ``VAR=value`` prefixes and wrappers (``sudo``, ``env`` …) peeled."""
     words = [t for t in tokens if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", t)]
     while words and Path(words[0]).name in _WRAPPERS:
         words = [w for w in words[1:] if not w.startswith("-") and "=" not in w]
+    return words
+
+
+def _is_mention_only(tokens: list[str]) -> bool:
+    words = _command_words(tokens)
     if not words:
         return False
     binary, rest = Path(words[0]).name, words[1:]
     if binary in _MENTION_ONLY_BINS:
         return True
     if binary == "git":
-        args = iter(rest)
-        for arg in args:
-            if arg in ("-C", "-c"):
-                next(args, None)  # option value
-            elif not arg.startswith("-"):
-                return arg in _MENTION_ONLY_GIT
-        return False
+        return _git_subcommand(rest) in _MENTION_ONLY_GIT
     if binary == "gh":
         positional = [a for a in rest if not a.startswith("-")]
         return tuple(positional[:2]) in _MENTION_ONLY_GH
@@ -233,17 +283,33 @@ def _protected_file_path(raw_path: str) -> str | None:
     return relative if relative in _PROTECTED_EDIT_PATHS else None
 
 
-def _leading_binary(segment: str) -> str | None:
-    """The command name a pipeline segment invokes, ignoring VAR=value prefixes."""
-    try:
-        tokens = shlex.split(segment)
-    except ValueError:
-        return None  # unbalanced quotes → unparseable → treat as unknown
-    for token in tokens:
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token):
-            continue  # environment assignment prefix
-        return Path(token).name
-    return None
+def _segment_cannot_write(tokens: list[str]) -> bool:
+    """True when a command segment provably only reads or annotates.
+
+    Read-only binaries, read-only ``git`` subcommands without a command- or
+    file-writing option, ``echo``/``printf`` (redirection is checked separately)
+    and ``gh`` annotate calls. Anything embedding a command substitution, or
+    not recognised, can write.
+    """
+    if any(_SUBSTITUTION.search(t) for t in tokens):
+        return False
+    # Stricter than `_command_words`: an env prefix can turn a reader into a
+    # runner (`GIT_EXTERNAL_DIFF=x git diff`), and a wrapper option can carry a
+    # whole command (`env -S '…'`), so neither is peeled away here.
+    words = list(tokens)
+    while words and Path(words[0]).name in _WRAPPERS:
+        words = words[1:]
+    if not words or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]) or words[0].startswith("-"):
+        return False
+    binary, rest = Path(words[0]).name, words[1:]
+    if binary == "git":
+        return (
+            _git_subcommand(rest) in _READ_ONLY_GIT | _MENTION_ONLY_GIT
+            and not any(_git_option_unsafe(arg) for arg in rest)
+        )
+    if binary == "gh":
+        return _is_mention_only(words)
+    return binary in _READ_ONLY_BINS or binary in ("echo", "printf")
 
 
 def _protected_shell_target(command: str) -> str | None:
@@ -252,26 +318,38 @@ def _protected_shell_target(command: str) -> str | None:
     Deny patterns in ``MANAGED_DENY`` match tool invocations, not shell text, so
     ``sed -i``/``cat >``/``tee`` reach the same files unchecked. This closes that
     route for every agent wired to the hook, while keeping reads frictionless.
+
+    The gate engages on the file's *basename*, so ``cd .claude && cp x
+    managed-settings.json``, ``..``-relative paths and ``"$dir/managed-settings.json"``
+    are caught too. Shell text still can't be parsed exhaustively — a glob or a
+    computed name evades any text check — so this is the early, friendly deny;
+    the control that can't be bypassed is the ``amendment`` CI check
+    (``server/sdlc/constitution_gate.py``), which fails any PR touching these
+    paths without the owner's acknowledgment (#3517).
     """
+    segments = _segments(command)
     for path in _PROTECTED_EDIT_PATHS:
-        if path not in command:
+        name = Path(path).name
+        if name not in command:
             continue
-        # Redirection into the protected path, e.g. `cat > path`, `echo x >> path`.
-        if re.search(r">>?\s*['\"]?" + re.escape(path), command):
-            return path
-        for segment in _SEGMENT_SPLIT.split(command):
-            if path not in segment:
+        if segments is None:
+            return path  # unparseable → fail closed
+        for tokens in segments:
+            if not any(name in t for t in tokens):
                 continue
-            binary = _leading_binary(segment)
-            if binary is None or binary not in _READ_ONLY_BINS:
+            if name in _redirect_targets(tokens) or not _segment_cannot_write(tokens):
                 return path
-            if binary in _STREAM_EDITORS and _IN_PLACE_FLAG.search(segment):
-                return path
-            if binary == "git":
-                tokens = [t for t in shlex.split(segment)[1:] if not t.startswith("-")]
-                if tokens and tokens[0] in _GIT_WRITE_SUBCOMMANDS:
-                    return path
     return None
+
+
+def _redirect_targets(tokens: list[str]) -> str:
+    """The words a segment redirects output into (``> f``, ``2>>f``, ``>| f``), joined."""
+    targets = []
+    for i, token in enumerate(tokens):
+        match = _REDIRECT.search(token)
+        if match:
+            targets.append(match.group(1) or (tokens[i + 1] if i + 1 < len(tokens) else ""))
+    return "\n".join(targets)
 
 
 def _deny(reason: str, route: str) -> None:
