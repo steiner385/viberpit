@@ -129,25 +129,15 @@ class ExportTests(unittest.TestCase):
         _git("add", "-A", cwd=self.cwd)
         _git("commit", "-q", "-m", name, cwd=self.cwd)
 
-    def test_an_unpushed_commit_the_vetted_state_did_not_see_is_refused(self) -> None:
-        # D-17 final review: on a public repo the caller vets a state with no unpushed
-        # commits; one committed after that must never reach the transfer refs.
+    def test_a_commit_made_after_vetting_travels(self) -> None:
+        # #3321: committed work moves on any repo, so a commit the vetted state did not
+        # see is pushed with the rest rather than refused.
         vetted = wt.inspect(self.cwd)
         self.assertEqual(vetted.unpushed_commits, 0)
         self._commit("late.txt")
-        with self.assertRaises(wt.TransferError) as ctx:
-            wt.export(self.cwd, "bbbb2222-0000", carry_dirty=False, vetted=vetted)
-        self.assertEqual(ctx.exception.code, "unpushed_commits")
-        self.assertIsNone(self._origin_ref(wt.head_ref("bbbb2222-0000")))
-
-    def test_a_second_commit_after_vetting_is_refused_too(self) -> None:
-        self._commit("one.txt")
-        vetted = wt.inspect(self.cwd)              # approved: exactly this one commit
-        self._commit("two.txt")
-        with self.assertRaises(wt.TransferError) as ctx:
-            wt.export(self.cwd, "bbbb2222-0000", carry_dirty=False, vetted=vetted)
-        self.assertEqual(ctx.exception.code, "unpushed_commits")
-        self.assertIsNone(self._origin_ref(wt.head_ref("bbbb2222-0000")))
+        b = wt.export(self.cwd, "bbbb2222-0000", carry_dirty=False, vetted=vetted)
+        self.assertEqual(b.head_sha, _git("rev-parse", "HEAD", cwd=self.cwd))
+        self.assertEqual(self._origin_ref(wt.head_ref("bbbb2222-0000")), b.head_sha)
 
     def test_vetted_unpushed_commits_travel(self) -> None:
         self._commit("one.txt")
