@@ -50,6 +50,7 @@ def test_ws_identity_resolves_off_the_loop(monkeypatch):
 
     class _WS:
         headers: dict[str, str] = {}
+        cookies: dict[str, str] = {}  # real WebSockets always carry .cookies (display check, #1408)
 
     got, worst = asyncio.run(_worst_tick_delay(middleware.require_ws_identity(_WS())))
     assert got == "alice@example.com"
