@@ -4,6 +4,16 @@ import { NAV_DEFS, type NavId } from './navDefs'
 import type { ThemeChoice } from './theme'
 
 export const DEFAULT_CYCLE_SECONDS = 30
+
+/** The page a display link (`/kiosk?token=…`, #1408) opens. It renders OUTSIDE
+ *  the shell — see `features/kiosk/KioskExchange` — so nothing there polls or
+ *  opens `/ws` before the display session exists. */
+export const KIOSK_EXCHANGE_PATH = '/kiosk'
+
+/** The shareable display link for a freshly minted token. */
+export function displayLinkFor(token: string, origin: string = window.location.origin): string {
+  return `${origin}${KIOSK_EXCHANGE_PATH}?${new URLSearchParams({ token })}`
+}
 export const MIN_CYCLE_SECONDS = 10
 const DEFAULT_PAGES: readonly NavId[] = ['pipeline']
 

@@ -1072,13 +1072,51 @@ export type SocketChannel = 'route' | 'assistant'
 
 const _sockets: Partial<Record<SocketChannel, SessionSocket>> = {}
 
+let _socketsAllowed = true
+
+/**
+ * The one switch for whether this page may open `/ws` (#1408 FR-G10.6).
+ *
+ * A kiosk — `?kiosk=1` or a display-scoped session — has nothing to attach to,
+ * and the server refuses a display cookie on every socket (1008), so an open
+ * attempt would only spin the reconnect loop. Gating HERE rather than in each
+ * of the half-dozen hooks that call `getSessionSocket()` (banners, update and
+ * epoch watchers, input hold) means a new caller cannot reopen the socket on a
+ * wall display by forgetting a check. While disallowed `getSocket` still hands
+ * out the channel's socket, unconnected, so subscribers need no null path;
+ * allowing connects those held sockets, and disallowing closes any open one.
+ *
+ * Allowing emits connection-state changes, so call it from an effect, never
+ * during render; disallowing emits nothing and is safe to call while rendering.
+ */
+export function setSessionSocketsAllowed(allowed: boolean): void {
+  if (allowed === _socketsAllowed) return
+  _socketsAllowed = allowed
+  for (const channel of Object.keys(_sockets) as SocketChannel[]) {
+    const socket = _sockets[channel]
+    if (!socket) continue
+    if (!allowed) {
+      socket.destroy()
+      delete _sockets[channel]
+      continue
+    }
+    try {
+      socket.connect()
+    } catch (e) {
+      // jsdom rejects relative WebSocket URLs ('/ws') with SYNTAX_ERR — the same
+      // degrade `useInputHold`/`useUpdatePending` make; anything else is real.
+      if (!(e instanceof DOMException && e.code === DOMException.SYNTAX_ERR)) throw e
+    }
+  }
+}
+
 export function getSocket(channel: SocketChannel = 'route'): SessionSocket {
   let socket = _sockets[channel]
   if (!socket) {
     socket = new SessionSocket('/ws')
     _sockets[channel] = socket
     // Created lazily, so the assistant socket only opens once the drawer asks for it.
-    socket.connect()
+    if (_socketsAllowed) socket.connect()
   }
   return socket
 }
@@ -1090,6 +1128,7 @@ export function getSessionSocket(): SessionSocket {
 
 /** Test-only: drop every channel's socket so the next getSocket() builds a fresh one. */
 export function __resetSocketsForTest(): void {
+  _socketsAllowed = true
   for (const channel of Object.keys(_sockets) as SocketChannel[]) {
     _sockets[channel]?.destroy()
     delete _sockets[channel]

@@ -68,7 +68,10 @@ describe('useRewindCommand', () => {
     run('rewind')
     await userEvent.click(await screen.findByRole('menuitem', { name: 'ask 1' }))
     expect(await screen.findByRole('dialog', { name: 'Rewind to this message?' })).toBeTruthy()
-    expect(post).toHaveBeenCalledWith('/sessions/s1/rewind', expect.objectContaining({ toTurnId: uuid(1), dryRun: true }))
+    // The dialog mounts before its dry-run request fires; under CI load the
+    // assertion can land in between, so wait for the call rather than race it.
+    await waitFor(() => expect(post).toHaveBeenCalledWith(
+      '/sessions/s1/rewind', expect.objectContaining({ toTurnId: uuid(1), dryRun: true })))
   })
 
   it('while busy, toasts why and opens nothing', async () => {

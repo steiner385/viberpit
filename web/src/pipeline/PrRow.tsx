@@ -152,7 +152,9 @@ export function areEqual(prev: PrRowProps, next: PrRowProps): boolean {
 
 function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr, live = false }: PrRowProps) {
   const { apiUrl } = useApiBase();
-  const expandable = useInteractive(); // false in kiosk mode (issue #20): row is read-only — no expand-on-click.
+  // False in kiosk (issue #20): the row is read-only — no expand-on-click, and
+  // no Fix button whatever the caller passes (#1408: a display must not mutate).
+  const expandable = useInteractive();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionResult, setActionResult] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -301,7 +303,7 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr, live = false 
                 <MessagesSquare size={12} aria-hidden="true" className="shrink-0" />
                 <span className="truncate">{session.name}</span>
               </Link>
-              {session.fixable && onFixPr && (
+              {expandable && session.fixable && onFixPr && (
                 <Button type="button" size="sm" variant="secondary" className={cn('border-warning px-2 text-xs text-warning', TOUCH_FLOOR)}
                         onClick={() => onFixPr(session.id, pr.number)}>Fix</Button>
               )}

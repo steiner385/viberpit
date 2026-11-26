@@ -243,15 +243,26 @@ class TokenCreateBody(BaseModel):
     label: str | None = None
 
 
+def _utc_iso(dt: datetime | None) -> str | None:
+    """`…Z` whichever way the row holds it: a fresh row carries the aware datetime it
+    was built with, a reloaded one the naive UTC the column stores. A bare naive
+    string would be read by the browser as LOCAL time (Settings › Display links)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.isoformat() + "Z"
+
+
 def _token_dict(row: AssistantToken) -> dict:
     return {
         "id": row.id,
         "scope": row.scope,
         "label": row.label,
-        "createdAt": row.created_at.isoformat(),
-        "expiresAt": row.expires_at.isoformat(),
-        "revokedAt": row.revoked_at.isoformat() if row.revoked_at else None,
-        "lastUsedAt": row.last_used_at.isoformat() if row.last_used_at else None,
+        "createdAt": _utc_iso(row.created_at),
+        "expiresAt": _utc_iso(row.expires_at),
+        "revokedAt": _utc_iso(row.revoked_at),
+        "lastUsedAt": _utc_iso(row.last_used_at),
     }
 
 

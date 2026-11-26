@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { render, screen, fireEvent, act, within, cleanup } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
@@ -282,5 +285,35 @@ describe('PipelinePage (Workspace variant)', () => {
     act(() => { FakeEventSource.instances.at(-1)!.onerror?.(new Event('error')) })
     act(() => { vi.advanceTimersByTime(90_000) })
     expect(document.querySelector('.pipeline-stale')).toHaveTextContent(/Pipeline feed disconnected/)
+  })
+
+  // #1408 FR-G10.5 — the pairing guard. A display session can only call the
+  // server's `DISPLAY_ROUTE_ALLOW`; everything else is a 403. So every URL the
+  // kiosk page requests must be on that list, read from the ONE source
+  // (`server/assistant/policy.py`) rather than a copy here. Adding a read to
+  // this page without adding it there reddens this test.
+  it('kiosk page requests only the display allowlist', async () => {
+    const policy = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../server/assistant/policy.py'), 'utf-8')
+    const block = policy.slice(policy.indexOf('DISPLAY_ROUTE_ALLOW'), policy.indexOf('def display_route_allowed'))
+    const allow = [...block.matchAll(/\("GET", r"([^"]+)"\)/g)].map((m) => new RegExp(`^${m[1]}$`))
+    expect(allow.length).toBeGreaterThan(0)
+
+    const requested: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      requested.push(url)
+      return new Response(JSON.stringify(frame()), { status: 200 })
+    }))
+    mount({ kiosk: { enabled: true, cycleSeconds: 10, pages: ['pipeline'] } })
+    deliver()
+    await act(async () => { await Promise.resolve() })
+    requested.push(...FakeEventSource.instances.map((es) => es.url))
+
+    const paths = [...new Set(requested.map((u) => new URL(u, 'http://edge').pathname))]
+    // Lower bound: the feed and its snapshot were both requested.
+    expect(paths).toEqual(expect.arrayContaining(['/api/pipeline/events', '/api/pipeline/snapshot']))
+    for (const path of paths) {
+      expect(allow.some((rx) => rx.test(path)), `${path} is not in DISPLAY_ROUTE_ALLOW`).toBe(true)
+    }
   })
 })

@@ -9,7 +9,44 @@ One table per leaf, updated by the PR that moves it. Evidence is sanitized: the 
 specs run on a synthetic, frozen-clock backend (`web/e2e/fixtures/seed.ts`), so no screenshot,
 trace or axe report carries a real account, prompt or transcript.
 
-Last updated: 2026-11-26 (G14, #1412).
+Last updated: 2026-11-26 (G10, #1408).
+
+## G10 — Server-enforced read-only kiosk identity (#1408)
+
+Server half shipped in #3536 (display scope, mint/exchange, `DISPLAY_ROUTE_ALLOW`, socket
+refusal, payload minimization); web half in the PR that adds this table.
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| Mutations and WS control frames denied for kiosk credentials regardless of URL | Done | `server/tests/test_kiosk_display_scope.py`: route-table sweep over the real router (every non-allowlisted route → 403 `DISPLAY_SCOPE_FORBIDDEN`), `/ws`, `/ws/stt`, `/ws/vnc` → 1008. |
+| Allowed feeds, expiry and revocation verified | Done | Same file: allowlisted reads 200; revoked or expired token → next request 401 and the session row revoked. |
+| Client follows the server (FR-G10.8) | Done | `web/src/shell/kioskDisplayScope.test.tsx`: `scope: "display"` without `?kiosk=1` and `?kiosk=1` with full scope both render kiosk with no Fix and **no `WebSocket` constructed**; the "neither" control renders Fix and opens `/ws`. |
+| Page reads paired with the allowlist (FR-G10.5) | Done | `PipelinePage.test.tsx` "kiosk page requests only the display allowlist" reads `DISPLAY_ROUTE_ALLOW` from `server/assistant/policy.py` itself — no copy. |
+| Revocable, least-privilege identity a person can manage | Done | Settings › Display links (`DisplayLinksSection`): mint (link shown once), list label/created/expires/last used, Revoke via the existing route; absent for a display session. `/kiosk?token=` strips the token from the URL before posting it as a form body. |
+| Sibling audit, existing source of truth | Done | One `/auth/me` query (`useAuthMe`, now also behind quick replies); one `/ws` switch (`setSessionSocketsAllowed`) instead of a check in each of the six socket-reaching hooks; the existing token list/revoke routes, not an alias. |
+
+### Before / after (deliberate breakage)
+
+Each guard was broken on purpose and the test run, then restored.
+
+| Seeded gap | Before | After |
+|---|---|---|
+| A display whose URL lost `?kiosk=1` opened `/ws` before its scope was known (hold removed: `socketsAllowed = !kiosk.enabled`) | red: `expected [ '/ws' ] to deeply equal []` | green |
+| A kiosk page read outside the allowlist (`/api/pipeline/snapshot` removed from `DISPLAY_ROUTE_ALLOW`) | red: `/api/pipeline/snapshot is not in DISPLAY_ROUTE_ALLOW` | green |
+| Before #1408 at all: `?kiosk=1` was the only kiosk, the credential behind it the operator's full identity, and a fixable PR's **Fix** rendered on a wall whenever the caller passed `onFixPr` | — | `PrRow` refuses Fix when not interactive; the server 403s the mutation regardless |
+
+### Not done here (and why)
+
+- **Live smoke (AC-X.7)** — a display link on a non-operator device, a forced mutation from
+  devtools, Revoke ending the display on its next poll — needs a deployed build; recorded on the
+  issue after deploy.
+- **A device with no ambient identity cannot load `/kiosk` itself**: the auth middleware 401s the
+  SPA shell for a request with neither an identity nor a display cookie, so the link only works
+  from a device the tailnet already identifies. Admitting the static shell unauthenticated is an
+  exposure-policy change, tracked in #3543.
+- **The shell's own reads still run in kiosk** (sessions, accounts, triage, …): for a display
+  they are silent 403s (4xx is never retried or logged), wasted polls rather than visible
+  breakage. Tracked in #3544.
 
 ## G13 — Field performance and bundle budget (#1411)
 

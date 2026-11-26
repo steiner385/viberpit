@@ -50,6 +50,10 @@ const META = [
     description: 'Webhook endpoints a routing rule can send a notification to.', keywords: ['webhook', 'slack', 'notifications'] },
   { id: 'rules',         group: 'workspace', label: 'Routing rules',
     description: 'Which events notify, and whether they push, go to a channel or are ignored.', keywords: ['notifications', 'routing', 'critical'] },
+  // #1408: read-only wall displays. Workspace, beside how this install reaches
+  // people — a display link is another way the workspace is shown.
+  { id: 'displays',      group: 'workspace', label: 'Display links',
+    description: 'Read-only links for wall displays: each shows the pipeline and nothing else, and can be revoked.', keywords: ['kiosk', 'wall', 'tv', 'token', 'display'] },
   { id: 'sessions',      group: 'sessions',  label: 'Defaults',
     // Names the three groups AND keeps the section's own "these are defaults, not
     // locks" caveat, which the registry sentence had dropped.

@@ -15,6 +15,7 @@ import { PageContent } from '@/ui/PageContent'
 import { PageHeader } from '@/ui/PageHeader'
 import { Skeleton } from '@/ui/Skeleton'
 import { Tabs } from '@/ui/Tabs'
+import { useInteractive } from '@/shell/InteractionContext'
 import { useViewport } from '@/shell/useViewport'
 import { deliveryPath } from '@/features/delivery/deliveryNavState'
 // The charts are the one allowlisted stylesheet (geometry, not palette); every
@@ -65,6 +66,7 @@ function Inner() {
   // interaction model under a user's hands.
   const { mode, kiosk, portrait } = useViewport()
   const isKiosk = mode === 'kiosk'
+  const interactive = useInteractive()
   const fixPr = useFixPr()
   // Depend on the stable `fixPr.mutate` (not the whole `fixPr` object, a fresh
   // ref each render) so onFixPr stays reference-stable — PrRow's areEqual
@@ -181,7 +183,9 @@ function Inner() {
               <PipelineView
                 state={state}
                 focusedRepo={focused}
-                onFixPr={onFixPr}
+                // A wall display cannot mutate (#1408); `PrRow` also refuses Fix
+                // when not interactive, so neither layer relies on the other.
+                onFixPr={interactive ? onFixPr : undefined}
                 activeFilter={filter}
                 onFilter={setFilter}
                 // Wrapping the queue train is for a portrait WALL, which has no
