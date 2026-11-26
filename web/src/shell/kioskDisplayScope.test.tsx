@@ -9,7 +9,7 @@
 // Every absence is paired with the "neither" control, where the same thing is
 // present — so a spy that could never see a socket fails there.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider, type RouteObject } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -29,7 +29,11 @@ vi.mock('@/api/client', async (importOriginal) => {
     ...actual,
     api: {
       get: vi.fn(async (path: string): Promise<unknown> => {
-        if (path === '/auth/me') return me
+        if (path === '/auth/me') {
+          if (me instanceof Promise) return me
+          if (me instanceof Error) throw me
+          return me
+        }
         if (path === '/sessions' || path === '/sessions?viewing=1') return SESSIONS
         if (path === '/fleet/hosts') return { hosts: [] }
         if (path === '/config') return { adoptionEnabled: false }
@@ -49,7 +53,7 @@ import { ThemeProvider } from '@/shell/theme'
 import { buildRoutes } from '@/shell/routes'
 import { ApiBaseProvider } from '@/pipeline/ApiBaseContext'
 import { PrRow } from '@/pipeline/PrRow'
-import { __resetSocketsForTest } from '@/ws/client'
+import { __resetSocketsForTest, getSessionSocket } from '@/ws/client'
 import { AppShell } from './AppShell'
 import { useInteractive } from './InteractionContext'
 
@@ -100,8 +104,8 @@ class CountingWebSocket {
   addEventListener() {}
 }
 
-function renderApp({ scope, kioskParam }: { scope: 'full' | 'display'; kioskParam: boolean }) {
-  me = { identity: scope === 'display' ? 'display:Wall' : 'alice@example.com', scope, authMode: scope === 'display' ? 'display' : 'tailscale' }
+function renderApp({ scope, kioskParam, meFails = false }: { scope: 'full' | 'display'; kioskParam: boolean; meFails?: boolean }) {
+  me = meFails ? new Error('502') : { identity: scope === 'display' ? 'display:Wall' : 'alice@example.com', scope, authMode: scope === 'display' ? 'display' : 'tailscale' }
   // A display is an ordinary desktop browser; only the URL or the scope makes it a kiosk.
   stubMatchMedia([...LAYOUT_MODE_QUERIES.desktop, MEDIA.drawerPush])
   window.history.replaceState(null, '', kioskParam ? '/?kiosk=1' : '/')
@@ -114,7 +118,7 @@ function renderApp({ scope, kioskParam }: { scope: 'full' | 'display'; kioskPara
       </ThemeProvider>
     </QueryClientProvider>,
   )
-  return router
+  return { router, qc }
 }
 
 beforeEach(() => {
@@ -133,7 +137,7 @@ afterEach(() => {
 
 describe('display scope drives kiosk (AC-G10.8)', () => {
   it('scope "display" without ?kiosk=1: kiosk layout, no Fix, no WebSocket', async () => {
-    const router = renderApp({ scope: 'display', kioskParam: false })
+    const { router } = renderApp({ scope: 'display', kioskParam: false })
     // The guard moves a kiosk off Sessions — only once the scope is known.
     await waitFor(() => expect(router.state.location.pathname).toBe('/pipeline'))
     const page = await screen.findByTestId('probe-page')
@@ -147,7 +151,7 @@ describe('display scope drives kiosk (AC-G10.8)', () => {
   })
 
   it('?kiosk=1 with scope "full": same layout, no Fix, no WebSocket', async () => {
-    const router = renderApp({ scope: 'full', kioskParam: true })
+    const { router } = renderApp({ scope: 'full', kioskParam: true })
     await waitFor(() => expect(router.state.location.pathname).toBe('/pipeline'))
     expect(await screen.findByTestId('probe-page')).toHaveAttribute('data-interactive', 'false')
     expect(regionCounts().has('app.rail')).toBe(false)
@@ -157,7 +161,7 @@ describe('display scope drives kiosk (AC-G10.8)', () => {
   })
 
   it('neither: the full app — rail, Fix, and the socket opens once the scope is known', async () => {
-    const router = renderApp({ scope: 'full', kioskParam: false })
+    const { router } = renderApp({ scope: 'full', kioskParam: false })
     const page = await screen.findByTestId('probe-page')
     expect(router.state.location.pathname).toBe('/sessions')
     expect(page).toHaveAttribute('data-interactive', 'true')
@@ -165,5 +169,29 @@ describe('display scope drives kiosk (AC-G10.8)', () => {
     expect(screen.getByRole('button', { name: 'Fix' })).toBeInTheDocument()
     await waitFor(() => expect(opened.length).toBeGreaterThan(0))
     expect(new Set(opened)).toEqual(new Set(['/ws']))
+  })
+
+  // A failed `/auth/me` is "known" (falls back to the full app) — and must STAY
+  // known. TanStack resets a data-less errored query to status 'pending' on every
+  // refetch (a later observer mounting, the interval, window focus); keying the
+  // hold on `isPending` then destroyed the socket a mounted session view held,
+  // so its attach never reached a server again (the e2e rotation-reconnect reds).
+  it('a failed /auth/me stays known: a refetch never swaps out the open socket', async () => {
+    const { qc } = renderApp({ scope: 'full', kioskParam: false, meFails: true })
+    await screen.findByTestId('probe-page')
+    await waitFor(() => expect(opened.length).toBeGreaterThan(0))
+    const held = getSessionSocket()
+    const before = opened.length
+    // The refetch is in flight (a real round-trip), so the shell renders the
+    // transient 'pending' state before the second failure lands.
+    let fail!: (e: Error) => void
+    me = new Promise((_, reject) => { fail = reject })
+    let refetch!: Promise<void>
+    act(() => { refetch = qc.refetchQueries({ queryKey: ['auth', 'me'] }) })
+    await waitFor(() => expect(qc.getQueryState(['auth', 'me'])?.fetchStatus).toBe('fetching'))
+    expect(getSessionSocket()).toBe(held)
+    await act(async () => { fail(new Error('502')); await refetch.catch(() => {}) })
+    expect(getSessionSocket()).toBe(held)
+    expect(opened.length).toBe(before)
   })
 })

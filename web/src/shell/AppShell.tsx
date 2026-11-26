@@ -213,7 +213,13 @@ export function AppShell() {
   // rendering and their effects run before this component's, so nothing later
   // is early enough. It emits nothing, so it is render-safe and idempotent.
   // The release connects (and emits), so it waits for the layout effect.
-  const socketsAllowed = !kiosk.enabled && !me.isPending
+  // "Known" latches on the first settle: TanStack resets a data-less errored
+  // query to status 'pending' on every refetch (interval, focus, a later
+  // observer mounting), and `isPending` alone would then destroy the socket a
+  // mounted session view already holds — its attach never reaches a server.
+  // `errorUpdatedAt` survives that reset; `data`, once present, never leaves.
+  const scopeKnown = !me.isPending || me.errorUpdatedAt > 0
+  const socketsAllowed = !kiosk.enabled && scopeKnown
   if (!socketsAllowed) setSessionSocketsAllowed(false)
   React.useLayoutEffect(() => {
     if (socketsAllowed) setSessionSocketsAllowed(true)
