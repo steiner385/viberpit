@@ -65,6 +65,18 @@ async def test_edge_unreachable_falls_back_to_local_create():
 
 
 @pytest.mark.asyncio
+async def test_edge_outcome_unknown_does_not_fall_back():
+    """#3499: a read timeout may follow a launch the edge is still running."""
+    with patch.dict(os.environ, {"VIBERPIT_AUTOMATION_HOST_ROUTING_ENABLED": "true"}), \
+         patch("server.sessions.internal_dispatch.create_via_edge",
+               new=AsyncMock(side_effect=EdgeUnreachable("ReadTimeout: ", outcome_unknown=True))):
+        me = _FakeSelf()
+        with pytest.raises(EdgeUnreachable):
+            await SessionOrchestrator._automation_create_session(me, name="x")
+        me.create_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_domain_refusal_propagates_without_falling_back():
     from server.sessions.selection import AllAccountsBusy
     with patch.dict(os.environ, {"VIBERPIT_AUTOMATION_HOST_ROUTING_ENABLED": "true"}), \

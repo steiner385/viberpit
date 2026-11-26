@@ -42,6 +42,38 @@ async def test_connection_failure_raises_edge_unreachable():
 
 
 @pytest.mark.asyncio
+async def test_connection_failure_outcome_is_known():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    with pytest.raises(EdgeUnreachable) as ei:
+        await create_via_edge(port=8787, transport=_transport(handler), name="x")
+    assert ei.value.outcome_unknown is False
+
+
+@pytest.mark.asyncio
+async def test_read_timeout_outcome_is_unknown():
+    """#3499: the request was delivered; the edge may still be spawning."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("", request=request)
+
+    with pytest.raises(EdgeUnreachable) as ei:
+        await create_via_edge(port=8787, transport=_transport(handler), name="x")
+    assert ei.value.outcome_unknown is True
+
+
+@pytest.mark.asyncio
+async def test_5xx_outcome_unknown_but_403_known():
+    for status, unknown in ((502, True), (403, False)):
+        def handler(request: httpx.Request, status=status) -> httpx.Response:
+            return httpx.Response(status, text="x")
+
+        with pytest.raises(EdgeUnreachable) as ei:
+            await create_via_edge(port=8787, transport=_transport(handler), name="x")
+        assert ei.value.outcome_unknown is unknown
+
+
+@pytest.mark.asyncio
 async def test_wiring_failure_status_raises_edge_unreachable_not_domain_error():
     # 401/403/404/5xx are "this route/token is broken", never a create_session
     # refusal — the caller must fall back, not surface a misleading domain error.

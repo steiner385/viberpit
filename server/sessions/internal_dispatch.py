@@ -32,7 +32,22 @@ class EdgeUnreachable(Exception):
     this route's own error envelope (wrong port, feature disabled elsewhere, token
     rejected). The caller should fall back to a direct local
     ``SessionOrchestrator.create_session`` — never treat this as "no accounts
-    available" or any other domain refusal."""
+    available" or any other domain refusal.
+
+    ``outcome_unknown`` is True when the request may already have reached the edge
+    (a read/write timeout, a dropped connection, a 5xx): the edge may still be
+    running the clone→worktree→spawn pipeline, so a local fallback would create a
+    SECOND session. Only a failure that provably never delivered the request
+    (connect error/timeout, pool timeout, a 401/403/404 wiring rejection) is safe to
+    fall back from."""
+
+    def __init__(self, message: str = "", *, outcome_unknown: bool = False):
+        super().__init__(message)
+        self.outcome_unknown = outcome_unknown
+
+
+# Transport failures raised before any byte of the request was delivered.
+_NEVER_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
 
 async def create_via_edge(
@@ -45,7 +60,8 @@ async def create_via_edge(
                                      verify=shared_ssl_context()) as client:
             r = await client.post(url, json=kwargs, headers=headers)
     except httpx.HTTPError as exc:
-        raise EdgeUnreachable(f"{exc.__class__.__name__}: {exc}") from exc
+        raise EdgeUnreachable(f"{exc.__class__.__name__}: {exc}",
+                              outcome_unknown=not isinstance(exc, _NEVER_SENT)) from exc
     if r.status_code == 422:
         try:
             err = r.json()["error"]
@@ -60,7 +76,8 @@ async def create_via_edge(
         # Anything other than our own 422 domain-refusal envelope — 401/403 (token
         # rejected, wrong route), 404 (edge predates this route), 5xx — is a wiring
         # problem, not a refusal the caller should see: fall back instead.
-        raise EdgeUnreachable(f"unexpected status {r.status_code}: {r.text[:200]}")
+        raise EdgeUnreachable(f"unexpected status {r.status_code}: {r.text[:200]}",
+                              outcome_unknown=r.status_code >= 500)
     return SessionRecord.from_dict(r.json()["session"])
 
 

@@ -5029,7 +5029,9 @@ class SessionOrchestrator:
         is ranked across hosts exactly like a human/API dispatch.
 
         Falls back to the direct local spawn — today's behaviour — when the
-        feature is off or the edge is unreachable (a TRANSPORT failure only; a
+        feature is off or the edge is provably unreachable (a connect failure or a
+        wiring rejection; a post-send failure such as a read timeout has an unknown
+        outcome and propagates instead, #3499; a
         genuine refusal from the edge, e.g. ``AllAccountsBusy``, is not a fallback
         trigger — it is the same answer a local call would give, reconstructed to
         the same exception type so `except AllAccountsBusy` call sites in the
@@ -5052,6 +5054,13 @@ class SessionOrchestrator:
             return await create_via_edge(port=get_settings().port, **kwargs)
         except EdgeUnreachable as exc:
             if platform is not None:
+                raise
+            if exc.outcome_unknown:
+                # The request may have reached the edge, which may still be spawning:
+                # a local spawn would double-create (#3499). Propagate; the caller's
+                # claim/ownership check decides, as on the platform path above.
+                log.warning("automation_create_session: edge outcome unknown (%s) — "
+                            "not spawning locally", exc)
                 raise
             log.warning("automation_create_session: edge unreachable (%s) — "
                         "spawning locally on %s instead", exc, self_host_name() or "this host")
