@@ -104,6 +104,7 @@ from server.sessions.account_auth import (
 )
 from server.sessions.scratch_config import helper_config_dir
 from server.sessions import deploy_snapshot as _deploy_snapshot
+from server.sessions import preflight as _preflight
 from server.sessions import provenance as _provenance
 from server.sessions import spawn_failure as _spawn_failure
 from server.sessions.archive_move import mountpoint, restore_from_archive
@@ -6071,6 +6072,7 @@ class SessionOrchestrator:
                 sid, params = entry.session_id, dict(entry.params)
                 queue_reason = params.pop("queue_reason", "global_cap")
                 spawn_attempt = int(params.pop(_spawn_failure.ATTEMPT_PARAM, 0) or 0)
+                spawn_exclude = frozenset(params.pop(_spawn_failure.EXCLUDE_PARAM, None) or ())
                 # The queue entry is deliberately NOT removed yet — it is the ONLY
                 # place the spawn params (cols/rows/identity/attachment_ids) are
                 # persisted, so deleting it before the spawn commits meant a daemon
@@ -6205,7 +6207,7 @@ class SessionOrchestrator:
                 try:
                     await self._spawn_session(
                         sid, preexisting_row=True, resume=row.engine_session_id or None,
-                        **params)
+                        exclude_accounts=spawn_exclude, **params)
                 except SessionLeaseHeld:
                     # Another host is building this very session (its adoption won
                     # the lease between our ownership check and this spawn). Not a
@@ -6287,13 +6289,22 @@ class SessionOrchestrator:
                         # verified, or a sandboxed parent's child cannot be one here).
                         log.info("session_queue.start_refused_sandbox id=%s code=%s "
                                  "reason=%s", sid, exc.code, exc.reason)
+                    elif isinstance(exc, _preflight.PreflightFailed):
+                        # FR-304: a typed, expected condition (the account's composed
+                        # credential cannot authenticate), handled by rotation or a
+                        # typed end below — not a traceback-carrying WARNING, which
+                        # would auto-file an issue per lapsed account.
+                        log.info("session_queue.start_refused_preflight id=%s account=%s "
+                                 "reason=%s", sid, exc.account, exc.reason)
                     else:
                         log.warning("session_queue.start_failed id=%s", sid,
                                     exc_info=True)
+                    pinned = bool(params.get("account"))
                     failure = _spawn_failure.classify(
                         exc, sandbox_error=sandbox_mod.SandboxError,
                         start_timeout=DriverStartTimeout,
-                        obsolete_pr=obsolete_pr.number if obsolete_pr is not None else None)
+                        obsolete_pr=obsolete_pr.number if obsolete_pr is not None else None,
+                        pinned=pinned)
                     attempt = spawn_attempt + 1
                     if (failure.transient and not forcing
                             and spawn_attempt < _spawn_failure.MAX_TRANSIENT_RETRIES):
@@ -6309,9 +6320,24 @@ class SessionOrchestrator:
                         await sq.set_spawn_attempt(sid, attempt)
                         await _provenance.record(sid, _provenance.SPAWN_FAILED,
                                                  failure.to_detail(attempt, requeued=True))
+                        # FR-303/FR-304: a start that overran its deadline or failed
+                        # credential preflight indicts the ACCOUNT, not the session, so
+                        # the retry must not land on it again: hard-exclude it on the
+                        # entry and say so on the timeline. A pinned entry never
+                        # rotates (its preflight failure is permanent — classify — and
+                        # its timeout retries the same account, as before). A spawn
+                        # that raised before picking an account has nothing to rotate
+                        # from and retries as a plain re-enqueue.
+                        rotate_from = (None if pinned
+                                       else _spawn_failure.rotation_source(exc, failure))
+                        if rotate_from is not None:
+                            await sq.set_spawn_exclude(sid, spawn_exclude | {rotate_from})
+                            await _provenance.record(sid, _provenance.ROTATED_ACCOUNT, {
+                                "from": rotate_from, "reason": failure.reason,
+                                "attempt": attempt})
                         foreign.add(sid)
-                        log.info("session_queue.start_requeued id=%s reason=%s attempt=%d",
-                                 sid, failure.reason, attempt)
+                        log.info("session_queue.start_requeued id=%s reason=%s attempt=%d "
+                                 "rotate_from=%s", sid, failure.reason, attempt, rotate_from)
                         continue
                     failure_detail = failure.to_detail(attempt, requeued=False)
                     await _provenance.record(sid, _provenance.SPAWN_FAILED, failure_detail)
@@ -6865,8 +6891,14 @@ class SessionOrchestrator:
         fork_from: tuple[str, str] | None = None,
         platform: str | None = None,
         sandbox: bool = False,
+        exclude_accounts: frozenset[str] = frozenset(),
     ) -> SessionRecord:
         """Start an AgentDriver, persist/update a DB row, return a SessionRecord.
+
+        *exclude_accounts*: accounts the pick may NOT land on (merged into
+        ``select_account``'s hard exclude) — the queue drain's rotated retry passes
+        the account whose start timed out or failed credential preflight
+        (FR-303/FR-304). Ignored when *account* is given.
 
         *fork_worktree* / *fork_from* (D-8, ``fork_session`` only): the session runs in
         that ready-made fork worktree instead of a new one, and — with *fork_from* =
@@ -6966,13 +6998,15 @@ class SessionOrchestrator:
             usage_unverified = False
             if account is None:
                 # Skip accounts currently quarantined for a 429/401 so a fresh session
-                # doesn't land on an account we already know is struggling.
+                # doesn't land on an account we already know is struggling, and the
+                # ones a rotated retry must avoid (the account whose start just
+                # timed out / failed preflight for this very session).
                 # select_account does synchronous, potentially-blocking oauth usage
                 # I/O (#2223) — off the loop via to_thread, like every other
                 # ledger-contending call in this class.
                 picked = await asyncio.to_thread(
                     select_account,
-                    exclude=self._recovery.quarantined(now=self._clock()),
+                    exclude=self._recovery.quarantined(now=self._clock()) | exclude_accounts,
                     load=self.live_session_load(), engine=selected_engine,
                     model=quota_model(model, engine=selected_engine))
                 account = picked.name
@@ -6987,12 +7021,33 @@ class SessionOrchestrator:
                 selected_engine, account, cwd, kind, disabled_mcp=disabled_mcp,
             )
 
+            provider = _provider_of(account)
             # Ensure the Copilot proxy is running for copilot-backed accounts.
-            if self._copilot is not None and _provider_of(account) == _copilot_mod.PROVIDER:
+            if self._copilot is not None and provider == _copilot_mod.PROVIDER:
                 await self._copilot.ensure(account)
 
             # …and the per-account Codex app-server for codex-engine sessions.
             await self._ensure_codex_runner(selected_engine, account)
+
+            # FR-304: can the composed config the CLI is about to read authenticate at
+            # all? Copilot's gate is the proxy health check above and Codex has no
+            # Claude credential (empty cfg dir), so this is the Claude account's. The
+            # launch KIND decides whether the composed claudeAiOauth blob is even read
+            # (a setup-token / envelope launch authenticates from the env); finding it
+            # reads the setup-token from the account store, so it runs through
+            # account_store_io and only when the check applies; a store too slow to
+            # answer (default=None, logged there) leaves the kind unknown and the
+            # launch unjudged — an infrastructure stall must not end the session. The
+            # check itself is pure filesystem. A failure raises inside this prespawn
+            # window, so the light rollback applies and the drain can rotate the
+            # retry (#947).
+            if _preflight.applies(provider, driver_config_dir):
+                launch = await account_store_io(oauth_launch_env, account, default=None)
+                reason = (_preflight.check(account, driver_config_dir, provider,
+                                           launch_kind=launch[1])
+                          if launch is not None else None)
+                if reason is not None:
+                    raise _preflight.PreflightFailed(account, reason)
 
             # Pre-seed the in-memory record so _session_factory's _oat_env closure can
             # look up the account (needed for copilot env injection during driver.start()).
@@ -7125,7 +7180,10 @@ class SessionOrchestrator:
                 is_fork=fork_worktree is not None,
                 sandbox=sandbox_on,
             )
-        except BaseException:
+        except BaseException as exc:
+            # Both rollback paths stamp the account this attempt ran on, so the queue
+            # drain knows which account to rotate its retry away from (FR-303/FR-304).
+            _spawn_failure.note_account(exc, account)
             await self._run_rollback_shielded(
                 self._release_prespawn_resources(session_id, worktree_info,
                                                  keep_paths=fork_worktree is not None),
@@ -7334,7 +7392,8 @@ class SessionOrchestrator:
                     log.warning("session.create: initial prompt not delivered "
                                 "session=%s result=%s", session_id, delivery)
             return record
-        except BaseException:
+        except BaseException as exc:
+            _spawn_failure.note_account(exc, account)   # see the prespawn rollback
             # Before the row is durable, this method owns every resource allocated
             # for the attempted spawn. In particular CodexRunnerManager.attach()
             # may register the claim and then raise; at that point the live driver

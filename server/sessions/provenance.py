@@ -30,8 +30,12 @@ SPAWN_FAILED = "spawn_failed"
 #: The session was archived by automation, not a person. detail: ``{by, reason}``,
 #: where ``by`` is the ``sessions.archived_by`` provenance value.
 AUTO_ARCHIVED = "auto_archived"
+#: The queue drain's retry of a failed start will run on a different account
+#: (FR-303/FR-304). detail: ``{from, reason, attempt}`` — the account the failed
+#: attempt ran on, the ``spawn_failed`` reason that moved it, that attempt's number.
+ROTATED_ACCOUNT = "rotated_account"
 
-KINDS = frozenset({SPAWN_FAILED, AUTO_ARCHIVED})
+KINDS = frozenset({SPAWN_FAILED, AUTO_ARCHIVED, ROTATED_ACCOUNT})
 
 #: Newest-first page size for :func:`list_events` when the caller gives none.
 DEFAULT_LIMIT = 50

@@ -12,7 +12,7 @@ from sqlalchemy import delete as sa_delete, select
 
 from server.db import db_session
 from server.db.models import SessionQueue
-from server.sessions.spawn_failure import ATTEMPT_PARAM
+from server.sessions.spawn_failure import ATTEMPT_PARAM, EXCLUDE_PARAM
 
 _ORDER = (SessionQueue.priority, SessionQueue.enqueued_at)
 
@@ -68,6 +68,20 @@ async def set_spawn_attempt(session_id: str, attempt: int) -> bool:
         if entry is None:
             return False
         entry.params = {**(entry.params or {}), ATTEMPT_PARAM: attempt}
+        return True
+
+
+async def set_spawn_exclude(session_id: str, accounts: Collection[str]) -> bool:
+    """Record the accounts *session_id*'s next start may not land on — the one its
+    failed attempt ran on (``spawn_failure.EXCLUDE_PARAM``, popped by the drain like
+    ``queue_reason``). False when not queued."""
+    async with db_session() as db:
+        entry = (await db.execute(
+            select(SessionQueue).where(SessionQueue.session_id == session_id)
+        )).scalar_one_or_none()
+        if entry is None:
+            return False
+        entry.params = {**(entry.params or {}), EXCLUDE_PARAM: sorted(set(accounts))}
         return True
 
 
