@@ -798,6 +798,24 @@ async def test_open_serves_the_warm_snapshot_without_a_full_read() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_cold_open_snapshots_its_catch_up_without_publishing_it() -> None:
+    api = FakeApi()
+    published: list[str] = []
+
+    async def publish(stream: str, event: dict) -> None:
+        published.append(stream)
+
+    svc = _service(api)
+    svc.set_publisher(publish, lambda _s: None)
+    snap = await svc.open(SID)                     # never warmed: the first read is the open's
+    assert snap["events"]                          # the history is in the snapshot ...
+    assert published == []                         # ... and not also burst onto the stream
+    api.events[SID].append(ev_text("live", mid="msg_l"))
+    await _until(lambda: rs.stream_id(SID) in published)   # later events still stream
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
 async def test_the_warm_set_is_capped_most_recently_updated_first(caplog) -> None:
     api = FakeApi()
     ids = [f"session_0{i}Cap" for i in range(5)]
