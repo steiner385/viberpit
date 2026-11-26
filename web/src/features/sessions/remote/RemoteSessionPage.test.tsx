@@ -67,7 +67,8 @@ vi.mock('@/api/client', async (orig) => ({
 
 const RECORD: RemoteSession = {
   id: 'session_r1', account: 'alice', title: 'Refactor the parser', status: 'running',
-  connection: 'connected', machineId: 'feedc0ffee112233', origin: 'repl', cwd: '/w/parser',
+  connection: 'connected', machineId: 'feedc0ffee112233', machineName: null, origin: 'repl',
+  project: null, branch: null, projects: null, cwd: '/w/parser',
   model: 'claude-opus', url: 'https://claude.ai/code/session_r1', updatedAt: null,
   needsYou: false, unread: false,
 }
@@ -135,6 +136,17 @@ describe('RemoteSessionPage — view', () => {
     const link = await screen.findByRole('link', { name: /open in claude app/i })
     expect(link).toHaveAttribute('href', 'https://claude.ai/code/session_r1')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('names the machine and shows the project when the server resolved them', async () => {
+    const named = { ...RECORD, machineName: 'dobby', project: 'cairnea/KinDash', branch: 'feat/x', cwd: null }
+    h.get.mockImplementation((path: string) => Promise.resolve(
+      path === '/remote-sessions' ? { enabled: true, sessions: [named], accounts: [] }
+        : path === '/sessions' ? [] : {},
+    ))
+    renderPage()
+    expect(await screen.findByText('Running on dobby — controlled via Remote Control')).toBeInTheDocument()
+    expect(await screen.findByText(/cairnea\/KinDash · feat\/x/)).toBeInTheDocument()
   })
 
   it('drops an unsafe Claude app url', async () => {

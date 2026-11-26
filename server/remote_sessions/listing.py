@@ -60,6 +60,18 @@ def owned_keys(urls: Iterable[str | None]) -> frozenset[str]:
     return frozenset(session_key(u) for u in urls if isinstance(u, str) and u)
 
 
+def _projects(ext: dict) -> list[dict]:
+    """``[{repo, branch}]`` from ``external_metadata.current_branches`` (``{"owner/repo":
+    "branch"}``), in the API's order. A bridge session's ``session_context.cwd`` is empty,
+    so this is the only place its project shows. Non-string keys are skipped; a
+    non-string branch reads as None."""
+    branches = ext.get("current_branches")
+    if not isinstance(branches, dict):
+        return []
+    return [{"repo": repo, "branch": _str(branch)}
+            for repo, branch in branches.items() if _str(repo) is not None]
+
+
 def summarize(raw: Any, account: str, *, now: float,
               owned: frozenset[str] = frozenset()) -> dict | None:
     """The summary ViberPit shows for one listed session, or None when it is not shown
@@ -88,6 +100,9 @@ def summarize(raw: Any, account: str, *, now: float,
     origin = next((ORIGIN_TAGS[t] for t in tags if t in ORIGIN_TAGS), None)
     ctx_raw = raw.get("session_context")
     ctx: dict = ctx_raw if isinstance(ctx_raw, dict) else {}
+    ext_raw = raw.get("external_metadata")
+    ext: dict = ext_raw if isinstance(ext_raw, dict) else {}
+    projects = _projects(ext)
     return {
         "id": sid,
         "account": account,
@@ -96,8 +111,13 @@ def summarize(raw: Any, account: str, *, now: float,
         "connection": connection,
         "machineId": machine or None,
         "origin": origin,
+        # The first repo claude.ai reports, its branch, and every one when several.
+        "project": projects[0]["repo"] if projects else None,
+        "branch": projects[0]["branch"] if projects else None,
+        "projects": projects if len(projects) > 1 else None,
+        # Empty for a bridge session (claude.ai sends ""), so usually None.
         "cwd": _str(ctx.get("cwd")),
-        "model": _str(ctx.get("model")),
+        "model": _str(ctx.get("model")) or _str(ext.get("model")),
         "url": url,
         "updatedAt": _str(raw.get("updated_at")),
         "needsYou": status == STATUS_REQUIRES_ACTION,

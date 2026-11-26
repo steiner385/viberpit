@@ -637,6 +637,11 @@ class AppSettings(Base):
     # normalized source} (server/library/curated.py). NULL = none confirmed. Nullable
     # for backfill.
     curated_marketplaces: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # The operator's names for Remote Control machine ids ViberPit does not run on: a JSON
+    # object {machine_id: label} (server/remote_sessions/machines.py). NULL = none.
+    # Nullable for backfill.
+    remote_machine_labels: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None)
 
 
 class SessionQueue(Base):

@@ -10,16 +10,22 @@ import { MemoryRouter } from 'react-router-dom'
 import type { RemoteSession, RemoteSessionsList } from '@/api/remoteSessionsHooks'
 import { RemoteSessionsSection } from './RemoteSessionsSection'
 
-const h = vi.hoisted(() => ({ data: undefined as RemoteSessionsList | undefined }))
+const h = vi.hoisted(() => ({
+  data: undefined as RemoteSessionsList | undefined,
+  mutate: vi.fn(),
+  error: null as Error | null,
+}))
 vi.mock('@/api/remoteSessionsHooks', async (orig) => ({
   ...(await orig<typeof import('@/api/remoteSessionsHooks')>()),
   useRemoteSessions: () => ({ data: h.data }),
+  useNameRemoteMachine: () => ({ mutate: h.mutate, isPending: false, error: h.error }),
 }))
 
 function session(over: Partial<RemoteSession> = {}): RemoteSession {
   return {
     id: 'session_a', account: 'alice', title: 'Fix the flaky test', status: 'idle',
-    connection: 'connected', machineId: 'abcdef1234567890', origin: 'repl', cwd: '/w/app',
+    connection: 'connected', machineId: 'abcdef1234567890', machineName: null, origin: 'repl',
+    project: null, branch: null, projects: null, cwd: null,
     model: 'claude-opus', url: 'https://claude.ai/code/session_a', updatedAt: '2026-11-25T10:00:00Z',
     needsYou: false, unread: false, ...over,
   }
@@ -33,7 +39,7 @@ function renderAt(path = '/sessions') {
   )
 }
 
-beforeEach(() => { h.data = undefined })
+beforeEach(() => { h.data = undefined; h.mutate.mockReset(); h.error = null })
 
 describe('RemoteSessionsSection', () => {
   it('renders nothing before the list answers', () => {
@@ -72,12 +78,56 @@ describe('RemoteSessionsSection', () => {
       expect.stringContaining('Working away'),
       expect.stringContaining('Gone quiet'),
     ])
-    expect(within(rows[0]).getByText('SDK · machine abcdef12')).toBeInTheDocument()
+    // No project reported: the origin stands in; the machine shows as its short id.
+    expect(within(rows[0]).getByTestId('remote-project')).toHaveTextContent('SDK')
+    expect(within(rows[0]).getByTestId('remote-machine')).toHaveTextContent('machine abcdef12')
     expect(within(rows[0]).getByText('Needs you')).toBeInTheDocument()
-    expect(within(rows[1]).getByText('Claude Code CLI · machine abcdef12')).toBeInTheDocument()
+    expect(within(rows[1]).getByTestId('remote-project')).toHaveTextContent('Claude Code CLI')
     expect(within(rows[1]).getByText('Working')).toBeInTheDocument()
     expect(within(rows[1]).getByText('Connected')).toBeInTheDocument()
     expect(within(rows[2]).getByText('Disconnected', { selector: '[class*="rounded-pill"]' })).toBeInTheDocument()
+  })
+
+  it('shows the project and branch claude.ai reports, and the resolved machine name', () => {
+    h.data = {
+      enabled: true, accounts: [],
+      sessions: [
+        session({ id: 'session_p', project: 'cairnea/KinDash', branch: 'feat/role-picker', machineName: 'dobby' }),
+        session({
+          id: 'session_m', project: 'o/a', branch: null, machineName: 'Work laptop',
+          projects: [{ repo: 'o/a', branch: null }, { repo: 'o/b', branch: 'dev' }],
+        }),
+      ],
+    }
+    renderAt()
+    const [p, m] = screen.getAllByTestId('remote-session-row')
+    expect(within(p).getByTestId('remote-project')).toHaveTextContent('cairnea/KinDash · feat/role-picker')
+    expect(within(p).getByTestId('remote-machine')).toHaveTextContent('dobby')
+    expect(within(m).getByTestId('remote-project')).toHaveTextContent('o/a +1')
+    expect(within(m).getByTestId('remote-machine')).toHaveTextContent('Work laptop')
+    // A named machine offers no naming action.
+    expect(screen.queryByRole('button', { name: /name this machine/i })).toBeNull()
+  })
+
+  it('offers "Name this machine" for an unknown machine id and saves the label', async () => {
+    const user = userEvent.setup()
+    h.data = {
+      enabled: true, accounts: [],
+      sessions: [session(), session({ id: 'session_none', title: 'No id', machineId: null })],
+    }
+    renderAt()
+    // Only the row with an id and no name offers it (the id-less row cannot be named).
+    const actions = screen.getAllByRole('button', { name: /name this machine/i })
+    expect(actions).toHaveLength(1)
+    await user.click(actions[0])
+    const dialog = screen.getByRole('dialog', { name: 'Name this machine' })
+    const save = within(dialog).getByRole('button', { name: 'Save' })
+    expect(save).toBeDisabled()
+    await user.type(within(dialog).getByLabelText(/name/i), '  Work laptop ')
+    await user.click(save)
+    expect(h.mutate).toHaveBeenCalledWith(
+      { machineId: 'abcdef1234567890', label: 'Work laptop' }, expect.anything(),
+    )
   })
 
   it('links each row to its remote page and marks the open one', () => {

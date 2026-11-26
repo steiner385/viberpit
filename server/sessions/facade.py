@@ -240,6 +240,12 @@ class InProcessOrchestratorAdapter:
         from server.remote_sessions.service import service_for
         return await service_for(self._orch).list_sessions()
 
+    async def remote_machine_hosts(self) -> dict[str, str]:
+        """``{machine_id: host name}`` for this (the only) host."""
+        from server.remote_sessions import machines
+        payload = await asyncio.to_thread(machines.local_payload)
+        return machines.merge_hosts([(payload["host"], payload)])
+
     async def remote_session_open(self, session_id: str):
         from server.remote_sessions.service import service_for
         from server.remote_sessions.view import open_in_process

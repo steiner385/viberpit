@@ -36,7 +36,7 @@ import { SessionErrorBanner } from '@/features/sessions/panels/SessionErrorBanne
 import { WorkingIndicator } from '@/features/sessions/WorkingIndicator'
 import { Composer } from '@/features/sessions/composer/Composer'
 import { useRemoteSessionRuntime } from './useRemoteSessionRuntime'
-import { remoteMachineLabel, remoteOriginLabel, remoteStatus } from './remoteSessionCopy'
+import { remoteMachineLabel, remoteOriginLabel, remoteProjectLabel, remoteStatus } from './remoteSessionCopy'
 
 export function RemoteSessionPage({ remoteId }: { remoteId: string }) {
   const remote = useRemoteSessionRuntime(remoteId)
@@ -48,7 +48,8 @@ export function RemoteSessionPage({ remoteId }: { remoteId: string }) {
   const runningSubAgents = selectRunningSubAgentCount(rt.state.turns, rt.state.subAgents)
   const url = isSafeHttpUrl(record?.url) ? record.url : null
   const meta = record
-    ? [remoteStatus(record).label, remoteOriginLabel(record.origin), record.account, record.cwd]
+    ? [remoteStatus(record).label, remoteOriginLabel(record.origin), record.account,
+        remoteProjectLabel(record) ?? record.cwd]
         .filter(Boolean).join(' · ')
     : 'Remote Control session'
 
@@ -71,7 +72,7 @@ export function RemoteSessionPage({ remoteId }: { remoteId: string }) {
         tone="info"
         role="none"
         className="mx-3 my-2 flex-shrink-0"
-        title={`Running on ${remoteMachineLabel(record?.machineId ?? null)} — controlled via Remote Control`}
+        title={`Running on ${remoteMachineLabel(record)} — controlled via Remote Control`}
         actions={openInApp}
       />
 

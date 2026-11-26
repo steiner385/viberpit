@@ -1536,6 +1536,19 @@ class RemoteOrchestrator:
         """``{enabled, sessions, accounts}`` from the primary daemon."""
         return await self._remote_sessions_call("remote_sessions_list")
 
+    async def remote_control_machine_ids(self) -> dict:
+        """``{host, machineIds: {id: source}}``: the Remote Control machine ids this
+        daemon's host carries (``remote_sessions.machines.local_payload``). Any daemon
+        answers, not only the primary."""
+        return await self._remote_sessions_call("remote_control_machine_ids")
+
+    async def remote_machine_hosts(self) -> dict[str, str]:
+        """``{machine_id: host name}`` for this one daemon's host."""
+        from server.remote_sessions import machines
+        payload = await self.remote_control_machine_ids()
+        host = payload.get("host") if isinstance(payload, dict) else None
+        return machines.merge_hosts([(host, payload)])
+
     async def remote_session_open(self, session_id: str):
         """A live :class:`~server.remote_sessions.view.RemoteSessionView`: the bus
         stream ``remote:<id>`` is joined BEFORE the snapshot RPC, so no event falls

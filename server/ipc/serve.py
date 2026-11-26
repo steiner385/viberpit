@@ -59,7 +59,7 @@ QUIET_ACCESS_PATHS = frozenset({"/info", "/healthz"} | {f"/rpc/{m}" for m in (
     "codex_account_status", "git_credential_alerts", "automation_statuses",
     "automation_overview", "pending_permissions", "pending_questions",
     # Remote sessions: the list the web polls and each open view's lease touch.
-    "remote_sessions_list", "remote_session_touch",
+    "remote_sessions_list", "remote_session_touch", "remote_control_machine_ids",
 )})
 
 

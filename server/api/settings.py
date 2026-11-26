@@ -15,6 +15,7 @@ from server.db import get_db, get_or_create_app_settings
 from server.db.models import AppSettings
 from server.hostname import self_host_name
 from server.library import scan
+from server.remote_sessions import machines as remote_machines
 from server.sessions.engine import AgentEngine, declared_capabilities
 from server.sessions.global_cap import GlobalCap, drain_if_raised, read_global_cap
 from server.sessions import remote_control
@@ -143,6 +144,11 @@ class SettingsBody(BaseModel):
     # Whether Claude sessions also appear in the Claude web / desktop / mobile apps
     # (Remote Control) unless a session overrides it. Omitted → unchanged.
     remoteControlDefault: bool | None = None
+    # Names for Remote Control machine ids (shown on remote sessions). A PATCH-style
+    # map: each key's label is set (trimmed), a null or blank label removes it, keys not
+    # sent are kept — so naming one machine never races another. Omitted → unchanged.
+    # A bad id or label → 422.
+    remoteMachineLabels: dict[str, str | None] | None = None
 
 
 async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | None) -> tuple[int, int, int]:
@@ -198,6 +204,7 @@ def _to_dict(s: AppSettings, cap: GlobalCap) -> dict:
         # Settings toggle shows only while it is true.
         "remoteControlDefault": remote_control.stored_default(s.remote_control_default),
         "remoteControlCapability": remote_control.remote_control_enabled(),
+        "remoteMachineLabels": remote_machines.stored_labels(s.remote_machine_labels),
         **_server_blocks(cap),
     }
 
@@ -367,6 +374,14 @@ async def put_settings_row(
                                     detail={"code": exc.code, "message": exc.message}) from exc
         row.remote_control_default = body.remoteControlDefault
         rc_default_changed = True
+    if body.remoteMachineLabels is not None:
+        try:
+            labels = remote_machines.apply_labels(
+                remote_machines.stored_labels(row.remote_machine_labels),
+                body.remoteMachineLabels)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        row.remote_machine_labels = labels or None
     if "branchPrefix" in body.model_fields_set:
         from server.sessions import branch_prefix as bp
         # Unchanged → nothing to validate (D-22): re-running the clash scan on every
