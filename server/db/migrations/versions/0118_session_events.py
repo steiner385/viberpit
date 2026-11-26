@@ -1,7 +1,7 @@
 """session_events timeline + sessions.last_spawn_failure (#947, spec 002 Phase 2).
 
-Revision ID: 0117_session_events
-Revises: 0116_remote_machine_labels
+Revision ID: 0118_session_events
+Revises: 0117_display_scope
 
 ``session_events`` is a new table (``create_all`` installs it whole); the nullable
 ``sessions.last_spawn_failure`` column is ALTER-added by ``init_db``'s reconcile on both
@@ -10,8 +10,8 @@ dialects. This revision is the reviewable record.
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0117_session_events"
-down_revision = "0116_remote_machine_labels"
+revision = "0118_session_events"
+down_revision = "0117_display_scope"
 branch_labels = None
 depends_on = None
 
