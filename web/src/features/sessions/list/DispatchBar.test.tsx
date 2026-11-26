@@ -463,6 +463,20 @@ describe('DispatchBar mobile collapse (More options)', () => {
     expect(indicator()).toBeInTheDocument()
   })
 
+  it('announces the non-default hint as part of the button name, not only as hidden text (#1412, WCAG 2.5.3)', async () => {
+    const user = userEvent.setup()
+    render(<DispatchBar {...makeProps()} />)
+    // Default: the name is just the label.
+    expect(screen.getByRole('button', { name: 'More options' })).toBeInTheDocument()
+    await user.click(moreBtn())
+    await user.selectOptions(screen.getByRole('combobox', { name: /account/i }), 'work')
+    await user.click(moreBtn())
+    // An `aria-label` would have replaced the content and silenced the hint; the name must
+    // come from content so a screen reader hears both.
+    expect(moreBtn()).not.toHaveAttribute('aria-label')
+    expect(moreBtn()).toHaveAccessibleName(/^More options.*non-default agent, account, model, reasoning, or runner selected/i)
+  })
+
   it('non-default model also lights the indicator', async () => {
     const user = userEvent.setup()
     render(<DispatchBar {...makeProps()} />)

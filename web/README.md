@@ -52,6 +52,8 @@ npm run lint        # eslint . --ext ts,tsx --report-unused-disable-directives -
 npm run test        # vitest run
 npm run build       # tsc -b && vite build
 npm run test:e2e    # playwright test
+npm run test:e2e:cross   # the cross-browser set on all three engines (needs firefox + webkit installed)
+npm run e2e:flake -- run.json …   # flake rate from Playwright JSON reports (#1412)
 ```
 
 CI (`.github/workflows/ci.yml`) runs those four in the `frontend` job on every pull request and on
@@ -104,8 +106,10 @@ for and leaves an error (no fix) on anything it doesn't, for you to hand-map.
 6. Add an e2e spec under `web/e2e/` covering the widths that matter to the page. Two styles are in
    use: a `test.use({ viewport })` per `test.describe` block (`delivery.spec.ts` — desktop 1440×900
    and phone 390×844) or a loop over a width list (`pipeline.spec.ts` — phone 390×844 and tablet
-   820×1180, with desktop in its own describe). There is no viewport matrix in
-   `playwright.config.ts`, so a width you do not name is a width you do not test.
+   820×1180, with desktop in its own describe). `playwright.config.ts` has no per-spec viewport
+   default, so a width you do not name is a width you do not test. A top-level page also belongs in
+   the `ROUTES` table of `e2e/cross-browser/shell-modes.spec.ts`, which runs it in four layout modes
+   on Chromium, Firefox and WebKit with an axe scan — that is the cheapest way to get the matrix.
 
 ## Adding a primitive
 

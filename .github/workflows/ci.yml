@@ -320,13 +320,70 @@ jobs:
       - name: Build
         run: npm run build
       - name: E2E tests
-        run: npx playwright test
+        # Chromium only: the other two engines run the representative set in the
+        # e2e-cross-browser job below, so this job keeps its single-browser install.
+        run: npx playwright test --project=chromium
       - name: Upload test results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: junit-e2e
           path: web/test-results/*.xml
+          retention-days: 30
+
+  e2e-cross-browser:
+    # ADVISORY: intentionally NOT in branch-protection required checks (#1412, G14).
+    # Chromium + Firefox + WebKit over the representative set in web/e2e/cross-browser/:
+    # four layout modes x the five top-level routes, geometry assertions, an axe scan per
+    # cell (no blanket rule disables - see web/e2e/support/a11y.ts) and seeded-defect
+    # specs that prove each gate can fail. Every spec runs on the seeded, frozen-clock
+    # backend in web/e2e/fixtures/seed.ts, so the screenshots and traces uploaded below
+    # carry synthetic data only.
+    #
+    # Added cost: ~2-4 min of browser install + the matrix, on web PRs only (the same
+    # `changes` gate as e2e). Promotion to a required check is an owner/admin action,
+    # taken only once the pooled flake rate is measured under 1% - see
+    # web/scripts/check-e2e-flake.mjs and docs/audits/ui-conformance-scorecard.md. It is
+    # deliberately NOT promoted here: required-first, stabilise-later is what the
+    # advisory `lighthouse` job already exists to avoid.
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install deps
+        run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install chromium firefox webkit --with-deps
+      - name: Build
+        run: npm run build
+      - name: Cross-browser E2E
+        run: npx playwright test e2e/cross-browser
+      - name: Flake report
+        # Published, never gating here: a single PR run is far below the sample floor
+        # the rule needs (MIN_RUNS_FOR_VERDICT). The nightly workflow pools many.
+        if: ${{ !cancelled() }}
+        run: |
+          echo '### E2E cross-browser flake report' >> "$GITHUB_STEP_SUMMARY"
+          node scripts/check-e2e-flake.mjs test-results/e2e.json | tee -a "$GITHUB_STEP_SUMMARY" || true
+      - name: Upload evidence
+        # test-results/ holds the junit + json reports and, for any failure or retry,
+        # the screenshot and trace.zip (open with `npx playwright show-trace`), plus the
+        # per-cell screenshots and axe-results.json each passing matrix test attaches.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-cross-browser-evidence
+          path: web/test-results/
           retention-days: 30
 
   lighthouse:

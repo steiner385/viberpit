@@ -25,7 +25,7 @@ export default function PluginsSection() {
   const uninstall = useOpRecord(useUninstallPlugin())
   const reload = useReloadPlugins()
   const { confirm, dialog } = useConfirm()
-  if (isLoading) return <div className="text-sm opacity-70 p-4">Loading…</div>
+  if (isLoading) return <div className="text-sm text-ink-muted p-4">Loading…</div>
   // A failed read is not "No plugins installed": say it failed and offer a retry.
   const failure = isError && (
     <QueryFailureBanner message={LOAD_FAILED_COPY} hasData={data !== undefined} onRetry={() => void refetch()} />
@@ -49,7 +49,7 @@ export default function PluginsSection() {
   return (
     <div className="min-w-0">
       <div className="flex items-start gap-3 mb-3 min-w-0">
-        <p className="flex-1 min-w-0 text-xs opacity-60">
+        <p className="flex-1 min-w-0 text-xs text-ink-muted">
           Plugins are shared across all accounts and installed on every host. Changes apply to newly started sessions.
         </p>
         <Button
@@ -88,7 +88,7 @@ export default function PluginsSection() {
           />
         ))}
         {plugins.length === 0 && (
-          <li className="text-sm opacity-70 p-4">No plugins installed.</li>
+          <li className="text-sm text-ink-muted p-4">No plugins installed.</li>
         )}
       </ul>
       <MarketplacesPanel marketplaces={marketplaces} installEnabled={installEnabled} />
@@ -165,24 +165,24 @@ function PluginRow({ plugin, installEnabled, busy, onUpdate, onUninstall }: {
         >
           <div className="flex items-baseline gap-2 min-w-0">
             <span className="font-medium truncate"><bdi>{clip(plugin.name, 120)}</bdi></span>
-            {plugin.version && <span className="text-xs opacity-60">{clip(plugin.version, 40)}</span>}
+            {plugin.version && <span className="text-xs text-ink-muted">{clip(plugin.version, 40)}</span>}
             {plugin.category && (
-              <span className="text-xs px-1.5 py-0.5 rounded-full border border-edge opacity-70 truncate">
+              <span className="text-xs px-1.5 py-0.5 rounded-full border border-edge text-ink-muted truncate">
                 {clip(plugin.category, 40)}
               </span>
             )}
-            {plugin.autoUpdate && <span className="text-xs opacity-60 shrink-0">auto-updates</span>}
+            {plugin.autoUpdate && <span className="text-xs text-ink-muted shrink-0">auto-updates</span>}
           </div>
           {plugin.description && (
-            <p className="text-sm opacity-70 truncate"><bdi>{clip(plugin.description, 500)}</bdi></p>
+            <p className="text-sm text-ink-muted truncate"><bdi>{clip(plugin.description, 500)}</bdi></p>
           )}
-          {componentSummary && <p className="text-xs opacity-50 mt-0.5">{componentSummary}</p>}
+          {componentSummary && <p className="text-xs text-ink-muted mt-0.5">{componentSummary}</p>}
           {plugin.tokenCost && (
-            <span className="text-xs opacity-50">≈{plugin.tokenCost.alwaysOn} tok always-on</span>
+            <span className="text-xs text-ink-muted">≈{plugin.tokenCost.alwaysOn} tok always-on</span>
           )}
         </button>
         <label className={`flex items-center gap-2 shrink-0 min-h-target ${saving ? 'cursor-wait' : 'cursor-pointer'}`}>
-          <span role="status" className={`text-xs ${saving ? 'text-warning' : 'opacity-60'}`}>
+          <span role="status" className={`text-xs ${saving ? 'text-warning' : 'text-ink-muted'}`}>
             {saving ? 'Saving… (can take up to a minute)' : shown ? 'On' : 'Off'}
           </span>
           <input
@@ -215,15 +215,15 @@ function PluginRow({ plugin, installEnabled, busy, onUpdate, onUninstall }: {
       )}
       {expanded && (
         <div className="mt-3 pt-3 border-t border-edge text-sm space-y-2">
-          {detail.isLoading && <div className="opacity-70">Loading components…</div>}
+          {detail.isLoading && <div className="text-ink-muted">Loading components…</div>}
           {detail.data && (
             <>
               <ComponentList label="Commands" items={detail.data.commands.map((x) => `/${x.path.replace(/\//g, ':')}`)} />
               <ComponentList label="Skills" items={detail.data.skills.map((x) => x.name)} />
               <ComponentList label="Agents" items={detail.data.agents} />
               <ComponentList label="MCP servers" items={detail.data.mcpServers.map((x) => `${x.name} (${x.transport})`)} />
-              {detail.data.hasHooks && <div className="opacity-70">Provides lifecycle hooks.</div>}
-              <div className="text-xs opacity-50 break-all">
+              {detail.data.hasHooks && <div className="text-ink-muted">Provides lifecycle hooks.</div>}
+              <div className="text-xs text-ink-muted break-all">
                 <bdi>{clip(plugin.marketplace, 120)}</bdi> · updated {plugin.lastUpdated ?? 'unknown'}
               </div>
             </>

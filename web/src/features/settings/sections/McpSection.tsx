@@ -86,7 +86,7 @@ export function McpSection() {
     }
   }, [])
 
-  if (isLoading) return <div className="text-sm opacity-70 p-4">Loading…</div>
+  if (isLoading) return <div className="text-sm text-ink-muted p-4">Loading…</div>
 
   const servers = data?.servers ?? []
 
@@ -110,7 +110,7 @@ export function McpSection() {
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <p className="text-xs opacity-60 flex-1 min-w-[12rem]">
+        <p className="text-xs text-ink-muted flex-1 min-w-[12rem]">
           MCP servers are shared across accounts; changes apply to newly started sessions. Test
           checks each server without starting a session.
         </p>
@@ -141,12 +141,12 @@ export function McpSection() {
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-medium break-all">{s.name}</span>
                 {/* Transport badge */}
-                <span className="text-xs px-1.5 py-0.5 rounded-full border border-edge opacity-70">
+                <span className="text-xs px-1.5 py-0.5 rounded-full border border-edge text-ink-muted">
                   {s.transport}
                 </span>
                 {/* Source badge (plugin id only — omit for 'user') */}
                 {s.source !== 'user' && (
-                  <span className="text-xs px-1.5 py-0.5 rounded-full border border-edge opacity-70">
+                  <span className="text-xs px-1.5 py-0.5 rounded-full border border-edge text-ink-muted">
                     {s.source}
                   </span>
                 )}
@@ -196,7 +196,7 @@ export function McpSection() {
                 {s.status.map((r) => (
                   <li
                     key={`${r.account}/${r.host}`}
-                    className={`border-l-2 border-edge pl-2 text-xs${r.counted ? '' : ' opacity-60'}`}
+                    className={`border-l-2 border-edge pl-2 text-xs${r.counted ? '' : ' text-ink-muted'}`}
                   >
                     <div className="flex flex-wrap items-center gap-2">
                       <span>
@@ -246,7 +246,7 @@ export function McpSection() {
           )
         })}
         {servers.length === 0 && (
-          <li className="text-sm opacity-70 p-4">No MCP servers configured.</li>
+          <li className="text-sm text-ink-muted p-4">No MCP servers configured.</li>
         )}
       </ul>
 

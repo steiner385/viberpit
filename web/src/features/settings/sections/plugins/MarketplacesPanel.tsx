@@ -52,7 +52,7 @@ export function MarketplacesPanel({ marketplaces, installEnabled }: {
             busy={update.pending || remove.pending}
           />
         ))}
-        {marketplaces.length === 0 && <li className="text-sm opacity-70">No marketplaces configured.</li>}
+        {marketplaces.length === 0 && <li className="text-sm text-ink-muted">No marketplaces configured.</li>}
       </ul>
       {[update, remove].map((op, i) => (
         <div key={i}>
@@ -165,20 +165,20 @@ function MarketplaceRow({ marketplace: m, installEnabled, onUpdate, onRemove, bu
         {curation === 'confirmed' && <Badge tone="success">Confirmed</Badge>}
         {curation === 'unconfirmed' && <Badge tone="warning">Unconfirmed</Badge>}
         {curation === 'source_changed' && <Badge tone="danger">Source changed</Badge>}
-        {m.autoUpdate && <span className="text-xs opacity-60">auto-updates</span>}
+        {m.autoUpdate && <span className="text-xs text-ink-muted">auto-updates</span>}
       </div>
       {curation === 'source_changed' && m.confirmedSource && (
         <div className="mt-1 text-xs min-w-0">
-          <span className="opacity-60">Confirmed at </span>
+          <span className="text-ink-muted">Confirmed at </span>
           <code className="break-all"><bdi>{clip(m.confirmedSource)}</bdi></code>
         </div>
       )}
       <div className="mt-1 text-xs min-w-0">
-        <span className="opacity-60">{curation === 'source_changed' ? 'Now points at ' : 'Source '}</span>
+        <span className="text-ink-muted">{curation === 'source_changed' ? 'Now points at ' : 'Source '}</span>
         <code className="break-all"><bdi>{source ?? 'unknown'}</bdi></code>
       </div>
       {curation !== 'confirmed' && !confirmable && (
-        <p className="mt-1 text-xs opacity-70">
+        <p className="mt-1 text-xs text-ink-muted">
           This source can’t be confirmed here (a local, http or pinned source). Plugins from it can’t be installed from ViberPit.
         </p>
       )}

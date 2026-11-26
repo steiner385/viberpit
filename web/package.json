@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:cross": "playwright test e2e/cross-browser --project=chromium --project=firefox --project=webkit",
+    "e2e:flake": "node scripts/check-e2e-flake.mjs",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "lint:fix-tokens": "eslint --fix --fix-type problem",
     "typecheck": "tsc -b",
@@ -41,6 +43,7 @@
     "web-vitals": "^6.2.2"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.14.1",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.61.0",
     "@tailwindcss/vite": "^4.3.1",

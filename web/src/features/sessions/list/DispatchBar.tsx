@@ -763,7 +763,6 @@ export function DispatchBar({
           </div>
           <button
             type="button"
-            aria-label="More options"
             aria-expanded={showMore}
             aria-controls={disclosedIds.join(' ')}
             onClick={() => setShowMore((v) => !v)}
@@ -776,6 +775,10 @@ export function DispatchBar({
             )}
           >
             <span aria-hidden="true">⋯</span>
+            {/* The name comes from CONTENT, not `aria-label`: an aria-label replaces the
+                button's content, so the "non-default" hint below was never announced
+                (WCAG 2.5.3 Label in Name — caught by the axe gate, #1412). */}
+            <span className="sr-only">More options</span>
             {!showMore && hasNonDefaultPick && (
               <>
                 <span

@@ -16,7 +16,7 @@ const LABEL: Record<PluginSessionOutcome['outcome'], Tone> = {
 export function SessionOutcomes({ result }: { result: PluginReloadResult }) {
   const rows = result.sessions ?? []
   if (rows.length === 0) {
-    return <p aria-live="polite" className="mt-2 text-xs opacity-70">{NO_SESSIONS_COPY}</p>
+    return <p aria-live="polite" className="mt-2 text-xs text-ink-muted">{NO_SESSIONS_COPY}</p>
   }
   return (
     <div
@@ -31,7 +31,7 @@ export function SessionOutcomes({ result }: { result: PluginReloadResult }) {
             <span className="font-medium break-all"><bdi>{clip(r.name ?? r.host, 80)}</bdi></span>
             <Badge tone={LABEL[r.outcome] ?? 'neutral'}>{r.outcome}</Badge>
             {(r.failureCode || r.message) && (
-              <span className="min-w-0 break-words opacity-70">
+              <span className="min-w-0 break-words text-ink-muted">
                 {r.failureCode && <code>{clip(r.failureCode, 80)}</code>}
                 {r.failureCode && r.message ? ' — ' : ''}
                 {r.message && <bdi>{clip(r.message, 500)}</bdi>}
