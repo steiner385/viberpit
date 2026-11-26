@@ -75,6 +75,18 @@ Certificate common names carry the role and the per-route ACL is built on them:
 
 A certificate presenting both identities is rejected outright.
 
+> **Where the live fleet's authority CAs are.** The block below shows a fresh mint into
+> `/etc/viberpit/codex-auth-ca`, but the CAs this fleet actually runs on were minted on
+> 2026-09-05 into a root-only directory on dobby holding `client-ca.{pem,key,srl}` and
+> `server-ca.{pem,key,srl}`:
+>
+> ```bash
+> LIVE_CODEX_CA_DIR=/root/ccswitch-codex-auth-ca-20260905
+> ```
+>
+> `/etc/viberpit/codex-auth-ca` does not exist there. Mint new client identities from the live directory — a client cert signed by a
+> freshly minted CA is not one the running authority trusts.
+
 ### Mint the authority CA and server cert (once)
 
 Run on the authority host. Keep this CA in its own directory — it must not land in
@@ -118,16 +130,22 @@ sudo install -m 0640 -o ccswitch-auth -g ccswitch-auth client-ca.pem /etc/viberp
 ```bash
 # ROLE is exactly the CN the allowlist pins: codex-edge, or codex-runner:<host>.
 ROLE=codex-runner:rocky
-cd /etc/viberpit/codex-auth-ca
-sudo openssl req -newkey rsa:2048 -nodes -keyout "${ROLE//:/-}.key" -out "${ROLE//:/-}.csr" \
+cd "$LIVE_CODEX_CA_DIR"      # the live CA dir on dobby named in the note above
+sudo openssl req -newkey rsa:3072 -nodes -keyout "${ROLE//:/-}.key" -out "${ROLE//:/-}.csr" \
      -subj "/CN=${ROLE}"
+printf 'keyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n' | sudo tee client-ext.cnf >/dev/null
 sudo openssl x509 -req -in "${ROLE//:/-}.csr" -CA client-ca.pem -CAkey client-ca.key \
-     -CAcreateserial -out "${ROLE//:/-}.pem" -days 825
+     -CAserial client-ca.srl -out "${ROLE//:/-}.pem" -days 1095 -extfile client-ext.cnf
 ```
+
+(The live runner certs — `codex-runner:rocky`, `codex-runner:thready` — are RSA-3072 with
+`keyUsage=digitalSignature` and `extendedKeyUsage=clientAuth`.)
 
 Copy `<role>.pem`, `<role>.key` (**0600, owned by the caller's user**) and
 `server-ca.pem` to the caller, then add the CN to
-`VIBERPIT_CODEX_AUTHORITY_CLIENT_ALLOWLIST` and restart the authority. An empty
+`VIBERPIT_CODEX_AUTHORITY_CLIENT_ALLOWLIST` and restart the authority. On dobby the
+allowlist lives in the authority's own env file, `/etc/viberpit/codex-auth.env`
+(`viberpit-codex-auth.service`). An empty
 allowlist is a startup error here, not "permissive" — this is the one service that
 hands out ChatGPT access tokens.
 
@@ -159,22 +177,34 @@ Prerequisite: the host is already a working session runner
 runner with none of this stays healthy and keeps taking Claude sessions.
 
 ```bash
-# 1. Install the pinned Codex CLI. Fails closed unless the artefact's digest
-#    matches scripts/codex-cli.sha256 AND `codex --version` matches
+# 1. Install the pinned Codex CLI.
+#    INTENDED: `bash scripts/fetch-codex.sh` — fails closed unless the artefact's
+#    digest matches scripts/codex-cli.sha256 AND `codex --version` matches
 #    server/codex/schema.py:PINNED_CLI_VERSION.
-bash scripts/fetch-codex.sh
+#    CURRENT STATE: scripts/codex-cli.sha256 records NO digest yet (the one-time
+#    `--record` in § 6 step 3 has never been done), so fetch-codex.sh exits 1 right
+#    after the download on EVERY host — by design, it will not invent a digest.
+#    Until a digest is recorded, the fleet (dobby, rocky, thready) runs the npm
+#    package at the pinned version; the daemon still enforces the version label and
+#    the app-server schema hash (probe_availability) before offering Codex:
+sudo npm install -g @openai/codex@<PINNED_CLI_VERSION>    # → /usr/bin/codex, on PATH
+#    (leave VIBERPIT_CODEX_BIN unset for the npm install; set it only for a
+#    fetch-codex.sh install, pointing at the binary that script installed)
 
-# 2. Client identity for this host (mint on the authority host, § 2 above).
-sudo install -d -m 0750 -o tony -g tony /etc/viberpit/codex-auth
-# copy codex-runner-<host>.pem/.key (0600, owned by tony) and server-ca.pem here
+# 2. Client identity for this host (mint on the authority host, § 2 above). Live layout:
+sudo install -d -m 0750 -o root -g tony /etc/viberpit/codex-auth/<host>
+#    client.pem (0644 tony), client.key (0600 tony), server-ca.pem (0640 root:tony)
 
-# 3. Daemon env — /etc/viberpit/viberpit.env on this host
-VIBERPIT_CODEX_BIN=/home/tony/.local/lib/ccswitch/codex
+# 3. Daemon env — a dedicated /etc/viberpit/codex-runner.env (root:tony 0640), loaded by a
+#    drop-in /etc/systemd/system/viberpit-daemon.service.d/90-codex-auth.conf:
+#      [Service]
+#      EnvironmentFile=/etc/viberpit/codex-runner.env
 VIBERPIT_CODEX_AUTHORITY_ENDPOINT=https://dobby.tail0dd570.ts.net:8442
-VIBERPIT_CODEX_AUTHORITY_CLIENT_CERT=/etc/viberpit/codex-auth/codex-runner-<host>.pem
-VIBERPIT_CODEX_AUTHORITY_CLIENT_KEY=/etc/viberpit/codex-auth/codex-runner-<host>.key
-VIBERPIT_CODEX_AUTHORITY_CLIENT_CA=/etc/viberpit/codex-auth/server-ca.pem
+VIBERPIT_CODEX_AUTHORITY_CLIENT_CERT=/etc/viberpit/codex-auth/<host>/client.pem
+VIBERPIT_CODEX_AUTHORITY_CLIENT_KEY=/etc/viberpit/codex-auth/<host>/client.key
+VIBERPIT_CODEX_AUTHORITY_CLIENT_CA=/etc/viberpit/codex-auth/<host>/server-ca.pem
 # Leave BOTH launch flags false until the launch bar in § 8 has passed.
+# (As of 2026-11-25 dobby, rocky and thready run with both set to true.)
 VIBERPIT_CODEX_ENABLED=false
 VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED=false
 
@@ -286,6 +316,10 @@ version bump that changes the schema is a code change, not an ops change.
    ```bash
    bash scripts/fetch-codex.sh --record
    ```
+   This step has not yet been done for any version (`scripts/codex-cli.sha256` is
+   empty), which is why runners currently install the npm package — see § 3 step 1.
+   Doing it once, after checking the release's provenance, makes `fetch-codex.sh`
+   the working install path everywhere.
 4. Roll it out **one runner at a time**, checking `python -m server.codex.doctor`
    on each before moving on.
 
@@ -308,7 +342,9 @@ Copilot sessions.
 
 ```bash
 # Kill switch — one runner. Live Codex sessions end; Claude sessions are untouched.
-# In /etc/viberpit/viberpit.env on that host:
+# In the env file that sets it on that host — /etc/viberpit/codex-runner.env where the
+# 90-codex-auth.conf drop-in exists (it loads AFTER viberpit.env and wins, so a
+# `false` in viberpit.env alone is silently overridden), else /etc/viberpit/viberpit.env:
 VIBERPIT_CODEX_ENABLED=false
 sudo systemctl restart viberpit-daemon.service     # drains in-flight turns first
 
@@ -319,6 +355,8 @@ sudo systemctl stop viberpit-codex-auth.service
 # Rollback the binary: reinstall the previous pin from a checkout at that commit.
 git -C <checkout> checkout <previous-sha> -- server/codex/schema.py scripts/codex-cli.sha256
 bash scripts/fetch-codex.sh
+# While no digest is recorded (§ 3 step 1), reinstall the npm package instead:
+sudo npm install -g @openai/codex@<previous PINNED_CLI_VERSION>
 ```
 
 Turning `VIBERPIT_CODEX_EXTERNAL_AUTH_ENABLED` off while `VIBERPIT_CODEX_ENABLED`
