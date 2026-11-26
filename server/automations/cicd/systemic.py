@@ -45,6 +45,9 @@ _INFRA_SIGNATURES = (
     "no space left on device",
     "exit code 137",
     "the operation was canceled",
+    # The merge-queue ref was deleted before the job started (PR dequeued/closed, or its
+    # group rebuilt onto a new base): the candidate is orphaned, not red.
+    "couldn't find remote ref refs/heads/gh-readonly-queue/",
 )
 _PROTECTED_RE = re.compile(_ADVISORY_RE.pattern + r"|\bexit code 137\b", re.IGNORECASE)
 _LOG_TS_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ?")
@@ -491,7 +494,8 @@ def recommended_action(state: dict) -> str:
                 f"failing CI. Ask the owner to dequeue {who} under the queue lock; the "
                 "Doctor never touches the merge queue and never brakes a poisoner.")
     if klass == "infra":
-        return ("Runner-level failure (shutdown, lost runner, disk, OOM). Follow the infra "
+        return ("Runner-level failure (shutdown, lost runner, disk, OOM) or an orphaned merge-queue "
+                "ref (entry dequeued or its group rebuilt before checkout). Follow the infra "
                 "runbook; no brake and no fix session.")
     if klass in _FIX_INSTRUCTION:
         return _FIX_INSTRUCTION[klass].format(job=job)

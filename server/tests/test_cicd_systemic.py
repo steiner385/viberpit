@@ -285,6 +285,19 @@ def test_classify_infra_on_startup_failure_or_runner_signature():
     assert classify(h2, startup, {}, normalized_sig="", external_feed_re=FEED_RE) == "infra"
 
 
+def test_classify_infra_on_orphaned_merge_queue_ref():
+    """#3509: checkout failing on a deleted gh-readonly-queue ref is not a regression."""
+    job = "visual: regression (desktop)"
+    main = _main(T0, [_job(job, "failure", T0 + 5 * MIN)])
+    cands = [_fail(pr, T0 + pr * MIN, job=job) for pr in (1, 2, 3, 4)]
+    hit = _hit_for(cands, {WF: main}, job)
+    sig, _ = signature("##[error]fatal: couldn't find remote ref "
+                       "refs/heads/gh-readonly-queue/main/pr-21657-0a1b2c3d4e5f")
+    klass = classify(hit, cands, {WF: main}, normalized_sig=sig, external_feed_re=FEED_RE)
+    assert klass == "infra"
+    assert klass not in BRAKE_CLASSES
+
+
 def test_classify_main_regression_on_rule_m():
     job = "docs: conformance"
     main = _main(T0, [_job(job, "failure", T0 + 5 * MIN)])
