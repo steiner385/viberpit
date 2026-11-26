@@ -11,7 +11,8 @@
  * virtualizer inside `TranscriptView` owns the scroll region.
  *
  * Between the header and the transcript, the session's recovery snapshots
- * (D-21, `RecoveryRefsCard`) when it has any.
+ * (D-21, `RecoveryRefsCard`) and its lifecycle timeline (#947, `SessionTimeline`)
+ * when it has any.
  *
  * The title is the session's name from the archived list (the transcript
  * payload carries none); until the list arrives — or if the row is gone, as
@@ -36,6 +37,8 @@ import { useAutoMarkViewed } from './useAutoMarkViewed'
 
 /** Lazy: the archived route is eager, so the card (and its fetch) loads only here. */
 const RecoveryRefsCard = lazy(() => import('./RecoveryRefsCard'))
+/** Lazy for the same reason: the lifecycle timeline (#947), collapsed. */
+const SessionTimeline = lazy(() => import('./SessionTimeline'))
 
 /** Initial payload cap: the last N turns; older history pages in on scroll-up. */
 const INITIAL_TURN_LIMIT = 100
@@ -99,6 +102,7 @@ export function ArchivedReviewPage({ sessionId }: { sessionId: string }) {
       />
       <Suspense fallback={null}>
         <RecoveryRefsCard sessionId={sessionId} />
+        <SessionTimeline sessionId={sessionId} />
       </Suspense>
       <PageContent scroll={false} busy={isLoading}>
         {isLoading ? (

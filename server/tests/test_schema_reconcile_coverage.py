@@ -148,6 +148,12 @@ RECONCILE_EXEMPT: set[str] = {
     "session_branches.branch",
     "session_branches.source",
     "session_branches.created_at",
+    # session_events (#947): a NEW table (create_all builds it on both dialects; Alembic
+    # 0118_session_events is the record). provenance.record supplies every NOT NULL
+    # column at INSERT; an event with no session/kind/time is meaningless.
+    "session_events.session_id",
+    "session_events.kind",
+    "session_events.ts",
 }
 
 

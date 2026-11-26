@@ -104,6 +104,8 @@ from server.sessions.account_auth import (
 )
 from server.sessions.scratch_config import helper_config_dir
 from server.sessions import deploy_snapshot as _deploy_snapshot
+from server.sessions import provenance as _provenance
+from server.sessions import spawn_failure as _spawn_failure
 from server.sessions.archive_move import mountpoint, restore_from_archive
 from server.sessions import attachments as _attachments
 from server.sessions import read_state as _read_state
@@ -6053,6 +6055,7 @@ class SessionOrchestrator:
                     break
                 sid, params = entry.session_id, dict(entry.params)
                 queue_reason = params.pop("queue_reason", "global_cap")
+                spawn_attempt = int(params.pop(_spawn_failure.ATTEMPT_PARAM, 0) or 0)
                 # The queue entry is deliberately NOT removed yet — it is the ONLY
                 # place the spawn params (cols/rows/identity/attachment_ids) are
                 # persisted, so deleting it before the spawn commits meant a daemon
@@ -6272,6 +6275,31 @@ class SessionOrchestrator:
                     else:
                         log.warning("session_queue.start_failed id=%s", sid,
                                     exc_info=True)
+                    failure = _spawn_failure.classify(
+                        exc, sandbox_error=sandbox_mod.SandboxError,
+                        start_timeout=DriverStartTimeout,
+                        obsolete_pr=obsolete_pr.number if obsolete_pr is not None else None)
+                    attempt = spawn_attempt + 1
+                    if (failure.transient and not forcing
+                            and spawn_attempt < _spawn_failure.MAX_TRANSIENT_RETRIES):
+                        # A failure that says nothing about the session (network down,
+                        # CLI slow to come up) gets ONE more try (#947, G6). Restore
+                        # the queued state, count the attempt on the entry, and leave
+                        # it for the next drain — not this one, which would hit the
+                        # same blip again. "Start now" (forcing) never re-enqueues: a
+                        # person is waiting on the answer and can retry themselves.
+                        if getattr(self._records.get(sid), "status", None) != "queued":
+                            in_mem.status = "queued"
+                            self._records[sid] = in_mem
+                        await sq.set_spawn_attempt(sid, attempt)
+                        await _provenance.record(sid, _provenance.SPAWN_FAILED,
+                                                 failure.to_detail(attempt, requeued=True))
+                        foreign.add(sid)
+                        log.info("session_queue.start_requeued id=%s reason=%s attempt=%d",
+                                 sid, failure.reason, attempt)
+                        continue
+                    failure_detail = failure.to_detail(attempt, requeued=False)
+                    await _provenance.record(sid, _provenance.SPAWN_FAILED, failure_detail)
                     resolution = (
                         f"obsolete: PR #{obsolete_pr.number} merged before start"
                         if obsolete_pr is not None else None)
@@ -6305,11 +6333,12 @@ class SessionOrchestrator:
                         )
                     else:
                         self._records[sid].status = "ended"
+                    self._records[sid].last_spawn_failure = failure_detail
                     if resolution is not None:
                         self._records[sid].pr_resolution = resolution
                         self._records[sid].pr_resolution_source = "queue-drain"
                     # Persist to DB — the row still exists (was 'queued'); update it.
-                    values: dict = {"status": "ended"}
+                    values: dict = {"status": "ended", "last_spawn_failure": failure_detail}
                     if resolution is not None:
                         values["pr_resolution"] = resolution
                         values["pr_resolution_source"] = "queue-drain"
@@ -7130,8 +7159,12 @@ class SessionOrchestrator:
             # Creation transfers cleanup ownership immediately. start() can allocate
             # its subprocess/client and then block or be cancelled before returning;
             # the outer BaseException rollback therefore closes `driver` regardless
-            # of whether this await completed.
-            await driver.start()
+            # of whether this await completed. Bounded (#947, G5): a CLI that never
+            # finishes initializing used to hold the spawn — and a queued session's
+            # drain — open indefinitely; it now fails as DriverStartTimeout, which the
+            # queue drain types as a transient ``start_timeout``.
+            await self._start_driver_bounded(driver, session_id=session_id, site="spawn",
+                                             close_on_abort=False)
             # Apply the chosen model before the first prompt runs (the initial prompt is
             # sent below, after the row is durable, so this always lands on turn one). The
             # "default" alias / empty means "account default" → leave the driver as-is.
@@ -22349,6 +22382,7 @@ class SessionOrchestrator:
                                else getattr(row, "launch_credential", None)),
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
+            last_spawn_failure=getattr(row, "last_spawn_failure", None),
             pr_resolution_note=getattr(row, "pr_resolution_note", None),
             # The hand-back ask and the judge's verdict on it. Both only mean
             # anything beside status == handed_back, a resting status that survives
@@ -26316,7 +26350,7 @@ class SessionOrchestrator:
                         session_id, DRIVER_RELEASE_WAIT_S)
 
     async def _start_driver_bounded(self, driver: AgentDriver, *, session_id: str,
-                                    site: str) -> None:
+                                    site: str, close_on_abort: bool = True) -> None:
         """``driver.start()`` under ``DRIVER_START_TIMEOUT_S`` (#2967).
 
         A start that overruns, or is cancelled by the caller's own swap deadline,
@@ -26328,7 +26362,10 @@ class SessionOrchestrator:
         raises a plain ``Exception("Control request timeout: initialize")`` *from* a
         ``TimeoutError`` (#3003). That is the same hung start, so it is treated as
         one: the driver is closed and ``DriverStartTimeout`` raised, which keeps it
-        out of the resume fallback and off the ``reassign.error`` ERROR path."""
+        out of the resume fallback and off the ``reassign.error`` ERROR path.
+
+        ``close_on_abort=False`` is for a caller whose own rollback already owns the
+        driver's close (``_spawn_session``): closing here too would close it twice."""
         try:
             await asyncio.wait_for(driver.start(), timeout=DRIVER_START_TIMEOUT_S)
         except (TimeoutError, asyncio.CancelledError) as exc:
@@ -26336,8 +26373,9 @@ class SessionOrchestrator:
                 log.warning("%s: driver start for session=%s did not finish within "
                             "%.0fs — closing the half-built driver", site, session_id,
                             DRIVER_START_TIMEOUT_S)
-            await bounded_wait(driver.aclose(), timeout=DRIVER_RELEASE_WAIT_S,
-                               phase=f"{site}.start_abort:{session_id}")
+            if close_on_abort:
+                await bounded_wait(driver.aclose(), timeout=DRIVER_RELEASE_WAIT_S,
+                                   phase=f"{site}.start_abort:{session_id}")
             if isinstance(exc, asyncio.CancelledError):
                 raise
             raise DriverStartTimeout(session_id, DRIVER_START_TIMEOUT_S) from exc
@@ -26346,8 +26384,9 @@ class SessionOrchestrator:
                 raise
             log.warning("%s: driver start for session=%s timed out inside the engine "
                         "(%s) — closing the half-built driver", site, session_id, exc)
-            await bounded_wait(driver.aclose(), timeout=DRIVER_RELEASE_WAIT_S,
-                               phase=f"{site}.start_abort:{session_id}")
+            if close_on_abort:
+                await bounded_wait(driver.aclose(), timeout=DRIVER_RELEASE_WAIT_S,
+                                   phase=f"{site}.start_abort:{session_id}")
             raise DriverStartTimeout(session_id, DRIVER_START_TIMEOUT_S,
                                      detail=str(exc)) from exc
 
@@ -31514,6 +31553,10 @@ class SessionOrchestrator:
                         archived_at=datetime.utcnow(), archive_root=None)
             )
         await sq.remove(session_id)
+        if archived_by in AUTO_ARCHIVE_PROVENANCE:
+            # Automation archived it, not a person: say so on its timeline (#947, G10).
+            await _provenance.record(session_id, _provenance.AUTO_ARCHIVED, {
+                "by": archived_by, "reason": (context or {}).get("reason")})
         prev_status = record.status if record is not None else None
         log_event(log, logging.INFO, "session.terminal",
                   session_id=session_id,

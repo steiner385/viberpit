@@ -56,6 +56,7 @@ from server.sessions.orchestrator import (
     ModelBlockedError,
 )
 from server.sessions import session_actions
+from server.sessions import provenance as _provenance
 from server.sessions import read_state
 from server.sessions import worktree_files
 from server.sessions import flag_settings
@@ -408,6 +409,9 @@ def _record_to_dict(
         # without them here the card shows a bare "Ended" over an empty transcript.
         "prResolution": getattr(record, "pr_resolution", None),
         "prResolutionSource": getattr(record, "pr_resolution_source", None),
+        # Why the queue drain ended it before it started (#947): {reason, transient,
+        # attempt, requeued, message}. Same two-serializer rule.
+        "lastSpawnFailure": getattr(record, "last_spawn_failure", None),
         # The hand-back ask (#2321) and the suspected-complete overlay on it (the
         # completion bar's reason). Same two-serializer rule: SessionRecord.to_dict
         # emits them daemon→edge, this emits them to the browser. #2326 added the
@@ -2311,6 +2315,19 @@ async def session_mcp_status(
     if servers is None:
         raise HTTPException(status_code=404, detail={"code": "SESSION_NOT_LIVE"})
     return {"servers": servers}
+
+
+@router.get("/{session_id}/events")
+async def session_events(
+    session_id: str,
+    limit: int = Query(default=_provenance.DEFAULT_LIMIT, ge=1, le=_provenance.MAX_LIMIT),
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """``{events: [{id, kind, ts, detail}]}`` — the session's lifecycle timeline
+    (spec 002 FR-301, #947), newest first, straight from the shared DB. The timeline
+    outlives the session row, so an unknown id is an empty list, not a 404.
+    Read-only: identity only, no audit row."""
+    return {"events": await _provenance.list_events(session_id, limit)}
 
 
 @router.get("/{session_id}/diff")

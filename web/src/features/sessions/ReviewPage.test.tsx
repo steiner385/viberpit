@@ -22,6 +22,7 @@ vi.mock('@/api/hooks', () => ({
   useArchivedSessions: vi.fn(() => ({ data: undefined })),
   useMarkSessionViewed: vi.fn(() => ({ mutate: markViewed })),
   useSessionRecoveryRefs: vi.fn(() => ({ data: undefined })),
+  useSessionEvents: vi.fn(() => ({ data: undefined })),
 }))
 vi.mock('@/api/transcript', () => ({ fetchOlderTurns: vi.fn() }))
 const { useSentFiles } = vi.hoisted(() => ({ useSentFiles: vi.fn() }))

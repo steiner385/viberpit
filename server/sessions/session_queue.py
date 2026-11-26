@@ -12,6 +12,7 @@ from sqlalchemy import delete as sa_delete, select
 
 from server.db import db_session
 from server.db.models import SessionQueue
+from server.sessions.spawn_failure import ATTEMPT_PARAM
 
 _ORDER = (SessionQueue.priority, SessionQueue.enqueued_at)
 
@@ -44,7 +45,7 @@ async def entry_for(session_id: str) -> SessionQueue | None:
 
 async def set_queue_reason(session_id: str, reason: str) -> bool:
     """Re-label *session_id*'s entry with *reason* (the drain-popped ``queue_reason``
-    params key — the only non-spawn key the blob may carry). False when not queued."""
+    params key — a non-spawn key, like ``spawn_attempt``). False when not queued."""
     async with db_session() as db:
         entry = (await db.execute(
             select(SessionQueue).where(SessionQueue.session_id == session_id)
@@ -53,6 +54,20 @@ async def set_queue_reason(session_id: str, reason: str) -> bool:
             return False
         # Reassign (not mutate) so the JSON column is flagged dirty.
         entry.params = {**(entry.params or {}), "queue_reason": reason}
+        return True
+
+
+async def set_spawn_attempt(session_id: str, attempt: int) -> bool:
+    """Record that *session_id*'s entry spent *attempt* transient start retries
+    (``spawn_failure.ATTEMPT_PARAM``, popped by the drain like ``queue_reason``).
+    False when not queued."""
+    async with db_session() as db:
+        entry = (await db.execute(
+            select(SessionQueue).where(SessionQueue.session_id == session_id)
+        )).scalar_one_or_none()
+        if entry is None:
+            return False
+        entry.params = {**(entry.params or {}), ATTEMPT_PARAM: attempt}
         return True
 
 

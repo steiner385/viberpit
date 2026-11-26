@@ -218,6 +218,9 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     # session_rewinds (D-9) joins the sweep via created_at/undone_at/expired_at;
     # id (the rewindId, derived per request) and session_id have no default.
     "session_rewinds": {"id": "dtcheck-rewind", "session_id": "dtcheck-session"},
+    # session_events (#947, 0117) joins the sweep via ts; session_id and kind are
+    # supplied at INSERT by provenance.record and have no default.
+    "session_events": {"session_id": "dtcheck-session", "kind": "spawn_failed"},
     # session_views (D-10) joins the sweep via viewed_at; identity is half the PK.
     "session_views": {"identity": "dtcheck@example.invalid"},
     # session_branches (D-22, 0109) joins the sweep via created_at; every key column is

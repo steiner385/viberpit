@@ -740,6 +740,18 @@ export function SessionCard({ session, account, selected = false, open = false, 
             {' '}— {session.prResolution}
           </span>
         )}
+        {/* Why a queued session never started (#947, G6): the drain's typed reason,
+            not a bare "Ended". "obsolete" is already said by prResolution above. */}
+        {presentation.tier === 'complete' && session.lastSpawnFailure
+          && session.lastSpawnFailure.reason !== 'obsolete' && (
+          <span
+            data-testid="card-spawn-failure"
+            className="min-w-0 truncate text-danger"
+            title={`${session.lastSpawnFailure.reason}: ${session.lastSpawnFailure.message}`}
+          >
+            {' '}— Failed to start: {session.lastSpawnFailure.message}
+          </span>
+        )}
         {presentation.tier === 'unreachable' && isValidTimestamp(session.lastConfirmedAliveAt) && (
           <span className="flex-shrink-0 text-ink-muted">
             {' '}— last seen {relTime(session.lastConfirmedAliveAt, now || undefined)}

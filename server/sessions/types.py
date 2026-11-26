@@ -148,6 +148,10 @@ class SessionRecord:
     # marker from the probabilistic classifier. None until explicitly set.
     pr_resolution: str | None = None
     pr_resolution_source: str | None = None
+    # Why the queue drain ended this session before it ever started (#947): DB
+    # Session.last_spawn_failure, ``spawn_failure.SpawnFailure.to_detail()``. None
+    # for every session that started.
+    last_spawn_failure: dict | None = None
     # `mark_no_pr`'s one-sentence reason (DB Session.pr_resolution_note), written with
     # the resolution and never on its own. The completion bar accepts a reasoned
     # self-claim instead of re-nudging it (#2915/#2917/#2918).
@@ -410,6 +414,7 @@ class SessionRecord:
             "autoArchiveOptOut": self.auto_archive_opt_out_reason,
             "prResolution": self.pr_resolution,
             "prResolutionSource": self.pr_resolution_source,
+            "lastSpawnFailure": self.last_spawn_failure,
             "handBackReason": self.hand_back_reason,
             "suspectedCompleteReason": self.suspected_complete_reason,
             "host": self.host,
@@ -503,6 +508,7 @@ class SessionRecord:
             auto_archive_opt_out_reason=d.get("autoArchiveOptOut"),
             pr_resolution=d.get("prResolution"),
             pr_resolution_source=d.get("prResolutionSource"),
+            last_spawn_failure=d.get("lastSpawnFailure"),
             hand_back_reason=d.get("handBackReason"),
             suspected_complete_reason=d.get("suspectedCompleteReason"),
             host=d.get("host"),

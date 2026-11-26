@@ -203,6 +203,11 @@ class Session(Base):
     # Source distinguishes the deterministic marker from the probabilistic classifier.
     pr_resolution: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     pr_resolution_source: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Why a queued session never started (#947): ``{reason, transient, attempt,
+    # message}`` from ``server/sessions/spawn_failure.py``, written when the queue
+    # drain ends it. NULL for every session that started. The full history is in
+    # ``session_events`` (kind ``spawn_failed``); this is the card's one-line answer.
+    last_spawn_failure: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     # The one-sentence `note` the session passed to `mark_no_pr` alongside that
     # resolution — its own account of WHY there is no PR. NULL when it gave none, or
     # when the resolution arrived by marker/classifier (neither carries a note).
@@ -813,6 +818,27 @@ class SessionBranch(Base):
     branch: Mapped[str] = mapped_column(String, nullable=False)
     source: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class SessionEvent(Base):
+    """One entry in a session's append-only lifecycle timeline (spec 002 FR-301, #947).
+
+    Provenance a user would otherwise have to reconstruct from logs: why a queued
+    session never started, that it was auto-archived, and so on. Kinds are the
+    vocabulary in ``server/sessions/provenance.py``; ``detail`` is a small JSON
+    object whose shape is per kind. ``session_id`` has no FK on purpose (house
+    pattern, as ``session_rewinds``): the timeline must never block a session
+    delete, and a delete must never fail because of it (#895). ``ts`` is naive UTC
+    from ``db_utc_now()`` (server/db/clock.py)."""
+
+    __tablename__ = "session_events"
+    __table_args__ = (Index("ix_session_events_session_ts", "session_id", "ts"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    session_id: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
 
 
 class SessionView(Base):

@@ -549,3 +549,89 @@ def test_cwd_vanishing_during_spawn_leaves_entry_queued(tmp_path, caplog):
             await _stop_orch(orch)
 
     asyncio.run(run())
+
+
+def test_start_failure_is_typed_on_the_record_row_and_timeline(tmp_path):
+    """#947 G6: a permanent start failure ends the session WITH its typed reason —
+    on the record (the card), the row (survives a restart) and the timeline."""
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'typed.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            a = await orch.create_session("one")
+            bad = await orch.create_session("bad")
+            calls = 0
+            real = orch._spawn_session
+
+            async def broken(session_id, **kw):
+                nonlocal calls
+                if session_id == bad.id:
+                    calls += 1
+                    raise RuntimeError("insufficient disk headroom at /x")
+                return await real(session_id, **kw)
+            orch._spawn_session = broken
+            await orch.close_session(a.id)
+            for _ in range(5):
+                if orch._records[bad.id].status == "ended":
+                    break
+                await orch._maybe_start_queued()
+            assert calls == 1                        # permanent: never retried
+            failure = orch._records[bad.id].last_spawn_failure
+            assert failure["reason"] == "start_error"
+            assert failure["transient"] is False and failure["requeued"] is False
+            assert failure["message"] == "insufficient disk headroom at /x"
+            from server.db import db_session
+            from server.db.models import Session as DbSession
+            async with db_session() as db:
+                row = await db.get(DbSession, bad.id)
+                assert row.last_spawn_failure == failure
+            from server.sessions import provenance
+            events = await provenance.list_events(bad.id)
+            assert [e["kind"] for e in events] == [provenance.SPAWN_FAILED]
+            assert events[0]["detail"] == failure
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_transient_start_failure_requeues_exactly_once(tmp_path):
+    """#947 G6: a network failure says nothing about the session, so the drain puts
+    it back ONCE (a later drain retries); a second failure ends it."""
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'transient.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            a = await orch.create_session("one")
+            bad = await orch.create_session("bad")
+            calls = 0
+            real = orch._spawn_session
+
+            async def offline(session_id, **kw):
+                nonlocal calls
+                if session_id == bad.id:
+                    calls += 1
+                    raise RuntimeError("fatal: unable to access 'https://github.com/o/r.git/': "
+                                       "Could not resolve host: github.com")
+                return await real(session_id, **kw)
+            orch._spawn_session = offline
+            await orch.close_session(a.id)
+            for _ in range(6):
+                if orch._records[bad.id].status == "ended":
+                    break
+                await orch._maybe_start_queued()
+            assert calls == 2                        # first try + exactly one retry
+            assert orch._records[bad.id].status == "ended"
+            failure = orch._records[bad.id].last_spawn_failure
+            assert (failure["reason"], failure["transient"], failure["attempt"],
+                    failure["requeued"]) == ("network", True, 2, False)
+            from server.sessions import provenance
+            from server.sessions import session_queue as sq
+            assert (await sq.positions()) == {}
+            events = await provenance.list_events(bad.id)        # newest first
+            assert [(e["detail"]["attempt"], e["detail"]["requeued"]) for e in events] == [
+                (2, False), (1, True)]
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
