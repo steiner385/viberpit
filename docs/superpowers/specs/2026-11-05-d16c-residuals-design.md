@@ -113,10 +113,16 @@ No change the daemon can make closes it: the session and the daemon share one ui
 by the session or outside the daemon's reach, and `strictKnownMarketplaces`/`blockedMarketplaces` gate
 `marketplace add` only, never a later edit of the clone or its `.git/config`. The structural fix is a
 privilege boundary between sessions and the shared config dir (a sandbox or a second uid), which is a
-separate project. Documented as accepted-unless-ruled-otherwise; the issue stays open for the ruling.
+separate project. Documented as accepted-unless-ruled-otherwise; the owner ruled on 2026-11-06 (below).
 
-## Left to the owner
+## Owner rulings (2026-11-06, #3314)
 
-- Whether the live push stays opt-in per action (built, recommended) or becomes the default after an
-  install (one-line flip of the checkbox default).
-- The same-host tampering ruling above.
+Both items left to the owner were decided on the issue; neither needs code.
+
+- **Live push stays opt-in per action.** The checkbox default stays off, as built. New sessions always
+  get the plugin; a running session reloads only when the installer chooses to.
+- **Same-host tampering is accepted as documented.** No managed-settings file will be scheduled: a
+  root-installed `/etc/claude-code/managed-settings.json` would not close it (`strictKnownMarketplaces`
+  and `blockedMarketplaces` gate `marketplace add` only), and it would add sudo-only upkeep on dobby and
+  rocky that the deploy controller cannot manage. The structural fix is the privilege boundary above,
+  which is out of scope.
