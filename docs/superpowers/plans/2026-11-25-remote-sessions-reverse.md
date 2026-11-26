@@ -139,6 +139,41 @@ reporting host, else the operator's label from Settings `remoteMachineLabels` (`
 group offers "Name this machine" for an id with no name. Code:
 `server/remote_sessions/machines.py`; tests `server/tests/test_remote_session_machines.py`.
 
+*Background sync (added 2026-11-26).* The primary keeps a warm watcher for every listed
+session, so opening one serves its snapshot without a whole-log read. Code:
+`service._sync_warm`, `_watch`, `_wait_s`; tests are the "background sync" block of
+`test_remote_sessions.py`.
+- **Warm set.** After each list read, the `MAX_WARM` (50) most recently updated listed
+  sessions get a watcher. One that leaves the listing (archived, gone, past the 15-min
+  disconnected grace) or the warm set stops, unless a viewer holds it; then it stops when
+  the lease lapses. A 404 stops it, and it is not re-warmed while still listed.
+- **Unviewed cadence.**
+  - **Catch-up:** the first, whole-log read takes one of `CATCHUP_CONCURRENCY` (2) slots,
+    `CATCHUP_STAGGER_S` (1 s) apart.
+  - **Later reads:** an `after_id` read only when the list's `updatedAt` moved since the
+    last read.
+  - **Working sessions:** while connected and `running` / `requires_action`, a read at most
+    every `BUSY_POLL_S` (10 s).
+  - **Holds:** a disconnected session's `updatedAt` stands still, so it is read once. A 429
+    on events holds every background read of that account (`events_hold_until`), and so
+    does the account's list backoff.
+- **Viewed cadence.** `open` (and its lease) switches the watcher to `WATCH_POLL_S` (2 s), and
+  jumps the catch-up queue.
+- **Publishing.** Events reach the viewers' stream (bus ring `remote:<id>`, or local queues)
+  only while viewed. `open` sets this before it takes the snapshot, so the
+  snapshot/`head` contract is unchanged. When the lease lapses the watcher stays warm, stops
+  publishing and frees the bus ring. `touch` then answers `REMOTE_SESSION_NOT_WATCHED`, so a
+  stale view resets and re-attaches.
+- **Answering.** `answer` still needs an open view (`REMOTE_SESSION_NOT_WATCHED` otherwise),
+  even when a warm watcher exists.
+- **Memory.** Each watcher keeps at most `MAX_LOG` (4000) events, the newest. The web has no
+  "load earlier" for a remote session, so a longer session opens on its newest 4000. Each
+  cap is logged once when it applies.
+- **List fields.** Each `RemoteSession` gains `synced: bool` (a warm snapshot that has read
+  to the end at least once) and `lastSyncedAt: ISO string | null` (the last successful
+  read). The web types them as optional and does not render them yet.
+- **Budget.** See `deploy/README.md` § "Remote sessions".
+
 **Live view: the ordinary `/ws` socket, session id `remote:<id>`.**
 - `{"type":"attach","sessionId":"remote:session_…"}` → `replayReset` (with `gen`), the
   snapshot's wire events, `replayComplete` (`earliestTurn: 0, totalTurns: 0`), then live

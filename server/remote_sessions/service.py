@@ -4,13 +4,23 @@
   read and cached (``listing``). An account whose read fails backs off exponentially up
   to ``MAX_BACKOFF_S``. Started lazily by the first list or open, so a process nobody asks
   never calls claude.ai.
-* **Watchers.** Opening a session starts (single-flight) one watcher for it: it reads the
-  session's whole events log, then polls ``/events?after_id=`` every ``WATCH_POLL_S``,
-  feeding each event through :class:`~server.remote_sessions.translate.RemoteEventTranslator`.
-  Each wire event is kept in the watcher's bounded log (the snapshot a new viewer gets) and
-  published to the viewers: on the daemon, the event bus stream ``remote:<session id>``
-  (``set_publisher``); in process, local queues. A watcher no viewer touched for
-  ``LEASE_S`` stops and frees its log.
+* **Watchers.** One watcher per remote session (single-flight) reads the session's
+  events log through ``/events?after_id=``, feeding each event through
+  :class:`~server.remote_sessions.translate.RemoteEventTranslator`. Each wire event is kept
+  in the watcher's bounded log (``MAX_LOG``; the snapshot a new viewer gets) and, while the
+  session has a viewer, published to the viewers: on the daemon, the event bus stream
+  ``remote:<session id>`` (``set_publisher``); in process, local queues.
+* **Background sync.** After every list read, each listed session (the ``MAX_WARM`` most
+  recently updated) gets a *warm* watcher, so opening one serves its snapshot at once.
+  Without a viewer a warm watcher is gentle: its first catch-up (the whole log) waits for
+  one of ``CATCHUP_CONCURRENCY`` slots, ``CATCHUP_STAGGER_S`` apart; after that it reads
+  ``after_id`` only when the list's ``updatedAt`` for the session moved, or — connected
+  and ``running`` / ``requires_action`` — at most every ``BUSY_POLL_S``. A disconnected
+  session's ``updatedAt`` stands still, so it is read once and then left alone. An account
+  in list backoff, or rate limited on events, holds every background read for it. A viewer
+  (``open`` / ``touch``, lease ``LEASE_S``) switches the watcher to ``WATCH_POLL_S``. A
+  watcher stops when its session leaves the listing or the warm set (unless a viewer still
+  holds it, then when the lease lapses) or claude.ai answers 404.
 * **Send / answer.** A prompt is a ``user`` event POSTed into the session; an answer is a
   ``control_response`` for the pending ask's ``request_id`` (both verified live).
 
@@ -32,6 +42,7 @@ import uuid as _uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from server.aio import cancel_and_reap
@@ -55,8 +66,20 @@ MAX_BACKOFF_S = 300.0
 LEASE_S = 180.0
 #: How long a first open waits for the watcher's first read, so the snapshot has history.
 FIRST_READ_WAIT_S = 10.0
-#: Events kept per watched session for a new viewer's snapshot (oldest dropped first).
+#: Events kept per watched session for a new viewer's snapshot (oldest dropped first). The
+#: web has no "load earlier" for a remote session, so this is generous; a session past it
+#: opens on its newest ``MAX_LOG`` events (logged once).
 MAX_LOG = 4000
+#: Background sync: at most this many warm sessions (most recently updated first; logged
+#: once when the cap applies). A session with a viewer is kept regardless.
+MAX_WARM = 50
+#: A connected session claude.ai reports as working is read at most this often unviewed.
+BUSY_POLL_S = 10.0
+BUSY_STATUSES = frozenset({"running", listing.STATUS_REQUIRES_ACTION})
+#: Unviewed first catch-ups (whole-log reads) run at most this many at a time, started at
+#: least ``CATCHUP_STAGGER_S`` apart, so enabling the feature never bursts claude.ai.
+CATCHUP_CONCURRENCY = 2
+CATCHUP_STAGGER_S = 1.0
 MAX_PROMPT_CHARS = 100_000
 #: An unknown id triggers an early list read at most this often (no hammering on bad ids).
 FORCED_REFRESH_MIN_S = 5.0
@@ -119,9 +142,11 @@ class _AccountState:
     failures: int = 0
     next_at: float = 0.0
     sessions: list[dict] = field(default_factory=list)
+    #: Background event reads for this account wait until then (a 429 on events).
+    events_hold_until: float = 0.0
 
 
-@dataclass
+@dataclass(eq=False)   # identity semantics: kept in sets, compared with `is`
 class _Watcher:
     session_id: str
     account: str
@@ -129,9 +154,31 @@ class _Watcher:
     translator: RemoteEventTranslator = field(default_factory=RemoteEventTranslator)
     log: deque = field(default_factory=lambda: deque(maxlen=MAX_LOG))
     last_id: str | None = None
-    touched_at: float = 0.0
+    #: The last viewer touch (open / touch / send); -inf for a background start.
+    touched_at: float = float("-inf")
     task: asyncio.Task | None = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
+    #: Woken by a listing change, a viewer, a freed catch-up slot or a retire.
+    wake: asyncio.Event = field(default_factory=asyncio.Event)
+    #: In the background-sync set (listed, within ``MAX_WARM``).
+    warm: bool = False
+    retired: bool = False
+    #: Events go to the viewers' stream (set by ``open``; cleared, and the bus ring freed,
+    #: when the lease lapses).
+    publishing: bool = False
+    #: Read to the end of the log at least once.
+    caught_up: bool = False
+    has_more: bool = False
+    # The listing's view of the session (``_apply_listing``).
+    list_updated: str | None = None
+    list_status: str | None = None
+    list_connected: bool = False
+    #: ``list_updated`` as of the last successful read's start: a newer one means unread events.
+    synced_updated: str | None = None
+    fetched_at: float = float("-inf")
+    synced_wall: float | None = None
+    failures: int = 0
+    backoff_until: float = 0.0
 
 
 Publisher = Callable[[str, dict], Awaitable[None]]
@@ -145,7 +192,10 @@ class RemoteSessionsService:
                  enabled: Callable[[], bool] = enabled_by_config,
                  clock: Callable[[], float] = time.monotonic,
                  wall_clock: Callable[[], float] = time.time,
-                 poll_s: float = POLL_S, watch_poll_s: float = WATCH_POLL_S) -> None:
+                 poll_s: float = POLL_S, watch_poll_s: float = WATCH_POLL_S,
+                 busy_poll_s: float = BUSY_POLL_S, max_warm: int = MAX_WARM,
+                 catchup_concurrency: int = CATCHUP_CONCURRENCY,
+                 catchup_stagger_s: float = CATCHUP_STAGGER_S) -> None:
         self._client = client
         self._accounts_fn = accounts
         self._credentials_fn = credentials
@@ -155,6 +205,16 @@ class RemoteSessionsService:
         self._wall = wall_clock
         self._poll_s = poll_s
         self._watch_poll_s = watch_poll_s
+        self._busy_poll_s = busy_poll_s
+        self._max_warm = max_warm
+        self._catchup_concurrency = max(1, catchup_concurrency)
+        self._catchup_stagger_s = catchup_stagger_s
+        self._catchups = 0
+        self._catchup_next_at = float("-inf")
+        self._catchup_waiters: set[_Watcher] = set()
+        # Sessions claude.ai answered 404 for: not re-warmed while the listing still shows
+        # them (dropped once they leave it).
+        self._gone: set[str] = set()
         self._accounts: dict[str, _AccountState] = {}
         self._polled_once = asyncio.Event()
         self._poller: asyncio.Task | None = None
@@ -233,6 +293,11 @@ class RemoteSessionsService:
             try:
                 if self.enabled():
                     await self.refresh()
+                else:
+                    # Kill switch off: an idle warm watcher waits only for a wake, so stop
+                    # every watcher here rather than leave them to notice.
+                    for w in list(self._watchers.values()):
+                        self._retire(w)
             except Exception as exc:  # noqa: BLE001 — the poller must outlive any bug
                 self._note(("poll",), "remote sessions: poll failed (%s)", type(exc).__name__)
             await asyncio.sleep(self._poll_s)
@@ -258,6 +323,7 @@ class RemoteSessionsService:
                     continue
                 await self._refresh_account(account, state)
             self._polled_once.set()
+            self._sync_warm()
 
     async def _refresh_account(self, account: str, state: _AccountState) -> None:
         creds = await self._creds(account)
@@ -331,9 +397,20 @@ class RemoteSessionsService:
                 await asyncio.wait_for(self._polled_once.wait(), FIRST_READ_WAIT_S)
             except asyncio.TimeoutError:
                 pass
-        return {"enabled": True, "sessions": self._summaries(),
+        return {"enabled": True, "sessions": [self._with_sync(s) for s in self._summaries()],
                 "accounts": [{"account": a, "status": s.status}
                              for a, s in sorted(self._accounts.items())]}
+
+    def _with_sync(self, summary: dict) -> dict:
+        """*summary* plus its background-sync freshness: ``synced`` — a warm snapshot that
+        has read to the end of the log at least once is held (opening it needs no full
+        read) — and ``lastSyncedAt``, the ISO time of the last successful read."""
+        w = self._watchers.get(summary["id"])
+        live = w if w is not None and not w.retired else None
+        wall = live.synced_wall if live is not None else None
+        return {**summary, "synced": bool(live is not None and live.caught_up),
+                "lastSyncedAt": (datetime.fromtimestamp(wall, timezone.utc).isoformat()
+                                 .replace("+00:00", "Z") if wall is not None else None)}
 
     async def _account_of(self, session_id: str) -> str:
         """The account a listed (shown) session belongs to. Waits for a read already in
@@ -372,15 +449,18 @@ class RemoteSessionsService:
         """Start (or join) the session's watcher and touch its lease. Returns the
         snapshot ``{epoch, head, events}``: every event kept so far, each stamped
         ``_remote: {epoch, seq}``, and ``head`` — the last seq handed out, which live
-        events will exceed."""
+        events will exceed. A warm (background-synced) session answers at once."""
         self._require_enabled()
         w = self._watchers.get(session_id)
-        if w is None or w.task is None or w.task.done():
+        if w is None or w.task is None or w.task.done() or w.retired:
             account = await self._account_of(session_id)
             w = self._watchers.get(session_id)   # another open may have won the race
-            if w is None or w.task is None or w.task.done():
+            if w is None or w.task is None or w.task.done() or w.retired:
                 w = self._start_watcher(session_id, account)
         w.touched_at = self._clock()
+        # Before the snapshot: every later event reaches the viewers' stream.
+        w.publishing = True
+        w.wake.set()          # a background watcher switches to the viewer cadence now
         if not w.ready.is_set():
             try:
                 await asyncio.wait_for(w.ready.wait(), FIRST_READ_WAIT_S)
@@ -393,61 +473,168 @@ class RemoteSessionsService:
                 "events": list(w.log)}
 
     def touch(self, session_id: str) -> dict:
-        """Extend a watcher's lease. ``{epoch}``; NOT_WATCHED when it already stopped."""
+        """Extend a watcher's lease. ``{epoch}``; NOT_WATCHED when it stopped, or when its
+        lease lapsed (it stopped publishing, so the viewer may have missed events and must
+        re-open)."""
         self._require_enabled()
         w = self._watchers.get(session_id)
-        if w is None or w.task is None or w.task.done():
+        if w is None or w.task is None or w.task.done() or w.retired or not w.publishing:
             raise RemoteSessionsError(NOT_WATCHED, "This remote session is no longer watched.")
         w.touched_at = self._clock()
         return {"epoch": w.epoch}
 
-    def _start_watcher(self, session_id: str, account: str) -> _Watcher:
+    def _start_watcher(self, session_id: str, account: str, *,
+                       summary: dict | None = None) -> _Watcher:
         epoch = self._epochs.get(session_id, 0) + 1
         self._epochs[session_id] = epoch
-        w = _Watcher(session_id=session_id, account=account, epoch=epoch,
-                     touched_at=self._clock())
+        w = _Watcher(session_id=session_id, account=account, epoch=epoch)
+        if summary is not None:
+            w.warm = True
+            self._apply_listing(w, summary)
         self._watchers[session_id] = w
         w.task = asyncio.get_running_loop().create_task(
             self._watch(w), name=f"remote-session-watch-{session_id}")
         return w
 
+    def _viewed(self, w: _Watcher) -> bool:
+        return self._clock() - w.touched_at <= LEASE_S
+
+    # -- background sync -----------------------------------------------------------
+
+    def _apply_listing(self, w: _Watcher, summary: dict) -> None:
+        updated = summary.get("updatedAt")
+        status = summary.get("status")
+        connected = summary.get("connection") == listing.CONNECTED
+        changed = (updated != w.list_updated or status != w.list_status
+                   or connected != w.list_connected)
+        w.list_updated, w.list_status, w.list_connected = updated, status, connected
+        if changed:
+            w.wake.set()
+
+    def _sync_warm(self) -> None:
+        """Reconcile the warm watchers with the listing just read: start one for each
+        newly listed session within ``MAX_WARM``, hand each the listing's ``updatedAt`` /
+        status (waking it when they moved), and stop the ones no longer listed or warm
+        (a viewed one is kept until its lease lapses)."""
+        if self._closed or not self.enabled():
+            return
+        summaries = self._summaries()
+        listed = {s["id"]: s for s in summaries}
+        self._gone &= set(listed)
+        candidates = sorted((s for s in summaries if s["id"] not in self._gone),
+                            key=lambda s: -(listing.updated_epoch(s) or 0.0))
+        keep = candidates[:self._max_warm]
+        if len(candidates) > self._max_warm:
+            self._note(("warm_cap",), "remote sessions: %d sessions listed; background sync "
+                       "keeps the %d most recently updated warm", len(candidates),
+                       self._max_warm, level=logging.INFO)
+        else:
+            self._clear(("warm_cap",), "remote sessions: every listed session is warm again")
+        keep_ids = {s["id"] for s in keep}
+        for sid, w in list(self._watchers.items()):
+            s = listed.get(sid)
+            if s is not None:
+                self._apply_listing(w, s)
+            if sid in keep_ids:
+                w.warm = True
+                continue
+            w.warm = False
+            if self._viewed(w):
+                w.wake.set()
+            else:
+                self._retire(w)
+        for s in keep:
+            if s["id"] not in self._watchers:
+                self._start_watcher(s["id"], str(s["account"]), summary=s)
+
+    def _retire(self, w: _Watcher) -> None:
+        """Stop *w* (its loop exits at the next wake) and free its log and bus ring now."""
+        w.retired, w.warm = True, False
+        self._catchup_waiters.discard(w)
+        if self._watchers.get(w.session_id) is w:
+            del self._watchers[w.session_id]
+            self._release_ring(w.session_id)
+        w.wake.set()
+
+    def _release_ring(self, session_id: str) -> None:
+        if self._release is not None:
+            try:
+                self._release(stream_id(session_id))
+            except Exception:  # noqa: BLE001
+                log.debug("remote sessions: ring release failed", exc_info=True)
+
+    def _wait_s(self, w: _Watcher, viewed: bool) -> float | None:
+        """Seconds until *w* should read again (0: now; None: only when woken)."""
+        now = self._clock()
+        until = w.backoff_until
+        if not viewed:
+            state = self._accounts.get(w.account)
+            if state is not None:
+                until = max(until, state.events_hold_until,
+                            state.next_at if state.failures else 0.0)
+        if now < until:
+            return until - now
+        if w.has_more:
+            return 0.0
+        if viewed:
+            return max(0.0, w.fetched_at + self._watch_poll_s - now)
+        if not w.caught_up or w.list_updated != w.synced_updated:
+            return 0.0
+        if w.list_connected and w.list_status in BUSY_STATUSES:
+            return max(0.0, w.fetched_at + self._busy_poll_s - now)
+        return None
+
+    def _catchup_wait(self) -> float | None:
+        """Seconds until an unviewed catch-up may start (None: wait for a freed slot)."""
+        if self._catchups >= self._catchup_concurrency:
+            return None
+        return max(0.0, self._catchup_next_at - self._clock())
+
+    def _free_catchup_slot(self) -> None:
+        self._catchups -= 1
+        waiters, self._catchup_waiters = self._catchup_waiters, set()
+        for other in waiters:
+            other.wake.set()
+
+    @staticmethod
+    async def _doze(w: _Watcher, timeout: float | None) -> None:
+        try:
+            await asyncio.wait_for(w.wake.wait(), timeout)
+        except asyncio.TimeoutError:
+            pass
+
     async def _watch(self, w: _Watcher) -> None:
-        delay = self._watch_poll_s
         key = ("watch", w.session_id)
         try:
-            while self.enabled() and self._clock() - w.touched_at <= LEASE_S:
-                creds = await self._creds(w.account)
-                if creds is None:
-                    self._note(key + ("login",), "remote sessions: %s lost its claude.ai "
-                               "login; session %s unavailable", w.account, w.session_id)
-                    delay = min(MAX_BACKOFF_S, delay * 2)
-                else:
-                    try:
-                        page = await self._http().fetch_events(creds, w.session_id,
-                                                               after_id=w.last_id)
-                    except UpstreamError as exc:
-                        if exc.kind == KIND_NOT_FOUND:
-                            await self._emit(w, ev.ErrorEvent(
-                                "remote_session_gone",
-                                "This remote session no longer exists on claude.ai.").to_wire())
-                            return
-                        delay = min(MAX_BACKOFF_S, max(delay * 2, exc.retry_after or 0.0))
-                        self._note(key + (exc.kind,), "remote sessions: reading session %s "
-                                   "failed (%s); retrying", w.session_id, exc,
-                                   level=logging.INFO if exc.kind in (KIND_RATE_LIMITED, KIND_AUTH)
-                                   else logging.WARNING)
-                    else:
-                        for raw in page.data:
-                            for wire in w.translator.feed(raw):
-                                await self._emit(w, wire)
-                        if page.last_id is not None:
-                            w.last_id = page.last_id
-                        for k in [k for k in self._conditions if k[:2] == key]:
-                            self._clear(k, "remote sessions: session %s readable again",
-                                        w.session_id)
-                        delay = 0.0 if page.has_more else self._watch_poll_s
+            while self.enabled() and not w.retired:
+                w.wake.clear()
+                self._catchup_waiters.discard(w)
+                viewed = self._viewed(w)
+                if w.publishing and not viewed:
+                    # The lease lapsed: stop feeding the viewers' stream, free its ring.
+                    w.publishing = False
+                    self._release_ring(w.session_id)
+                if not viewed and not w.warm:
+                    return
+                wait = self._wait_s(w, viewed)
+                if wait is None or wait > 0:
+                    await self._doze(w, wait)
+                    continue
+                slot = not viewed and not w.caught_up
+                if slot:
+                    wait = self._catchup_wait()
+                    if wait is None or wait > 0:
+                        self._catchup_waiters.add(w)
+                        await self._doze(w, wait)
+                        continue
+                    self._catchups += 1
+                    self._catchup_next_at = self._clock() + self._catchup_stagger_s
+                try:
+                    await self._read(w, key)
+                finally:
+                    if slot:
+                        self._free_catchup_slot()
                 w.ready.set()
-                await asyncio.sleep(delay)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — a watcher bug ends that watch, nothing else
@@ -455,22 +642,74 @@ class RemoteSessionsService:
                        w.session_id, type(exc).__name__)
         finally:
             w.ready.set()
+            self._catchup_waiters.discard(w)
             if self._watchers.get(w.session_id) is w:
                 del self._watchers[w.session_id]
-                if self._release is not None:
-                    try:
-                        self._release(stream_id(w.session_id))
-                    except Exception:  # noqa: BLE001
-                        log.debug("remote sessions: ring release failed", exc_info=True)
+                self._release_ring(w.session_id)
+
+    async def _read(self, w: _Watcher, key: tuple) -> None:
+        """One ``/events?after_id=`` read for *w*; a failure sets its backoff."""
+        creds = await self._creds(w.account)
+        if creds is None:
+            self._note(key + ("login",), "remote sessions: %s lost its claude.ai "
+                       "login; session %s unavailable", w.account, w.session_id)
+            self._back_off(w, None)
+            return
+        listed_as = w.list_updated
+        try:
+            page = await self._http().fetch_events(creds, w.session_id, after_id=w.last_id)
+        except UpstreamError as exc:
+            if exc.kind == KIND_NOT_FOUND:
+                await self._emit(w, ev.ErrorEvent(
+                    "remote_session_gone",
+                    "This remote session no longer exists on claude.ai.").to_wire())
+                self._gone.add(w.session_id)
+                self._retire(w)
+                return
+            delay = self._back_off(w, exc.retry_after)
+            if exc.kind == KIND_RATE_LIMITED:
+                state = self._accounts.get(w.account)
+                if state is not None:     # the limit is the account's, not this session's
+                    state.events_hold_until = max(state.events_hold_until,
+                                                  self._clock() + delay)
+            self._note(key + (exc.kind,), "remote sessions: reading session %s "
+                       "failed (%s); retrying", w.session_id, exc,
+                       level=logging.INFO if exc.kind in (KIND_RATE_LIMITED, KIND_AUTH)
+                       else logging.WARNING)
+            return
+        for raw in page.data:
+            for wire in w.translator.feed(raw):
+                await self._emit(w, wire)
+        if page.last_id is not None:
+            w.last_id = page.last_id
+        for k in [k for k in self._conditions if k[:2] == key]:
+            self._clear(k, "remote sessions: session %s readable again", w.session_id)
+        w.failures, w.backoff_until = 0, 0.0
+        w.fetched_at, w.synced_wall = self._clock(), self._wall()
+        w.synced_updated = listed_as
+        w.has_more = page.has_more
+        if not page.has_more:
+            w.caught_up = True
+
+    def _back_off(self, w: _Watcher, retry_after: float | None) -> float:
+        w.failures += 1
+        delay = min(MAX_BACKOFF_S, max(self._watch_poll_s * (2 ** w.failures),
+                                       retry_after or 0.0))
+        w.backoff_until = self._clock() + delay
+        return delay
 
     async def _emit(self, w: _Watcher, wire: dict) -> None:
         seq = self._seq.get(w.session_id, -1) + 1
         self._seq[w.session_id] = seq
         stamped = {**wire, "_remote": {"epoch": w.epoch, "seq": seq}}
+        if len(w.log) == w.log.maxlen:
+            self._note(("log_cap",), "remote sessions: session %s passed %d events; a view "
+                       "opens on the newest %d (logged once)", w.session_id, MAX_LOG,
+                       MAX_LOG, level=logging.INFO)
         w.log.append(stamped)
         for q in list(self._local.get(w.session_id, ())):
             q.put_nowait(stamped)
-        if self._publish is not None:
+        if self._publish is not None and w.publishing:
             try:
                 await self._publish(stream_id(w.session_id), stamped)
             except Exception:  # noqa: BLE001
@@ -530,7 +769,9 @@ class RemoteSessionsService:
         ``{ok: True, sent, account, kind}``."""
         self._require_enabled()
         w = self._watchers.get(session_id)
-        if w is None:
+        # A warm watcher without a viewer may be behind the log: only an open view's
+        # cards are answerable (the contract predates background sync).
+        if w is None or w.retired or not w.publishing:
             raise RemoteSessionsError(NOT_WATCHED, "Open this remote session to answer it.")
         if not isinstance(ask_id, str) or not ask_id:
             raise RemoteSessionsError(BAD_REQUEST, "An answer needs the card's id.")

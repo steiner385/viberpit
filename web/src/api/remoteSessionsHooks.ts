@@ -37,6 +37,11 @@ export interface RemoteSession {
   updatedAt: string | null
   needsYou: boolean
   unread: boolean
+  /** Background sync: the server holds a warm snapshot that has read the whole log at
+   *  least once, so opening the session needs no full read. */
+  synced?: boolean
+  /** ISO time of the server's last successful read of the session's events, or null. */
+  lastSyncedAt?: string | null
 }
 
 export interface RemoteSessionsList {
