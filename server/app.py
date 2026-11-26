@@ -1342,7 +1342,7 @@ def create_app(
         via = human_gate_via(request)
         try:
             require_human(identity, via, action="open a browser for a session",
-                          code=SESSION_CONTROL_HUMAN_ONLY_CODE)
+                          code=SESSION_CONTROL_HUMAN_ONLY_CODE, trust_local_host=False)
         except ActionError as exc:
             _browser_log.info("browser.open_refused code=%s identity=%s via=%s", exc.code, identity, via)
             raise HTTPException(status_code=exc.http,

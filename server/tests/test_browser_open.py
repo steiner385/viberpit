@@ -159,6 +159,21 @@ def test_open_browser_refuses_a_local_process_caller(monkeypatch):
     assert fake.calls == []
 
 
+def test_open_browser_refuses_a_local_process_caller_even_when_local_host_trusted(monkeypatch):
+    """#3325: VIBERPIT_RULES_TRUST_LOCAL_HOST must not let a loopback process (a session's
+    ``curl``) start a browser — only an attested front-end hop is a person here."""
+    from server.auth import identity
+    monkeypatch.setattr(identity, "attested_front_end_hop", lambda _conn: False)
+    fake = FakeX11(ok=True)
+    client = _make_client(fake)
+    with patch.dict(os.environ, {"VIBERPIT_RULES_TRUST_LOCAL_HOST": "true"}):
+        r = client.post("/api/sessions/S/browser/open", json={"url": "https://example.com"},
+                        headers=_IDENTITY_HEADERS)
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "SESSION_CONTROL_HUMAN_ONLY"
+    assert fake.calls == []
+
+
 def test_open_browser_refuses_a_token_caller():
     from server.assistant.token import mint_token
     fake = FakeX11(ok=True)
