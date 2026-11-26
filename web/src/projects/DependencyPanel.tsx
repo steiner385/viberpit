@@ -41,7 +41,7 @@ export function DependencyPanel({ slug }: { slug: string }) {
           {edges.map((e, i) => (
             <span key={`${e.dst}:${e.source}`}>
               {i > 0 && ', '}
-              <span className={e.dstState === 'closed' ? 'line-through opacity-60' : ''}>
+              <span className={e.dstState === 'closed' ? 'line-through text-ink-muted' : ''}>
                 {e.dst}
               </span>
               <span className="text-xs text-ink-muted"> ({e.source})</span>
