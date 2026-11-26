@@ -291,6 +291,38 @@ OPERATOR_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 )
 
 
+# The display (kiosk) principal's whole API surface (#1408). Disjoint from the two
+# tiers above on purpose: a wall display reads the pipeline feed and nothing else, so
+# it never inherits a row someone adds for the assistant. The kiosk page's fetch set is
+# pinned by web/src/features/pipeline/PipelinePage.test.tsx ("kiosk page requests only
+# the display allowlist"); a new kiosk fetch needs its row here AND the payload
+# projection in server/api/display_projection.py.
+DISPLAY_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (m, re.compile(p + r"$")) for m, p in [
+        ("GET", r"/api/pipeline/snapshot"),
+        ("GET", r"/api/pipeline/events"),
+        ("GET", r"/api/pipeline/repos"),
+        ("GET", r"/api/pipeline/insights/checks"),
+        ("GET", r"/api/config"),
+        ("GET", r"/api/auth/me"),
+        ("POST", r"/api/auth/logout"),
+    ]
+)
+
+
+def display_route_allowed(method: str, path: str) -> bool:
+    """Whether a display-scoped session may call ``method path``.
+
+    The API is a closed list (``DISPLAY_ROUTE_ALLOW``). Anything outside ``/api`` is the
+    SPA's static shell, which is public JS/CSS and read-only by method.
+    """
+    path = path.split("?", 1)[0]
+    method = method.upper()
+    if any(m == method and rx.match(path) for m, rx in DISPLAY_ROUTE_ALLOW):
+        return True
+    return method in ("GET", "HEAD") and not path.startswith(("/api/", "/ws"))
+
+
 def route_allowed(method: str, path: str, *, operator: bool = False) -> bool:
     path = path.split("?", 1)[0]
     method = method.upper()

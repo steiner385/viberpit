@@ -203,7 +203,7 @@ async def _bump_last_used_at(token_id: str) -> None:
         log.debug("assistant external token last_used_at bump failed", exc_info=True)
 
 
-async def _validate_user_token(token: str) -> "UserClaims | None":
+async def _validate_user_token(token: str, *, display: bool = False) -> "UserClaims | None":
     """Verify a `ccas2:…` token's signature AND its DB row (revocation, per-token
     expiry) — the full check both the HTTP dispatch below and the WS upgrade
     (`require_ws_identity`, Task 9.7) need, since `BaseHTTPMiddleware` never runs on a
@@ -211,15 +211,21 @@ async def _validate_user_token(token: str) -> "UserClaims | None":
     `last_used_at` (fire-and-forget) on success; returns None on any failure without
     distinguishing why — callers that need a specific 401 message check
     `settings.assistant_external_tokens` themselves before calling this.
+
+    ``display`` picks which family is valid: a ``scope="display"`` (kiosk) token is
+    EXCHANGE-ONLY — redeemed at ``POST /api/kiosk/session`` for a read-only cookie
+    session — so as a bearer it is refused (``display=False``), and the exchange alone
+    passes ``display=True``, which refuses every other scope the same way. Display
+    tokens do not depend on the external-assistant-token flag.
     """
     settings = get_settings()
-    if not settings.assistant_external_tokens:
+    if not display and not settings.assistant_external_tokens:
         return None
 
     from server.assistant.token import verify_user_token  # noqa: PLC0415
     claims: "UserClaims | None" = verify_user_token(
         token, max_age_s=settings.assistant_token_max_days * 86400)
-    if claims is None:
+    if claims is None or (claims.scope == "display") != display:
         return None
 
     from server.db import db_session as _token_db_session  # noqa: PLC0415
@@ -245,6 +251,61 @@ async def _validate_user_token(token: str) -> "UserClaims | None":
         return None
     _spawn_bg(_bump_last_used_at(claims.token_id))
     return claims
+
+
+# ---------------------------------------------------------------------------
+# Display (kiosk) principal (#1408)
+# ---------------------------------------------------------------------------
+
+# A display session rides its OWN cookie, never the ambient one: the middleware can then
+# tell "this browser is a wall display" without a DB read on every ordinary request, and
+# the display cookie wins over any ambient Tailscale identity on the same browser
+# ("narrower wins") instead of being shadowed by it.
+DISPLAY_COOKIE_NAME = f"{brand.SLUG}_display"
+DISPLAY_FORBIDDEN_CODE = "DISPLAY_SCOPE_FORBIDDEN"
+# Where the exchange authenticates by its body token, so it cannot demand an identity.
+# It is NOT exempt from the Origin guard, which wraps the whole app.
+KIOSK_EXCHANGE_PATH = "/api/kiosk/session"
+
+
+def display_cookie(conn) -> str | None:
+    return conn.cookies.get(DISPLAY_COOKIE_NAME) or None
+
+
+async def resolve_display_session(conn) -> tuple[str, str] | None:
+    """``(identity, session_id)`` for a LIVE display cookie, else None.
+
+    "Live" re-checks the token row on every call — revoked or expired ends the display
+    on its next poll, exactly like ``_validate_user_token`` — and revokes the session
+    row so a dead token cannot be revived. Works for HTTP and WebSocket alike.
+    """
+    signed = display_cookie(conn)
+    session_id = _unsign_session_id(signed) if signed else None
+    if not session_id:
+        return None
+    from server.db import db_session as _display_db_session  # noqa: PLC0415
+    from server.db.models import AssistantToken  # noqa: PLC0415
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    async with _display_db_session() as db:
+        row = (await db.execute(
+            select(AppSession).where(
+                AppSession.id == session_id, AppSession.scope == "display",
+                AppSession.revoked_at.is_(None), AppSession.expires_at > now)
+        )).scalar_one_or_none()
+        if row is None or not row.token_id:
+            return None
+        token = (await db.execute(
+            select(AssistantToken).where(AssistantToken.id == row.token_id)
+        )).scalar_one_or_none()
+        expires_at = token.expires_at if token is not None else None
+        if expires_at is not None and expires_at.tzinfo is not None:
+            expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+        if token is None or token.revoked_at is not None or expires_at is None \
+                or expires_at <= now:
+            row.revoked_at = now
+            await db.commit()
+            return None
+        return f"display:{token.label or token.id[:8]}", row.id
 
 
 async def _dispatch_user_token(request: Request, call_next, token: str):
@@ -331,10 +392,39 @@ class IdentityMiddleware(BaseHTTPMiddleware):
       close the socket directly — the `require_ws_identity` dependency handles that.
     """
 
+    async def _dispatch_display(self, request: Request, call_next):
+        """A request carrying a display cookie: the display principal or a 401, never
+        the ambient identity — the narrower scope wins on a shared browser."""
+        from server.assistant.policy import display_route_allowed  # noqa: PLC0415
+        resolved = await resolve_display_session(request)
+        if resolved is None:
+            response = JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={
+                "error": {"code": "DISPLAY_SESSION_ENDED",
+                          "message": "this display link has expired or been revoked"}})
+            response.delete_cookie(DISPLAY_COOKIE_NAME)
+            return response
+        if not display_route_allowed(request.method, request.url.path):
+            return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"error": {
+                "code": DISPLAY_FORBIDDEN_CODE,
+                "message": "a display session may not call this route"}})
+        request.state.identity, request.state.app_session_id = resolved
+        request.state.scope = "display"
+        request.state.via = None
+        return await call_next(request)
+
     async def dispatch(self, request: Request, call_next):
         # Unauthenticated liveness/schema probe (used by auto-deploy health-check).
         if request.url.path in _EXEMPT_PATHS:
             return await call_next(request)
+
+        if request.method == "POST" and request.url.path == KIOSK_EXCHANGE_PATH:
+            request.state.identity = None
+            request.state.scope = "full"
+            request.state.app_session_id = None
+            return await call_next(request)
+
+        if display_cookie(request):
+            return await self._dispatch_display(request, call_next)
 
         claims = _assistant_claims(request)
         if claims is None and request.headers.get("authorization", "").startswith(
@@ -394,6 +484,7 @@ class IdentityMiddleware(BaseHTTPMiddleware):
             )
 
         request.state.identity = identity
+        request.state.scope = "full"
 
         # Get-or-create AppSession via cookie
         # We handle DB session manually here since we're in middleware (no DI)
@@ -552,6 +643,13 @@ async def require_ws_identity(websocket: WebSocket) -> str:
     (human-in-the-browser) `None`.
     """
     from server.assistant.token import USER_PREFIX  # noqa: PLC0415
+    # A display (kiosk) cookie is refused on EVERY socket, live or dead, before any other
+    # credential is weighed: /ws, /ws/vnc and /ws/stt all carry control frames (prompts,
+    # permission answers, input) that a read-only wall display must never send, and the
+    # narrower scope wins over whatever ambient identity the same browser holds.
+    if display_cookie(websocket):
+        await websocket.close(code=1008)
+        raise HTTPException(status_code=403, detail="WebSocket: display scope is read-only")
     auth_header = websocket.headers.get("authorization", "")
     if auth_header.startswith("Bearer " + USER_PREFIX):
         claims = await _validate_user_token(auth_header[len("Bearer "):])

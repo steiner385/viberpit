@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import update
 
-from server.auth.middleware import (current_identity, _unsign_session_id,
+from server.auth.middleware import (DISPLAY_COOKIE_NAME, current_identity, _unsign_session_id,
                                     clear_session_cookies, read_session_cookie)
 from server.db import get_db
 from server.db.models import AppSession
@@ -35,10 +35,16 @@ async def auth_me(
     request: Request,
     identity: str = Depends(current_identity),
 ) -> dict:
-    """Return the current caller's verified identity and auth mode."""
+    """Return the current caller's verified identity, scope and auth mode.
+
+    A display (kiosk) session reports ``scope: "display"`` and an identity of
+    ``display:<label>`` — never the operator who minted the link (#1408).
+    """
+    scope = getattr(request.state, "scope", None) or "full"
     return {
         "identity": identity,
-        "authMode": "tailscale",
+        "scope": scope,
+        "authMode": "display" if scope == "display" else "tailscale",
     }
 
 
@@ -52,6 +58,19 @@ async def logout(
 
     Marks the server-side AppSession row as revoked and clears the cookie.
     """
+    if getattr(request.state, "scope", None) == "display":
+        # Ends the display session itself; the token stays valid for the next exchange.
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        await db.execute(
+            update(AppSession)
+            .where(AppSession.id == request.state.app_session_id,
+                   AppSession.scope == "display", AppSession.revoked_at.is_(None))
+            .values(revoked_at=now)
+        )
+        response = JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
+        response.delete_cookie(DISPLAY_COOKIE_NAME)
+        return response
+
     # Resolve the AppSession id from the signed cookie
     signed = read_session_cookie(request)
     if signed:

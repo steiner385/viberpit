@@ -1,7 +1,7 @@
 """Config API — exposes server-side config that the frontend needs."""
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select as sa_select
 
 from viberpit.engines import AgentEngine
@@ -96,10 +96,12 @@ def _edge_blocker(engine: AgentEngine) -> str | None:
 
 
 @router.get("")
-async def get_config(_identity: str = Depends(current_identity)) -> dict:
+async def get_config(request: Request, _identity: str = Depends(current_identity)) -> dict:
     settings = get_settings()
+    display = getattr(request.state, "scope", None) == "display"
     return {
-        "repoRoot": settings.repo_root,
+        # A host filesystem path: not for an unattended display (#1408).
+        "repoRoot": None if display else settings.repo_root,
         "adoptionEnabled": settings.enable_adoption,
         # True only when the flag is on AND the `stt` extra is importable, so the UI
         # never offers a mic engine the edge cannot actually run.
