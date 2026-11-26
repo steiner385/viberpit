@@ -12,15 +12,21 @@ the stream the edge's live view subscribes to.
 * ``remote_session_prompt`` ``{session_id, text}`` -> ``{ok, account}``
 * ``remote_session_answer`` ``{session_id, ask_id, decision?, message?, selected?, mode?}``
   -> ``{ok, sent, account, kind}``
+* ``remote_control_machine_ids`` ``{}`` -> ``{host, machineIds: {id: source}}`` — the
+  Remote Control machine ids THIS host's config files carry (``machines.local_payload``).
+  Answered by every daemon, kill switch or not: it reads only local files, and the edge
+  asks every host to name the machine a listed session runs on.
 
 A refusal raises ``RemoteSessionsError``; its ``error_data`` carries the code across the
 envelope.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from server.ipc.daemon import register_rpc
+from server.remote_sessions import machines
 from server.remote_sessions.service import RemoteSessionsService, service_for
 
 _ANSWER_KEYS = ("decision", "message", "selected", "mode")
@@ -48,7 +54,11 @@ def register_remote_sessions(app: Any, orchestrator: Any) -> RemoteSessionsServi
         return await svc.answer(str(params.get("session_id") or ""),
                                 str(params.get("ask_id") or ""), **answer)
 
+    async def remote_control_machine_ids(params: dict) -> dict:
+        return await asyncio.to_thread(machines.local_payload)
+
     register_rpc(app, "remote_sessions_list", remote_sessions_list)
+    register_rpc(app, "remote_control_machine_ids", remote_control_machine_ids)
     register_rpc(app, "remote_session_open", remote_session_open)
     register_rpc(app, "remote_session_touch", remote_session_touch)
     register_rpc(app, "remote_session_prompt", remote_session_prompt)

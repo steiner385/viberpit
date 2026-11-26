@@ -11,7 +11,7 @@
 // its 15 s poll adds to the initial chunk.
 import { useState } from 'react'
 import { Link, useMatch } from 'react-router-dom'
-import { ChevronDown, ChevronRight, ExternalLink, Radio } from 'lucide-react'
+import { ChevronDown, ChevronRight, ExternalLink, Radio, Tag } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { isSafeHttpUrl } from '@/lib/safeUrl'
 import { Badge } from '@/ui/Badge'
@@ -19,7 +19,10 @@ import { TIER_TONE } from '@/session/statusTier'
 import { REMOTE_SESSION_ROUTE, remoteSessionPath } from '@/session/sessionNavState'
 import { useRemoteSessions, type RemoteSession } from '@/api/remoteSessionsHooks'
 import { SessionStatusDot } from '../SessionStatusDot'
-import { remoteStatus, remoteWhereLabel } from './remoteSessionCopy'
+import {
+  remoteMachineLabel, remoteMachineUnnamed, remoteOriginLabel, remoteProjectLabel, remoteStatus,
+} from './remoteSessionCopy'
+import { NameMachineDialog } from './NameMachineDialog'
 
 export function RemoteSessionsSection() {
   const { data } = useRemoteSessions()
@@ -66,8 +69,11 @@ export function RemoteSessionsSection() {
 
 function RemoteSessionRow({ session, open }: { session: RemoteSession; open: boolean }) {
   const { tier, label } = remoteStatus(session)
-  const where = remoteWhereLabel(session)
+  // claude.ai sends no cwd for these; the repo + branch it reports is the project.
+  const project = remoteProjectLabel(session) ?? remoteOriginLabel(session.origin)
+  const machine = remoteMachineLabel(session)
   const connected = session.connection === 'connected'
+  const [naming, setNaming] = useState(false)
   return (
     <li
       data-testid="remote-session-row"
@@ -94,9 +100,29 @@ function RemoteSessionRow({ session, open }: { session: RemoteSession; open: boo
             className={cn('h-1.5 w-1.5 rounded-full flex-shrink-0', connected ? 'bg-success' : 'bg-neutral')}
           />
           <span className="sr-only">{connected ? 'Connected' : 'Disconnected'}</span>
-          {where && <span className="truncate">{where}</span>}
+          {project && <span data-testid="remote-project" className="truncate min-w-0">{project}</span>}
+          {project && <span aria-hidden="true">·</span>}
+          <span data-testid="remote-machine" className="truncate shrink-0 max-w-[45%]">{machine}</span>
         </div>
       </Link>
+      {session.machineId && remoteMachineUnnamed(session) && (
+        // Outside the row link (a11y: no interactive element nested in another).
+        <button
+          type="button"
+          onClick={() => setNaming(true)}
+          aria-label={`Name this machine (${machine})`}
+          title="Name this machine"
+          className={cn(
+            'shrink-0 inline-flex min-h-11 [@media(hover:hover)]:min-h-0 items-center px-1 text-ink-muted hover:text-ink',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded',
+          )}
+        >
+          <Tag size={14} aria-hidden="true" />
+        </button>
+      )}
+      {naming && session.machineId && (
+        <NameMachineDialog machineId={session.machineId} onClose={() => setNaming(false)} />
+      )}
       <Badge tone={TIER_TONE[tier]} className={cn('shrink-0', tier === 'needs-you' && 'font-semibold')}>
         {label}
       </Badge>

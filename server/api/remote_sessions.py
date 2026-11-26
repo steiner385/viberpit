@@ -16,7 +16,9 @@ Remote Control enable does) and audited (``remote_session.prompt`` /
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request
@@ -26,8 +28,9 @@ from pydantic import BaseModel, Field, StrictStr
 from server.audit import record_audit
 from server.auth.identity import human_gate_via
 from server.auth.middleware import current_identity
-from server.db import get_db
+from server.db import get_db, get_or_create_app_settings
 from server.ipc.client import DaemonError, DaemonUnavailable
+from server.remote_sessions import machines
 from server.remote_sessions import service as rs
 from server.sessions.session_actions import (SESSION_CONTROL_HUMAN_ONLY_CODE, ActionError,
                                              require_human)
@@ -62,17 +65,54 @@ def _human_gate(request: Request, identity: str, action: str) -> JSONResponse | 
     return None
 
 
+#: How long the fleet's ``{machine_id: host}`` map is reused, and how long an empty answer
+#: (every host failed) is, so a dead fleet is not re-asked on every 15 s poll.
+MACHINE_HOSTS_TTL_S = 300.0
+MACHINE_HOSTS_RETRY_S = 60.0
+#: The longest the list waits for the hosts' answers; past it the rows show ids.
+MACHINE_HOSTS_WAIT_S = 5.0
+
+
+async def _machine_hosts(request: Request) -> dict[str, str]:
+    """``{machine_id: host name}`` across every ViberPit host, cached on the app."""
+    state = request.app.state
+    cached = getattr(state, "remote_machine_hosts_cache", None)
+    now = time.monotonic()
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    hosts: dict[str, str] = {}
+    try:
+        hosts = await asyncio.wait_for(state.sessions.remote_machine_hosts(),
+                                       MACHINE_HOSTS_WAIT_S)
+    except Exception as exc:  # noqa: BLE001 — a missing name is cosmetic
+        log.info("remote sessions: naming machines failed (%s)", type(exc).__name__)
+    state.remote_machine_hosts_cache = (
+        now + (MACHINE_HOSTS_TTL_S if hosts else MACHINE_HOSTS_RETRY_S), hosts)
+    return hosts
+
+
 @router.get("")
 async def list_remote_sessions(request: Request,
-                               identity: str = Depends(current_identity)) -> Any:
+                               identity: str = Depends(current_identity),
+                               db=Depends(get_db)) -> Any:
     """Every Remote Control session on the operator's accounts that ViberPit does not
-    run itself. Each: ``{id, account, title, status, connection, machineId, origin, cwd,
-    model, url, updatedAt, needsYou, unread}``. With the kill switch off this is
-    ``{enabled: false, sessions: [], accounts: []}`` (200)."""
+    run itself. Each: ``{id, account, title, status, connection, machineId, machineName,
+    origin, project, branch, projects, cwd, model, url, updatedAt, needsYou, unread}``.
+    ``machineName`` is the ViberPit host whose config carries the machine id, else the
+    operator's label for it (Settings ``remoteMachineLabels``), else null. With the kill
+    switch off this is ``{enabled: false, sessions: [], accounts: []}`` (200)."""
     try:
-        return await request.app.state.sessions.remote_sessions_list()
+        result = await request.app.state.sessions.remote_sessions_list()
     except (rs.RemoteSessionsError, DaemonUnavailable, DaemonError) as exc:
         return _error(*_refusal(exc))
+    sessions = result.get("sessions") if isinstance(result, dict) else None
+    if not sessions:
+        return result
+    hosts = (await _machine_hosts(request)
+             if any(isinstance(s, dict) and s.get("machineId") for s in sessions) else {})
+    labels = machines.stored_labels((await get_or_create_app_settings(db))
+                                    .remote_machine_labels)
+    return {**result, "sessions": machines.apply_names(sessions, hosts, labels)}
 
 
 class PromptRequest(BaseModel):

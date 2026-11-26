@@ -15,17 +15,25 @@ export function remoteOriginLabel(origin: RemoteSession['origin']): string | nul
   return origin ? ORIGIN_LABEL[origin] : null
 }
 
-/** The machine a remote session runs on, as the short id claude.ai tags it with.
- *  claude.ai reports an opaque machine id, never a host name, so this cannot tell
- *  "this machine" from another — it names the id rather than guessing. */
-export function remoteMachineLabel(machineId: string | null): string {
-  return machineId ? `machine ${machineId.slice(0, 8)}` : 'an unknown machine'
+/** The machine a remote session runs on: the ViberPit host or operator label the server
+ *  resolved, else the short id claude.ai tags it with (which cannot tell "this machine"
+ *  from another, so it names the id rather than guessing). */
+export function remoteMachineLabel(s: Pick<RemoteSession, 'machineId' | 'machineName'> | undefined): string {
+  if (s?.machineName) return s.machineName
+  return s?.machineId ? `machine ${s.machineId.slice(0, 8)}` : 'an unknown machine'
 }
 
-/** `<origin> · <machine>` — the row's second line. */
-export function remoteWhereLabel(s: Pick<RemoteSession, 'origin' | 'machineId'>): string {
-  return [remoteOriginLabel(s.origin), s.machineId ? remoteMachineLabel(s.machineId) : null]
-    .filter(Boolean).join(' · ')
+/** True when the machine has only an id — no ViberPit host and no operator label. */
+export function remoteMachineUnnamed(s: Pick<RemoteSession, 'machineId' | 'machineName'>): boolean {
+  return Boolean(s.machineId) && !s.machineName
+}
+
+/** `owner/repo · branch` (or just the repo), with `+N` when the session reports more
+ *  repos; null when claude.ai reported none. */
+export function remoteProjectLabel(s: Pick<RemoteSession, 'project' | 'branch' | 'projects'>): string | null {
+  if (!s.project) return null
+  const more = (s.projects?.length ?? 0) > 1 ? ` +${(s.projects?.length ?? 0) - 1}` : ''
+  return (s.branch ? `${s.project} · ${s.branch}` : s.project) + more
 }
 
 /** The status tier (dot colour, badge tone) and words for a remote session. A

@@ -4,8 +4,9 @@
 // Its own module, like `remoteControlHooks`, so it ships only in the lazy remote chunks
 // (the list section and the remote page) rather than the entry bundle, and so the
 // suites that hand-mock `@/api/hooks` never have to learn it.
-import { useQuery } from '@tanstack/react-query'
-import { api } from './client'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { api, type ApiRequestError } from './client'
+import { QK } from './hooks'
 
 export type RemoteSessionStatus = 'running' | 'idle' | 'requires_action' | 'pending'
 
@@ -17,8 +18,18 @@ export interface RemoteSession {
   title: string
   status: RemoteSessionStatus
   connection: 'connected' | 'disconnected'
+  /** The opaque Remote Control machine id claude.ai tags the session with. */
   machineId: string | null
+  /** The ViberPit host whose config carries `machineId`, else the operator's label for
+   *  it (Settings `remoteMachineLabels`), else null. */
+  machineName: string | null
   origin: 'repl' | 'sdk' | 'auto' | null
+  /** The first `owner/repo` claude.ai reports for the session, and its branch. */
+  project: string | null
+  branch: string | null
+  /** Every `{repo, branch}` when the session reports more than one, else null. */
+  projects: { repo: string; branch: string | null }[] | null
+  /** Usually null: claude.ai sends an empty cwd for Remote Control sessions. */
   cwd: string | null
   model: string | null
   /** The claude.ai link ("Open in Claude app"). Untrusted: gate with `isSafeHttpUrl`. */
@@ -48,6 +59,21 @@ export function useRemoteSessions() {
     queryFn: () => api.get<RemoteSessionsList>('/remote-sessions'),
     refetchInterval: (query) => (query.state.data?.enabled === false ? DISABLED_POLL_MS : POLL_MS),
     staleTime: 10_000,
+  })
+}
+
+/** Name a Remote Control machine ViberPit does not run on: `PUT /api/settings
+ *  {remoteMachineLabels: {id: label}}` (a patch — other labels are kept; a blank label
+ *  removes it). The list re-reads so the rows pick the name up. */
+export function useNameRemoteMachine() {
+  const qc = useQueryClient()
+  return useMutation<unknown, ApiRequestError, { machineId: string; label: string }>({
+    mutationFn: ({ machineId, label }) =>
+      api.put('/settings', { remoteMachineLabels: { [machineId]: label } }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: REMOTE_SESSIONS_KEY })
+      qc.invalidateQueries({ queryKey: QK.settings })
+    },
   })
 }
 

@@ -276,7 +276,8 @@ def test_listing_keeps_live_remote_control_sessions_only() -> None:
     assert show is not None
     assert show == {"id": SID, "account": "acct", "title": f"title {SID}",
                     "status": "running", "connection": "connected", "machineId": "m-123",
-                    "origin": "repl", "cwd": "/work/repo", "model": "claude-x",
+                    "origin": "repl", "project": None, "branch": None, "projects": None,
+                    "cwd": "/work/repo", "model": "claude-x",
                     "url": f"https://claude.ai/code/{SID}", "updatedAt": show["updatedAt"],
                     "needsYou": False, "unread": False}
     assert listing.summarize(_session(SID, environment_kind="anthropic_cloud"), "a",
@@ -294,6 +295,38 @@ def test_listing_keeps_live_remote_control_sessions_only() -> None:
     odd = listing.summarize(_session(SID, tags="nope", session_context=None, title=7), "a",
                             now=now)
     assert odd is not None and odd["origin"] is None and odd["cwd"] is None and odd["title"] == ""
+
+
+def test_listing_reads_the_project_from_current_branches() -> None:
+    """A bridge session's ``session_context.cwd`` is "" (verified 2026-11-26); its project is
+    ``external_metadata.current_branches`` ({owner/repo: branch})."""
+    now = time.time()
+    one = listing.summarize(_session(SID, session_context={"cwd": ""}, external_metadata={
+        "current_branches": {"cairnea/KinDash": "feat/x"}, "model": "claude-opus"}), "a",
+        now=now)
+    assert one is not None
+    assert (one["project"], one["branch"], one["projects"]) == ("cairnea/KinDash", "feat/x",
+                                                                None)
+    assert one["cwd"] is None  # empty cwd reads as absent
+    assert one["model"] == "claude-opus"  # external_metadata.model when the context has none
+
+    many = listing.summarize(_session(SID, external_metadata={"current_branches": {
+        "o/a": "main", "o/b": "dev"}}), "a", now=now)
+    assert many is not None and many["project"] == "o/a" and many["branch"] == "main"
+    assert many["projects"] == [{"repo": "o/a", "branch": "main"},
+                                {"repo": "o/b", "branch": "dev"}]
+
+    ext: Any
+    for ext in (None, {}, {"current_branches": {}}, {"current_branches": ["o/a"]},
+                {"current_branches": "o/a"}, "garbage", {"current_branches": None}):
+        none = listing.summarize(_session(SID, external_metadata=ext), "a", now=now)
+        assert none is not None
+        assert (none["project"], none["branch"], none["projects"]) == (None, None, None)
+
+    odd = listing.summarize(_session(SID, external_metadata={"current_branches": {
+        "": "x", "o/a": 7, "o/b": "b"}}), "a", now=now)
+    assert odd is not None and odd["project"] == "o/a" and odd["branch"] is None
+    assert odd["projects"] == [{"repo": "o/a", "branch": None}, {"repo": "o/b", "branch": "b"}]
 
 
 def test_listing_excludes_viberpit_owned_sessions_by_url_or_id() -> None:
@@ -714,6 +747,9 @@ async def test_daemon_rpc_round_trip_streams_over_the_event_bus() -> None:
             ro = RemoteOrchestrator(client)
             listed = await ro.remote_sessions_list()
             assert {s["id"] for s in listed["sessions"]} == {SID, OTHER}
+            with patch("server.remote_sessions.machines.local_payload",
+                       return_value={"host": "rocky", "machineIds": {"m-123": "home"}}):
+                assert await ro.remote_machine_hosts() == {"m-123": "rocky"}
             view = await ro.remote_session_open(SID)
             assert "textDelta" in _types(view.snapshot)
             got: list[dict] = []
@@ -798,6 +834,43 @@ def test_http_routes_list_prompt_answer_and_audit() -> None:
         r = c.post(f"/api/remote-sessions/{SID}/answer", json={"askId": "r1",
                                                                "decision": "maybe"}, headers=_H)
         assert r.status_code == 422
+
+
+def test_http_list_names_machines_by_host_then_operator_label() -> None:
+    """``machineName``: the ViberPit host whose config carries the id, else the operator's
+    Settings label (round-tripped through ``PUT /api/settings``), else null."""
+    api = FakeApi()
+    app = _app(api)
+    on_dobby = {"host": "dobby", "machineIds": {"m-123": "home"}}
+    with patch.dict(os.environ, _ENV), TestClient(app) as c, \
+            patch("server.remote_sessions.machines.local_payload",
+                  return_value={"host": "dobby", "machineIds": {}}) as local:
+        rows = c.get("/api/remote-sessions", headers=_H).json()["sessions"]
+        assert rows and all(s["machineId"] == "m-123" and s["machineName"] is None
+                            for s in rows)
+
+        r = c.put("/api/settings", json={"remoteMachineLabels": {"m-123": " Work  laptop "}},
+                  headers=_H)
+        assert r.status_code == 200 and r.json()["remoteMachineLabels"] == {
+            "m-123": "Work laptop"}
+        assert c.get("/api/settings", headers=_H).json()["remoteMachineLabels"] == {
+            "m-123": "Work laptop"}
+        rows = c.get("/api/remote-sessions", headers=_H).json()["sessions"]
+        assert {s["machineName"] for s in rows} == {"Work laptop"}
+
+        # A ViberPit host that carries the id outranks the label (once the cache expires).
+        local.return_value = on_dobby
+        app.state.remote_machine_hosts_cache = None
+        rows = c.get("/api/remote-sessions", headers=_H).json()["sessions"]
+        assert {s["machineName"] for s in rows} == {"dobby"}
+        calls = local.call_count
+        c.get("/api/remote-sessions", headers=_H)
+        assert local.call_count == calls  # cached
+
+        r = c.put("/api/settings", json={"remoteMachineLabels": {"../bad": "x"}}, headers=_H)
+        assert r.status_code == 422
+        r = c.put("/api/settings", json={"remoteMachineLabels": {"m-123": None}}, headers=_H)
+        assert r.status_code == 200 and r.json()["remoteMachineLabels"] == {}
 
 
 def test_http_send_routes_are_person_only() -> None:

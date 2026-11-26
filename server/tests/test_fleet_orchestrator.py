@@ -655,6 +655,10 @@ def test_every_remote_method_is_classified():
                 # Remote sessions: defined on FleetOrchestrator — the primary's list
                 # minus every host's own Remote Control sessions.
                 "remote_sessions_list",
+                # Remote sessions' machine names: remote_machine_hosts is defined on
+                # FleetOrchestrator, asks EVERY host by name (remote_control_machine_ids)
+                # and names each machine id by the host that reported it.
+                "remote_machine_hosts", "remote_control_machine_ids",
                 # D-16c plugin ops: plugin_op_everywhere is defined on FleetOrchestrator
                 # and names EVERY host's outcome; it calls plugin_op per host by name.
                 "plugin_op", "plugin_op_everywhere",
@@ -941,7 +945,8 @@ def test_api_orchestrator_reads_are_all_classified():
                 "automation_overview", "plugin_op_everywhere",
                 "reload_plugins_everywhere",
                 "apply_remote_control_default",  # fleet-wide on FleetOrchestrator
-                "remote_sessions_list"}  # primary's list minus fleet-wide own sessions
+                "remote_sessions_list",  # primary's list minus fleet-wide own sessions
+                "remote_machine_hosts"}  # every host's Remote Control machine ids
     classified = (_PER_SESSION | _FANOUT_BY_IDS | set(_MERGE_ALL_HOSTS)
                   | PRIMARY_LOCAL | EXPLICIT)
 
@@ -1529,3 +1534,33 @@ async def test_remote_sessions_list_disabled_is_passed_through():
     dobby = _RsOrch("dobby", listing=off)
     fo = FleetOrchestrator(_FakeRouter({"dobby": dobby}), primary="dobby")
     assert await fo.remote_sessions_list() == off
+
+
+# --- remote_machine_hosts: each host names the Remote Control machine ids it carries ---
+
+class _MidOrch(_FakeOrch):
+    def __init__(self, name, payload=None, fail=None):
+        super().__init__(name)
+        self.payload, self.fail = payload, fail
+
+    async def remote_control_machine_ids(self):
+        if self.fail is not None:
+            raise self.fail
+        return self.payload
+
+
+@pytest.mark.asyncio
+async def test_remote_machine_hosts_names_ids_by_the_reporting_host_and_skips_failures():
+    from server.ipc.client import DaemonUnavailable
+    dobby = _MidOrch("dobby", {"host": "ignored", "machineIds": {"m-d": "home",
+                                                                 "m-shared": "account"}})
+    rocky = _MidOrch("rocky", {"host": "rocky", "machineIds": {"m-r": "home",
+                                                               "m-shared": "account"}})
+    gone = _MidOrch("thready", fail=DaemonUnavailable("down"))
+    old = _MidOrch("old", fail=RuntimeError("unknown rpc"))
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky, "thready": gone,
+                                        "old": old}), primary="dobby")
+    # Registry names win over the daemon's self-reported host; a shared account store's
+    # id names both hosts; unreachable and older daemons are skipped.
+    assert await fo.remote_machine_hosts() == {"m-d": "dobby", "m-r": "rocky",
+                                               "m-shared": "dobby / rocky"}

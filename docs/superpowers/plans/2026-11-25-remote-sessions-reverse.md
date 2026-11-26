@@ -119,10 +119,25 @@ CLI is listed, streams, runs a prompt, resolves a tool approval and a question).
 `status` is `ok | no_login | pending | error:<kind>`. Kill switch off →
 `{enabled: false, sessions: [], accounts: []}`. `RemoteSession`:
 `{id: "session_…", account, title, status: "running"|"idle"|"requires_action"|"pending",
-connection: "connected"|"disconnected", machineId: string|null, origin:
-"repl"|"sdk"|"auto"|null, cwd: string|null, model: string|null, url: string|null (the
+connection: "connected"|"disconnected", machineId: string|null, machineName: string|null,
+origin: "repl"|"sdk"|"auto"|null, project: string|null, branch: string|null, projects:
+[{repo, branch}]|null, cwd: string|null, model: string|null, url: string|null (the
 claude.ai link, "Open in Claude app"), updatedAt: ISO string|null, needsYou: bool, unread:
 bool}`, sorted needs-you first, then connected, then most recent.
+
+*Project and machine (added 2026-11-26).* A bridge session's `session_context.cwd` is an empty
+string, so `cwd` is usually null; the project is `external_metadata.current_branches`
+(`{"owner/repo": "branch"}`): `project`/`branch` are its first entry, `projects` every entry
+when there are several. claude.ai reports the machine only as the tag `machine-id:<uuid>` —
+the CLI's `remoteControlMachineId` in the `.claude.json` of the config dir the session ran
+from (not the separate `machineID` key). Every daemon answers `remote_control_machine_ids`
+(`{host, machineIds: {id: "home"|"account"}}`, read from the host user's `~/.claude.json`
+and each account config dir under `cfg/`); the edge fans it out (`FleetOrchestrator.
+remote_machine_hosts`, unreachable hosts skipped, cached 5 min) and sets `machineName` to the
+reporting host, else the operator's label from Settings `remoteMachineLabels` (`PUT
+/api/settings {remoteMachineLabels: {id: label|null}}`, a patch), else null. The web Remote
+group offers "Name this machine" for an id with no name. Code:
+`server/remote_sessions/machines.py`; tests `server/tests/test_remote_session_machines.py`.
 
 **Live view: the ordinary `/ws` socket, session id `remote:<id>`.**
 - `{"type":"attach","sessionId":"remote:session_…"}` → `replayReset` (with `gen`), the

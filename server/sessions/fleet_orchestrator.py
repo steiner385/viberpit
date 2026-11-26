@@ -1229,6 +1229,25 @@ class FleetOrchestrator:
                 and not (s.get("url") and listing.session_key(s["url"]) in owned)]
         return {**result, "sessions": kept}
 
+    async def remote_machine_hosts(self) -> dict[str, str]:
+        """``{machine_id: host name}`` FLEET-WIDE: every reachable host is asked for the
+        Remote Control machine ids its config files carry, and each id is named by the
+        host (its registry name) that reported it (``remote_sessions.machines``). A host
+        that fails or does not know the RPC (an older daemon) is skipped: a session it
+        runs just shows its id, which is cosmetic."""
+        from server.remote_sessions import machines
+
+        async def _one(name: str):
+            try:
+                return name, await self._router.get(name).remote_control_machine_ids()
+            except Exception as exc:  # noqa: BLE001 — one host must not block the rest
+                log.info("fleet.remote_machine_hosts host=%s skipped (%s)",
+                         name, type(exc).__name__)
+                return name, None
+
+        reports = await asyncio.gather(*(_one(n) for n in await self._fanout_names()))
+        return machines.merge_hosts(reports)
+
     async def codex_invalidate_credentials(self, account: str) -> dict:
         """Revoke *account*'s Codex credentials on EVERY host, reporting per host.
 
