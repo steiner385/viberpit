@@ -40,4 +40,13 @@ describe('effortStep', () => {
     expect(effortStep(['low', 'high'], null)).toBe('pick')
     expect(effortStep(['low', 'high'], 'max')).toBe('pick')
   })
+
+  it("a known-level list that is not lowest-first opens the picker rather than raising effort", () => {
+    expect(effortStep(['high', 'medium', 'low'], 'medium')).toBe('pick')
+    expect(effortStep(['low', 'low', 'high'], 'high')).toBe('pick')
+  })
+
+  it('a list with unknown level names is trusted as catalog order', () => {
+    expect(effortStep(['lowest', 'balanced', 'highest'], 'highest')).toEqual({ to: 'balanced' })
+  })
 })
