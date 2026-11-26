@@ -83,6 +83,12 @@ also carries the tick's ``getrusage(RUSAGE_SELF)`` deltas and GC time
 (``utime_s``, ``stime_s``, ``majflt``, ``nivcsw``, ``gc_s``): utime ≈ lag is the
 loop on CPU in our code, high ``majflt`` is faulting heap back from swap, high
 ``nivcsw`` with utime ≈ 0 is descheduling, and ``gc_s`` is a collector pause.
+
+That last pair is also the one PSI misses (#3163): a collector pause covering
+``GC_SWAPIN_SHARE`` of the lag with ``SWAPIN_MAJFLT``+ major faults is the
+collector paging the heap back from zram, so it is a ``loop_lag.host_stall`` too.
+It was held back until ``gc.freeze()`` (#3150) landed, so the signal was not
+hidden while still actionable.
 """
 import asyncio
 import concurrent.futures
@@ -329,6 +335,15 @@ PSI_READ_TIMEOUT_S = 1.0
 # own code (#2866, #2882).
 HOST_STALL_SHARE = 0.5
 
+# A collector pause covering this share of the lag, with at least ``SWAPIN_MAJFLT``
+# major faults in the same tick, is the collector paging a swapped-out heap back
+# in (#3163). zram swap-in is not memstall, so PSI cannot explain it. Once
+# ``gc.freeze()`` (#3150) has taken the startup heap out of the collector, what
+# remains is host memory pressure, not a defect in our code. Observed host stalls
+# had 15k-99k faults; GC pauses with no swap-in had ~100.
+GC_SWAPIN_SHARE = 0.5
+SWAPIN_MAJFLT = 1000
+
 
 class _Throttle:
     """One level's quiet window, and what it swallowed since its last line."""
@@ -494,6 +509,10 @@ class LoopLagWatchdog:
                     kind, level, event = "host", logging.INFO, "loop_lag.host_stall"
             if usage:
                 extra.update(usage)
+                if (kind == "alert"
+                        and usage.get("gc_s", 0.0) >= GC_SWAPIN_SHARE * lag
+                        and usage.get("majflt", 0) >= SWAPIN_MAJFLT):
+                    kind, level, event = "host", logging.INFO, "loop_lag.host_stall"
         t = self._throttles[kind]
         now = self._clock()
         if t.last_at is not None and (now - t.last_at) < self.warn_every:

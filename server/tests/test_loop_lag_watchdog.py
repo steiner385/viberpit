@@ -293,6 +293,34 @@ def test_a_stall_the_host_pressure_explains_is_info():
     assert fields["lag_s"] == pytest.approx(6.88)
 
 
+def test_a_gc_pause_that_is_swap_in_is_a_host_stall():
+    log = _LevelLog()
+    wd = _alerting_watchdog(log, _FakePsi())
+    wd._note_lag(14.9, usage={"gc_s": 15.0, "majflt": 99078, "utime_s": 0.9})
+
+    assert log.levels == [logging.INFO]
+    event, fields = log.events[0]
+    assert event == "loop_lag.host_stall"
+    assert fields["majflt"] == 99078
+
+
+def test_a_gc_pause_without_major_faults_stays_a_warning():
+    log = _LevelLog()
+    wd = _alerting_watchdog(log, _FakePsi())
+    wd._note_lag(10.0, usage={"gc_s": 9.0, "majflt": 133})
+
+    assert log.levels == [logging.WARNING]
+    assert log.events[0][0] == "loop_lag.stall"
+
+
+def test_major_faults_without_a_gc_pause_stay_a_warning():
+    log = _LevelLog()
+    wd = _alerting_watchdog(log, _FakePsi())
+    wd._note_lag(10.0, usage={"gc_s": 0.1, "majflt": 50000})
+
+    assert log.levels == [logging.WARNING]
+
+
 def test_a_stall_the_host_pressure_does_not_explain_stays_a_warning():
     log = _LevelLog()
     psi = _FakePsi()
