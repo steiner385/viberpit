@@ -125,7 +125,12 @@ def summarize(raw: Any, account: str, *, now: float,
     }
 
 
+def updated_epoch(summary: dict) -> float | None:
+    """A summary's ``updatedAt`` as epoch seconds, or None."""
+    return _epoch(summary.get("updatedAt"))
+
+
 def sort_key(summary: dict) -> tuple:
     """Needs-you first, then connected, then most recently updated."""
     return (not summary["needsYou"], summary["connection"] != CONNECTED,
-            -(_epoch(summary.get("updatedAt")) or 0.0))
+            -(updated_epoch(summary) or 0.0))

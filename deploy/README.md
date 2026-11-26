@@ -855,9 +855,27 @@ question). ViberPit does not own them: no rotation, respawn or archive.
   account's browser-login slot access token and org UUID (`account_auth`, the Remote Control
   launch credential). An account without that login is skipped (`no_login`). The edge reaches
   it over daemon RPC; a worker answers `REMOTE_SESSIONS_DISABLED`.
-- **Polling:** each account's list every 15 s, backing off to 5 min on errors; a watched
-  session's events every 2 s, while a viewer is attached (3 min lease). Failures degrade to
-  "unavailable" and are logged once per condition.
+- **Polling and background sync:** each account's list every 15 s, backing off to 5 min on
+  errors. Every listed session (the 50 most recently updated) keeps a warm snapshot, so
+  opening one shows it at once. Its events are read in these cases:
+  - **Catch-up:** one whole-log read on first listing, at most 2 at a time and 1 s apart.
+  - **When `updatedAt` moves:** after that, an `after_id` read only when the list's
+    `updatedAt` for the session moved.
+  - **While working:** a connected `running` / `requires_action` session is read at most
+    every 10 s.
+  - **While viewed:** every 2 s (3 min lease).
+
+  A disconnected session is read once and then left alone. A 429 on events holds every
+  background read for that account, and so does an account in list backoff. Failures
+  degrade to "unavailable" and are logged once per condition. The caps are logged once when
+  they apply: 50 warm sessions, and 4000 events kept per session, the newest kept.
+- **API call budget (claude.ai), about 10 sessions on one account:** the list costs 4/min
+  (up to 2 pages each). An idle session costs 0/min. A working session costs at most
+  ~8/min: a busy read every 10 s, plus a read whenever a list poll shows `updatedAt` moved.
+  An open view adds 30/min. With 2 of 10 sessions working and nothing open, that is
+  ≤ ~20/min. Before background sync it was 4/min idle, plus a full-log read and 30/min per
+  open view. Enabling the feature costs one paced whole-log read per listed session: about
+  10 s for 10 sessions.
 - **Who can act:** sending a prompt or an answer is person-only (403
   `SESSION_CONTROL_HUMAN_ONLY`, honouring `VIBERPIT_RULES_TRUST_LOCAL_HOST` like the Remote
   Control enable) and audited (`remote_session.prompt` / `remote_session.answer`).

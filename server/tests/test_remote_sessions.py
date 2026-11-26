@@ -504,16 +504,18 @@ async def test_open_refuses_unknown_owned_and_bad_ids() -> None:
         with pytest.raises(rs.RemoteSessionsError) as info:
             await svc.open(sid)
         assert info.value.code == rs.NOT_FOUND
-    assert not any("/events" in r.url.path for r in api.requests)
+    # Background sync reads the listed sessions; never the refused ids.
+    assert not any("99Nope" in r.url.path or OWNED in r.url.path for r in api.requests)
     await svc.aclose()
 
 
 @pytest.mark.asyncio
 async def test_one_watcher_per_session_and_it_stops_without_viewers() -> None:
+    """A session outside the warm set (``max_warm=0``) is watched only while viewed."""
     api = FakeApi()
-    svc = _service(api)
+    svc = _service(api, max_warm=0)
     a, b = await asyncio.gather(svc.open(SID), svc.open(SID))
-    assert a["epoch"] == b["epoch"] == 1 and len(svc._watchers) == 1
+    assert a["epoch"] == b["epoch"] == 1 and list(svc._watchers) == [SID]
     svc._watchers[SID].touched_at -= rs.LEASE_S + 1
     await _until(lambda: SID not in svc._watchers)
     with pytest.raises(rs.RemoteSessionsError) as info:
@@ -666,8 +668,240 @@ async def test_turning_the_kill_switch_off_stops_watchers() -> None:
     api = FakeApi()
     svc = _service(api)
     await svc.open(SID)
+    await _until(lambda: OTHER in svc._watchers)          # a warm background watcher too
     svc._test_flag["on"] = False  # type: ignore[attr-defined]
-    await _until(lambda: SID not in svc._watchers)
+    await _until(lambda: not svc._watchers)
+    n = len(api.requests)
+    await asyncio.sleep(0.15)
+    assert len(api.requests) == n                        # nothing runs while off
+    await svc.aclose()
+
+
+# ================================================================= background sync
+
+def _event_reads(api: FakeApi, sid: str) -> list[httpx.Request]:
+    return [r for r in api.requests
+            if r.method == "GET" and r.url.path == f"/v1/sessions/{sid}/events"]
+
+
+def _idle_api() -> FakeApi:
+    """Two listed sessions claude.ai reports idle (no busy polling)."""
+    api = FakeApi()
+    api.sessions = [_session(SID, session_status="idle"),
+                    _session(OTHER, session_status="idle")]
+    return api
+
+
+@pytest.mark.asyncio
+async def test_first_listing_warms_every_listed_session_and_reports_it_synced() -> None:
+    api = _idle_api()
+    svc = _service(api)
+    first = await svc.list_sessions()
+    assert {s["id"] for s in first["sessions"]} == {SID, OTHER}
+    await _until(lambda: all(svc._watchers.get(s) is not None and svc._watchers[s].caught_up
+                             for s in (SID, OTHER)))
+    w = svc._watchers[SID]
+    assert any(e.get("text") == "Hi there" for e in w.log)
+    assert w.publishing is False and w.touched_at == float("-inf")   # no viewer
+    listed = {s["id"]: s for s in (await svc.list_sessions())["sessions"]}
+    assert listed[SID]["synced"] is True and listed[SID]["lastSyncedAt"].endswith("Z")
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_updated_at_reads_nothing_and_an_advanced_one_reads_after_id() -> None:
+    api = _idle_api()
+    svc = _service(api)
+    await svc.list_sessions()
+    await _until(lambda: SID in svc._watchers and svc._watchers[SID].caught_up)
+    n = len(_event_reads(api, SID))
+    await asyncio.sleep(0.4)                       # ~8 list polls, updatedAt unchanged
+    assert len(_event_reads(api, SID)) == n
+    last = svc._watchers[SID].last_id
+    api.events[SID].append(ev_text("while away", mid="msg_w"))
+    api.sessions[0]["updated_at"] = _iso(-5)       # claude.ai bumps updatedAt
+    await _until(lambda: any(e.get("text") == "while away" for e in svc._watchers[SID].log))
+    reads = _event_reads(api, SID)[n:]
+    assert reads and reads[0].url.params.get("after_id") == last   # incremental, not full
+    await asyncio.sleep(0.3)
+    assert len(_event_reads(api, SID)) == n + len(reads)          # and quiet again
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_connected_working_session_is_polled_at_the_busy_cadence() -> None:
+    api = FakeApi()                                # SID and OTHER are "running"
+    api.sessions = [_session(SID), _session(OTHER, connection_status="disconnected")]
+    svc = _service(api, busy_poll_s=0.1)
+    await svc.list_sessions()
+    await _until(lambda: SID in svc._watchers and svc._watchers[SID].caught_up
+                 and OTHER in svc._watchers and svc._watchers[OTHER].caught_up)
+    n, m = len(_event_reads(api, SID)), len(_event_reads(api, OTHER))
+    await asyncio.sleep(0.55)
+    busy = len(_event_reads(api, SID)) - n
+    assert 3 <= busy <= 7                          # ~every 0.1 s, not every 0.02 s
+    # Disconnected: read once (caught up), then left alone — its updatedAt stands still.
+    assert len(_event_reads(api, OTHER)) == m
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_gets_the_fast_cadence_until_its_lease_lapses() -> None:
+    api = _idle_api()
+    published: list[str] = []
+    released: list[str] = []
+
+    async def publish(stream: str, event: dict) -> None:
+        published.append(stream)
+
+    svc = _service(api)
+    svc.set_publisher(publish, released.append)
+    await svc.list_sessions()
+    await _until(lambda: SID in svc._watchers and svc._watchers[SID].caught_up)
+    assert published == []                         # background reads feed no viewer stream
+    n = len(_event_reads(api, SID))
+    await svc.open(SID)
+    await asyncio.sleep(0.3)
+    assert len(_event_reads(api, SID)) - n >= 5    # every watch_poll_s (0.02 s)
+    api.events[SID].append(ev_text("live", mid="msg_l"))
+    await _until(lambda: rs.stream_id(SID) in published)
+    svc._watchers[SID].touched_at -= rs.LEASE_S + 1
+    await _until(lambda: rs.stream_id(SID) in released)
+    w = svc._watchers[SID]                          # still warm, same epoch
+    assert w.publishing is False and w.epoch == 1
+    with pytest.raises(rs.RemoteSessionsError) as info:
+        svc.touch(SID)                             # a lapsed view must re-open
+    assert info.value.code == rs.NOT_WATCHED
+    await asyncio.sleep(0.05)
+    k = len(_event_reads(api, SID))
+    await asyncio.sleep(0.3)
+    assert len(_event_reads(api, SID)) == k        # back to background: quiet
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_open_serves_the_warm_snapshot_without_a_full_read() -> None:
+    api = _idle_api()
+    svc = _service(api)
+    await svc.list_sessions()
+    await _until(lambda: SID in svc._watchers and svc._watchers[SID].caught_up)
+    n = len(api.requests)
+    snap = await svc.open(SID)
+    assert snap["epoch"] == 1
+    assert [e.get("text") for e in snap["events"] if e["type"] == "textDelta"] == ["Hi there"]
+    assert snap["head"] == snap["events"][-1]["_remote"]["seq"]
+    await asyncio.sleep(0.1)
+    # Every read after the open continues from the cursor: none restarts the log.
+    later = [r for r in api.requests[n:] if r.url.path.endswith("/events")]
+    assert later and all(r.url.params.get("after_id") for r in later)
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_warm_set_is_capped_most_recently_updated_first(caplog) -> None:
+    api = FakeApi()
+    ids = [f"session_0{i}Cap" for i in range(5)]
+    api.sessions = [_session(sid, session_status="idle", updated_at=_iso(60 * i))
+                    for i, sid in enumerate(ids)]
+    svc = _service(api, max_warm=2)
+    with caplog.at_level(logging.INFO, logger="server.remote_sessions.service"):
+        out = await svc.list_sessions()
+        await asyncio.sleep(0.2)                   # several list polls
+    assert len(out["sessions"]) == 5               # the listing itself is not capped
+    assert set(svc._watchers) == set(ids[:2])
+    capped = [r for r in caplog.records if "background sync keeps the 2" in r.getMessage()]
+    assert len(capped) == 1
+    # Opening one outside the set still works; it is watched only while viewed.
+    snap = await svc.open(ids[4])
+    assert snap["epoch"] == 1 and svc._watchers[ids[4]].warm is False
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_session_leaving_the_listing_archiving_or_404ing_stops_its_watcher() -> None:
+    api = _idle_api()
+    third = "session_06Third"
+    api.sessions.append(_session(third, session_status="idle"))
+    svc = _service(api)
+    await svc.list_sessions()
+    await _until(lambda: {SID, OTHER, third} <= set(svc._watchers))
+    api.sessions = [s for s in api.sessions if s["id"] != OTHER]          # left the listing
+    api.sessions[0]["session_status"] = "archived"                         # SID archived
+    await _until(lambda: OTHER not in svc._watchers and SID not in svc._watchers)
+    api.status_for[("GET", f"/v1/sessions/{third}/events")] = 404          # gone upstream
+    api.sessions[-1]["updated_at"] = _iso(-5)
+    await _until(lambda: third not in svc._watchers)
+    n = len(_event_reads(api, third))
+    await asyncio.sleep(0.3)                       # still listed, but not re-warmed
+    assert len(_event_reads(api, third)) == n and third not in svc._watchers
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_initial_catch_up_is_paced() -> None:
+    api = FakeApi()
+    ids = [f"session_0{i}Pace" for i in range(5)]
+    api.sessions = [_session(sid, session_status="idle") for sid in ids]
+    for sid in ids:
+        api.events[sid] = [ev_init(), ev_prompt("p"), ev_text("t")]
+    inflight = {"now": 0, "max": 0}
+    starts: list[float] = []
+    inner = api.handler
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/events") and not request.url.params.get("after_id"):
+            starts.append(time.monotonic())
+            inflight["now"] += 1
+            inflight["max"] = max(inflight["max"], inflight["now"])
+            try:
+                await asyncio.sleep(0.03)
+                return inner(request)
+            finally:
+                inflight["now"] -= 1
+        return inner(request)
+
+    client = SessionsApiClient(transport=httpx.MockTransport(handler))
+    svc = rs.RemoteSessionsService(
+        client=client, accounts=lambda: ["acct"], credentials=lambda a: CREDS,
+        enabled=lambda: True, poll_s=0.05, watch_poll_s=0.02,
+        catchup_concurrency=1, catchup_stagger_s=0.08)
+    await svc.list_sessions()
+    await _until(lambda: all(svc._watchers.get(s) is not None and svc._watchers[s].caught_up
+                             for s in ids), timeout=5.0)
+    assert len(starts) == 5 and inflight["max"] == 1
+    gaps = [b - a for a, b in zip(starts, starts[1:])]
+    assert min(gaps) >= 0.07
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_jumps_the_catch_up_queue() -> None:
+    api = _idle_api()
+    svc = _service(api, catchup_concurrency=1, catchup_stagger_s=30.0)
+    await svc.list_sessions()
+    await _until(lambda: sum(w.caught_up for w in svc._watchers.values()) == 1)
+    waiting = next(s for s, w in svc._watchers.items() if not w.caught_up)
+    if waiting == SID:
+        snap = await asyncio.wait_for(svc.open(SID), 2.0)    # not 30 s behind the stagger
+        assert any(e.get("text") == "Hi there" for e in snap["events"])
+    else:
+        snap = await asyncio.wait_for(svc.open(OTHER), 2.0)
+        assert svc._watchers[OTHER].caught_up
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limit_on_events_holds_the_accounts_background_reads() -> None:
+    api = FakeApi()
+    api.sessions = [_session(SID, session_status="idle")]
+    api.status_for[("GET", f"/v1/sessions/{SID}/events")] = 429
+    svc = _service(api)
+    await svc.list_sessions()
+    await _until(lambda: svc._accounts["acct"].events_hold_until > 0)
+    n = len(_event_reads(api, SID))
+    await asyncio.sleep(0.03)
+    assert len(_event_reads(api, SID)) <= n + 1
+    assert svc._watchers[SID].failures >= 1
     await svc.aclose()
 
 
@@ -811,7 +1045,8 @@ def test_http_routes_list_prompt_answer_and_audit() -> None:
         assert audit.call_args.kwargs["type"] == "remote_session.prompt"
         assert audit.call_args.kwargs["detail"]["outcome"] == "sent"
         assert "go" not in json.dumps(audit.call_args.kwargs["detail"])
-        # Not watched yet -> 409; after the /ws open it is answerable.
+        # Not viewed yet (even if background-synced) -> 409; after the /ws open it is
+        # answerable.
         r = c.post(f"/api/remote-sessions/{SID}/answer",
                    json={"askId": "r1", "decision": "allow"}, headers=_H)
         assert r.status_code == 409 and r.json()["detail"]["code"] == rs.NOT_WATCHED
