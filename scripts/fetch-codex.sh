@@ -110,21 +110,27 @@ if [[ "${RECORD}" == "1" ]]; then
     echo "==> Recording digest for ${ASSET_NAME}"
     echo "    ${ACTUAL_HASH}"
     mkdir -p "$(dirname "${SHA256_FILE}")"
-    # Replace any previous line for this asset; keep other targets' entries.
+    # Replace any previous line for this asset; keep other targets' entries. The
+    # comment header stays first and in order — only the digest lines are sorted
+    # (sorting the whole file once shuffled the header around the entries).
+    : > "${TMPDIR_WORK}/header"; : > "${TMPDIR_WORK}/entries"
     if [[ -f "${SHA256_FILE}" ]]; then
-        grep -v "[[:space:]]${ASSET_NAME}\$" "${SHA256_FILE}" > "${TMPDIR_WORK}/sha" || true
-    else
-        : > "${TMPDIR_WORK}/sha"
+        grep -E '^[[:space:]]*(#|$)' "${SHA256_FILE}" > "${TMPDIR_WORK}/header" || true
+        # Each grep may legitimately match nothing; guard both, or pipefail aborts.
+        { grep -v -E '^[[:space:]]*(#|$)' "${SHA256_FILE}" || true; } \
+            | { grep -v "[[:space:]]${ASSET_NAME}\$" || true; } > "${TMPDIR_WORK}/entries"
     fi
-    printf '%s  %s\n' "${ACTUAL_HASH}" "${ASSET_NAME}" >> "${TMPDIR_WORK}/sha"
-    LC_ALL=C sort -k2 "${TMPDIR_WORK}/sha" > "${SHA256_FILE}"
+    printf '%s  %s\n' "${ACTUAL_HASH}" "${ASSET_NAME}" >> "${TMPDIR_WORK}/entries"
+    { cat "${TMPDIR_WORK}/header"; LC_ALL=C sort -k2 "${TMPDIR_WORK}/entries"; } > "${SHA256_FILE}"
     echo "    Wrote ${SHA256_FILE} — commit it so every other runner enforces this digest."
 elif [[ "${CODEX_SKIP_VERIFY:-0}" == "1" ]]; then
     echo "WARNING: SHA256 verification skipped (CODEX_SKIP_VERIFY=1)" >&2
 else
     EXPECTED_HASH=""
     if [[ -f "${SHA256_FILE}" ]]; then
-        EXPECTED_HASH="$(grep "[[:space:]]${ASSET_NAME}\$" "${SHA256_FILE}" | awk '{print $1}')"
+        # `|| true`: no match is the case the message below explains; under
+        # `set -euo pipefail` a bare grep|awk would kill the script silently first.
+        EXPECTED_HASH="$(grep "[[:space:]]${ASSET_NAME}\$" "${SHA256_FILE}" | awk '{print $1}' || true)"
     fi
     if [[ -z "${EXPECTED_HASH}" ]]; then
         echo "ERROR: no recorded SHA256 for '${ASSET_NAME}'." >&2

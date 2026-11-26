@@ -48,7 +48,9 @@ if [[ "${COPILOT_PROXY_SKIP_VERIFY:-0}" != "1" ]]; then
 
     echo "==> Verifying SHA256 checksum..."
     # Extract expected hash for this asset from the .sha256 file (first field on matching line)
-    EXPECTED_HASH="$(grep "[[:space:]]${ASSET_NAME}$" "${SHA256_FILE}" | awk '{print $1}')"
+    # `|| true`: no match is the case the message below explains; under
+    # `set -euo pipefail` a bare grep|awk would kill the script silently first.
+    EXPECTED_HASH="$(grep "[[:space:]]${ASSET_NAME}$" "${SHA256_FILE}" | awk '{print $1}' || true)"
     if [[ -z "${EXPECTED_HASH}" ]]; then
         echo "ERROR: No SHA256 entry found for '${ASSET_NAME}' in ${SHA256_FILE}" >&2
         exit 1

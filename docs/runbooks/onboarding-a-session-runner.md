@@ -381,10 +381,10 @@ client CN this host must present, and the six-check preflight — is
 `docs/runbooks/codex-credential-authority.md` § 3. In outline:
 
 ```bash
-# Install the pinned CLI — see codex-credential-authority.md § 3 step 1: until a
-# digest is recorded in scripts/codex-cli.sha256, fetch-codex.sh fails closed on
-# every host, and the fleet runs the npm package at the pinned version instead.
-sudo npm install -g @openai/codex@<PINNED_CLI_VERSION>   # → /usr/bin/codex
+# Install the pinned CLI (codex-credential-authority.md § 3 step 1): either
+bash scripts/fetch-codex.sh                          # digest-verified; set VIBERPIT_CODEX_BIN
+# or, as dobby/rocky/thready do, the byte-identical npm package (no VIBERPIT_CODEX_BIN):
+#   sudo npm install -g @openai/codex@<PINNED_CLI_VERSION>   # → /usr/bin/codex
 # install codex-runner:<host>.pem/.key (0600) + server-ca.pem, add the CN to the
 # authority's VIBERPIT_CODEX_AUTHORITY_CLIENT_ALLOWLIST, restart the authority
 python -m server.codex.doctor                     # exits 0 when nothing failed

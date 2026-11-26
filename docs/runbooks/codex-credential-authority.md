@@ -178,18 +178,19 @@ runner with none of this stays healthy and keeps taking Claude sessions.
 
 ```bash
 # 1. Install the pinned Codex CLI.
-#    INTENDED: `bash scripts/fetch-codex.sh` — fails closed unless the artefact's
-#    digest matches scripts/codex-cli.sha256 AND `codex --version` matches
-#    server/codex/schema.py:PINNED_CLI_VERSION.
-#    CURRENT STATE: scripts/codex-cli.sha256 records NO digest yet (the one-time
-#    `--record` in § 6 step 3 has never been done), so fetch-codex.sh exits 1 right
-#    after the download on EVERY host — by design, it will not invent a digest.
-#    Until a digest is recorded, the fleet (dobby, rocky, thready) runs the npm
-#    package at the pinned version; the daemon still enforces the version label and
-#    the app-server schema hash (probe_availability) before offering Codex:
-sudo npm install -g @openai/codex@<PINNED_CLI_VERSION>    # → /usr/bin/codex, on PATH
-#    (leave VIBERPIT_CODEX_BIN unset for the npm install; set it only for a
-#    fetch-codex.sh install, pointing at the binary that script installed)
+#    `fetch-codex.sh` fails closed unless the artefact's digest matches
+#    scripts/codex-cli.sha256 AND `codex --version` matches
+#    server/codex/schema.py:PINNED_CLI_VERSION. Then point the daemon at it:
+#    VIBERPIT_CODEX_BIN=<the binary it installed> in the daemon env.
+bash scripts/fetch-codex.sh
+#    Equivalent, and what dobby/rocky/thready actually run: the npm package at the
+#    pinned version, on PATH as /usr/bin/codex (leave VIBERPIT_CODEX_BIN unset):
+#      sudo npm install -g @openai/codex@<PINNED_CLI_VERSION>
+#    For 0.153.2 the npm package's vendored binary
+#    (@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex) is
+#    byte-identical to the one in the recorded release tarball (sha256 f8786262…,
+#    checked on all three hosts 2026-11-25), so both paths run the same bytes.
+#    Re-check that on every pin bump; if they ever differ, use fetch-codex.sh.
 
 # 2. Client identity for this host (mint on the authority host, § 2 above). Live layout:
 sudo install -d -m 0750 -o root -g tony /etc/viberpit/codex-auth/<host>
@@ -316,10 +317,13 @@ version bump that changes the schema is a code change, not an ops change.
    ```bash
    bash scripts/fetch-codex.sh --record
    ```
-   This step has not yet been done for any version (`scripts/codex-cli.sha256` is
-   empty), which is why runners currently install the npm package — see § 3 step 1.
-   Doing it once, after checking the release's provenance, makes `fetch-codex.sh`
-   the working install path everywhere.
+   Check provenance before committing it: the release must be in `openai/codex`
+   (org-owned, not a fork), uploaded by `github-actions[bot]`, and the recorded digest
+   must equal GitHub's own asset digest
+   (`gh api repos/openai/codex/releases/tags/rust-v<version> --jq '.assets[] | {name,digest}'`).
+   `openai/codex` publishes no build attestations (`gh attestation verify` → 404), so
+   that cross-check is the provenance evidence. Then re-check § 3 step 1's npm
+   byte-identity note for the new version.
 4. Roll it out **one runner at a time**, checking `python -m server.codex.doctor`
    on each before moving on.
 
@@ -355,7 +359,7 @@ sudo systemctl stop viberpit-codex-auth.service
 # Rollback the binary: reinstall the previous pin from a checkout at that commit.
 git -C <checkout> checkout <previous-sha> -- server/codex/schema.py scripts/codex-cli.sha256
 bash scripts/fetch-codex.sh
-# While no digest is recorded (§ 3 step 1), reinstall the npm package instead:
+# On an npm-installed runner (§ 3 step 1), reinstall the previous npm version instead:
 sudo npm install -g @openai/codex@<previous PINNED_CLI_VERSION>
 ```
 
