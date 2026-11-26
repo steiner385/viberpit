@@ -91,7 +91,40 @@ async def test_list_archived_normalizes_old_daemon_wire_shape():
         "engine": "claude_code",
         "engineSessionId": "legacy-csid",
         "reasoningEffort": None,
+        "archivedBy": None,
+        "archiveReason": None,
+        "deleteState": None,
     }]
+
+
+class _RaisingClient:
+    def __init__(self, exc):
+        self.exc = exc
+
+    async def call(self, method, *, timeout=None, **kwargs):
+        raise self.exc
+
+
+@pytest.mark.asyncio
+async def test_delete_state_degrades_to_none_on_an_old_daemon():
+    """A daemon that predates the FR-404 RPC tracks no kept rows: None (→ 404), not a
+    500 from the UnknownMethod envelope. Any other daemon error still surfaces."""
+    old = RemoteOrchestrator(_RaisingClient(DaemonError("UnknownMethod", "delete_state")))
+    assert await old.delete_state("s1") is None
+    assert await old.pending_delete_states() == {}
+    broken = RemoteOrchestrator(_RaisingClient(DaemonError("RuntimeError", "boom")))
+    with pytest.raises(DaemonError):
+        await broken.delete_state("s1")
+    with pytest.raises(DaemonError):
+        await broken.pending_delete_states()
+
+
+@pytest.mark.asyncio
+async def test_pending_delete_states_round_trips_the_map():
+    client = _RecordingClient({"a1": "pending", "a2": "stuck"})
+    remote = RemoteOrchestrator(client)
+    assert await remote.pending_delete_states() == {"a1": "pending", "a2": "stuck"}
+    assert client.last_call == ("pending_delete_states", {})
 
 
 @pytest.mark.asyncio

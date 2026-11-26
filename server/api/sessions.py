@@ -1300,10 +1300,23 @@ async def list_archived_sessions(
     orch = _get_orchestrator(request)
     rows = await orch.list_archived()
     unread = await _unread_ids_or_none(identity, "list_archived_sessions")
+    # FR-404: ``deleteState`` on each row is the LISTING host's memory; in fleet mode
+    # that is the primary, blind to a row a worker could not delete. Overlay the
+    # fleet-wide union so the chip survives a refetch. Best-effort: an orchestrator
+    # without the method (older daemon → {}, test doubles) keeps the rows' own value.
+    states_fn = getattr(orch, "pending_delete_states", None)
+    states: dict = {}
+    if callable(states_fn):
+        try:
+            states = await states_fn() or {}
+        except DaemonError as exc:
+            if exc.err_type != "UnknownMethod":
+                raise
     # The orchestrator's internal RPC wire temporarily carries the old Claude
     # alias for daemon-first rolling deploys. It is not part of the browser API.
     return [
         {**{key: value for key, value in row.items() if key != "claudeSessionId"},
+         "deleteState": states.get(row.get("id"), row.get("deleteState")),
          "unread": row.get("id") in unread}
         for row in rows
     ]
@@ -1444,10 +1457,14 @@ async def batch_permanent_delete_sessions(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
-    """Permanently delete multiple sessions. Best-effort: returns per-id succeeded/failed."""
+    """Permanently delete multiple sessions. Best-effort: returns per-id
+    succeeded / failed / pending — ``pending`` is a row KEPT because its directory
+    could not be removed (FR-404; ``state`` is ``pending`` or ``stuck``), told apart
+    from a true not-found exactly as the single-id route's 202 is from its 404."""
     orch = _get_orchestrator(request)
     succeeded: list[str] = []
     failed: list[dict] = []
+    pending: list[dict] = []
     for session_id in dict.fromkeys(body.ids):  # dedupe, preserve order
         try:
             deleted = await orch.permanent_delete(session_id)
@@ -1456,7 +1473,11 @@ async def batch_permanent_delete_sessions(
             failed.append({"id": session_id, "error": str(exc)})
             continue
         if not deleted:
-            failed.append({"id": session_id, "error": "not found"})
+            state = await orch.delete_state(session_id)
+            if state:
+                pending.append({"id": session_id, "state": state})
+            else:
+                failed.append({"id": session_id, "error": "not found"})
             continue
         succeeded.append(session_id)
         await record_audit(
@@ -1465,7 +1486,7 @@ async def batch_permanent_delete_sessions(
             identity=identity,
             detail={"session_id": session_id},
         )
-    return {"succeeded": succeeded, "failed": failed}
+    return {"succeeded": succeeded, "failed": failed, "pending": pending}
 
 
 @router.post("/batch/archive")
@@ -3412,10 +3433,21 @@ async def permanent_delete_session(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ):
-    """Permanently delete a session: remove archive folder and DB row. 404 if unknown."""
+    """Permanently delete a session: remove its directory and DB row.
+
+    204 when it is gone. 202 ``{"state": "pending" | "stuck"}`` when the row was KEPT
+    because the directory could not be removed (FR-404): ``pending`` — the owning
+    daemon retries on its own; ``stuck`` — it has given up after repeated failures
+    and the directory needs manual cleanup (deleting again does try once more).
+    404 only when no such row exists. The audit row is written for a real delete only.
+    """
     orch = _get_orchestrator(request)
     deleted = await orch.permanent_delete(session_id)
     if not deleted:
+        state = await orch.delete_state(session_id)
+        if state:
+            return JSONResponse(status_code=status.HTTP_202_ACCEPTED,
+                                content={"state": state})
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},

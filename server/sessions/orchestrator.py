@@ -1095,6 +1095,14 @@ DRIVER_SWAP_TIMEOUT_S = env_float("VIBERPIT_DRIVER_SWAP_TIMEOUT_S", 150.0, minim
 # persist failed (spec 002 FR-307). Bounds how long the polled DB shadow can lag the
 # in-memory record after a DB blip: one interval.
 DIRTY_FLUSH_INTERVAL_S = env_float("VIBERPIT_DIRTY_FLUSH_INTERVAL_S", 10.0, minimum=0.1)
+# How often a daemon retries the permanent deletes that kept their row (FR-404):
+# the worktree / archive dir could not be removed (stale sshfs handle, containment
+# guard) and the row stayed so the directory is never stranded. Per host — the dir
+# is on the host that failed to remove it. Ids that crossed
+# _ARCHIVE_PURGE_MAX_STRIKES ("stuck") are left to a manual delete. Default matches
+# _ARCHIVE_LIMIT_SWEEP_INTERVAL so a kept row reaches "stuck" on the same ~15 min
+# cadence the cap purge always had — long enough for the #825 sshfs remount to land.
+DELETE_RETRY_INTERVAL_S = env_float("VIBERPIT_DELETE_RETRY_INTERVAL_S", 300.0, minimum=0.1)
 # Worst case one ensure_driver resume legitimately takes (#3020): the wait for an
 # in-flight release, a start() that runs its whole budget, then the bounded close of
 # the half-built driver before DriverStartTimeout is raised. The bridge derives its
@@ -1535,6 +1543,12 @@ class SessionOrchestrator:
         # have become deletable (e.g. the sshfs mount recovered).
         self._archive_purge_strikes: dict[str, int] = {}
         self._archive_purge_poisoned: set[str] = set()
+        # Permanent deletes that KEPT their row (FR-404): session id → the last rmtree /
+        # containment error. Shares the strike counter + poison set above (a kept row is
+        # exactly what the cap purge strikes on); _delete_retry_loop retries the
+        # non-poisoned ones, delete_state() reads it for the API. In-memory like the
+        # strikes: a restart forgets it and the user can re-issue the delete.
+        self._pending_deletes: dict[str, str] = {}
         # Session ids whose last _persist_status DB write failed (FR-307): the record
         # moved, the row did not. _flush_dirty_status re-writes them from the record
         # every DIRTY_FLUSH_INTERVAL_S; a later successful persist clears the mark.
@@ -2272,6 +2286,7 @@ class SessionOrchestrator:
         self._goal_task: asyncio.Task | None = None
         self._stall_task: asyncio.Task | None = None
         self._dirty_flush_task: asyncio.Task | None = None
+        self._delete_retry_task: asyncio.Task | None = None
         self._token_refresh_task: asyncio.Task | None = None
         self._sweep_task: asyncio.Task | None = None
         self._archive_limit_task: asyncio.Task | None = None
@@ -3796,6 +3811,10 @@ class SessionOrchestrator:
         self._dirty_flush_task = asyncio.create_task(
             self._dirty_flush_loop(), name="dirty-status-flush"
         )
+        # Per-host too: the directory a delete could not remove is on THIS host (FR-404).
+        self._delete_retry_task = asyncio.create_task(
+            self._delete_retry_loop(), name="delete-retry"
+        )
         # Renew/release the per-session ownership leases this daemon holds (#1379).
         # Unconditional (not role-gated like the primary lease): the duplicate-CLI
         # bug is a WORKER-vs-primary race as much as a primary-vs-primary one.
@@ -4611,7 +4630,7 @@ class SessionOrchestrator:
         # suspect in the #846 teardown stalls). test_orchestrator_stop_completeness
         # pins the full set by task name.
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
-                     "_dirty_flush_task",
+                     "_dirty_flush_task", "_delete_retry_task",
                      "_token_refresh_task", "_backlog_task", "_sdlc_intake_task",
                      "_pm_sync_task", "_pm_triage_task", "_gh_reconcile_task",
                      "_sdlc_synth_task", "_control_band_task", "_capacity_governor_task",
@@ -8418,6 +8437,7 @@ class SessionOrchestrator:
         if _cs.steering_parent(record):
             await self._child_stop_transition(record, "ended", None)
         record = self._records.pop(session_id, None)
+        await self._resolve_hold_on_terminal(session_id, record)
         await self._cleanup_session_paths(session_id, record)
 
         # Persist 'ended' BEFORE dropping any queue entry (#1100 ordering rule, see
@@ -8721,6 +8741,21 @@ class SessionOrchestrator:
         except Exception:  # noqa: BLE001 - provenance must never break the status path
             log.warning("holds.track_failed session=%s status=%s", session_id, status,
                         exc_info=True)
+
+    async def _resolve_hold_on_terminal(self, session_id: str,
+                                        record: "SessionRecord | None") -> None:
+        """A session archived or closed while in a hold status takes its open hold
+        with it (FR-305): the ask can never be answered now, so it is resolved — not
+        left open to be reported ``hold_lost`` or to linger forever on a row no
+        rehydrate rebuilds. Unlike ``_track_hold``'s status path this is NOT skipped
+        during shutdown: archive/close is the user's (or automation's) decision to end
+        the session, not the daemon dying under it. Never raises
+        (``holds.resolve_open`` swallows and logs)."""
+        kind = self._open_hold_kind.pop(session_id, None)
+        status = getattr(record, "status", None)
+        if kind is None and status not in _holds.HOLD_KIND_BY_STATUS:
+            return
+        await _holds.resolve_open(session_id)
 
     async def _persist_status(self, session_id: str, status: str) -> str:
         """Driver ``on_status`` callback: persist the derived dashboard status.
@@ -25770,6 +25805,9 @@ class SessionOrchestrator:
             rec = self._records.get(session_id)
             if rec is not None:
                 rec.host = owner
+        # The hold row itself stays open — the ask is still pending, on the new owner,
+        # whose _track_hold now dedupes it. Only this host's dedupe entry goes.
+        self._open_hold_kind.pop(session_id, None)
         self._worktrees.pop(session_id, None)
         self._pending_prompt_preambles.pop(session_id, None)
         self._resume_recovery.pop(session_id, None)
@@ -29396,6 +29434,42 @@ class SessionOrchestrator:
             except Exception:
                 log.exception("dirty-status flush tick failed")
 
+    async def _retry_pending_deletes(self) -> int:
+        """One retry tick (FR-404): re-run ``permanent_delete`` for every kept row that
+        is not stuck. Returns how many rows it reclaimed.
+
+        Stuck (poisoned) ids are skipped for the same reason the cap purge skips them —
+        the mount is not coming back on its own, and a WARNING already named the
+        session; only a manual delete tries those again. A retry that fails again
+        has already been noted (strike + event) by the delete path itself, so this
+        says nothing more; an id whose row is gone was dropped there too.
+        """
+        if not self._pending_deletes:
+            return 0
+        healed = 0
+        for sid in list(self._pending_deletes):
+            if sid in self._archive_purge_poisoned or sid in self._permanent_delete_inflight:
+                continue
+            try:
+                ok = await self.permanent_delete(sid)
+            except Exception:  # noqa: BLE001 - keep the mark, retry next tick
+                log.info("delete_retry.failed session=%s", sid, exc_info=True)
+                continue
+            if ok:
+                healed += 1
+        if healed:
+            log.info("delete_retry.reclaimed healed=%d remaining=%d",
+                     healed, len(self._pending_deletes))
+        return healed
+
+    async def _delete_retry_loop(self) -> None:
+        while True:
+            await asyncio.sleep(DELETE_RETRY_INTERVAL_S)
+            try:
+                await self._retry_pending_deletes()
+            except Exception:
+                log.exception("delete-retry tick failed")
+
     # ------------------------------------------------------------------
     # Rotation monitor (background task)
     # ------------------------------------------------------------------
@@ -31807,6 +31881,7 @@ class SessionOrchestrator:
         # disappears from list_sessions() immediately and a background refetch
         # can never see it half-archived.
         record = self._records.pop(session_id, None)
+        await self._resolve_hold_on_terminal(session_id, record)
 
         # Clear the in-memory worktree registration; the git registration stays
         # until the cap purge deletes the worktree (permanent_delete).
@@ -32006,10 +32081,10 @@ class SessionOrchestrator:
             if ok:
                 self._archive_purge_strikes.pop(sid, None)  # clean delete — reset strikes
                 deleted.append(sid)
-            else:
-                # permanent_delete returned False (e.g. containment guard kept the row):
-                # a soft failure that still re-selects the same session next sweep.
-                self._note_purge_failure(sid)
+            # else: permanent_delete returned False. A KEPT row (rmtree / containment
+            # failure) has already been struck by _note_delete_failure on the delete
+            # path itself (FR-404) — counting it here again would poison it in half the
+            # sweeps; a row that vanished under the selection has nothing to strike.
         if deleted:
             log.info("archive_limit: purged %d oldest archived session(s)", len(deleted))
         return deleted
@@ -32028,6 +32103,51 @@ class SessionOrchestrator:
                 "be reclaimed from other archived sessions; investigate its on-disk dir",
                 sid, strikes,
             )
+
+    async def _note_delete_failure(self, sid: str, err: str) -> None:
+        """A permanent delete KEPT *sid*'s row because its directory could not be
+        removed (FR-404): remember it for the retry loop and ``delete_state()``, take
+        one strike (the cap purge's counter — poisoned = "stuck"), and say so on the
+        session's timeline. The strike WARNING at poison time is the only WARNING: each
+        retry would otherwise auto-file an issue."""
+        self._pending_deletes[sid] = err
+        self._note_purge_failure(sid)
+        await _provenance.record(sid, _provenance.DELETE_RETRY, {
+            "strike": self._archive_purge_strikes.get(sid, 0),
+            "error": err,
+            "stuck": sid in self._archive_purge_poisoned,
+        })
+
+    def _clear_delete_failure(self, sid: str) -> None:
+        """The row is gone (deleted here, or found already missing): nothing is
+        pending or stuck about it any more."""
+        self._pending_deletes.pop(sid, None)
+        self._archive_purge_strikes.pop(sid, None)
+        self._archive_purge_poisoned.discard(sid)
+
+    def delete_state(self, session_id: str) -> str | None:
+        """What a permanent delete left behind for *session_id* (FR-404): ``"stuck"``
+        once it crossed the strike cap (the retry loop has given up; a manual delete
+        still tries), ``"pending"`` while the retry loop will try again, None when
+        no delete has kept its row. The API answers 202 with this instead of 404."""
+        if session_id in self._archive_purge_poisoned:
+            return "stuck"
+        if session_id in self._pending_deletes:
+            return "pending"
+        return None
+
+    def pending_delete_states(self) -> dict[str, str]:
+        """Every session id with a non-None ``delete_state()`` on THIS host, keyed to
+        it. The archived list is served by the primary, whose memory knows nothing of
+        a row a worker could not delete; the fleet unions this across hosts so that
+        row's chip survives a refetch (FR-404)."""
+        ids = set(self._pending_deletes) | self._archive_purge_poisoned
+        out: dict[str, str] = {}
+        for sid in ids:
+            state = self.delete_state(sid)
+            if state is not None:
+                out[sid] = state
+        return out
 
     async def _enforce_archive_limit(self) -> int:
         """Purge oldest archived sessions until the count is within
@@ -32187,6 +32307,13 @@ class SessionOrchestrator:
                 # incidental row write and only stands in for rows archived before
                 # that column existed (it is NULL on those).
                 "archivedAt": iso_utc(row.archived_at or row.updated_at),
+                # Provenance (FR-405): who archived it and, for an automatic archive,
+                # why — the same keys _stored_session_dict / archive_context use.
+                "archivedBy": row.archived_by,
+                "archiveReason": (row.archive_context or {}).get("reason"),
+                # A permanent delete that kept this row (FR-404), so a refetch after the
+                # 202 keeps the card's "Deleting… / Delete stuck" chip.
+                "deleteState": self.delete_state(row.id),
             }
             for row in rows
         ]
@@ -32367,7 +32494,11 @@ class SessionOrchestrator:
         and its git worktree registration cleared. Legacy rows (non-NULL
         archive_root) have their moved-away archive folder deleted instead.
 
-        Returns True if deleted, False if the session was not found in DB.
+        Returns True if deleted, False if the session was not found in DB — or if its
+        directory could not be removed and the row was KEPT so a later attempt can
+        reclaim it (FR-404). The two False outcomes are told apart by
+        ``delete_state()``: a kept row is ``pending`` (``stuck`` after
+        _ARCHIVE_PURGE_MAX_STRIKES), a missing one is None.
 
         A *live* session (still in _records/_drivers, or status != 'archived') is
         archived first: archive_session stops the driver, so deleting it can't
@@ -32380,6 +32511,8 @@ class SessionOrchestrator:
                 sa_select(DbSession).where(DbSession.id == session_id)
             )).scalars().first()
         if row is None:
+            # Gone — by whoever's hand. A pending/stuck mark for it is stale now.
+            self._clear_delete_failure(session_id)
             return False
 
         # Archive-then-delete: a live session must be torn down before its row and
@@ -32402,15 +32535,16 @@ class SessionOrchestrator:
         if stored_root is None and cwd_path is not None and cwd_path.exists():
             # New-style archive: the worktree is still at cwd (same NULL-root +
             # present-cwd marker as unarchive).
-            if not await self._delete_worktree_at_cwd(
-                session_id, cwd_path, kind=row.kind
-            ):
-                return False
+            err = await self._delete_worktree_at_cwd(session_id, cwd_path, kind=row.kind)
         else:
             # Legacy archive (moved into an archive home) — including ancient
             # pre-archive_root rows, whose NULL root resolves to the current home.
-            if not await self._delete_legacy_archive_dir(session_id, stored_root):
-                return False
+            err = await self._delete_legacy_archive_dir(session_id, stored_root)
+        if err is not None:
+            # The row is KEPT (the helper said why): make the outcome visible and
+            # retryable instead of indistinguishable from "no such session" (FR-404).
+            await self._note_delete_failure(session_id, err)
+            return False
 
         await self._delete_codex_item_times(row)
         async with db_session() as db:
@@ -32446,16 +32580,18 @@ class SessionOrchestrator:
             log.info("session.permanent_delete id=%s removed %d always-allow rule(s)",
                      session_id, n_rules)
         log.info("session.permanent_delete id=%s db row removed", session_id)
+        self._clear_delete_failure(session_id)
         self._settle_claims_on_terminal(session_id)
         return True
 
     async def _delete_worktree_at_cwd(self, session_id: str, cwd_path: Path,
-                                      kind: str | None = None) -> bool:
+                                      kind: str | None = None) -> str | None:
         """Delete a new-style archived session's worktree (still at its cwd).
 
-        Returns True when it is safe for the caller to drop the DB row, False when the
-        directory could not be removed and the row must be KEPT so a later sweep retries
-        (e.g. a stale sshfs handle that recovers on remount — #825).
+        Returns None when it is safe for the caller to drop the DB row, or the error
+        (a short string) when the directory could not be removed and the row must be
+        KEPT so a later attempt retries (e.g. a stale sshfs handle that recovers on
+        remount — #825).
 
         Containment guard: sessions only ever run in ViberPit-created worktrees or
         scratch dirs (both under a repo-namespace segment, either spelling —
@@ -32484,13 +32620,13 @@ class SessionOrchestrator:
                     "scratch directory — leaving it in place, deleting the row only",
                     session_id, cwd_path,
                 )
-                return True
+                return None
             log.warning(
                 "session.permanent_delete id=%s cwd=%s is not a managed worktree "
                 "directory — leaving it in place, deleting the row only",
                 session_id, cwd_path,
             )
-            return True  # nothing we should delete on disk; the row can still go
+            return None  # nothing we should delete on disk; the row can still go
         if gitrepos.is_clone_path(str(cwd_path)):
             # Expected for a never-spawned row, not a fault: logged at INFO because a
             # WARNING auto-files an issue per purge (same reasoning as #2029 above).
@@ -32500,7 +32636,7 @@ class SessionOrchestrator:
                 "deleting the row only",
                 session_id, cwd_path,
             )
-            return True
+            return None
         # Resolve the shared clone BEFORE the delete, while the worktree is still a
         # valid git dir, so we can scope-deregister exactly this path afterward
         # (never a global prune — issue #177). Off the event loop: git subprocess
@@ -32519,7 +32655,7 @@ class SessionOrchestrator:
             log.warning("session.permanent_delete id=%s worktree rmtree incomplete at %s: %s "
                         "— keeping the row to retry on a later sweep",
                         session_id, cwd_path, err)
-            return False
+            return err
         if repo_top:
             try:
                 await asyncio.to_thread(
@@ -32530,17 +32666,17 @@ class SessionOrchestrator:
                           session_id, exc_info=True)
         log.info("session.permanent_delete id=%s worktree removed at %s",
                  session_id, cwd_path)
-        return True
+        return None
 
     async def _delete_legacy_archive_dir(self, session_id: str,
-                                         stored_root: str | None) -> bool:
+                                         stored_root: str | None) -> str | None:
         # @deprecated — legacy pre-status-flip archives (files moved into an archive
         # home); remove together with _restore_legacy_archive.
         """Delete a legacy archived session's folder under its recorded archive root.
 
         Containment guard: only removes paths that are direct children of the
-        resolved archive root. Returns False (caller must keep the DB row) on a
-        guard violation, True otherwise.
+        resolved archive root. Returns the error (caller must keep the DB row) on a
+        guard violation or an incomplete rmtree, None otherwise.
         """
         base = Path(stored_root) if stored_root else await self._effective_archive_home()
         archive_base = base.resolve()
@@ -32552,7 +32688,7 @@ class SessionOrchestrator:
                 "session.permanent_delete CONTAINMENT GUARD id=%s candidate=%s",
                 session_id, candidate,
             )
-            return False
+            return f"containment guard: {candidate} is outside {archive_base}"
 
         if candidate.exists():
             err = await asyncio.to_thread(_rmtree_best_effort, str(candidate))
@@ -32562,7 +32698,7 @@ class SessionOrchestrator:
                 log.warning("session.permanent_delete id=%s archive rmtree incomplete at %s: %s "
                             "— keeping the row to retry on a later sweep",
                             session_id, candidate, err)
-                return False
+                return err
             log.info("session.permanent_delete id=%s archive_path=%s", session_id, candidate)
         elif stored_root is not None:
             # Never let this pass silently. This used to resolve against the CURRENT
@@ -32591,7 +32727,7 @@ class SessionOrchestrator:
                 " (archive_root=<unset>) — deleting the row anyway",
                 session_id, candidate,
             )
-        return True
+        return None
 
     async def resolve_transcript_path(self, session_id: str) -> str | None:
         """Resolve the on-disk JSONL path for a session's transcript.
