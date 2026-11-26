@@ -197,4 +197,66 @@ describe('useDashboard', () => {
 
     expect(result.current.stale).toBe(false)
   })
+  describe('freshness from the first snapshot (#1417)', () => {
+    const snap = { generatedAt: 'snap', staleSince: null, repos: [] }
+    const snapWrapper = ({ children }: { children: ReactNode }) => {
+      const fetchImpl = (async () => ({ ok: true, json: async () => snap })) as unknown as typeof fetch
+      return <ApiBaseProvider base="/api/pipeline" fetchImpl={fetchImpl}>{children}</ApiBaseProvider>
+    }
+
+    it('warm snapshot + a silent stream still trips stale and keeps the last-good state', async () => {
+      vi.useFakeTimers()
+      const { result } = renderHook(() => useDashboard(), { wrapper: snapWrapper })
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(result.current.state).toEqual(snap)
+      expect(result.current.lastSuccessAt).not.toBeNull()
+      expect(result.current.stale).toBe(false)
+      act(() => { vi.advanceTimersByTime(90_001) })
+      expect(result.current.stale).toBe(true)
+      expect(result.current.state).toEqual(snap)
+    })
+
+    it('warm snapshot + a refused stream reads stale AND disconnected', async () => {
+      vi.useFakeTimers()
+      const { result } = renderHook(() => useDashboard(), { wrapper: snapWrapper })
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      act(() => { FakeEventSource.instances[0].onerror?.(new Event('error')) })
+      act(() => { vi.advanceTimersByTime(90_001) })
+      expect(result.current.stale).toBe(true)
+      expect(result.current.connected).toBe(false)
+    })
+
+    it('a malformed frame is not a success: it neither clears stale nor re-arms the watchdog', () => {
+      vi.useFakeTimers()
+      const { result } = renderHook(() => useDashboard(), { wrapper })
+      act(() => { vi.advanceTimersByTime(80_000) })
+      act(() => {
+        FakeEventSource.instances[0].onmessage?.(new MessageEvent('message', { data: '{not json' }))
+      })
+      expect(result.current.lastSuccessAt).toBeNull()
+      act(() => { vi.advanceTimersByTime(10_001) })
+      expect(result.current.stale).toBe(true)
+    })
+
+    it('a good frame after stale clears it (reconnect)', () => {
+      vi.useFakeTimers()
+      const { result } = renderHook(() => useDashboard(), { wrapper })
+      act(() => { vi.advanceTimersByTime(90_001) })
+      expect(result.current.stale).toBe(true)
+      act(() => {
+        FakeEventSource.instances[0].onmessage?.(new MessageEvent('message', { data: JSON.stringify(snap) }))
+      })
+      expect(result.current.stale).toBe(false)
+    })
+
+    it('tab resume re-judges freshness against the wall clock when timers were frozen', () => {
+      vi.useFakeTimers()
+      const { result } = renderHook(() => useDashboard(), { wrapper })
+      // Simulate a frozen background tab: the clock jumps, the watchdog never fired.
+      vi.setSystemTime(Date.now() + 120_000)
+      expect(result.current.stale).toBe(false)
+      act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+      expect(result.current.stale).toBe(true)
+    })
+  })
 })
