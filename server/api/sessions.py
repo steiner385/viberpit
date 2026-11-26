@@ -402,6 +402,10 @@ def _record_to_dict(
         # This is the BROWSER serializer; SessionRecord.to_dict is the daemon→edge
         # RPC one. Both must emit these or the feature is dead on the wire.
         "interruptedFromStatus": getattr(record, "interrupted_from_status", None),
+        # The ask the restart killed, with its content (FR-305/FR-406, #947):
+        # {kind, content, holdId, createdAt} | null. Same two-serializer rule — the
+        # LostHoldBanner reads it off the list payload.
+        "lostHold": getattr(record, "lost_hold", None),
         # Why a finished session produced no PR: the mark_no_pr/marker token on a
         # 'complete' session, or the queue drainer's "obsolete: PR #N merged before
         # start" on a queued session it ended without ever spawning. Same

@@ -34,8 +34,12 @@ AUTO_ARCHIVED = "auto_archived"
 #: (FR-303/FR-304). detail: ``{from, reason, attempt}`` — the account the failed
 #: attempt ran on, the ``spawn_failed`` reason that moved it, that attempt's number.
 ROTATED_ACCOUNT = "rotated_account"
+#: A pending permission / question / plan approval whose waiter died with the daemon
+#: (FR-305). detail: ``{kind, content, holdId, createdAt}`` — the durable hold's
+#: snapshot (``holds.snapshot_content``), so the user can see WHAT was being asked.
+HOLD_LOST = "hold_lost"
 
-KINDS = frozenset({SPAWN_FAILED, AUTO_ARCHIVED, ROTATED_ACCOUNT})
+KINDS = frozenset({SPAWN_FAILED, AUTO_ARCHIVED, ROTATED_ACCOUNT, HOLD_LOST})
 
 #: Newest-first page size for :func:`list_events` when the caller gives none.
 DEFAULT_LIMIT = 50

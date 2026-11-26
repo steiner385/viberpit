@@ -47,9 +47,10 @@ RESTART_ASK_MESSAGE = (
 #: mints one, so a decision on it can only take the orphaned-answer fallback.
 ORPHAN_PERM_PREFIX = "orphan:"
 
-# Pre-restart statuses that mean a human was being asked something, mapped to the
-# kind of ask that was lost.
-_KIND_BY_STATUS: dict[str, str] = {
+#: Statuses that mean a human is being asked something, mapped to the kind of ask.
+#: The ONE vocabulary for both readers: the restart card (``orphaned_ask_kind``) and
+#: the durable hold a status write opens (``server/sessions/holds.py``, FR-305).
+HOLD_KIND_BY_STATUS: dict[str, str] = {
     "waiting_question": "question",
     "waiting_input": "permission",
     "ready_review": "plan",
@@ -63,7 +64,7 @@ _KIND_BY_STATUS: dict[str, str] = {
 # "done", are in neither set). #938 resumes dropped WORK and explicitly excludes
 # these three awaiting-human states; this module owns them. If either set grows,
 # the other must be reconsidered.
-ORPHANABLE_ASK_STATUSES: frozenset[str] = frozenset(_KIND_BY_STATUS)
+ORPHANABLE_ASK_STATUSES: frozenset[str] = frozenset(HOLD_KIND_BY_STATUS)
 
 
 def orphaned_ask_kind(interrupted_by_restart: bool,
@@ -76,7 +77,7 @@ def orphaned_ask_kind(interrupted_by_restart: bool,
     """
     if not interrupted_by_restart:
         return None
-    return _KIND_BY_STATUS.get(interrupted_from_status or "")
+    return HOLD_KIND_BY_STATUS.get(interrupted_from_status or "")
 
 
 _DISOWN_NOTE = (

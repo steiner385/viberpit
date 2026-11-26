@@ -841,6 +841,31 @@ class SessionEvent(Base):
     detail: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
 
 
+class SessionHold(Base):
+    """A pending permission / AskUserQuestion / plan approval, durable (spec 002
+    FR-305, #947).
+
+    The live ask is an in-memory rendezvous (``PermissionRegistry`` /
+    ``QuestionRegistry``) that a restart destroys; this row is what survives so
+    the next boot can say WHAT was being asked (``provenance.HOLD_LOST``). Opened
+    when the session enters a hold status, ``resolved_at`` stamped when it leaves
+    one — or by ``rehydrate()``, which marks an open hold on an interrupted row
+    lost. ``content`` is ``server/sessions/holds.py:snapshot_content``: the card,
+    never the resolving identity or a future. Kinds are
+    ``orphaned_asks.HOLD_KIND_BY_STATUS``. No FK on ``session_id`` (house pattern,
+    as ``session_events``): a hold must never block a session delete."""
+
+    __tablename__ = "session_holds"
+    __table_args__ = (Index("ix_session_holds_session_created", "session_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    session_id: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+
+
 class SessionView(Base):
     """When one viewer last looked at one session (D-10 read state).
 

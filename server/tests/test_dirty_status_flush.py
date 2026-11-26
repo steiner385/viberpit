@@ -31,6 +31,11 @@ async def _build_orch(tmp_path) -> SessionOrchestrator:
                          engine_session_id="claude-s1", status="idle", cwd="/repo/s1"))
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
     await orch.rehydrate()
+    # Let rehydrate's spawned work (the queue drain) finish its own DB reads before a
+    # test arms the one-shot failing db_session: _persist_status awaits the durable
+    # hold helpers before its row write, and that yield would otherwise let the drain
+    # consume the fake's single raise instead of the status write under test.
+    await asyncio.gather(*getattr(orch, "_bg_tasks", ()), return_exceptions=True)
     orch._drivers["s1"] = types.SimpleNamespace(last_hand_back_reason=None)
     return orch
 

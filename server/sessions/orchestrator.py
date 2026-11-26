@@ -106,6 +106,7 @@ from server.sessions.scratch_config import helper_config_dir
 from server.sessions import deploy_snapshot as _deploy_snapshot
 from server.sessions import preflight as _preflight
 from server.sessions import provenance as _provenance
+from server.sessions import holds as _holds
 from server.sessions import spawn_failure as _spawn_failure
 from server.sessions.archive_move import mountpoint, restore_from_archive
 from server.sessions import attachments as _attachments
@@ -1538,6 +1539,12 @@ class SessionOrchestrator:
         # moved, the row did not. _flush_dirty_status re-writes them from the record
         # every DIRTY_FLUSH_INTERVAL_S; a later successful persist clears the mark.
         self._dirty_status: set[str] = set()
+        # The open durable hold per session (FR-305): session id → kind
+        # (holds.HOLD_KIND_BY_STATUS value). _persist_status consults it so the
+        # per-derive re-persist of the same hold status does not re-insert a row;
+        # the DB row is the truth, this is only the dedupe. Empty after rehydrate()
+        # (every hold a restart left open is resolved or marked lost there).
+        self._open_hold_kind: dict[str, str] = {}
         # Single-flight for the archived-cap purge (#3458): every archive spawns an
         # _enforce_archive_limit pass, so a batch archive started N passes that each
         # counted the same excess and picked the same oldest ids. Serialising them
@@ -8676,6 +8683,45 @@ class SessionOrchestrator:
                 sa_update(DbSession).where(DbSession.id == session_id).values(**values)
             )
 
+    async def _track_hold(self, session_id: str, status: str) -> None:
+        """Keep the durable hold (FR-305) in step with the status being persisted.
+
+        Entering a hold status with no open hold, or one of a different kind, closes
+        the old hold and opens a new one holding a snapshot of the live ask (the
+        registry card / the driver's pending questions). Re-persisting the same hold
+        status is a no-op (``_open_hold_kind``). Leaving to a non-hold status resolves
+        it — EXCEPT during shutdown: the restart's ``deny_all`` makes the driver derive
+        a non-hold status that is the daemon dying, not the user answering, and the
+        hold must stay open so the next boot's ``rehydrate()`` reports it lost.
+
+        Never raises: the hold is provenance of the turn, not control flow.
+        """
+        try:
+            kind = _holds.HOLD_KIND_BY_STATUS.get(status)
+            current = self._open_hold_kind.get(session_id)
+            if kind is None:
+                if current is None or self._shutting_down:
+                    return
+                await _holds.resolve_open(session_id)
+                self._open_hold_kind.pop(session_id, None)
+                return
+            if current == kind:
+                return
+            driver = self._drivers.get(session_id)
+            pending_questions = getattr(driver, "pending_questions", None)
+            questions = list(pending_questions()) if callable(pending_questions) else []
+            content = _holds.snapshot_content(
+                kind, self._registry.pending(session_id), questions)
+            # At most one open hold per session: close whatever is open (a different
+            # kind, or a row an earlier failed open left behind) before the new one.
+            await _holds.resolve_open(session_id)
+            self._open_hold_kind.pop(session_id, None)
+            if await _holds.open_hold(session_id, kind, content) is not None:
+                self._open_hold_kind[session_id] = kind
+        except Exception:  # noqa: BLE001 - provenance must never break the status path
+            log.warning("holds.track_failed session=%s status=%s", session_id, status,
+                        exc_info=True)
+
     async def _persist_status(self, session_id: str, status: str) -> str:
         """Driver ``on_status`` callback: persist the derived dashboard status.
 
@@ -8814,6 +8860,7 @@ class SessionOrchestrator:
             if status != "idle":
                 rec.interrupted_by_restart = False
                 rec.interrupted_from_status = None
+                rec.lost_hold = None
             # Stalled-on-usage bookkeeping (usage_stall.py): a status outside the two
             # parked shapes means the session is moving again, so the cause is stale.
             if status not in _STALLED_STATUSES:
@@ -8831,6 +8878,10 @@ class SessionOrchestrator:
             # exactly as long as the hand-back it judged: every status write clears
             # it, and the judge re-derives it (off the pump, below) for the new one.
             rec.suspected_complete_reason = None
+        # The durable hold (FR-305) follows the record, before the row write: a DB
+        # blip there is retried by the flusher, and the hold helpers swallow their
+        # own failures, so neither can keep the other from landing.
+        await self._track_hold(session_id, status)
         try:
             await self._update_session_row(session_id, self._status_row_values(
                 status, rec, turn_at=turn_at, hand_back_reason=hand_back_reason,
@@ -22576,6 +22627,9 @@ class SessionOrchestrator:
         added = 0
         backfilled: dict[str, str] = {}
         healed: dict[str, str] = {}
+        # Every row this pass rebuilt → (did the restart drop its turn, its host stamp);
+        # the durable-hold reconcile below reads both (FR-305).
+        rebuilt: dict[str, tuple[bool, str | None]] = {}
         for row in rows:
             if row.id in self._records:
                 continue
@@ -22590,6 +22644,7 @@ class SessionOrchestrator:
             # idle card. Transient: the flag lives only on this in-memory record and
             # clears on the next turn.
             was_interrupted = row.status in _RESTART_TRANSIENT_STATUSES
+            rebuilt[row.id] = (was_interrupted, getattr(row, "host", None))
             status = "idle" if was_interrupted else row.status
             # Persist waiting_input → idle to DB when the backing process is gone
             # (issue #789, companion to #785). waiting_input sessions where the process
@@ -22667,6 +22722,12 @@ class SessionOrchestrator:
                     await db.execute(
                         sa_update(DbSession).where(DbSession.id == sid).values(status=st, background_work=None)
                     )
+        # Durable holds the last process left open (FR-305): on a row whose turn the
+        # restart dropped, the ask is LOST — record it with its content and surface it
+        # on the record; on a resting row it is stale bookkeeping — close it silently.
+        # Only rows this daemon OWNS: the worker filter above is enough for a worker,
+        # but the primary loads every host's rows, and a worker's hold is live there.
+        await self._reconcile_holds(rebuilt)
         log.info("rehydrate: %d session(s) restored (%d branch backfilled, %d status healed)",
                  added, len(backfilled), len(healed))
         self._startup_note("rehydrated", added)
@@ -22688,6 +22749,40 @@ class SessionOrchestrator:
         # so stop() can cancel before it writes into a later test's DB.
         self._spawn(self._maybe_start_queued(), name="queue-drain-on-rehydrate")
         return added
+
+    async def _reconcile_holds(self, rebuilt: dict[str, tuple[bool, str | None]]) -> int:
+        """Close every open ``session_holds`` row of the rehydrated sessions THIS daemon
+        owns; the ones on an interrupted row become ``hold_lost`` events +
+        ``SessionRecord.lost_hold`` (FR-305/FR-406). Returns how many were reported
+        lost. Never raises.
+
+        ``rebuilt`` maps session id → (was_interrupted, row host stamp). Ownership is
+        ``_owns_record_by_stamp`` (#852): on a primary-only restart a row stamped for
+        another ENABLED host has a live daemon still holding its ask — stamping it
+        resolved and announcing it lost would put a false banner over a live card. A
+        stamp that has left the registry is an orphan the primary adopts, and its ask
+        really did die with that host.
+        """
+        lost = 0
+        try:
+            enabled_hosts = await self._enabled_host_names()
+            interrupted = {sid: was for sid, (was, host) in rebuilt.items()
+                           if self._owns_record_by_stamp(host, enabled_hosts)}
+            open_holds = await _holds.newest_open(interrupted)
+            for sid, hold in open_holds.items():
+                if interrupted[sid]:
+                    await _holds.mark_lost(hold)
+                    rec = self._records.get(sid)
+                    if rec is not None:
+                        rec.lost_hold = _holds.hold_detail(hold)
+                    lost += 1
+                    log_event(log, logging.INFO, "session.hold_lost", session_id=sid,
+                              kind=hold.kind, hold_id=hold.id)
+                else:
+                    await _holds.resolve_open(sid)
+        except Exception:  # noqa: BLE001 - provenance must never break rehydrate
+            log.warning("holds.reconcile_failed", exc_info=True)
+        return lost
 
     async def _recover_undelivered_prompts(self, rows) -> int:
         """Re-stage / re-send initial prompts a daemon restart stranded. Returns the count.
