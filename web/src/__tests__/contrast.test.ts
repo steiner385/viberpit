@@ -90,6 +90,15 @@ export function contrastRatio(fg: string, bg: string): number {
   return (hi + 0.05) / (lo + 0.05)
 }
 
+/** Composite `fg` at `alpha` over `bg` — what `opacity-N` actually paints. */
+export function composite(fg: string, bg: string, alpha: number): string {
+  const f = parseInt(fg.slice(1), 16)
+  const b = parseInt(bg.slice(1), 16)
+  const mix = (shift: number) =>
+    Math.round(((f >> shift) & 0xff) * alpha + ((b >> shift) & 0xff) * (1 - alpha))
+  return '#' + [16, 8, 0].map((s) => mix(s).toString(16).padStart(2, '0')).join('')
+}
+
 /* ── The pairs the UI actually renders ────────────────────────────────────── */
 
 /** Tone name → the token supplying its *text* colour. Neutral pills take their
@@ -155,4 +164,17 @@ describe('design-token colour contrast (WCAG 2.x AA, normal text)', () => {
     }
     expect(drift, drift.join('\n')).toEqual([])
   })
+
+  // #1402: completed dependencies used `opacity-60` on top of muted ink,
+  // which composites well below 4.5:1 and bypasses every token-pair check.
+  // Strike-through now carries the "done" meaning on `text-ink-muted` instead.
+  for (const { name, tokens } of BLOCKS) {
+    it(`${name}: a completed dependency (line-through text-ink-muted) clears ${AA_NORMAL_TEXT}:1`, () => {
+      expect(contrastRatio(tokens['ink-muted'], tokens['surface'])).toBeGreaterThanOrEqual(AA_NORMAL_TEXT)
+    })
+    it(`${name}: the retired opacity-60 treatment is measurably below ${AA_NORMAL_TEXT}:1`, () => {
+      const faded = composite(tokens['ink-muted'], tokens['surface'], 0.6)
+      expect(contrastRatio(faded, tokens['surface'])).toBeLessThan(AA_NORMAL_TEXT)
+    })
+  }
 })
