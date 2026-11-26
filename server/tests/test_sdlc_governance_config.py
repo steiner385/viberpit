@@ -170,6 +170,8 @@ def test_hook_ignores_prose_mentioning_trigger_words(command):
     "sudo ./scripts/deploy.sh --prod",
     "bash -c 'deploy prod'",
     "cat notes.txt && ./scripts/deploy.sh --prod",
+    "cat notes.txt\n./scripts/deploy.sh --prod",
+    "git --git-dir .git log\n./scripts/deploy.sh --prod",
     "echo hi; deploy production",
     "cat $(deploy prod)",
     "cat <<EOF\n$(./deploy.sh --prod)\nEOF",
@@ -264,6 +266,30 @@ _SHELL_WRITES = [
     "mv /tmp/evil.md .specify/memory/constitution.md",
     "truncate -s 0 .specify/memory/constitution.md",
     "cat > .claude/managed-settings.json",
+    # #3517: awk and sed can write without -i.
+    "awk 'BEGIN{print \"x\" > \".claude/managed-settings.json\"}'",
+    "awk 'BEGIN{system(\"cp /tmp/e .claude/managed-settings.json\")}'",
+    "sed -n 'w .claude/managed-settings.json' /tmp/other.txt",
+    "sed -n '1,20p' .specify/memory/constitution.md",
+    "sort -o .claude/managed-settings.json /tmp/evil",
+    "uniq /tmp/evil .claude/managed-settings.json",
+    # #3517: global options must not hide the git subcommand.
+    "git -C . checkout -- .claude/managed-settings.json",
+    "git -c core.x=y restore .claude/managed-settings.json",
+    "git --git-dir .git --work-tree . checkout HEAD~1 -- .claude/managed-settings.json",
+    "git reset --hard HEAD~1 -- .claude/managed-settings.json",
+    "git -c diff.external=/tmp/evil diff .claude/managed-settings.json",
+    "git diff --output=.claude/managed-settings.json HEAD~1",
+    # #3517: indirection that never spells the full path.
+    "cd .claude && cp /tmp/evil managed-settings.json",
+    "p=.claude; cp /tmp/evil \"$p/managed-settings.json\"",
+    "cp /tmp/evil ../20ac0855/.claude/managed-settings.json",
+    "echo x >| .claude/managed-settings.json",
+    "echo x &> .claude/managed-settings.json",
+    "echo x 2>.claude/managed-settings.json",
+    "cat .claude/managed-settings.json\ncp /tmp/evil .claude/managed-settings.json",
+    "cat $(cp /tmp/evil .claude/managed-settings.json)",
+    "sudo tee .claude/managed-settings.json",
 ]
 
 
@@ -276,14 +302,16 @@ def test_hook_blocks_shell_write_to_protected_path(command):
 
 _SHELL_READS = [
     "grep -n 'Principle' .specify/memory/constitution.md",
-    "sed -n '1,20p' .specify/memory/constitution.md",
     "head -40 .specify/memory/constitution.md",
     "wc -l .specify/memory/constitution.md",
-    "awk 'length($0)>100' .specify/memory/constitution.md",
     "git show HEAD:.specify/memory/constitution.md",
     "git diff .specify/memory/constitution.md",
+    "git -C . log --oneline -- .claude/managed-settings.json",
     "cat .specify/memory/constitution.md",
     "grep -c Principle .specify/memory/constitution.md | sort",
+    "cat .claude/managed-settings.json 2>/dev/null | jq .permissions",
+    "git commit -m 'docs: note constitution.md; cp is denied'",
+    "gh pr create --title x --body 'touches .claude/managed-settings.json'",
 ]
 
 
