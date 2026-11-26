@@ -4,8 +4,9 @@
 // LANE_TONE) and stays dense enough to sit inside `PageHeader.meta`.
 import { useMemo } from 'react';
 import { cn } from '@/lib/utils';
-import { Badge } from '@/ui/Badge';
+import { Badge, TONE_TEXT } from '@/ui/Badge';
 import { Button } from '@/ui/Button';
+import { TOUCH_FLOOR } from '@/ui/list/listControlStyles';
 import { useInteractive } from '@/shell/InteractionContext';
 import type { DashboardState, LaneStatus } from './types';
 import { buildLaneHealth } from './spine/laneHealth';
@@ -47,7 +48,7 @@ export function HealthHeader({ state, onJumpToLane }: {
         type="button"
         variant="ghost"
         size="sm"
-        className="gap-1.5 px-2 font-semibold"
+        className={cn('gap-1.5 px-2 font-semibold', TOUCH_FLOOR)}
         data-testid="health-rollup"
         /* The rollup routes to the richest detail for the first lane needing
            attention — the legacy app's Delivery tab, or the matching workspace
@@ -68,7 +69,7 @@ export function HealthHeader({ state, onJumpToLane }: {
               type="button"
               variant="ghost"
               size="sm"
-              className={cn('gap-1.5 px-2 font-normal',
+              className={cn('gap-1.5 px-2 font-normal', TOUCH_FLOOR,
                 l.wiredness === 'not-wired' && 'opacity-60')}
               data-testid={`health-lane-${l.id}`}
               aria-label={`${l.title}: ${LANE_WORD[l.status]} — ${l.summary}`}
@@ -76,10 +77,14 @@ export function HealthHeader({ state, onJumpToLane }: {
               aria-disabled={!interactive || undefined}
               onClick={() => interactive && onJumpToLane(l.id, l.status)}
             >
-              <Badge dot tone={LANE_TONE[l.status]} />
-              {/* The glyph is what tells blind (◌) from idle (·) — they share
-                  the neutral tone, so shape carries the difference. */}
-              <span aria-hidden="true">{LANE_GLYPH[l.status]}</span>
+              {/* One mark per lane: the glyph in its tone. The chip used to lead
+                  with a tone dot AND the glyph ("● ● Merge queue", "● · Scheduled"),
+                  two marks saying one thing. Shape still tells blind (◌) from
+                  idle (·), which share the neutral tone. */}
+              <span aria-hidden="true" data-testid={`health-glyph-${l.id}`}
+                className={cn('inline-block w-3 text-center font-semibold', TONE_TEXT[LANE_TONE[l.status]])}>
+                {LANE_GLYPH[l.status]}
+              </span>
               {/* Below md a QUIET lane is folded away entirely (above), so the
                   only chips left are the attention ones and they can afford
                   their word: the ≤2-row budget (#1555) holds with the count

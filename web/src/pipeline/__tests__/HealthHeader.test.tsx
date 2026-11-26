@@ -46,6 +46,15 @@ describe('HealthHeader', () => {
     expect(rollup.querySelector('.bg-success')).not.toBeNull();
   });
 
+  it('a lane chip carries ONE status mark — its glyph in the lane tone, no extra dot', () => {
+    render(<HealthHeader state={redState()} onJumpToLane={vi.fn()} />);
+    const chip = screen.getByTestId('health-lane-pr-ci');
+    expect(chip.querySelector('.rounded-pill')).toBeNull();
+    const glyph = screen.getByTestId('health-glyph-pr-ci');
+    expect(glyph).toHaveTextContent('✗');
+    expect(glyph).toHaveClass('text-danger');
+  });
+
   it('clicking the rollup jumps to the first lane needing attention, with its status', () => {
     const onJump = vi.fn();
     render(<HealthHeader state={redState()} onJumpToLane={onJump} />);

@@ -1,10 +1,12 @@
 // Ported from plotroom@5166b52 frontend/src/PrRow.tsx; edits: ApiBaseContext import ./embed/ApiBaseContext → ./ApiBaseContext; eslint-disable react-refresh/only-export-components (mixed export file — subLine/readyMergeGate/areEqual + PrRow, intentional port); ViberPit blend (spec §6) — react-router-dom Link import; onFixPr? prop on PrRowProps + areEqual; session label/Fix span in pr-head after the ETA chip
 /* eslint-disable react-refresh/only-export-components */
-import { useState, useMemo, memo, type MouseEvent, type KeyboardEvent } from 'react';
+import { useState, useMemo, memo, type MouseEvent } from 'react';
 import { Link } from 'react-router-dom'
+import { AlertTriangle, ChevronDown, ChevronRight, MessagesSquare, Workflow } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Badge } from '@/ui/Badge';
+import { Badge, TONE_FILL } from '@/ui/Badge';
 import { Button } from '@/ui/Button';
+import { TOUCH_FLOOR } from '@/ui/list/listControlStyles';
 import { sessionPath } from '@/session/sessionNavState';
 import { useInteractive } from '@/shell/InteractionContext';
 import { useApiBase } from './ApiBaseContext';
@@ -21,7 +23,7 @@ import { ApiRequestError } from '@/api/client';
 import { extractMutationErrorMessage } from '@/api/queryClient';
 
 /** The expanded panel's section caption ("merge group build", …). */
-const PANEL_LABEL = 'px-3.5 pt-2 text-2xs font-semibold uppercase tracking-wider text-ink-muted';
+const PANEL_LABEL = 'px-3.5 pt-2 text-xs font-semibold uppercase tracking-wide text-ink-muted';
 
 /** The stages an ETA can be about: something is running and will end. */
 const TIMED_STAGES: ReadonlySet<string> = new Set(['ci', 'queue', 'qa-deploy', 'awaiting-prod']);
@@ -114,6 +116,10 @@ type PrRowProps = {
    *  MUST be a reference-stable callback (useCallback in the caller) — areEqual
    *  compares it by identity, so a fresh closure each render defeats memoization. */
   onFixPr?: (sessionId: string, prNumber: number) => void;
+  /** This PR is what merges next: its live node is the one that breathes.
+   *  Every other active node keeps a still halo — a board of nineteen pulsing
+   *  rings says nothing about which one is moving. */
+  live?: boolean;
 };
 
 /**
@@ -139,11 +145,12 @@ export function areEqual(prev: PrRowProps, next: PrRowProps): boolean {
     prev.hasDeploy === next.hasDeploy &&
     prev.queueCulprit === next.queueCulprit &&
     prev.onFixPr === next.onFixPr &&
+    prev.live === next.live &&
     JSON.stringify(prev.pr) === JSON.stringify(next.pr)
   );
 }
 
-function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps) {
+function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr, live = false }: PrRowProps) {
   const { apiUrl } = useApiBase();
   const expandable = useInteractive(); // false in kiosk mode (issue #20): row is read-only — no expand-on-click.
   const [open, setOpen] = useState(false);
@@ -205,25 +212,42 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
   const sim = s.stage === 'queue' ? pr.mergeEtaSim ?? null : null;
   // useMemo: subLine scans pr.checks and reads queueCulprit — re-run only when either changes
   const sub = useMemo(() => subLine(pr, queueCulprit), [pr, queueCulprit]);
+  const failedRow = parked && s.substate === 'ci-failed';
+  const panelId = `${prAnchorId(pr.repo, pr.number)}-detail`;
+  const Chevron = open ? ChevronDown : ChevronRight;
   return (
-    <div id={prAnchorId(pr.repo, pr.number)} className={cn('mb-1.5 rounded-lg border border-edge bg-surface',
-      parked && (s.substate === 'ci-failed' ? 'border-l-4 border-l-danger' : 'opacity-75'))}>
-      {/* Keyboard-operable expand toggle (UX-H1). role="button" rather than a
-          real <button> because the row nests interactive children (title link,
-          ready-merge action) which a <button> can't legally contain. */}
-      <div className={cn('pr-main rounded-lg px-3.5 pb-2.5 pt-2', expandable && 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent')}
-        {...(expandable ? {
-          role: 'button' as const,
-          tabIndex: 0,
-          'aria-expanded': open,
-          'aria-label': `${open ? 'Collapse' : 'Expand'} PR #${pr.number} details`,
-          onClick: () => setOpen(!open),
-          onKeyDown: (e: KeyboardEvent) => {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(!open); }
-          },
-        } : {})}>
-        <div className="mb-2 flex items-baseline gap-2.5">
-          <span className="whitespace-nowrap text-sm font-semibold">#{pr.number}</span>
+    // A failed row takes the system's inset tone rail (the Card silhouette);
+    // a parked draft/conflicting row recedes a tonal step to Cool Paper. It
+    // used to fade to 75% opacity, which sank its Graphite text to ~3.3:1.
+    <div id={prAnchorId(pr.repo, pr.number)} className={cn('relative mb-1.5 rounded-lg border border-edge',
+      parked && !failedRow ? 'bg-canvas' : 'bg-surface')}>
+      {failedRow && <span aria-hidden="true" className={cn('absolute left-0 top-2 bottom-2 w-1 rounded-r-sm', TONE_FILL.danger)} />}
+      {/* The whole row still toggles on a pointer click (a convenience), but the
+          keyboard and screen-reader control is the real disclosure button on
+          the PR number. The row used to be role="button" itself while holding
+          the title link, session link and actions — nested interactive
+          controls, which assistive tech cannot announce or reach reliably. */}
+      {/* From xl the track moves beside the title instead of under it: five
+          nodes spread across 1300px said nothing more than five nodes in
+          34rem, and every row was twice as tall as its content. */}
+      <div className={cn('pr-main rounded-lg px-3.5 pb-2.5 pt-2 xl:grid xl:grid-cols-[minmax(0,1fr)_34rem] xl:items-center xl:gap-x-6',
+        expandable && 'cursor-pointer')}
+        onClick={expandable ? () => setOpen(!open) : undefined}>
+        <div className="mb-2 flex min-w-0 items-baseline gap-2.5 xl:col-start-1 xl:row-start-1 xl:mb-0.5">
+          {expandable ? (
+            <button type="button"
+              className={cn('-ml-1 inline-flex shrink-0 items-center gap-1 self-center whitespace-nowrap rounded-sm px-1 text-sm font-semibold text-ink',
+                'hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent', TOUCH_FLOOR)}
+              aria-expanded={open}
+              aria-controls={open ? panelId : undefined}
+              aria-label={`${open ? 'Collapse' : 'Expand'} PR #${pr.number} details`}
+              onClick={(e) => { e.stopPropagation(); setOpen(!open); }}>
+              <Chevron size={14} aria-hidden="true" className="text-ink-muted" />
+              #{pr.number}
+            </button>
+          ) : (
+            <span className="whitespace-nowrap text-sm font-semibold">#{pr.number}</span>
+          )}
           {/* A wall display has no one to follow a link: the title is text there
               (2026-09-30 Pipeline critique, P2 — 172 links on a no-touch board). */}
           {expandable
@@ -233,16 +257,16 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
           {pr.touchesWorkflows && (
             /* workflow-change badge (issue #49): the PR edits .github/workflows/** —
                summary lines (when a derived-graph diff exists) ride the tooltip */
-            <Badge tone="warning" className="whitespace-nowrap"
+            <Badge tone="warning" className="inline-flex items-center gap-1 self-center whitespace-nowrap"
               title={pr.workflowImpact?.summary.join('\n')
                 ?? 'touches .github/workflows — CI behavior may change'}>
-              ⚙ CI change
+              <Workflow size={12} aria-hidden="true" />CI change
             </Badge>
           )}
           {s.stage === 'ready' && s.substate === 'stuck-enqueue' && (
-            <Badge tone="warning" className="whitespace-nowrap"
+            <Badge tone="warning" className="inline-flex items-center gap-1 self-center whitespace-nowrap"
               title="auto-merge is armed and checks are green, but GitHub has not enqueued this PR — typically a shadowed required check; re-arm or re-run the required check to unstick">
-              ⚠ stuck
+              <AlertTriangle size={12} aria-hidden="true" />stuck
             </Badge>
           )}
           {sim ? (
@@ -257,8 +281,9 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
                  dates it so a stale number never reads as fresh. */
               <span
                 className={cn('eta whitespace-nowrap text-right text-xs tabular-nums', s.overdue ? 'text-danger' : 'text-ink-muted',
-                  // stale-while-revalidate (#671): dimmed + dotted so it reads as an estimate
-                  s.etaStale && 'eta-stale cursor-help italic underline decoration-dotted underline-offset-2 opacity-60')}
+                  // stale-while-revalidate (#671): italic + dotted + "(est.)" so it
+                  // reads as an estimate. No opacity: Graphite at 60% fell to ~2.4:1.
+                  s.etaStale && 'eta-stale cursor-help italic underline decoration-dotted underline-offset-2')}
                 title={s.etaStale && s.etaUpdatedAt
                   ? `estimate — ETA last updated ${formatSince(s.etaUpdatedAt)}`
                   : undefined}>
@@ -267,29 +292,36 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
             )
           )}
           {/* ViberPit extension (spec §6): the authoring session label + optional
-              Fix action. Kept OUT of the row's role="button" (nested-interactive
-              a11y rule); stopPropagation guards the expand handler like .pr-title. */}
+              Fix action. stopPropagation guards the row's pointer toggle. */}
           {session && (
-            <span className="ml-auto inline-flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-              <Link className="text-xs text-ink-muted hover:underline" to={sessionPath(session.id)}
-                    title={`Open session ${session.name}`}>⌗ {session.name}</Link>
+            <span className="ml-auto inline-flex items-center gap-1.5 self-center" onClick={(e) => e.stopPropagation()}>
+              <Link className={cn('inline-flex max-w-48 items-center gap-1 text-xs text-ink-muted hover:text-ink hover:underline', TOUCH_FLOOR)}
+                    to={sessionPath(session.id)}
+                    title={`Open session ${session.name}`}>
+                <MessagesSquare size={12} aria-hidden="true" className="shrink-0" />
+                <span className="truncate">{session.name}</span>
+              </Link>
               {session.fixable && onFixPr && (
-                <Button type="button" size="sm" variant="secondary" className="border-warning px-2 text-xs text-warning"
+                <Button type="button" size="sm" variant="secondary" className={cn('border-warning px-2 text-xs text-warning', TOUCH_FLOOR)}
                         onClick={() => onFixPr(session.id, pr.number)}>Fix</Button>
               )}
             </span>
           )}
         </div>
-        <MetroTrack stage={s} hasDeploy={hasDeploy} />
+        <div className="xl:col-start-2 xl:row-span-2 xl:row-start-1">
+          <MetroTrack stage={s} hasDeploy={hasDeploy} live={live} />
+        </div>
+        <div className="min-w-0 xl:col-start-1 xl:row-start-2">
         {/* sub-line vocabulary tooltips (issue #66): the definitions of every
-            recognized term in the line, from the shared SUBLINE_TERMS map */}
-        {sub && <div className="mt-1 truncate text-2xs text-ink-muted" title={subLineTitle(sub)}>{sub}</div>}
+            recognized term in the line, from the shared SUBLINE_TERMS map.
+            12px, not the 11px Micro step: this is a sentence, not a counter. */}
+        {sub && <div className="mt-1 truncate text-xs text-ink-muted xl:mt-0" title={subLineTitle(sub)}>{sub}</div>}
         {/* ready+auto-merge action (drafts only; disabled when conflicting or a
             required check has already failed). Own click-guarded row so it never
             toggles the expand panel. */}
         {expandable && gate.show && (
           <div className="mt-1.5 flex flex-wrap items-center gap-2" onClick={(e) => e.stopPropagation()}>
-            <Button type="button" size="sm" variant="primary" className="h-7 px-2.5 text-xs" data-testid="pr-ready-merge"
+            <Button type="button" size="sm" variant="primary" className={cn('px-2.5 text-xs', TOUCH_FLOOR)} data-testid="pr-ready-merge"
               disabled={busy || gate.blocked}
               title={gate.blocked ? gate.reason : 'Mark this draft ready for review and arm auto-merge (squash)'}
               onClick={onReadyMerge}>
@@ -307,7 +339,10 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
             )}
           </div>
         )}
+        </div>
       </div>
+      {open && (
+      <div id={panelId}>
       {/* PR-level CI cost (cost explorer): the current head's runner-minutes
           (running checks count started→now), priced when rates are configured —
           minutes-only otherwise. Hidden entirely when no check has started. */}
@@ -356,6 +391,8 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
       ) : (open && pr.checks.length > 0 && (
         <CheckGantt checks={pr.checks} stage={s.stage} />
       ))}
+      </div>
+      )}
     </div>
   );
 }

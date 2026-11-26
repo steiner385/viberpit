@@ -178,7 +178,11 @@ function Inner() {
                 onFixPr={onFixPr}
                 activeFilter={filter}
                 onFilter={setFilter}
-                portrait={portrait}
+                // Wrapping the queue train is for a portrait WALL, which has no
+                // pointer to scroll it. A portrait phone swipes the train fine,
+                // and wrapping it stacked seven cars into ~470px above the first
+                // PR row.
+                portrait={isKiosk && portrait}
               />
             </div>
           )}

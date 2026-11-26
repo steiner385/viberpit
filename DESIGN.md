@@ -265,7 +265,7 @@ The system is flat. Depth is conveyed by a 1px Hairline Grey border and a single
 ### Shadow Vocabulary
 - **Floating overlay** (`box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1)`): `Dialog` and `Sheet` panels, always paired with a hairline border and the `bg-black/50` backdrop.
 - **Anchored popover** (`box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)`): `Menu`, the command palette, mention and export menus; hairline border, 4px padding, no backdrop.
-- **Live halo** (`box-shadow: 0 0 0 4px color-mix(in srgb, var(--t-accent) 22%, transparent)`): the metro track's active node, breathing to 7px/11% behind `prefers-reduced-motion: no-preference`.
+- **Live halo** (`box-shadow: 0 0 0 4px color-mix(in srgb, var(--t-accent) 22%, transparent)`): the metro track's active node; it breathes to 7px/11% behind `prefers-reduced-motion: no-preference` on exactly one track, the PR that merges next. Every other active node keeps the still halo.
 
 ### Named Rules
 **The Hairline-First Rule.** A boundary is a 1px `edge` border before it is anything else. Reach for a tonal step second, and for a shadow only when the element portals out of the page flow.
@@ -323,7 +323,7 @@ The component philosophy is "refined and restrained": controls are quiet rectang
 A row of wash-on-hairline tiles (6px corners, `px-3 py-2`, 44px minimum, `flex-1 basis-24`), one per bucket, each a tone wash with a toned numeral (20px/600 at a desk, 36px/600 at ten feet) over an uppercase Graphite label (11px, or 14px on the wall). An empty bucket dims to 50%; the active filter takes the 2px accent ring; the failed tile shows a bold Micro delta arrow in Stop Red or Go Green. Tiles lead with the queue: Needs you, Blocked, In flight, then inventory, and the page's tabs follow the same order.
 
 ### Signature: the Metro Track
-The pipeline as a transit line: 32px circular nodes (Hairline Grey with a Graphite glyph at rest) joined by 4px Hairline segments. Done nodes and segments fill Go Green (`-strong` with Fill Ink); the live node fills Signal Blue with a Cool Paper glyph and the accent halo, which breathes only when the track is live and motion is allowed; failed is Stop Red, parked is Caution Amber `-strong` in bold. Labels sit under each node at the chart floor (`--fs-base`); the live one turns accent and bold. On a phone the nodes flex to share the row and labels ellipsize; the queue train beside it uses 2px solid or dashed borders as its status channel.
+The pipeline as a transit line: 32px circular nodes (Hairline Grey with a Graphite glyph at rest) joined by 4px Hairline segments. Done nodes and segments fill Go Green (`-strong` with Fill Ink); the live node fills Signal Blue with a Cool Paper glyph and the accent halo, which breathes only on the one live track (the PR that merges next) and only when motion is allowed; failed is Stop Red, parked is Caution Amber `-strong` in bold. Labels sit under each node at the chart floor (`--fs-base`); the live one turns accent and bold. From `xl` the track sits beside the PR title in a 34rem column instead of under it; on a phone the nodes flex to share the row and labels ellipsize; the queue train beside it uses 2px solid or dashed borders as its status channel.
 
 ## Do's and Don'ts
 

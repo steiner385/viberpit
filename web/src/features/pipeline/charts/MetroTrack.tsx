@@ -107,12 +107,15 @@ function segment(prev: TrackNode, percent: number | null, key: string) {
   return <i key={key} className="seg" />;
 }
 
-export function MetroTrack({ stage, hasDeploy }: { stage: StageResult; hasDeploy: boolean }) {
+/** @param live this track is the board's one moving thing (the PR that merges
+ *  next): only a live track's active node breathes, so the motion points at
+ *  something instead of being ambient on every running row. */
+export function MetroTrack({ stage, hasDeploy, live = false }: { stage: StageResult; hasDeploy: boolean; live?: boolean }) {
   const nodes = trackState(stage, hasDeploy);
   const nodeEta = stage.etaSeconds != null && stage.etaSeconds > 0 && !stage.overdue
     ? `~${formatDur(stage.etaSeconds)}` : null;
   return (
-    <div className="pipeline-chart track" aria-label={trackAriaLabel(nodes)}>
+    <div className={`pipeline-chart track${live ? ' live' : ''}`} aria-label={trackAriaLabel(nodes)}>
       {nodes.map((n, i) => (
         <Fragment key={`${n.label}-${i}`}>
           {i > 0 && segment(nodes[i - 1]!, stage.percent, `seg-${i}`)}
