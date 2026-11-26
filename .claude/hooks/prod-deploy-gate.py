@@ -87,12 +87,14 @@ _GIT_VALUE_OPTIONS = frozenset({
 })
 # Git options that run configured commands or write an output file, turning a
 # read subcommand into a writer (`git -c diff.external=sh diff`, `--output=f`,
-# `git grep -O<cmd>`). A pager command can only arrive via `-c` or an env
-# prefix, both refused, so `-p`/`--paginate` stay allowed.
-_GIT_UNSAFE_OPTION = re.compile(
-    r"^(?:-O|(?:-c|--config-env|--exec-path|--output|--ext-diff|--textconv"
-    r"|--open-files-in-pager)(?:=|$))"
+# `git grep -O<cmd>`). git accepts any unambiguous abbreviation of a long option
+# (`--out=f`) and bundles short flags (`-iO<cmd>`), so `_git_option_unsafe`
+# matches prefixes and letters, not spellings. A pager command can only arrive
+# via `-c` or an env prefix, both refused, so `-p`/`--paginate` stay allowed.
+_GIT_UNSAFE_LONG = (
+    "config-env", "exec-path", "ext-diff", "open-files-in-pager", "output", "textconv",
 )
+_GIT_UNSAFE_SHORT = frozenset("cO")
 # An output redirection inside a token (`>`, `>>`, `2>`, `x>f`), with its target
 # when written attached. Searched, not anchored: the lexer keeps `echo x>f` as
 # one word `x>f`. The target must follow without whitespace, so a quoted
@@ -186,6 +188,16 @@ def _git_subcommand(args: list[str]) -> str | None:
         elif not arg.startswith("-"):
             return arg
     return None
+
+
+def _git_option_unsafe(arg: str) -> bool:
+    """True when ``arg`` is (or abbreviates, or bundles) a git option in ``_GIT_UNSAFE_*``."""
+    if arg.startswith("--"):
+        name = arg[2:].split("=", 1)[0]
+        return bool(name) and any(full.startswith(name) for full in _GIT_UNSAFE_LONG)
+    if arg.startswith("-"):
+        return bool(_GIT_UNSAFE_SHORT & set(arg[1:]))
+    return False
 
 
 def _command_words(tokens: list[str]) -> list[str]:
@@ -293,7 +305,7 @@ def _segment_cannot_write(tokens: list[str]) -> bool:
     if binary == "git":
         return (
             _git_subcommand(rest) in _READ_ONLY_GIT | _MENTION_ONLY_GIT
-            and not any(_GIT_UNSAFE_OPTION.match(arg) for arg in rest)
+            and not any(_git_option_unsafe(arg) for arg in rest)
         )
     if binary == "gh":
         return _is_mention_only(words)
