@@ -539,9 +539,10 @@ async def _lifespan(app: FastAPI):
         threading.Thread(target=_warm_stt, name="stt-warm", daemon=True).start()
 
     # --- model catalog warm-up ---------------------------------------------
-    # The first catalog read scans the ~250 MB claude binary; warm it in a thread
-    # so neither GET /api/models nor a sync is_known_alias() caller on the loop
-    # pays it cold (#3150). Failure just leaves the cache cold for the endpoint.
+    # The first catalog read scans the ~340 MB claude binary (or, if the binary is
+    # unchanged since the last probe, reads the persisted result — #3510); warm it
+    # in a thread so neither GET /api/models nor a sync is_known_alias() caller on
+    # the loop pays it cold (#3150). Failure just leaves the cache cold.
     def _warm_model_catalog() -> None:
         try:
             from server.sessions import model_catalog as _mc
