@@ -86,12 +86,19 @@ _GIT_VALUE_OPTIONS = frozenset({
     "--config-env",
 })
 # Git options that run configured commands or write an output file, turning a
-# read subcommand into a writer (`git -c diff.external=sh diff`, `--output=f`).
-_GIT_UNSAFE_OPTION = re.compile(r"^(?:-c|--config-env|--exec-path|--output|--ext-diff|--textconv)(?:=|$)")
-# A token that is an output redirection (`>`, `>>`, `2>`), with its target when
-# written attached (`>f`). `>|` and `&>` reach the lexer as `>` + a separator,
-# which leaves the target leading a segment of its own — unknown, so denied.
-_REDIRECT = re.compile(r"\d*>>?(.*)")
+# read subcommand into a writer (`git -c diff.external=sh diff`, `--output=f`,
+# `git grep -O<cmd>`). A pager command can only arrive via `-c` or an env
+# prefix, both refused, so `-p`/`--paginate` stay allowed.
+_GIT_UNSAFE_OPTION = re.compile(
+    r"^(?:-O|(?:-c|--config-env|--exec-path|--output|--ext-diff|--textconv"
+    r"|--open-files-in-pager)(?:=|$))"
+)
+# An output redirection inside a token (`>`, `>>`, `2>`, `x>f`), with its target
+# when written attached. Searched, not anchored: the lexer keeps `echo x>f` as
+# one word `x>f`. The target must follow without whitespace, so a quoted
+# `"a > b"` in prose is not a redirect. `>|` and `&>` reach the lexer as `>` + a
+# separator, which leaves the target leading a segment of its own — denied.
+_REDIRECT = re.compile(r">>?(\S*)$")
 
 
 # Commands that only read or annotate: the words in their arguments (a commit
@@ -274,8 +281,13 @@ def _segment_cannot_write(tokens: list[str]) -> bool:
     """
     if any(_SUBSTITUTION.search(t) for t in tokens):
         return False
-    words = _command_words(tokens)
-    if not words:
+    # Stricter than `_command_words`: an env prefix can turn a reader into a
+    # runner (`GIT_EXTERNAL_DIFF=x git diff`), and a wrapper option can carry a
+    # whole command (`env -S '…'`), so neither is peeled away here.
+    words = list(tokens)
+    while words and Path(words[0]).name in _WRAPPERS:
+        words = words[1:]
+    if not words or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]) or words[0].startswith("-"):
         return False
     binary, rest = Path(words[0]).name, words[1:]
     if binary == "git":
@@ -322,7 +334,7 @@ def _redirect_targets(tokens: list[str]) -> str:
     """The words a segment redirects output into (``> f``, ``2>>f``, ``>| f``), joined."""
     targets = []
     for i, token in enumerate(tokens):
-        match = _REDIRECT.fullmatch(token)
+        match = _REDIRECT.search(token)
         if match:
             targets.append(match.group(1) or (tokens[i + 1] if i + 1 < len(tokens) else ""))
     return "\n".join(targets)
