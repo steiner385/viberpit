@@ -285,6 +285,14 @@ class Session(Base):
     # transcript and handle the WIP commit exactly. Cleared with the claim.
     move_manifest: Mapped[dict | None] = mapped_column(
         JSON(none_as_null=True), nullable=True, default=None)
+    # Dead-host adoption (spec 002 FR-201..FR-205, server/sessions/adoption.py): the
+    # host this row was adopted OFF, set by the primary's adoption pass in the same
+    # UPDATE that restamps ``host`` to the new owner, and cleared by that owner once it
+    # has taken the session (resumed, fresh-started, queued, or deferred). While set, the
+    # row is "adopted, not yet picked up" — the new host's pickup tick looks for exactly
+    # this. ``moved_from``/``moved_at`` keep the durable history; this is the pending
+    # marker. Nullable so init_db reconcile adds it on both dialects (migration 0122).
+    adopted_from: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Why a session the locality rule would have made "native" was routed to "virtual"
     # (NativeDisplay.unavailable_reason(), or "native_disabled" when this host has no
     # native display). NULL = no fallback happened. Nullable so init_db backfills it.
