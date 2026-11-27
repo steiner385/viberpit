@@ -516,15 +516,22 @@ def _plan_from(profile: dict | None, name: str) -> dict:
 
 def complete_code_login(name: str, token_response: dict) -> None:
     """Install a code-paste claude.ai login (``setup_token_oauth.exchange_login``)
-    into EXISTING account *name*'s slot — the Remote Control sign-in.
+    into *name*'s slot — the Remote Control sign-in, or the first sign-in of a
+    brand-new account (``/accounts/add``).
 
     Identity comes from the token response's ``account``/``organization`` and the
-    profile endpoint (always asked, best-effort: it also names the plan). Before ANY
-    write the identity must be the stored account's own (``_check_same_identity``),
-    or ``WrongAccountLogin`` is raised; an unreadable identity raises
-    ``LoginIdentityUnavailable``. Both leave the slot, ``.claude.json`` and the
-    composed dir untouched. On success the writes are ``install_claude_login``'s,
-    plus ``mark_reauthenticated``.
+    profile endpoint (always asked, best-effort: it also names the plan). An
+    unreadable identity raises ``LoginIdentityUnavailable``. Before ANY write:
+
+    * an EXISTING slot must be the stored account's own identity
+      (``_check_same_identity``), or ``WrongAccountLogin`` is raised;
+    * a slot that does NOT exist yet is bootstrapped from the captured identity —
+      there is nothing stored to compare with, and the login itself names the account.
+
+    Every failure leaves the slot, ``.claude.json`` and the composed dir untouched. A
+    bootstrap that fails mid-write removes the slot it created. On success the writes
+    are ``install_claude_login``'s (the same ones ``capture_login`` makes), plus
+    ``mark_reauthenticated``.
 
     NEVER logs the token response.
     """
@@ -541,10 +548,28 @@ def complete_code_login(name: str, token_response: dict) -> None:
     identity = _login_identity(token_response, profile)
     if not identity.get("accountUuid") and not identity.get("emailAddress"):
         raise LoginIdentityUnavailable()
-    _check_same_identity(name, identity.get("accountUuid"), identity.get("emailAddress"))
+    bootstrap = not paths.slot_path(name).exists()
+    if not bootstrap:
+        _check_same_identity(name, identity.get("accountUuid"), identity.get("emailAddress"))
 
     blob = oauth.slot_blob_from_token_response(token_response, _plan_from(profile, name))
     stored_account = _dict_at(_stored_claude_json(name), "oauthAccount")
-    install_claude_login(name, blob, {"oauthAccount": {**stored_account, **identity}})
+    claude_json = {"oauthAccount": {**stored_account, **identity}}
+    if bootstrap:
+        _install_new_login(name, blob, claude_json)
+    else:
+        install_claude_login(name, blob, claude_json)
     mark_reauthenticated(name)
+
+
+def _install_new_login(name: str, claude_oauth: dict, claude_json: dict) -> None:
+    """``install_claude_login`` for a slot that does not exist yet; on any failure the
+    slot and its ``.claude.json`` are removed again, so a failed first sign-in never
+    leaves a half-created account behind."""
+    try:
+        install_claude_login(name, claude_oauth, claude_json)
+    except BaseException:
+        paths.slot_path(name).unlink(missing_ok=True)
+        paths.store_claude_json_path(name).unlink(missing_ok=True)
+        raise
 

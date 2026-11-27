@@ -61,11 +61,13 @@ class FakeReauthManager:
         self._state = ReauthState(
             state="running",
             identity=identity,
+            account=name,
             started_at=time.time(),
         )
         return ReauthState(
             state=self._state.state,
             identity=self._state.identity,
+            account=self._state.account,
             started_at=self._state.started_at,
         )
 
@@ -74,6 +76,7 @@ class FakeReauthManager:
         return ReauthState(
             state=s.state,
             identity=s.identity,
+            account=s.account,
             started_at=s.started_at,
             message=s.message,
             vnc_session=s.vnc_session,

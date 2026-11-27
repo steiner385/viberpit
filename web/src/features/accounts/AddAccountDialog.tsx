@@ -1,7 +1,8 @@
 /**
  * AddAccountDialog — collects a name for a new account, then drives either:
- *   - Anthropic OAuth: the interactive browser-OAuth login (the same global
- *     state machine as reauth) to create the account's credential slot.
+ *   - Anthropic: the claude.ai sign-in as a code paste in the operator's own browser
+ *     (the same state machine as the re-auth paste, `claude_login`), which creates
+ *     the account's credential slot once the pasted code is exchanged.
  *   - GitHub Copilot: the device-flow OAuth to create a Copilot account slot.
  *   - OpenAI (ChatGPT): the SAME device flow, at the credential authority, to
  *     create an OpenAI account the Codex engine can launch.
@@ -30,7 +31,8 @@ import {
   QK,
 } from '@/api/hooks'
 import { accountNameError } from '@/lib/accountName'
-import { ReauthBrowserPanel } from './ReauthBrowserPanel'
+import { CodePastePanel } from './CodePastePanel'
+import { useSubmitAddAccountCode } from './useAddAccountCode'
 import { DeviceCodePanel } from './DeviceCodePanel'
 
 /** The providers this dialog can enrol. Ordered as the toggle renders them. */
@@ -65,6 +67,7 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
   // Anthropic hooks
   const addAccount = useAddAccount()
   const cancelAdd = useCancelAddAccount()
+  const submitAddCode = useSubmitAddAccountCode()
   const statusQuery = useAddAccountStatus(started && !optimisticIdle)
   const status = optimisticIdle ? undefined : statusQuery.data
 
@@ -82,12 +85,12 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
   const openaiStatus = openaiStarted ? openaiStatusQuery.data : undefined
   const openaiStarting = addOpenAIAccount.isPending
 
-  const isRunning = status?.state === 'running' || status?.state === 'cancelling'
+  // Anthropic add is busy from start until its code is exchanged (awaiting_code is the
+  // paste step, not a finished state).
+  const isAwaitingCode = status?.state === 'awaiting_code'
+  const isBusy = status?.state === 'running' || status?.state === 'cancelling' || isAwaitingCode
   const isSuccess = status?.state === 'success'
   const isError = status?.state === 'error' || status?.state === 'timeout'
-  // While the in-page reauth browser is showing, widen the dialog so the 1280×800
-  // virtual display isn't crushed into the narrow add-account form width.
-  const showVnc = isRunning && !!status?.vncSession
 
   // Refresh the accounts list once the Anthropic add transitions into success — the new
   // account only appears in the list after its slot is written.
@@ -125,7 +128,7 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
   const nameError = accountNameError(trimmed)
 
   // Anthropic canSubmit: block while running
-  const canSubmit = !!trimmed && !nameError && !isRunning
+  const canSubmit = !!trimmed && !nameError && !isBusy
   // Device flows: block once the flow has started
   const copilotCanSubmit = !!trimmed && !nameError && !copilotStarted && !copilotStarting
   const openaiCanSubmit = !!trimmed && !nameError && !openaiStarted && !openaiStarting
@@ -226,11 +229,10 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
       open
       onClose={onClose}
       title="Add account"
-      size={showVnc ? 'xl' : 'sm'}
+      size="sm"
       initialFocus={inputRef}
-      dismissable={!isRunning && !copilotStarted && !openaiStarted
+      dismissable={!isBusy && !copilotStarted && !openaiStarted
         && !copilotStarting && !openaiStarting}
-      className="transition-[max-width] motion-reduce:transition-none"
     >
       {/* Provider toggle */}
       <div className="flex rounded-lg border border-edge overflow-hidden text-sm">
@@ -272,7 +274,7 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
               submitCurrent()
             }
           }}
-          disabled={isRunning || isSuccess || copilotStarted || openaiStarted
+          disabled={isBusy || isSuccess || copilotStarted || openaiStarted
             || copilotStarting || openaiStarting}
           placeholder="e.g. work"
           aria-label="Account name"
@@ -281,19 +283,22 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
       </Field>
 
       {/* Anthropic OAuth flow status */}
-      {provider === 'anthropic' && isRunning && (
-        status?.vncSession ? (
-          <>
-            <p className="mt-4 text-xs text-warning">
-              Sign in to Claude in the window below…
-            </p>
-            <ReauthBrowserPanel vncSession={status.vncSession} />
-          </>
-        ) : (
-          <p className="mt-4 text-xs text-warning">
-            Opening Chrome on the host screen — sign in there…
-          </p>
-        )
+      {provider === 'anthropic' && isAwaitingCode && status?.authUrl && (
+        <div className="mt-4">
+          <CodePastePanel
+            authUrl={status.authUrl}
+            instructions="Open this link in your browser, where you're signed in to claude.ai, approve, then paste the code below."
+            inputLabel={`Authorization code for ${trimmed}`}
+            onSubmit={(code, onAccepted) => {
+              submitAddCode.mutate(code, { onSuccess: onAccepted })
+            }}
+          />
+        </div>
+      )}
+      {provider === 'anthropic' && isBusy && !isAwaitingCode && (
+        <p className="mt-4 text-xs text-warning">
+          Starting the claude.ai sign-in…
+        </p>
       )}
       {provider === 'anthropic' && isSuccess && (
         <p className="mt-4 text-xs text-success">
@@ -318,7 +323,7 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
       <div className="flex gap-3 justify-end pt-4">
         {provider === 'anthropic' ? (
           <>
-            {isRunning ? (
+            {isBusy ? (
               <Button
                 type="button"
                 variant="secondary"
@@ -343,7 +348,7 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
                 onClick={handleSubmit}
                 disabled={!canSubmit}
               >
-                {isRunning ? 'Adding…' : 'Add'}
+                {isBusy ? 'Adding…' : 'Add'}
               </Button>
             )}
           </>
