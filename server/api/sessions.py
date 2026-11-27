@@ -56,6 +56,7 @@ from server.sessions.orchestrator import (
     ModelBlockedError,
 )
 from server.sessions import session_actions
+from server.sessions.preflight import PreflightFailed
 from server.sessions import provenance as _provenance
 from server.sessions import read_state
 from server.sessions import worktree_files
@@ -402,6 +403,10 @@ def _record_to_dict(
         # This is the BROWSER serializer; SessionRecord.to_dict is the daemon→edge
         # RPC one. Both must emit these or the feature is dead on the wire.
         "interruptedFromStatus": getattr(record, "interrupted_from_status", None),
+        # The ask the restart killed, with its content (FR-305/FR-406, #947):
+        # {kind, content, holdId, createdAt} | null. Same two-serializer rule — the
+        # LostHoldBanner reads it off the list payload.
+        "lostHold": getattr(record, "lost_hold", None),
         # Why a finished session produced no PR: the mark_no_pr/marker token on a
         # 'complete' session, or the queue drainer's "obsolete: PR #N merged before
         # start" on a queued session it ended without ever spawning. Same
@@ -1183,6 +1188,8 @@ async def create_session(
     except AllAccountsBusy as exc:
         return _all_accounts_busy_response(
             exc, limited_message="All accounts are at or above the usage ceiling")
+    except PreflightFailed as exc:
+        return _preflight_failed_response(exc)
     except sandbox_mod.SandboxError as exc:
         # D-23: the new session's sandbox could not start or be verified (the default
         # sandboxes new sessions). Nothing runs; the CLI's own reason rides along.
@@ -1296,10 +1303,23 @@ async def list_archived_sessions(
     orch = _get_orchestrator(request)
     rows = await orch.list_archived()
     unread = await _unread_ids_or_none(identity, "list_archived_sessions")
+    # FR-404: ``deleteState`` on each row is the LISTING host's memory; in fleet mode
+    # that is the primary, blind to a row a worker could not delete. Overlay the
+    # fleet-wide union so the chip survives a refetch. Best-effort: an orchestrator
+    # without the method (older daemon → {}, test doubles) keeps the rows' own value.
+    states_fn = getattr(orch, "pending_delete_states", None)
+    states: dict = {}
+    if callable(states_fn):
+        try:
+            states = await states_fn() or {}
+        except DaemonError as exc:
+            if exc.err_type != "UnknownMethod":
+                raise
     # The orchestrator's internal RPC wire temporarily carries the old Claude
     # alias for daemon-first rolling deploys. It is not part of the browser API.
     return [
         {**{key: value for key, value in row.items() if key != "claudeSessionId"},
+         "deleteState": states.get(row.get("id"), row.get("deleteState")),
          "unread": row.get("id") in unread}
         for row in rows
     ]
@@ -1440,10 +1460,14 @@ async def batch_permanent_delete_sessions(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
-    """Permanently delete multiple sessions. Best-effort: returns per-id succeeded/failed."""
+    """Permanently delete multiple sessions. Best-effort: returns per-id
+    succeeded / failed / pending — ``pending`` is a row KEPT because its directory
+    could not be removed (FR-404; ``state`` is ``pending`` or ``stuck``), told apart
+    from a true not-found exactly as the single-id route's 202 is from its 404."""
     orch = _get_orchestrator(request)
     succeeded: list[str] = []
     failed: list[dict] = []
+    pending: list[dict] = []
     for session_id in dict.fromkeys(body.ids):  # dedupe, preserve order
         try:
             deleted = await orch.permanent_delete(session_id)
@@ -1452,7 +1476,11 @@ async def batch_permanent_delete_sessions(
             failed.append({"id": session_id, "error": str(exc)})
             continue
         if not deleted:
-            failed.append({"id": session_id, "error": "not found"})
+            state = await orch.delete_state(session_id)
+            if state:
+                pending.append({"id": session_id, "state": state})
+            else:
+                failed.append({"id": session_id, "error": "not found"})
             continue
         succeeded.append(session_id)
         await record_audit(
@@ -1461,7 +1489,7 @@ async def batch_permanent_delete_sessions(
             identity=identity,
             detail={"session_id": session_id},
         )
-    return {"succeeded": succeeded, "failed": failed}
+    return {"succeeded": succeeded, "failed": failed, "pending": pending}
 
 
 @router.post("/batch/archive")
@@ -1872,6 +1900,23 @@ async def queue_cancel_session(
         )
 
 
+def _preflight_failed_response(exc: PreflightFailed) -> JSONResponse:
+    """The 409 for a ``PreflightFailed`` (FR-304): the account's composed credential
+    cannot authenticate, so nothing was started. ``reason`` is the typed token
+    (``credentials_expired`` / ``missing_credentials``); a pinned account names itself."""
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "error": {
+                "code": "credential_preflight_failed",
+                "message": str(exc),
+                "reason": exc.reason,
+                "account": exc.account,
+            },
+        },
+    )
+
+
 def _all_accounts_busy_response(exc: AllAccountsBusy, *, limited_message: str) -> JSONResponse:
     """The 409 for an ``AllAccountsBusy``: ``accounts_need_reauth`` when no account is
     usable at all, else ``all_accounts_limited`` with the ``earliestReset``."""
@@ -1937,6 +1982,9 @@ async def queue_start_now(
         return _all_accounts_busy_response(
             exc, limited_message="Every account is at its usage ceiling; this session "
                                  "starts automatically when quota frees.")
+    # No PreflightFailed branch: start_queued_now runs the queue drain, which classifies
+    # a preflight refusal itself (rotate once, else a typed end) — only AllAccountsBusy
+    # escapes it.
     except DaemonUnavailable:
         log.warning("queue_start_now: daemon unavailable id=%s", session_id, exc_info=True)
         return _start_now_unavailable(
@@ -2804,6 +2852,8 @@ async def fork_session(
     except AllAccountsBusy as exc:
         return _all_accounts_busy_response(
             exc, limited_message="The source's account is at or above the usage ceiling")
+    except PreflightFailed as exc:
+        return _preflight_failed_response(exc)
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     except DaemonError as exc:
@@ -3408,10 +3458,21 @@ async def permanent_delete_session(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ):
-    """Permanently delete a session: remove archive folder and DB row. 404 if unknown."""
+    """Permanently delete a session: remove its directory and DB row.
+
+    204 when it is gone. 202 ``{"state": "pending" | "stuck"}`` when the row was KEPT
+    because the directory could not be removed (FR-404): ``pending`` — the owning
+    daemon retries on its own; ``stuck`` — it has given up after repeated failures
+    and the directory needs manual cleanup (deleting again does try once more).
+    404 only when no such row exists. The audit row is written for a real delete only.
+    """
     orch = _get_orchestrator(request)
     deleted = await orch.permanent_delete(session_id)
     if not deleted:
+        state = await orch.delete_state(session_id)
+        if state:
+            return JSONResponse(status_code=status.HTTP_202_ACCEPTED,
+                                content={"state": state})
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
@@ -3650,6 +3711,10 @@ async def model_approval(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "model_blocked", "message": f"{body.model} is blocked by policy"})
+    except PreflightFailed as exc:
+        # FR-304: the approved launch's account cannot authenticate; the hold was
+        # restored by the orchestrator, so the approver can retry on another account.
+        return _preflight_failed_response(exc)  # type: ignore[return-value]
     except ValueError:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="no pending model approval")
     return _record_to_dict(rec)

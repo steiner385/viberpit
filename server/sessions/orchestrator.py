@@ -104,7 +104,9 @@ from server.sessions.account_auth import (
 )
 from server.sessions.scratch_config import helper_config_dir
 from server.sessions import deploy_snapshot as _deploy_snapshot
+from server.sessions import preflight as _preflight
 from server.sessions import provenance as _provenance
+from server.sessions import holds as _holds
 from server.sessions import spawn_failure as _spawn_failure
 from server.sessions.archive_move import mountpoint, restore_from_archive
 from server.sessions import attachments as _attachments
@@ -1089,6 +1091,18 @@ DRIVER_START_TIMEOUT_S = env_float("VIBERPIT_DRIVER_START_TIMEOUT_S", 90.0, mini
 # midway could leave the old CLI running next to the new one (#1040). Also the bound
 # on _reassign's wait for a prior swap of the same session.
 DRIVER_SWAP_TIMEOUT_S = env_float("VIBERPIT_DRIVER_SWAP_TIMEOUT_S", 150.0, minimum=1.0)
+# How often _dirty_flush_loop retries the DB row for records whose last status
+# persist failed (spec 002 FR-307). Bounds how long the polled DB shadow can lag the
+# in-memory record after a DB blip: one interval.
+DIRTY_FLUSH_INTERVAL_S = env_float("VIBERPIT_DIRTY_FLUSH_INTERVAL_S", 10.0, minimum=0.1)
+# How often a daemon retries the permanent deletes that kept their row (FR-404):
+# the worktree / archive dir could not be removed (stale sshfs handle, containment
+# guard) and the row stayed so the directory is never stranded. Per host — the dir
+# is on the host that failed to remove it. Ids that crossed
+# _ARCHIVE_PURGE_MAX_STRIKES ("stuck") are left to a manual delete. Default matches
+# _ARCHIVE_LIMIT_SWEEP_INTERVAL so a kept row reaches "stuck" on the same ~15 min
+# cadence the cap purge always had — long enough for the #825 sshfs remount to land.
+DELETE_RETRY_INTERVAL_S = env_float("VIBERPIT_DELETE_RETRY_INTERVAL_S", 300.0, minimum=0.1)
 # Worst case one ensure_driver resume legitimately takes (#3020): the wait for an
 # in-flight release, a start() that runs its whole budget, then the bounded close of
 # the half-built driver before DriverStartTimeout is raised. The bridge derives its
@@ -1529,6 +1543,22 @@ class SessionOrchestrator:
         # have become deletable (e.g. the sshfs mount recovered).
         self._archive_purge_strikes: dict[str, int] = {}
         self._archive_purge_poisoned: set[str] = set()
+        # Permanent deletes that KEPT their row (FR-404): session id → the last rmtree /
+        # containment error. Shares the strike counter + poison set above (a kept row is
+        # exactly what the cap purge strikes on); _delete_retry_loop retries the
+        # non-poisoned ones, delete_state() reads it for the API. In-memory like the
+        # strikes: a restart forgets it and the user can re-issue the delete.
+        self._pending_deletes: dict[str, str] = {}
+        # Session ids whose last _persist_status DB write failed (FR-307): the record
+        # moved, the row did not. _flush_dirty_status re-writes them from the record
+        # every DIRTY_FLUSH_INTERVAL_S; a later successful persist clears the mark.
+        self._dirty_status: set[str] = set()
+        # The open durable hold per session (FR-305): session id → kind
+        # (holds.HOLD_KIND_BY_STATUS value). _persist_status consults it so the
+        # per-derive re-persist of the same hold status does not re-insert a row;
+        # the DB row is the truth, this is only the dedupe. Empty after rehydrate()
+        # (every hold a restart left open is resolved or marked lost there).
+        self._open_hold_kind: dict[str, str] = {}
         # Single-flight for the archived-cap purge (#3458): every archive spawns an
         # _enforce_archive_limit pass, so a batch archive started N passes that each
         # counted the same excess and picked the same oldest ids. Serialising them
@@ -2255,6 +2285,8 @@ class SessionOrchestrator:
         self._goal_stat_sig: dict[str, tuple[int, int]] = {}
         self._goal_task: asyncio.Task | None = None
         self._stall_task: asyncio.Task | None = None
+        self._dirty_flush_task: asyncio.Task | None = None
+        self._delete_retry_task: asyncio.Task | None = None
         self._token_refresh_task: asyncio.Task | None = None
         self._sweep_task: asyncio.Task | None = None
         self._archive_limit_task: asyncio.Task | None = None
@@ -3774,6 +3806,15 @@ class SessionOrchestrator:
             self._goal_monitor(), name="goal-inference-monitor"
         )
         self._stall_task = asyncio.create_task(self._stall_loop(), name="stall-watchdog")
+        # Per-host, not primary-only: every daemon owns its own records, so each
+        # heals its own rows (FR-307).
+        self._dirty_flush_task = asyncio.create_task(
+            self._dirty_flush_loop(), name="dirty-status-flush"
+        )
+        # Per-host too: the directory a delete could not remove is on THIS host (FR-404).
+        self._delete_retry_task = asyncio.create_task(
+            self._delete_retry_loop(), name="delete-retry"
+        )
         # Renew/release the per-session ownership leases this daemon holds (#1379).
         # Unconditional (not role-gated like the primary lease): the duplicate-CLI
         # bug is a WORKER-vs-primary race as much as a primary-vs-primary one.
@@ -4589,6 +4630,7 @@ class SessionOrchestrator:
         # suspect in the #846 teardown stalls). test_orchestrator_stop_completeness
         # pins the full set by task name.
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
+                     "_dirty_flush_task", "_delete_retry_task",
                      "_token_refresh_task", "_backlog_task", "_sdlc_intake_task",
                      "_pm_sync_task", "_pm_triage_task", "_gh_reconcile_task",
                      "_sdlc_synth_task", "_control_band_task", "_capacity_governor_task",
@@ -4890,7 +4932,7 @@ class SessionOrchestrator:
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                     queue_reason=queue_reason, platform=platform, sandbox=sandbox)
             try:
-                return await self._spawn_session(
+                return await self._spawn_rotating_on_preflight(
                     session_id, name=name, account=account, initial_prompt=initial_prompt,
                     cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
                     identity=identity, permission_mode=permission_mode,
@@ -5669,8 +5711,9 @@ class SessionOrchestrator:
                         session_id, model=approved_model, replace_row=row is not None,
                         **spawn_kwargs)
                 else:
-                    launched = await self._spawn_session(
-                        session_id, model=approved_model, preexisting_row=row is not None,
+                    launched = await self._spawn_rotating_on_preflight(
+                        session_id, account=spawn_kwargs.pop("account", None),
+                        model=approved_model, preexisting_row=row is not None,
                         **spawn_kwargs)
             except Exception as exc:
                 if session_id in self._drivers:
@@ -6056,6 +6099,7 @@ class SessionOrchestrator:
                 sid, params = entry.session_id, dict(entry.params)
                 queue_reason = params.pop("queue_reason", "global_cap")
                 spawn_attempt = int(params.pop(_spawn_failure.ATTEMPT_PARAM, 0) or 0)
+                spawn_exclude = frozenset(params.pop(_spawn_failure.EXCLUDE_PARAM, None) or ())
                 # The queue entry is deliberately NOT removed yet — it is the ONLY
                 # place the spawn params (cols/rows/identity/attachment_ids) are
                 # persisted, so deleting it before the spawn commits meant a daemon
@@ -6190,7 +6234,7 @@ class SessionOrchestrator:
                 try:
                     await self._spawn_session(
                         sid, preexisting_row=True, resume=row.engine_session_id or None,
-                        **params)
+                        exclude_accounts=spawn_exclude, **params)
                 except SessionLeaseHeld:
                     # Another host is building this very session (its adoption won
                     # the lease between our ownership check and this spawn). Not a
@@ -6272,13 +6316,22 @@ class SessionOrchestrator:
                         # verified, or a sandboxed parent's child cannot be one here).
                         log.info("session_queue.start_refused_sandbox id=%s code=%s "
                                  "reason=%s", sid, exc.code, exc.reason)
+                    elif isinstance(exc, _preflight.PreflightFailed):
+                        # FR-304: a typed, expected condition (the account's composed
+                        # credential cannot authenticate), handled by rotation or a
+                        # typed end below — not a traceback-carrying WARNING, which
+                        # would auto-file an issue per lapsed account.
+                        log.info("session_queue.start_refused_preflight id=%s account=%s "
+                                 "reason=%s", sid, exc.account, exc.reason)
                     else:
                         log.warning("session_queue.start_failed id=%s", sid,
                                     exc_info=True)
+                    pinned = bool(params.get("account"))
                     failure = _spawn_failure.classify(
                         exc, sandbox_error=sandbox_mod.SandboxError,
                         start_timeout=DriverStartTimeout,
-                        obsolete_pr=obsolete_pr.number if obsolete_pr is not None else None)
+                        obsolete_pr=obsolete_pr.number if obsolete_pr is not None else None,
+                        pinned=pinned)
                     attempt = spawn_attempt + 1
                     if (failure.transient and not forcing
                             and spawn_attempt < _spawn_failure.MAX_TRANSIENT_RETRIES):
@@ -6294,9 +6347,24 @@ class SessionOrchestrator:
                         await sq.set_spawn_attempt(sid, attempt)
                         await _provenance.record(sid, _provenance.SPAWN_FAILED,
                                                  failure.to_detail(attempt, requeued=True))
+                        # FR-303/FR-304: a start that overran its deadline or failed
+                        # credential preflight indicts the ACCOUNT, not the session, so
+                        # the retry must not land on it again: hard-exclude it on the
+                        # entry and say so on the timeline. A pinned entry never
+                        # rotates (its preflight failure is permanent — classify — and
+                        # its timeout retries the same account, as before). A spawn
+                        # that raised before picking an account has nothing to rotate
+                        # from and retries as a plain re-enqueue.
+                        rotate_from = (None if pinned
+                                       else _spawn_failure.rotation_source(exc, failure))
+                        if rotate_from is not None:
+                            await sq.set_spawn_exclude(sid, spawn_exclude | {rotate_from})
+                            await _provenance.record(sid, _provenance.ROTATED_ACCOUNT, {
+                                "from": rotate_from, "reason": failure.reason,
+                                "attempt": attempt})
                         foreign.add(sid)
-                        log.info("session_queue.start_requeued id=%s reason=%s attempt=%d",
-                                 sid, failure.reason, attempt)
+                        log.info("session_queue.start_requeued id=%s reason=%s attempt=%d "
+                                 "rotate_from=%s", sid, failure.reason, attempt, rotate_from)
                         continue
                     failure_detail = failure.to_detail(attempt, requeued=False)
                     await _provenance.record(sid, _provenance.SPAWN_FAILED, failure_detail)
@@ -6814,6 +6882,29 @@ class SessionOrchestrator:
             return "failed"
         return "not_queued"
 
+    async def _spawn_rotating_on_preflight(self, session_id: str, *, account: str | None,
+                                           **kw: Any) -> SessionRecord:
+        """``_spawn_session`` for a DIRECT launch (create, model approval), retried ONCE
+        on a rotated account when the auto-picked account fails credential preflight
+        (FR-304): the failed account is hard-excluded from the second pick and the move
+        is on the timeline (``ROTATED_ACCOUNT``). The queue drain does not use this —
+        it rotates through its own re-enqueue. A pinned *account* is never moved and a
+        second failure is not retried: the typed ``PreflightFailed`` propagates and the
+        API answers 409 with its reason. When that second attempt fails too, the
+        ``ROTATED_ACCOUNT`` row stays behind for an id that never got a session row —
+        orphan provenance, harmless (no FK, nothing reads an unknown id's timeline)."""
+        try:
+            return await self._spawn_session(session_id, account=account, **kw)
+        except _preflight.PreflightFailed as exc:
+            if account is not None:
+                raise
+            log.info("session.start_rotated_preflight id=%s from=%s reason=%s",
+                     session_id, exc.account, exc.reason)
+            await _provenance.record(session_id, _provenance.ROTATED_ACCOUNT, {
+                "from": exc.account, "reason": exc.reason, "attempt": 1})
+            return await self._spawn_session(
+                session_id, account=None, exclude_accounts=frozenset({exc.account}), **kw)
+
     async def _spawn_session(
         self,
         session_id: str,
@@ -6850,8 +6941,14 @@ class SessionOrchestrator:
         fork_from: tuple[str, str] | None = None,
         platform: str | None = None,
         sandbox: bool = False,
+        exclude_accounts: frozenset[str] = frozenset(),
     ) -> SessionRecord:
         """Start an AgentDriver, persist/update a DB row, return a SessionRecord.
+
+        *exclude_accounts*: accounts the pick may NOT land on (merged into
+        ``select_account``'s hard exclude) — the queue drain's rotated retry passes
+        the account whose start timed out or failed credential preflight
+        (FR-303/FR-304). Ignored when *account* is given.
 
         *fork_worktree* / *fork_from* (D-8, ``fork_session`` only): the session runs in
         that ready-made fork worktree instead of a new one, and — with *fork_from* =
@@ -6951,13 +7048,15 @@ class SessionOrchestrator:
             usage_unverified = False
             if account is None:
                 # Skip accounts currently quarantined for a 429/401 so a fresh session
-                # doesn't land on an account we already know is struggling.
+                # doesn't land on an account we already know is struggling, and the
+                # ones a rotated retry must avoid (the account whose start just
+                # timed out / failed preflight for this very session).
                 # select_account does synchronous, potentially-blocking oauth usage
                 # I/O (#2223) — off the loop via to_thread, like every other
                 # ledger-contending call in this class.
                 picked = await asyncio.to_thread(
                     select_account,
-                    exclude=self._recovery.quarantined(now=self._clock()),
+                    exclude=self._recovery.quarantined(now=self._clock()) | exclude_accounts,
                     load=self.live_session_load(), engine=selected_engine,
                     model=quota_model(model, engine=selected_engine))
                 account = picked.name
@@ -6972,12 +7071,33 @@ class SessionOrchestrator:
                 selected_engine, account, cwd, kind, disabled_mcp=disabled_mcp,
             )
 
+            provider = _provider_of(account)
             # Ensure the Copilot proxy is running for copilot-backed accounts.
-            if self._copilot is not None and _provider_of(account) == _copilot_mod.PROVIDER:
+            if self._copilot is not None and provider == _copilot_mod.PROVIDER:
                 await self._copilot.ensure(account)
 
             # …and the per-account Codex app-server for codex-engine sessions.
             await self._ensure_codex_runner(selected_engine, account)
+
+            # FR-304: can the composed config the CLI is about to read authenticate at
+            # all? Copilot's gate is the proxy health check above and Codex has no
+            # Claude credential (empty cfg dir), so this is the Claude account's. The
+            # launch KIND decides whether the composed claudeAiOauth blob is even read
+            # (a setup-token / envelope launch authenticates from the env); finding it
+            # reads the setup-token from the account store, so it runs through
+            # account_store_io and only when the check applies; a store too slow to
+            # answer (default=None, logged there) leaves the kind unknown and the
+            # launch unjudged — an infrastructure stall must not end the session. The
+            # check itself is pure filesystem. A failure raises inside this prespawn
+            # window, so the light rollback applies and the drain can rotate the
+            # retry (#947).
+            if _preflight.applies(provider, driver_config_dir):
+                launch = await account_store_io(oauth_launch_env, account, default=None)
+                reason = (_preflight.check(account, driver_config_dir, provider,
+                                           launch_kind=launch[1])
+                          if launch is not None else None)
+                if reason is not None:
+                    raise _preflight.PreflightFailed(account, reason)
 
             # Pre-seed the in-memory record so _session_factory's _oat_env closure can
             # look up the account (needed for copilot env injection during driver.start()).
@@ -7110,7 +7230,10 @@ class SessionOrchestrator:
                 is_fork=fork_worktree is not None,
                 sandbox=sandbox_on,
             )
-        except BaseException:
+        except BaseException as exc:
+            # Both rollback paths stamp the account this attempt ran on, so the queue
+            # drain knows which account to rotate its retry away from (FR-303/FR-304).
+            _spawn_failure.note_account(exc, account)
             await self._run_rollback_shielded(
                 self._release_prespawn_resources(session_id, worktree_info,
                                                  keep_paths=fork_worktree is not None),
@@ -7319,7 +7442,8 @@ class SessionOrchestrator:
                     log.warning("session.create: initial prompt not delivered "
                                 "session=%s result=%s", session_id, delivery)
             return record
-        except BaseException:
+        except BaseException as exc:
+            _spawn_failure.note_account(exc, account)   # see the prespawn rollback
             # Before the row is durable, this method owns every resource allocated
             # for the attempted spawn. In particular CodexRunnerManager.attach()
             # may register the claim and then raise; at that point the live driver
@@ -8337,6 +8461,7 @@ class SessionOrchestrator:
         if _cs.steering_parent(record):
             await self._child_stop_transition(record, "ended", None)
         record = self._records.pop(session_id, None)
+        await self._resolve_hold_on_terminal(session_id, record)
         await self._cleanup_session_paths(session_id, record)
 
         # Persist 'ended' BEFORE dropping any queue entry (#1100 ordering rule, see
@@ -8522,6 +8647,161 @@ class SessionOrchestrator:
                 .values(name=name, name_is_auto=False)
             )
 
+    @staticmethod
+    def _status_row_values(status: str, rec: "SessionRecord | None", *,
+                           turn_at: "datetime | None",
+                           hand_back_reason: str | None,
+                           write_background_work: bool,
+                           background_work: dict | None,
+                           suspected_complete_reason: str | None,
+                           resolution: str | None,
+                           resolution_source: str | None,
+                           resolution_note: str | None) -> dict:
+        """The one mapping from a status persist's inputs to ``sessions`` columns.
+
+        Shared by ``_persist_status`` (inputs are what it just assigned to the record)
+        and ``_flush_dirty_status`` (inputs are read back off the record, FR-307), so
+        the two can never write a different column set for the same status."""
+        values: dict = {"status": status}
+        if turn_at is not None:
+            values["last_turn_at"] = turn_at
+        # Mirrors the in-memory assignment in _persist_status, and unconditional for
+        # the same reason: the row must clear the old ask, not just gain a new one.
+        values["hand_back_reason"] = hand_back_reason
+        if write_background_work:
+            values["background_work"] = background_work
+        values["suspected_complete_reason"] = suspected_complete_reason
+        if status in _STALLED_STATUSES:
+            if rec is not None:
+                values["paused_reason"] = rec.paused_reason
+                values["paused_until"] = rec.paused_until
+        else:
+            values["paused_reason"] = None
+            values["paused_until"] = None
+        # Write pr_resolution to DB when the in-memory record was just set by the
+        # caller; rec.pr_resolution == resolution guards idempotency (won't
+        # overwrite a pre-existing classifier value that differs from the
+        # session's own).
+        if (status == "complete" and resolution and rec is not None
+                and rec.pr_resolution == resolution):
+            values["pr_resolution"] = resolution
+            values["pr_resolution_source"] = resolution_source
+            # Under the SAME guard, so the note can never outlive or contradict
+            # the resolution it explains. Read by the Backlog Runner's
+            # investigation settle (by session id) and, via the record, by the
+            # completion bar (a reasoned no-PR claim is accepted, #2917).
+            values["pr_resolution_note"] = resolution_note
+        # Fold the in-memory slash-command catalog (cached during attach by
+        # command_catalog(), which must not write from the cancellable attach path)
+        # into this driver-loop write so it reaches the DB row for cross-restart
+        # replay. Written here rather than on attach because this callback runs in
+        # the turn loop, safe from client-disconnect cancellation.
+        if rec is not None and rec.command_catalog:
+            values["command_catalog"] = rec.command_catalog
+        return values
+
+    @staticmethod
+    def _record_row_values(rec: SessionRecord) -> dict:
+        """``_status_row_values`` fed entirely from the record: what the row MUST say
+        for the record to be its truth. Every other writer of these columns (the
+        background-work refresh, the completion judge, the PR classifier) assigns the
+        record in the same breath, so mirroring it is lossless."""
+        return SessionOrchestrator._status_row_values(
+            rec.status, rec,
+            turn_at=rec.last_turn_at,
+            hand_back_reason=rec.hand_back_reason,
+            write_background_work=True,
+            background_work=rec.background_work,
+            suspected_complete_reason=rec.suspected_complete_reason,
+            resolution=rec.pr_resolution,
+            resolution_source=rec.pr_resolution_source,
+            resolution_note=rec.pr_resolution_note,
+        )
+
+    async def _update_session_row(self, session_id: str, values: dict) -> None:
+        """One UPDATE of the session's row; raises on DB failure (FR-307 callers
+        decide what a failure means)."""
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(**values)
+            )
+
+    # Lazily-created bookkeeping (#662 pattern, like _queue_drain_lock): several tests
+    # build the orchestrator with ``__new__`` and no ``__init__``, and a hold / dirty-
+    # status / delete-state read on the hot paths below must not raise — or WARN on
+    # every call — there. Each returns the __init__-owned attribute, creating it once.
+
+    def _hold_kinds(self) -> dict[str, str]:
+        if not hasattr(self, "_open_hold_kind"):
+            self._open_hold_kind = {}
+        return self._open_hold_kind
+
+    def _dirty_ids(self) -> set[str]:
+        if not hasattr(self, "_dirty_status"):
+            self._dirty_status = set()
+        return self._dirty_status
+
+    def _pending_delete_errors(self) -> dict[str, str]:
+        if not hasattr(self, "_pending_deletes"):
+            self._pending_deletes = {}
+        return self._pending_deletes
+
+    async def _track_hold(self, session_id: str, status: str) -> None:
+        """Keep the durable hold (FR-305) in step with the status being persisted.
+
+        Entering a hold status with no open hold, or one of a different kind, closes
+        the old hold and opens a new one holding a snapshot of the live ask (the
+        registry card / the driver's pending questions). Re-persisting the same hold
+        status is a no-op (``_open_hold_kind``). Leaving to a non-hold status resolves
+        it — EXCEPT during shutdown: the restart's ``deny_all`` makes the driver derive
+        a non-hold status that is the daemon dying, not the user answering, and the
+        hold must stay open so the next boot's ``rehydrate()`` reports it lost.
+
+        Never raises: the hold is provenance of the turn, not control flow.
+        """
+        try:
+            kind = _holds.HOLD_KIND_BY_STATUS.get(status)
+            open_kinds = self._hold_kinds()
+            current = open_kinds.get(session_id)
+            if kind is None:
+                if current is None or self._shutting_down:
+                    return
+                await _holds.resolve_open(session_id)
+                open_kinds.pop(session_id, None)
+                return
+            if current == kind:
+                return
+            driver = self._drivers.get(session_id)
+            pending_questions = getattr(driver, "pending_questions", None)
+            questions = list(pending_questions()) if callable(pending_questions) else []
+            content = _holds.snapshot_content(
+                kind, self._registry.pending(session_id), questions)
+            # At most one open hold per session: close whatever is open (a different
+            # kind, or a row an earlier failed open left behind) before the new one.
+            await _holds.resolve_open(session_id)
+            open_kinds.pop(session_id, None)
+            if await _holds.open_hold(session_id, kind, content) is not None:
+                open_kinds[session_id] = kind
+        except Exception:  # noqa: BLE001 - provenance must never break the status path
+            log.warning("holds.track_failed session=%s status=%s", session_id, status,
+                        exc_info=True)
+
+    async def _resolve_hold_on_terminal(self, session_id: str,
+                                        record: "SessionRecord | None") -> None:
+        """A session archived or closed while in a hold status takes its open hold
+        with it (FR-305): the ask can never be answered now, so it is resolved — not
+        left open to be reported ``hold_lost`` or to linger forever on a row no
+        rehydrate rebuilds. Unlike ``_track_hold``'s status path this is NOT skipped
+        during shutdown: archive/close is the user's (or automation's) decision to end
+        the session, not the daemon dying under it. Never raises
+        (``holds.resolve_open`` swallows and logs)."""
+        kind = self._hold_kinds().pop(session_id, None)
+        status = getattr(record, "status", None)
+        if kind is None and status not in _holds.HOLD_KIND_BY_STATUS:
+            return
+        await _holds.resolve_open(session_id)
+
     async def _persist_status(self, session_id: str, status: str) -> str:
         """Driver ``on_status`` callback: persist the derived dashboard status.
 
@@ -8660,6 +8940,7 @@ class SessionOrchestrator:
             if status != "idle":
                 rec.interrupted_by_restart = False
                 rec.interrupted_from_status = None
+                rec.lost_hold = None
             # Stalled-on-usage bookkeeping (usage_stall.py): a status outside the two
             # parked shapes means the session is moving again, so the cause is stale.
             if status not in _STALLED_STATUSES:
@@ -8677,46 +8958,31 @@ class SessionOrchestrator:
             # exactly as long as the hand-back it judged: every status write clears
             # it, and the judge re-derives it (off the pump, below) for the new one.
             rec.suspected_complete_reason = None
-        async with db_session() as db:
-            from sqlalchemy import update as sa_update
-            values: dict = {"status": status}
-            if turn_at is not None:
-                values["last_turn_at"] = turn_at
-            # Mirrors the in-memory assignment above, and unconditional for the same
-            # reason: the row must clear the old ask, not just gain a new one.
-            values["hand_back_reason"] = hand_back_reason
-            if completed_turn:
-                values["background_work"] = background_work
-            values["suspected_complete_reason"] = None
-            if status in _STALLED_STATUSES:
-                if rec is not None:
-                    values["paused_reason"] = rec.paused_reason
-                    values["paused_until"] = rec.paused_until
-            else:
-                values["paused_reason"] = None
-                values["paused_until"] = None
-            # Write pr_resolution to DB when the in-memory record was just set above;
-            # rec.pr_resolution == resolution guards idempotency (won't overwrite a
-            # pre-existing classifier value that differs from the session's own).
-            if (status == "complete" and resolution and rec is not None
-                    and rec.pr_resolution == resolution):
-                values["pr_resolution"] = resolution
-                values["pr_resolution_source"] = resolution_source
-                # Under the SAME guard, so the note can never outlive or contradict
-                # the resolution it explains. Read by the Backlog Runner's
-                # investigation settle (by session id) and, via the record, by the
-                # completion bar (a reasoned no-PR claim is accepted, #2917).
-                values["pr_resolution_note"] = resolution_note
-            # Fold the in-memory slash-command catalog (cached during attach by
-            # command_catalog(), which must not write from the cancellable attach path)
-            # into this driver-loop write so it reaches the DB row for cross-restart
-            # replay. Written here rather than on attach because this callback runs in
-            # the turn loop, safe from client-disconnect cancellation.
-            if rec is not None and rec.command_catalog:
-                values["command_catalog"] = rec.command_catalog
-            await db.execute(
-                sa_update(DbSession).where(DbSession.id == session_id).values(**values)
-            )
+        # The durable hold (FR-305) follows the record, before the row write: a DB
+        # blip there is retried by the flusher, and the hold helpers swallow their
+        # own failures, so neither can keep the other from landing.
+        await self._track_hold(session_id, status)
+        try:
+            await self._update_session_row(session_id, self._status_row_values(
+                status, rec, turn_at=turn_at, hand_back_reason=hand_back_reason,
+                write_background_work=completed_turn, background_work=background_work,
+                # Cleared on every write (see the record assignment above); the judge
+                # re-derives and writes its own verdict off the pump.
+                suspected_complete_reason=None,
+                resolution=resolution, resolution_source=resolution_source,
+                resolution_note=resolution_note))
+        except Exception:  # noqa: BLE001 - the row is retried; the frame must not be lost
+            # FR-307: the record above already moved, so the dashboard's poll will
+            # read the right status; only the DB shadow lags. Mark it and carry on —
+            # the status publish below is what the open session and the card see
+            # live, and before this a DB blip here lost that frame along with the
+            # row (the driver logged `on_status failed` and nothing else happened).
+            # _flush_dirty_status re-writes the row within DIRTY_FLUSH_INTERVAL_S.
+            log.warning("persist.status_db_failed session=%s status=%s",
+                        session_id, status, exc_info=True)
+            self._dirty_ids().add(session_id)
+        else:
+            self._dirty_ids().discard(session_id)
         # Child sessions (spec §4.4): tell the parent about a stop transition. The
         # decision and the persisted guard live in child_sessions.notify_decision.
         if _cs.steering_parent(rec):
@@ -22441,6 +22707,9 @@ class SessionOrchestrator:
         added = 0
         backfilled: dict[str, str] = {}
         healed: dict[str, str] = {}
+        # Every row this pass rebuilt → (did the restart drop its turn, its host stamp);
+        # the durable-hold reconcile below reads both (FR-305).
+        rebuilt: dict[str, tuple[bool, str | None]] = {}
         for row in rows:
             if row.id in self._records:
                 continue
@@ -22455,6 +22724,7 @@ class SessionOrchestrator:
             # idle card. Transient: the flag lives only on this in-memory record and
             # clears on the next turn.
             was_interrupted = row.status in _RESTART_TRANSIENT_STATUSES
+            rebuilt[row.id] = (was_interrupted, getattr(row, "host", None))
             status = "idle" if was_interrupted else row.status
             # Persist waiting_input → idle to DB when the backing process is gone
             # (issue #789, companion to #785). waiting_input sessions where the process
@@ -22532,6 +22802,14 @@ class SessionOrchestrator:
                     await db.execute(
                         sa_update(DbSession).where(DbSession.id == sid).values(status=st, background_work=None)
                     )
+        # Durable holds the last process left open (FR-305): on a row whose turn the
+        # restart dropped, the ask is LOST — record it with its content and surface it
+        # on the record; on a resting row it is stale bookkeeping — close it silently.
+        # Only rows this daemon OWNS: the worker filter above is enough for a worker,
+        # but the primary loads every host's rows, and a worker's hold is live there.
+        await self._reconcile_holds(rebuilt)
+        # A delete the last process could not finish stays pending/stuck (FR-404).
+        await self._seed_delete_states()
         log.info("rehydrate: %d session(s) restored (%d branch backfilled, %d status healed)",
                  added, len(backfilled), len(healed))
         self._startup_note("rehydrated", added)
@@ -22553,6 +22831,40 @@ class SessionOrchestrator:
         # so stop() can cancel before it writes into a later test's DB.
         self._spawn(self._maybe_start_queued(), name="queue-drain-on-rehydrate")
         return added
+
+    async def _reconcile_holds(self, rebuilt: dict[str, tuple[bool, str | None]]) -> int:
+        """Close every open ``session_holds`` row of the rehydrated sessions THIS daemon
+        owns; the ones on an interrupted row become ``hold_lost`` events +
+        ``SessionRecord.lost_hold`` (FR-305/FR-406). Returns how many were reported
+        lost. Never raises.
+
+        ``rebuilt`` maps session id → (was_interrupted, row host stamp). Ownership is
+        ``_owns_record_by_stamp`` (#852): on a primary-only restart a row stamped for
+        another ENABLED host has a live daemon still holding its ask — stamping it
+        resolved and announcing it lost would put a false banner over a live card. A
+        stamp that has left the registry is an orphan the primary adopts, and its ask
+        really did die with that host.
+        """
+        lost = 0
+        try:
+            enabled_hosts = await self._enabled_host_names()
+            interrupted = {sid: was for sid, (was, host) in rebuilt.items()
+                           if self._owns_record_by_stamp(host, enabled_hosts)}
+            open_holds = await _holds.newest_open(interrupted)
+            for sid, hold in open_holds.items():
+                if interrupted[sid]:
+                    await _holds.mark_lost(hold)
+                    rec = self._records.get(sid)
+                    if rec is not None:
+                        rec.lost_hold = _holds.hold_detail(hold)
+                    lost += 1
+                    log_event(log, logging.INFO, "session.hold_lost", session_id=sid,
+                              kind=hold.kind, hold_id=hold.id)
+                else:
+                    await _holds.resolve_open(sid)
+        except Exception:  # noqa: BLE001 - provenance must never break rehydrate
+            log.warning("holds.reconcile_failed", exc_info=True)
+        return lost
 
     async def _recover_undelivered_prompts(self, rows) -> int:
         """Re-stage / re-send initial prompts a daemon restart stranded. Returns the count.
@@ -25540,6 +25852,9 @@ class SessionOrchestrator:
             rec = self._records.get(session_id)
             if rec is not None:
                 rec.host = owner
+        # The hold row itself stays open — the ask is still pending, on the new owner,
+        # whose _track_hold now dedupes it. Only this host's dedupe entry goes.
+        self._hold_kinds().pop(session_id, None)
         self._worktrees.pop(session_id, None)
         self._pending_prompt_preambles.pop(session_id, None)
         self._resume_recovery.pop(session_id, None)
@@ -29112,6 +29427,96 @@ class SessionOrchestrator:
             except Exception:
                 log.exception("stall watchdog tick failed")
 
+    async def _flush_dirty_status(self) -> int:
+        """One flusher tick (FR-307): re-write the row of every record whose last
+        ``_persist_status`` DB write failed, mirroring the record's current values
+        for every column that write carries (``_record_row_values``). Returns how
+        many rows were healed.
+
+        An id with no live record (closed/archived since the failed write), or one
+        this daemon does not own, has nothing of ours to heal and is dropped. A retry
+        that fails again keeps the mark for the next tick and says so only at debug —
+        the original failure already warned, and a down DB would otherwise warn once
+        per record per interval.
+        """
+        if not self._dirty_status:
+            return 0
+        healed = 0
+        enabled_hosts = await self._enabled_host_names()
+        for session_id in list(self._dirty_status):
+            rec = self._records.get(session_id)
+            # No record, or a record this daemon no longer owns (the session moved
+            # to another host, whose daemon now writes that row): nothing of ours to
+            # heal. NOT `rec.detached` — that is just "no live driver here", which a
+            # completed session whose driver was released also reads, and its failed
+            # `complete` write is exactly what this loop exists to land.
+            if rec is None or not self._owns_record(rec, enabled_hosts):
+                self._dirty_status.discard(session_id)
+                continue
+            # Snapshot and write with no await between them, then re-check: a
+            # _persist_status that assigns the record while our UPDATE is in flight
+            # lands its own row write AFTER ours, so if the record no longer matches
+            # what we wrote, ours may be the stale one — keep the mark and let the next
+            # tick re-mirror the current record rather than declaring the row healed.
+            written = self._record_row_values(rec)
+            try:
+                await self._update_session_row(session_id, written)
+            except Exception:  # noqa: BLE001 - keep the mark, retry next tick
+                log.debug("persist.status_flush_failed session=%s", session_id, exc_info=True)
+                continue
+            if self._record_row_values(rec) != written:
+                continue
+            self._dirty_status.discard(session_id)
+            healed += 1
+        if healed:
+            log.info("persist.status_flushed healed=%d remaining=%d",
+                     healed, len(self._dirty_status))
+        return healed
+
+    async def _dirty_flush_loop(self) -> None:
+        while True:
+            await asyncio.sleep(DIRTY_FLUSH_INTERVAL_S)
+            try:
+                await self._flush_dirty_status()
+            except Exception:
+                log.exception("dirty-status flush tick failed")
+
+    async def _retry_pending_deletes(self) -> int:
+        """One retry tick (FR-404): re-run ``permanent_delete`` for every kept row that
+        is not stuck. Returns how many rows it reclaimed.
+
+        Stuck (poisoned) ids are skipped for the same reason the cap purge skips them —
+        the mount is not coming back on its own, and a WARNING already named the
+        session; only a manual delete tries those again. A retry that fails again
+        has already been noted (strike + event) by the delete path itself, so this
+        says nothing more; an id whose row is gone was dropped there too.
+        """
+        if not self._pending_deletes:
+            return 0
+        healed = 0
+        for sid in list(self._pending_deletes):
+            if sid in self._archive_purge_poisoned or sid in self._permanent_delete_inflight:
+                continue
+            try:
+                ok = await self.permanent_delete(sid)
+            except Exception:  # noqa: BLE001 - keep the mark, retry next tick
+                log.info("delete_retry.failed session=%s", sid, exc_info=True)
+                continue
+            if ok:
+                healed += 1
+        if healed:
+            log.info("delete_retry.reclaimed healed=%d remaining=%d",
+                     healed, len(self._pending_deletes))
+        return healed
+
+    async def _delete_retry_loop(self) -> None:
+        while True:
+            await asyncio.sleep(DELETE_RETRY_INTERVAL_S)
+            try:
+                await self._retry_pending_deletes()
+            except Exception:
+                log.exception("delete-retry tick failed")
+
     # ------------------------------------------------------------------
     # Rotation monitor (background task)
     # ------------------------------------------------------------------
@@ -31523,6 +31928,7 @@ class SessionOrchestrator:
         # disappears from list_sessions() immediately and a background refetch
         # can never see it half-archived.
         record = self._records.pop(session_id, None)
+        await self._resolve_hold_on_terminal(session_id, record)
 
         # Clear the in-memory worktree registration; the git registration stays
         # until the cap purge deletes the worktree (permanent_delete).
@@ -31722,10 +32128,10 @@ class SessionOrchestrator:
             if ok:
                 self._archive_purge_strikes.pop(sid, None)  # clean delete — reset strikes
                 deleted.append(sid)
-            else:
-                # permanent_delete returned False (e.g. containment guard kept the row):
-                # a soft failure that still re-selects the same session next sweep.
-                self._note_purge_failure(sid)
+            # else: permanent_delete returned False. A KEPT row (rmtree / containment
+            # failure) has already been struck by _note_delete_failure on the delete
+            # path itself (FR-404) — counting it here again would poison it in half the
+            # sweeps; a row that vanished under the selection has nothing to strike.
         if deleted:
             log.info("archive_limit: purged %d oldest archived session(s)", len(deleted))
         return deleted
@@ -31744,6 +32150,90 @@ class SessionOrchestrator:
                 "be reclaimed from other archived sessions; investigate its on-disk dir",
                 sid, strikes,
             )
+
+    async def _note_delete_failure(self, sid: str, err: str) -> None:
+        """A permanent delete KEPT *sid*'s row because its directory could not be
+        removed (FR-404): remember it for the retry loop and ``delete_state()``, take
+        one strike (the cap purge's counter — poisoned = "stuck"), and say so on the
+        session's timeline. The strike WARNING at poison time is the only WARNING: each
+        retry would otherwise auto-file an issue."""
+        self._pending_delete_errors()[sid] = err
+        self._note_purge_failure(sid)
+        await _provenance.record(sid, _provenance.DELETE_RETRY, {
+            "strike": self._archive_purge_strikes.get(sid, 0),
+            "error": err,
+            "stuck": sid in self._archive_purge_poisoned,
+        })
+
+    def _clear_delete_failure(self, sid: str) -> None:
+        """The row is gone (deleted here, or found already missing): nothing is
+        pending or stuck about it any more."""
+        self._pending_delete_errors().pop(sid, None)
+        self._archive_purge_strikes.pop(sid, None)
+        self._archive_purge_poisoned.discard(sid)
+
+    async def _seed_delete_states(self) -> int:
+        """Rebuild ``_pending_deletes`` / the strike counter / the poisoned set from the
+        newest ``delete_retry`` event of every session whose row still exists (FR-404:
+        a delete the last process could not finish must not come back as a plain
+        archived row after a restart — the chip and the retry loop would both forget
+        it). Only rows this daemon owns by stamp (#852): the directory a delete could
+        not remove is on the owning host. Returns how many were seeded. Never raises."""
+        from sqlalchemy import select as sa_select
+        from server.db.models import SessionEvent
+        seeded = 0
+        try:
+            enabled_hosts = await self._enabled_host_names()
+            async with db_session() as db:
+                rows = (await db.execute(
+                    sa_select(SessionEvent.session_id, SessionEvent.detail, DbSession.host)
+                    .join(DbSession, DbSession.id == SessionEvent.session_id)
+                    .where(SessionEvent.kind == _provenance.DELETE_RETRY)
+                    .order_by(SessionEvent.ts.desc(), SessionEvent.id.desc()))).all()
+            seen: set[str] = set()
+            for sid, detail, host in rows:
+                if sid in seen:
+                    continue           # newest event per session wins
+                seen.add(sid)
+                if not self._owns_record_by_stamp(host, enabled_hosts):
+                    continue
+                detail = detail if isinstance(detail, dict) else {}
+                self._pending_delete_errors()[sid] = str(detail.get("error") or "")
+                strike = detail.get("strike")
+                if isinstance(strike, int) and strike > 0:
+                    self._archive_purge_strikes[sid] = strike
+                if detail.get("stuck"):
+                    self._archive_purge_poisoned.add(sid)
+                seeded += 1
+        except Exception:  # noqa: BLE001 - provenance must never break rehydrate
+            log.warning("delete_state.seed_failed", exc_info=True)
+        if seeded:
+            log.info("rehydrate: %d pending delete(s) restored from the timeline", seeded)
+        return seeded
+
+    def delete_state(self, session_id: str) -> str | None:
+        """What a permanent delete left behind for *session_id* (FR-404): ``"stuck"``
+        once it crossed the strike cap (the retry loop has given up; a manual delete
+        still tries), ``"pending"`` while the retry loop will try again, None when
+        no delete has kept its row. The API answers 202 with this instead of 404."""
+        if session_id in self._archive_purge_poisoned:
+            return "stuck"
+        if session_id in self._pending_delete_errors():
+            return "pending"
+        return None
+
+    def pending_delete_states(self) -> dict[str, str]:
+        """Every session id with a non-None ``delete_state()`` on THIS host, keyed to
+        it. The archived list is served by the primary, whose memory knows nothing of
+        a row a worker could not delete; the fleet unions this across hosts so that
+        row's chip survives a refetch (FR-404)."""
+        ids = set(self._pending_delete_errors()) | self._archive_purge_poisoned
+        out: dict[str, str] = {}
+        for sid in ids:
+            state = self.delete_state(sid)
+            if state is not None:
+                out[sid] = state
+        return out
 
     async def _enforce_archive_limit(self) -> int:
         """Purge oldest archived sessions until the count is within
@@ -31903,6 +32393,13 @@ class SessionOrchestrator:
                 # incidental row write and only stands in for rows archived before
                 # that column existed (it is NULL on those).
                 "archivedAt": iso_utc(row.archived_at or row.updated_at),
+                # Provenance (FR-405): who archived it and, for an automatic archive,
+                # why — the same keys _stored_session_dict / archive_context use.
+                "archivedBy": row.archived_by,
+                "archiveReason": (row.archive_context or {}).get("reason"),
+                # A permanent delete that kept this row (FR-404), so a refetch after the
+                # 202 keeps the card's "Deleting… / Delete stuck" chip.
+                "deleteState": self.delete_state(row.id),
             }
             for row in rows
         ]
@@ -32083,7 +32580,11 @@ class SessionOrchestrator:
         and its git worktree registration cleared. Legacy rows (non-NULL
         archive_root) have their moved-away archive folder deleted instead.
 
-        Returns True if deleted, False if the session was not found in DB.
+        Returns True if deleted, False if the session was not found in DB — or if its
+        directory could not be removed and the row was KEPT so a later attempt can
+        reclaim it (FR-404). The two False outcomes are told apart by
+        ``delete_state()``: a kept row is ``pending`` (``stuck`` after
+        _ARCHIVE_PURGE_MAX_STRIKES), a missing one is None.
 
         A *live* session (still in _records/_drivers, or status != 'archived') is
         archived first: archive_session stops the driver, so deleting it can't
@@ -32096,6 +32597,8 @@ class SessionOrchestrator:
                 sa_select(DbSession).where(DbSession.id == session_id)
             )).scalars().first()
         if row is None:
+            # Gone — by whoever's hand. A pending/stuck mark for it is stale now.
+            self._clear_delete_failure(session_id)
             return False
 
         # Archive-then-delete: a live session must be torn down before its row and
@@ -32118,15 +32621,16 @@ class SessionOrchestrator:
         if stored_root is None and cwd_path is not None and cwd_path.exists():
             # New-style archive: the worktree is still at cwd (same NULL-root +
             # present-cwd marker as unarchive).
-            if not await self._delete_worktree_at_cwd(
-                session_id, cwd_path, kind=row.kind
-            ):
-                return False
+            err = await self._delete_worktree_at_cwd(session_id, cwd_path, kind=row.kind)
         else:
             # Legacy archive (moved into an archive home) — including ancient
             # pre-archive_root rows, whose NULL root resolves to the current home.
-            if not await self._delete_legacy_archive_dir(session_id, stored_root):
-                return False
+            err = await self._delete_legacy_archive_dir(session_id, stored_root)
+        if err is not None:
+            # The row is KEPT (the helper said why): make the outcome visible and
+            # retryable instead of indistinguishable from "no such session" (FR-404).
+            await self._note_delete_failure(session_id, err)
+            return False
 
         await self._delete_codex_item_times(row)
         async with db_session() as db:
@@ -32162,16 +32666,18 @@ class SessionOrchestrator:
             log.info("session.permanent_delete id=%s removed %d always-allow rule(s)",
                      session_id, n_rules)
         log.info("session.permanent_delete id=%s db row removed", session_id)
+        self._clear_delete_failure(session_id)
         self._settle_claims_on_terminal(session_id)
         return True
 
     async def _delete_worktree_at_cwd(self, session_id: str, cwd_path: Path,
-                                      kind: str | None = None) -> bool:
+                                      kind: str | None = None) -> str | None:
         """Delete a new-style archived session's worktree (still at its cwd).
 
-        Returns True when it is safe for the caller to drop the DB row, False when the
-        directory could not be removed and the row must be KEPT so a later sweep retries
-        (e.g. a stale sshfs handle that recovers on remount — #825).
+        Returns None when it is safe for the caller to drop the DB row, or the error
+        (a short string) when the directory could not be removed and the row must be
+        KEPT so a later attempt retries (e.g. a stale sshfs handle that recovers on
+        remount — #825).
 
         Containment guard: sessions only ever run in ViberPit-created worktrees or
         scratch dirs (both under a repo-namespace segment, either spelling —
@@ -32200,13 +32706,13 @@ class SessionOrchestrator:
                     "scratch directory — leaving it in place, deleting the row only",
                     session_id, cwd_path,
                 )
-                return True
+                return None
             log.warning(
                 "session.permanent_delete id=%s cwd=%s is not a managed worktree "
                 "directory — leaving it in place, deleting the row only",
                 session_id, cwd_path,
             )
-            return True  # nothing we should delete on disk; the row can still go
+            return None  # nothing we should delete on disk; the row can still go
         if gitrepos.is_clone_path(str(cwd_path)):
             # Expected for a never-spawned row, not a fault: logged at INFO because a
             # WARNING auto-files an issue per purge (same reasoning as #2029 above).
@@ -32216,7 +32722,7 @@ class SessionOrchestrator:
                 "deleting the row only",
                 session_id, cwd_path,
             )
-            return True
+            return None
         # Resolve the shared clone BEFORE the delete, while the worktree is still a
         # valid git dir, so we can scope-deregister exactly this path afterward
         # (never a global prune — issue #177). Off the event loop: git subprocess
@@ -32235,7 +32741,7 @@ class SessionOrchestrator:
             log.warning("session.permanent_delete id=%s worktree rmtree incomplete at %s: %s "
                         "— keeping the row to retry on a later sweep",
                         session_id, cwd_path, err)
-            return False
+            return err
         if repo_top:
             try:
                 await asyncio.to_thread(
@@ -32246,17 +32752,17 @@ class SessionOrchestrator:
                           session_id, exc_info=True)
         log.info("session.permanent_delete id=%s worktree removed at %s",
                  session_id, cwd_path)
-        return True
+        return None
 
     async def _delete_legacy_archive_dir(self, session_id: str,
-                                         stored_root: str | None) -> bool:
+                                         stored_root: str | None) -> str | None:
         # @deprecated — legacy pre-status-flip archives (files moved into an archive
         # home); remove together with _restore_legacy_archive.
         """Delete a legacy archived session's folder under its recorded archive root.
 
         Containment guard: only removes paths that are direct children of the
-        resolved archive root. Returns False (caller must keep the DB row) on a
-        guard violation, True otherwise.
+        resolved archive root. Returns the error (caller must keep the DB row) on a
+        guard violation or an incomplete rmtree, None otherwise.
         """
         base = Path(stored_root) if stored_root else await self._effective_archive_home()
         archive_base = base.resolve()
@@ -32268,7 +32774,7 @@ class SessionOrchestrator:
                 "session.permanent_delete CONTAINMENT GUARD id=%s candidate=%s",
                 session_id, candidate,
             )
-            return False
+            return f"containment guard: {candidate} is outside {archive_base}"
 
         if candidate.exists():
             err = await asyncio.to_thread(_rmtree_best_effort, str(candidate))
@@ -32278,7 +32784,7 @@ class SessionOrchestrator:
                 log.warning("session.permanent_delete id=%s archive rmtree incomplete at %s: %s "
                             "— keeping the row to retry on a later sweep",
                             session_id, candidate, err)
-                return False
+                return err
             log.info("session.permanent_delete id=%s archive_path=%s", session_id, candidate)
         elif stored_root is not None:
             # Never let this pass silently. This used to resolve against the CURRENT
@@ -32307,7 +32813,7 @@ class SessionOrchestrator:
                 " (archive_root=<unset>) — deleting the row anyway",
                 session_id, candidate,
             )
-        return True
+        return None
 
     async def resolve_transcript_path(self, session_id: str) -> str | None:
         """Resolve the on-disk JSONL path for a session's transcript.

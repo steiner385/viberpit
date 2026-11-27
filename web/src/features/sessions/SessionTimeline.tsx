@@ -13,6 +13,7 @@
 import type { SessionTimelineEvent } from '@/api/types'
 import { useSessionEvents } from '@/api/hooks'
 import { isValidTimestamp } from '@/lib/relativeTime'
+import { holdKindLabel } from '@/features/sessions/transcript/lostHold'
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null)
 
@@ -30,6 +31,22 @@ function describeEvent(e: SessionTimelineEvent): string {
     const by = str(d.by)
     const reason = str(d.reason)
     return `Auto-archived${by ? ` by ${by}` : ''}${reason ? `: ${reason}` : ''}`
+  }
+  if (e.kind === 'hold_lost') {
+    // The content itself is on the session's LostHoldBanner (FR-406); the line only
+    // records that it happened.
+    return `A pending ${holdKindLabel(d.kind)} was lost in a restart`
+  }
+  if (e.kind === 'rotated_account') {
+    const from = str(d.from)
+    const reason = str(d.reason)
+    const attempt = typeof d.attempt === 'number' ? ` (attempt ${d.attempt})` : ''
+    return `Rotated${from ? ` off ${from}` : ' account'}${reason ? `: ${reason}` : ''}${attempt}`
+  }
+  if (e.kind === 'delete_retry') {
+    const strike = typeof d.strike === 'number' ? ` #${d.strike}` : ''
+    const error = str(d.error)
+    return `Delete retry${strike}${d.stuck === true ? ' — stuck' : ''}${error ? `: ${error}` : ''}`
   }
   return e.kind.replace(/_/g, ' ')
 }

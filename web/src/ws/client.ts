@@ -18,6 +18,7 @@ import { clientLogger } from '@/obs/logger'
 import { createGapState, handleLiveBatch, describeSrcSeqGap, catchUpCursor, catchUpEpoch, invalidateCatchUp, resetGens, type GapState } from './liveBatch'
 import { revIsNewer, shouldApplyRev } from '@/session/reconcile'
 import { RESTING_BEFORE_TURN } from '@/session/statusTier'
+import { setChannelOpen } from './socketState'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
@@ -1096,8 +1097,7 @@ export function setSessionSocketsAllowed(allowed: boolean): void {
     const socket = _sockets[channel]
     if (!socket) continue
     if (!allowed) {
-      socket.destroy()
-      delete _sockets[channel]
+      _dropSocket(channel)
       continue
     }
     try {
@@ -1110,11 +1110,23 @@ export function setSessionSocketsAllowed(allowed: boolean): void {
   }
 }
 
+/** Destroy a channel's socket and forget it. `destroy()` emits no connectionStateChange
+ *  (its onclose is suppressed), so the channel's open flag is cleared here, not by the listener. */
+function _dropSocket(channel: SocketChannel): void {
+  _sockets[channel]?.destroy()
+  delete _sockets[channel]
+  setChannelOpen(channel, false)
+}
+
 export function getSocket(channel: SocketChannel = 'route'): SessionSocket {
   let socket = _sockets[channel]
   if (!socket) {
     socket = new SessionSocket('/ws')
     _sockets[channel] = socket
+    // Each channel's open flag feeds the FR-403 trust order in useSessions (api/hooks.ts),
+    // which cannot import this module — see ws/socketState.ts. Every channel patches the
+    // sessions cache once a QueryClient is wired, so every channel is tracked.
+    socket.on('connectionStateChange', (state) => setChannelOpen(channel, state === 'connected'))
     // Created lazily, so the assistant socket only opens once the drawer asks for it.
     if (_socketsAllowed) socket.connect()
   }
@@ -1129,10 +1141,7 @@ export function getSessionSocket(): SessionSocket {
 /** Test-only: drop every channel's socket so the next getSocket() builds a fresh one. */
 export function __resetSocketsForTest(): void {
   _socketsAllowed = true
-  for (const channel of Object.keys(_sockets) as SocketChannel[]) {
-    _sockets[channel]?.destroy()
-    delete _sockets[channel]
-  }
+  for (const channel of Object.keys(_sockets) as SocketChannel[]) _dropSocket(channel)
 }
 
 // ── React hook ───────────────────────────────────────────────────────────────

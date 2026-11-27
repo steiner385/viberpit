@@ -1021,6 +1021,28 @@ class RemoteOrchestrator:
     async def permanent_delete(self, session_id):
         return await self._client.call("permanent_delete", session_id=session_id)
 
+    async def delete_state(self, session_id):
+        """"pending" | "stuck" | None for a permanent delete that kept its row (FR-404),
+        from the daemon that owns the directory it could not remove. A daemon that
+        predates the RPC tracks no kept rows, so None (→ the 404 the API always gave)."""
+        try:
+            return await self._client.call("delete_state", session_id=session_id)
+        except DaemonError as exc:
+            if exc.err_type != "UnknownMethod":
+                raise
+            return None
+
+    async def pending_delete_states(self) -> dict[str, str]:
+        """session id → "pending" | "stuck" for every kept row on that daemon (FR-404);
+        ``{}`` from a daemon that predates the RPC."""
+        try:
+            r = await self._client.call("pending_delete_states")
+        except DaemonError as exc:
+            if exc.err_type != "UnknownMethod":
+                raise
+            return {}
+        return r if isinstance(r, dict) else {}
+
     async def rename_session(self, session_id, name):
         return await self._client.call("rename_session", session_id=session_id, name=name)
 
@@ -1309,7 +1331,7 @@ class RemoteOrchestrator:
                 raise KeyError(exc.message) from exc
             if exc.err_type == "ModelBlockedError":
                 raise ModelBlockedError((exc.data or {}).get("model", exc.message)) from exc
-            if exc.err_type == "AllAccountsBusy":
+            if exc.err_type in ("AllAccountsBusy", "PreflightFailed"):
                 raise reconstruct_create_session_error(exc) from exc
             code = (exc.data or {}).get("code")
             if exc.err_type == "ForkError" and code in fk.FORK_CODES:
@@ -1626,6 +1648,8 @@ class RemoteOrchestrator:
                 raise ValueError(exc.message) from exc
             if exc.err_type == "ModelBlockedError":
                 raise ModelBlockedError(exc.message) from exc
+            if exc.err_type == "PreflightFailed":
+                raise reconstruct_create_session_error(exc) from exc
             raise
         return SessionRecord.from_dict(r["session"])
 
@@ -1677,6 +1701,10 @@ class RemoteOrchestrator:
             if "engineSessionId" not in item:
                 item["engineSessionId"] = item.get("claudeSessionId")
             item.setdefault("reasoningEffort", None)
+            # #947 (FR-404/FR-405): provenance + delete state, absent from an old daemon.
+            item.setdefault("archivedBy", None)
+            item.setdefault("archiveReason", None)
+            item.setdefault("deleteState", None)
             item.pop("claudeSessionId", None)
             normalized.append(item)
         return normalized

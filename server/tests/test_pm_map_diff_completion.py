@@ -153,7 +153,7 @@ async def test_real_archive_delete_and_fresh_triage_preserve_disposition(tmp_pat
     # cleanup and unrelated background retention scheduling.
     del orch._pm_onboard_observe_map_diff_not_needed
     orch._enforce_archive_limit = AsyncMock()
-    orch._delete_legacy_archive_dir = AsyncMock(return_value=True)
+    orch._delete_legacy_archive_dir = AsyncMock(return_value=None)  # None = safe to drop the row
     async with db_session() as db:
         project = Project(slug="viberpit", name="ViberPit", automation_policy={"trusted_authors": [TONY_ENTRY]})
         db.add(project)
@@ -195,7 +195,7 @@ async def test_classifier_map_disposition_survives_cleanup_and_respects_dispatch
     del orch._pm_onboard_observe_map_diff_not_needed
     orch._read_auto_archive_enabled = AsyncMock(return_value=True)
     orch._enforce_archive_limit = AsyncMock()
-    orch._delete_legacy_archive_dir = AsyncMock(return_value=True)
+    orch._delete_legacy_archive_dir = AsyncMock(return_value=None)  # None = safe to drop the row
     before = datetime.now(timezone.utc) - timedelta(minutes=5)
     dispatch = before + timedelta(minutes=2)
     async with db_session() as db:

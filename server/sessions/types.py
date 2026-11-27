@@ -203,6 +203,12 @@ class SessionRecord:
     # session is resumable iff it was flagged AND this is in RESUME_ELIGIBLE_STATUSES.
     # Never persisted; cleared with the flag on the next turn.
     interrupted_from_status: str | None = None
+    # transient (FR-305/FR-406, #947): the pending ask a daemon restart killed, set by
+    # rehydrate() from the durable hold it marked lost — ``holds.hold_detail``:
+    # {kind, content, holdId, createdAt}. Lets the card show WHAT was being asked, not
+    # just that something was. Cleared with interrupted_by_restart on the next
+    # non-idle status (the row of record is the `hold_lost` timeline event).
+    lost_hold: dict | None = None
     # Why the session is parked (a _pause_session reason token, or
     # "pinned_account_limited" for the `limited` overlay) and the earliest known
     # usage reset (naive UTC). Persisted so a poll/reload keeps the cause; cleared by
@@ -427,6 +433,7 @@ class SessionRecord:
             "usageUnverified": self.usage_unverified,
             "interruptedByRestart": self.interrupted_by_restart,
             "interruptedFromStatus": self.interrupted_from_status,
+            "lostHold": self.lost_hold,
             "resumable": (self.interrupted_by_restart
                           and self.interrupted_from_status in RESUME_ELIGIBLE_STATUSES),
             "pausedReason": self.paused_reason,
@@ -521,6 +528,7 @@ class SessionRecord:
             usage_unverified=d.get("usageUnverified", False),
             interrupted_by_restart=d.get("interruptedByRestart", False),
             interrupted_from_status=d.get("interruptedFromStatus"),
+            lost_hold=d.get("lostHold"),
             paused_reason=d.get("pausedReason"),
             paused_until=(datetime.fromisoformat(d["pausedUntil"])
                           if d.get("pausedUntil") else None),

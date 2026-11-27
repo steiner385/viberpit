@@ -635,3 +635,196 @@ def test_transient_start_failure_requeues_exactly_once(tmp_path):
             await _stop_orch(orch)
 
     asyncio.run(run())
+
+
+# --- credential preflight + rotated-account retry (FR-303/FR-304, #947) -------------
+
+def _write_creds(cfg_dir, *, expired: bool) -> None:
+    import json
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    blob = {"accessToken": "tok", "refreshToken": "ref",
+            "expiresAt": int(time.time() * 1000) + 3_600_000}
+    if expired:
+        # Lapsed, and nothing to refresh it with: the CLI would start and 401.
+        blob = {"accessToken": "tok", "expiresAt": 1}
+    (cfg_dir / ".credentials.json").write_text(json.dumps({"claudeAiOauth": blob}))
+
+
+async def _events(session_id: str) -> list[dict]:
+    from server.sessions import provenance
+    return await provenance.list_events(session_id)       # newest first
+
+
+def test_unpinned_preflight_failure_rotates_to_another_account(tmp_path):
+    """An expired composed credential on the picked account is a typed, transient
+    failure: the drain re-enqueues once with THAT account hard-excluded and records
+    ROTATED_ACCOUNT, so the retry lands on a different account."""
+    from server.sessions.selection import Picked
+
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'rotate.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            _seed_account("beta")
+            excludes: list[frozenset] = []
+
+            def picking(exclude=frozenset(), **kw):
+                excludes.append(frozenset(exclude))
+                return Picked("beta" if "alpha" in exclude else "alpha")
+
+            with patch("server.sessions.orchestrator.select_account", side_effect=picking), \
+                 patch("server.sessions.orchestrator.compose",
+                       side_effect=lambda account: tmp_path / "cfg" / account):
+                a = await orch.create_session("one")
+                bad = await orch.create_session("bad")              # queued
+                _write_creds(tmp_path / "cfg" / "alpha", expired=True)
+                _write_creds(tmp_path / "cfg" / "beta", expired=False)
+                await orch.close_session(a.id)
+                for _ in range(6):
+                    if orch._records[bad.id].status != "queued":
+                        break
+                    await orch._maybe_start_queued()
+
+            rec = orch._records[bad.id]
+            assert rec.status == "idle"
+            assert rec.account == "beta"
+            assert any("alpha" in ex for ex in excludes), excludes
+            assert "alpha" in excludes[-1]
+            from server.sessions import session_queue as sq
+            assert (await sq.positions()) == {}
+            events = await _events(bad.id)
+            assert [e["kind"] for e in events] == ["rotated_account", "spawn_failed"]
+            assert events[0]["detail"] == {"from": "alpha", "reason": "credentials_expired",
+                                           "attempt": 1}
+            failed = events[1]["detail"]
+            assert (failed["reason"], failed["transient"], failed["requeued"],
+                    failed["attempt"]) == ("credentials_expired", True, True, 1)
+            # The retry succeeded: the failure is history, not the record's state.
+            assert rec.last_spawn_failure is None
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_pinned_preflight_failure_ends_with_typed_reason(tmp_path):
+    """The user chose this account; moving them silently is wrong. A pinned entry
+    whose credentials fail preflight ends at once with the typed reason — no
+    retry, no rotation event."""
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'pinned.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            a = await orch.create_session("one")
+            bad = await orch.create_session("bad", account="alpha")   # queued, pinned
+            calls = 0
+            real = orch._spawn_session
+
+            async def counting(session_id, **kw):
+                nonlocal calls
+                if session_id == bad.id:
+                    calls += 1
+                return await real(session_id, **kw)
+            orch._spawn_session = counting
+            _write_creds(tmp_path / "cfg" / "alpha", expired=True)
+            await orch.close_session(a.id)
+            for _ in range(6):
+                if orch._records[bad.id].status == "ended":
+                    break
+                await orch._maybe_start_queued()
+
+            assert calls == 1
+            rec = orch._records[bad.id]
+            assert rec.status == "ended"
+            failure = rec.last_spawn_failure
+            assert (failure["reason"], failure["transient"], failure["requeued"]) == (
+                "credentials_expired", False, False)
+            from server.sessions import session_queue as sq
+            assert (await sq.positions()) == {}
+            assert [e["kind"] for e in await _events(bad.id)] == ["spawn_failed"]
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_unpinned_start_timeout_retries_on_a_rotated_account(tmp_path):
+    """FR-303: a start that overran its deadline is retried ONCE with the account it
+    ran on hard-excluded from the pick."""
+    from server.sessions import spawn_failure
+    from server.sessions.orchestrator import DriverStartTimeout
+
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'timeout.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            a = await orch.create_session("one")
+            bad = await orch.create_session("bad")
+            seen: list[frozenset] = []
+            real = orch._spawn_session
+
+            async def slow_once(session_id, **kw):
+                if session_id == bad.id:
+                    seen.append(kw["exclude_accounts"])
+                    if len(seen) == 1:
+                        # What the real spawn's rollback stamps before re-raising.
+                        exc = DriverStartTimeout(session_id, 1.0)
+                        spawn_failure.note_account(exc, "alpha")
+                        raise exc
+                return await real(session_id, **kw)
+            orch._spawn_session = slow_once
+            await orch.close_session(a.id)
+            for _ in range(6):
+                if orch._records[bad.id].status != "queued":
+                    break
+                await orch._maybe_start_queued()
+
+            assert seen == [frozenset(), frozenset({"alpha"})]
+            assert orch._records[bad.id].status == "idle"
+            events = await _events(bad.id)
+            assert [e["kind"] for e in events] == ["rotated_account", "spawn_failed"]
+            assert events[0]["detail"] == {"from": "alpha", "reason": "start_timeout",
+                                           "attempt": 1}
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_pinned_start_timeout_retries_the_same_account(tmp_path):
+    """Pinned + start_timeout keeps today's behaviour: one more try on the SAME
+    account, nothing excluded, no rotation event."""
+    from server.sessions import spawn_failure
+    from server.sessions.orchestrator import DriverStartTimeout
+
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'pinned-timeout.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            a = await orch.create_session("one")
+            bad = await orch.create_session("bad", account="alpha")
+            seen: list[tuple] = []
+            real = orch._spawn_session
+
+            async def slow_once(session_id, **kw):
+                if session_id == bad.id:
+                    seen.append((kw["account"], kw["exclude_accounts"]))
+                    if len(seen) == 1:
+                        exc = DriverStartTimeout(session_id, 1.0)
+                        spawn_failure.note_account(exc, "alpha")
+                        raise exc
+                return await real(session_id, **kw)
+            orch._spawn_session = slow_once
+            await orch.close_session(a.id)
+            for _ in range(6):
+                if orch._records[bad.id].status != "queued":
+                    break
+                await orch._maybe_start_queued()
+
+            assert seen == [("alpha", frozenset()), ("alpha", frozenset())]
+            assert orch._records[bad.id].status == "idle"
+            assert [e["kind"] for e in await _events(bad.id)] == ["spawn_failed"]
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())

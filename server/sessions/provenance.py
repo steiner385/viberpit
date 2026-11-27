@@ -30,8 +30,21 @@ SPAWN_FAILED = "spawn_failed"
 #: The session was archived by automation, not a person. detail: ``{by, reason}``,
 #: where ``by`` is the ``sessions.archived_by`` provenance value.
 AUTO_ARCHIVED = "auto_archived"
+#: The queue drain's retry of a failed start will run on a different account
+#: (FR-303/FR-304). detail: ``{from, reason, attempt}`` — the account the failed
+#: attempt ran on, the ``spawn_failed`` reason that moved it, that attempt's number.
+ROTATED_ACCOUNT = "rotated_account"
+#: A pending permission / question / plan approval whose waiter died with the daemon
+#: (FR-305). detail: ``{kind, content, holdId, createdAt}`` — the durable hold's
+#: snapshot (``holds.snapshot_content``), so the user can see WHAT was being asked.
+HOLD_LOST = "hold_lost"
+#: A permanent delete kept the row because its directory could not be removed
+#: (FR-404). detail: ``{strike, error, stuck}`` — the consecutive-failure count, the
+#: rmtree / containment error, and whether this strike crossed the cap-purge
+#: poison threshold (``stuck``: the retry loop stops trying; a manual delete still may).
+DELETE_RETRY = "delete_retry"
 
-KINDS = frozenset({SPAWN_FAILED, AUTO_ARCHIVED})
+KINDS = frozenset({SPAWN_FAILED, AUTO_ARCHIVED, ROTATED_ACCOUNT, HOLD_LOST, DELETE_RETRY})
 
 #: Newest-first page size for :func:`list_events` when the caller gives none.
 DEFAULT_LIMIT = 50

@@ -409,6 +409,9 @@ def register_orchestrator_rpc(app, orch) -> None:
         "pending_questions", "orphaned_interaction", "pop_pending_initial_prompt",
         "repark_pending_initial_prompt",
         "command_catalog", "run_command", "list_archived",
+        # FR-404: "pending" | "stuck" | None for a permanent delete that kept its row,
+        # and the {id: state} map of every such row on this host.
+        "delete_state", "pending_delete_states",
         # Task 8.4 (spec v2 §4.7 Pack N): post_notice returns bool — already
         # JSON-safe, no bespoke handler needed.
         "post_notice",

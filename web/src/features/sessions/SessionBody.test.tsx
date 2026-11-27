@@ -162,6 +162,34 @@ describe('SessionBody', () => {
     expect(rt.onPrompt).toHaveBeenCalledWith(expect.stringContaining('Please re-request'), [], undefined, 'suggested')
   })
 
+  it('shows the lost hold content instead of the bare notice when the record carries it (FR-406)', async () => {
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([
+      makeSession({
+        id: 's1', interruptedFromStatus: 'waiting_input',
+        lostHold: {
+          kind: 'permission', holdId: 'h1', createdAt: '2026-11-26T10:00:00Z',
+          content: { tool: 'Bash', input: { command: 'git push --force-with-lease' }, turnId: 't1', permId: 'p1' },
+        },
+      }),
+    ]))
+    const rt = makeRuntime([])
+    renderBody(<SessionBody rt={rt} />)
+    // The banner is lazy (off the initial chunk); the notice must never show meanwhile.
+    expect(screen.queryByTestId('interrupted-ask-notice')).toBeNull()
+    expect(await screen.findByTestId('lost-hold-banner')).toHaveTextContent('Bash: git push --force-with-lease')
+    expect(screen.queryByTestId('interrupted-ask-notice')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Ask again' }))
+    expect(rt.onPrompt).toHaveBeenCalledTimes(1)
+    const [text, attachments, replyTo, origin] = vi.mocked(rt.onPrompt).mock.calls[0]
+    expect(attachments).toEqual([])
+    expect(replyTo).toBeUndefined()
+    expect(origin).toBe('suggested')
+    expect(text).toContain('Bash: git push --force-with-lease')
+    expect(text).toContain('nothing was approved or answered')
+    // FR-306: the recovery prompt never decides the hold for the user.
+    expect(text.toLowerCase()).not.toMatch(/\b(approve|allow|deny|yes|go ahead|proceed)\b/)
+  })
+
   it('renders the pinned answer panel for a LIVE open question (desktop + mobile)', () => {
     renderBody(<SessionBody rt={makeRuntime([question('a', true)])} />)
     expect(screen.getByTestId('pending-question-panel')).toBeInTheDocument()

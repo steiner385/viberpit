@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from server.sessions import spawn_failure
 from server.sessions.engine import AgentDriverConfig, AgentDriverRegistry, AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
 
@@ -111,7 +112,7 @@ async def test_codex_attach_failure_rolls_back_started_spawn(tmp_path: Path) -> 
         patch("server.sessions.orchestrator.configdir.trust_project") as trust_project,
         patch.object(orchestrator, "_isolated_dir_for", side_effect=lambda cfg, kind: cfg),
     ):
-        with pytest.raises(RuntimeError, match="runner exited during attach"):
+        with pytest.raises(RuntimeError, match="runner exited during attach") as raised:
             await orchestrator._spawn_session(
                 session_id,
                 name="Codex",
@@ -134,6 +135,9 @@ async def test_codex_attach_failure_rolls_back_started_spawn(tmp_path: Path) -> 
 
     compose.assert_not_called()
     trust_project.assert_not_called()
+    # The post-record rollback stamps the account the spawn ran on, so the queue
+    # drain knows which account to rotate away from (#947 FR-303/FR-304).
+    assert spawn_failure.failed_account(raised.value) == account
     assert factory.configs[0].config_dir == ""
     assert driver.started
     assert driver.close_calls == 1

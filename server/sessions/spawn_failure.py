@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from server.sessions import preflight
 from server.sessions.failure import classify as classify_turn
 from viberpit import gh_credential
 
@@ -25,6 +26,18 @@ MAX_TRANSIENT_RETRIES = 1
 #: The queue-entry params key carrying how many transient retries were spent. Popped
 #: by the drain with ``queue_reason`` before the params reach ``_spawn_session``.
 ATTEMPT_PARAM = "spawn_attempt"
+#: The queue-entry params key listing the accounts a retry may not land on — the one
+#: the failed attempt ran on (FR-303/FR-304). Popped like ``ATTEMPT_PARAM`` and passed
+#: as ``_spawn_session(exclude_accounts=...)``, the HARD exclude of ``select_account``.
+EXCLUDE_PARAM = "spawn_exclude_accounts"
+
+#: ``driver.start()`` overran its deadline (the orchestrator's ``DriverStartTimeout``).
+START_TIMEOUT = "start_timeout"
+
+#: Attribute the spawn's rollback stamps on the escaping exception: the account the
+#: attempt ran on. The drain reads it (:func:`rotation_source`) rather than the
+#: record, which the spawn may not have created yet.
+_ACCOUNT_ATTR = "spawn_account"
 
 _MESSAGE_CAP = 300
 
@@ -45,19 +58,47 @@ def _first_line(exc: BaseException) -> str:
     return text.splitlines()[0][:_MESSAGE_CAP]
 
 
+def note_account(exc: BaseException, account: str | None) -> None:
+    """Stamp *account* — the one the failed spawn attempt ran on — on *exc*. The
+    first stamp wins; None (no account picked yet) leaves *exc* alone."""
+    if account and getattr(exc, _ACCOUNT_ATTR, None) is None:
+        setattr(exc, _ACCOUNT_ATTR, account)
+
+
+def failed_account(exc: BaseException) -> str | None:
+    """The account :func:`note_account` stamped on *exc*, or None."""
+    return getattr(exc, _ACCOUNT_ATTR, None)
+
+
+def rotation_source(exc: BaseException, failure: SpawnFailure) -> str | None:
+    """The account the retry must avoid, or None. Only a reason that indicts the
+    ACCOUNT rather than the session rotates — a start that overran its deadline or a
+    credential preflight failure — and only when the spawn stamped which account that
+    was; a network blip or a bad branch retries as before."""
+    if failure.reason == START_TIMEOUT or failure.reason in preflight.PREFLIGHT_REASONS:
+        return failed_account(exc)
+    return None
+
+
 def classify(exc: BaseException, *, sandbox_error: type[BaseException] | None = None,
              start_timeout: type[BaseException] | None = None,
-             obsolete_pr: int | None = None) -> SpawnFailure:
+             obsolete_pr: int | None = None, pinned: bool = False) -> SpawnFailure:
     """The typed failure for *exc*. The orchestrator passes its own exception
     classes (``SandboxError``, ``DriverStartTimeout``) rather than this module
     importing the orchestrator, and ``obsolete_pr`` when it has already proved the
-    branch was auto-deleted by its PR merging (``_queued_spawn_merged_pr``)."""
+    branch was auto-deleted by its PR merging (``_queued_spawn_merged_pr``).
+    *pinned*: the user chose the account the entry runs on."""
     if obsolete_pr is not None:
         return SpawnFailure("obsolete", False, f"PR #{obsolete_pr} merged before start")
     if sandbox_error is not None and isinstance(exc, sandbox_error):
         return SpawnFailure("sandbox_refused", False, _first_line(exc))
+    if isinstance(exc, preflight.PreflightFailed):
+        # Rotation IS the retry: transient so the drain re-enqueues once, excluding
+        # the account. Unless the user pinned it — moving them silently is wrong, so
+        # the session ends with the typed reason instead.
+        return SpawnFailure(exc.reason, not pinned, _first_line(exc))
     if start_timeout is not None and isinstance(exc, start_timeout):
-        return SpawnFailure("start_timeout", True, _first_line(exc))
+        return SpawnFailure(START_TIMEOUT, True, _first_line(exc))
     message = _first_line(exc)
     if gh_credential.classify_gh_failure(str(exc)) == gh_credential.UNREACHABLE:
         return SpawnFailure("network", True, message)

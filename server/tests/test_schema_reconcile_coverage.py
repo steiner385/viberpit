@@ -154,6 +154,12 @@ RECONCILE_EXEMPT: set[str] = {
     "session_events.session_id",
     "session_events.kind",
     "session_events.ts",
+    # session_holds (#947): a NEW table (create_all builds it on both dialects; Alembic
+    # 0119_session_holds is the record). holds.open_hold supplies every NOT NULL column
+    # at INSERT; a hold with no session/kind/open time is meaningless.
+    "session_holds.session_id",
+    "session_holds.kind",
+    "session_holds.created_at",
 }
 
 

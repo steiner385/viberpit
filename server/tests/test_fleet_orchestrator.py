@@ -866,6 +866,20 @@ async def test_codex_status_fanout_returns_but_never_persists_a_degraded_merge()
 
 
 @pytest.mark.asyncio
+async def test_pending_delete_states_unions_across_hosts():
+    """FR-404: a kept-row delete state is the memory of the host that could not remove
+    the directory; the archived list (primary-served) needs every host's."""
+    class _DelOrch(_FakeOrch):
+        def __init__(self, name, states):
+            super().__init__(name); self._states = states
+        async def pending_delete_states(self): return self._states
+    dobby = _DelOrch("dobby", {"p1": "pending"})
+    rocky = _DelOrch("rocky", {"w1": "stuck"})
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    assert await fo.pending_delete_states() == {"p1": "pending", "w1": "stuck"}
+
+
+@pytest.mark.asyncio
 async def test_merge_all_skips_unreachable_worker_but_raises_on_primary():
     dobby = _AggOrch("dobby", load={"acctA": 1.0})
     rocky = _AggOrch("rocky", fail=True)  # a dead worker must not blank the total

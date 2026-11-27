@@ -136,6 +136,8 @@ class InProcessOrchestratorAdapter:
     async def transfer_finalize(self, *a, **k): return await _maybe_await(self._orch.transfer_finalize(*a, **k))
     async def unarchive(self, *a, **k): return await _maybe_await(self._orch.unarchive(*a, **k))
     async def permanent_delete(self, *a, **k): return await _maybe_await(self._orch.permanent_delete(*a, **k))
+    async def delete_state(self, *a, **k): return await _maybe_await(self._orch.delete_state(*a, **k))
+    async def pending_delete_states(self, *a, **k): return await _maybe_await(self._orch.pending_delete_states(*a, **k))
     async def adopt_session(self, *a, **k): return await _maybe_await(self._orch.adopt_session(*a, **k))
     async def rename_session(self, *a, **k): return await _maybe_await(self._orch.rename_session(*a, **k))
     async def note_user_interaction(self, *a, **k): return await _maybe_await(self._orch.note_user_interaction(*a, **k))

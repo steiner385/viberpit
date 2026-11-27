@@ -218,6 +218,7 @@ async def test_simple_and_quirk_methods_round_trip():
     orch.answer_question = mock.MagicMock(return_value=True)
     orch.rename_session = mock.AsyncMock(return_value=None)
     orch.list_archived = mock.AsyncMock(return_value=[{"id": "old"}])
+    orch.delete_state = mock.MagicMock(return_value="pending")       # sync, str | None
     orch.unarchive = mock.AsyncMock(return_value=_rec("u1"))
     orch.adopt_session = mock.AsyncMock(return_value=(_rec("a1"), {"resumed": True, "terminatedPid": 7}))
 
@@ -237,7 +238,11 @@ async def test_simple_and_quirk_methods_round_trip():
                 "engine": "claude_code",
                 "engineSessionId": None,
                 "reasoningEffort": None,
+                "archivedBy": None,
+                "archiveReason": None,
+                "deleteState": None,
             }]
+            assert await ro.delete_state("s1") == "pending"
             un = await ro.unarchive("u1")
             assert un.id == "u1"
             rec, meta = await ro.adopt_session("cs", "me")

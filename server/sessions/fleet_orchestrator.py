@@ -204,6 +204,9 @@ _MERGE_ALL_HOSTS: dict[str, object] = {
     "live_session_load": _merge_sum_floats,
     "live_session_counts": _merge_sum_counts,
     "session_queue_positions": _merge_union,
+    # FR-404: kept-row delete states live in the memory of the host that could not
+    # remove the directory; the archived list (primary-served) overlays this union.
+    "pending_delete_states": _merge_union,
 }
 
 # Method names whose FIRST positional arg is session_id and that touch live daemon
@@ -211,6 +214,10 @@ _MERGE_ALL_HOSTS: dict[str, object] = {
 _PER_SESSION: frozenset[str] = frozenset({
     "get_session", "send_prompt", "ensure_driver", "session_queue_move",
     "session_queue_cancel", "start_queued_now", "cancel_queued", "archive_session", "permanent_delete",
+    # FR-404: the kept-row / stuck state of a permanent delete lives in memory on the
+    # host that could not remove the directory — the same host the delete routed to.
+    # A missing row (host None) goes to the primary and reads None, i.e. the 404.
+    "delete_state",
     "rename_session", "note_user_interaction", "set_autopilot_paused",
     # D-14 PR auto-fix opt-out: the row is shared, but the live record mirror is the
     # owning host's.

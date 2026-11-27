@@ -23,6 +23,16 @@ describe('describeCreateSessionFailure — the 409 triage', () => {
     expect(describeCreateSessionFailure(err)).toEqual({ kind: 'reauth', message: REAUTH_MESSAGE })
   })
 
+  it('credential_preflight_failed (#947) is the same re-login remedy, whatever the reason token', () => {
+    for (const reason of ['credentials_expired', 'missing_credentials']) {
+      const err = new ApiRequestError(409, {
+        error: { code: 'credential_preflight_failed', reason, account: 'alpha',
+                 message: `account 'alpha' failed credential preflight (${reason})` },
+      })
+      expect(describeCreateSessionFailure(err)).toEqual({ kind: 'reauth', message: REAUTH_MESSAGE })
+    }
+  })
+
   it('all_accounts_limited carries the reset time when the daemon gave one', () => {
     expect(describeCreateSessionFailure(
       new ApiRequestError(409, { error: { code: 'all_accounts_limited' }, earliestReset: '2026-09-04T12:00:00Z' }),
