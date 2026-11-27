@@ -178,7 +178,7 @@ function SelectBox({ label, checked, indeterminate = false, onChange }: {
       aria-label={label}
       checked={checked}
       onChange={(e) => onChange(e.target.checked)}
-      className="mt-1 h-4 w-4 shrink-0 rounded-sm border-edge-strong accent-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      className="mt-1 h-4 w-4 shrink-0 rounded-sm border-edge-strong accent-accent focus:outline-none"
     />
   )
 }

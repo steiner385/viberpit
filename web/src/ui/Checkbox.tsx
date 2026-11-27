@@ -28,7 +28,7 @@ export function Checkbox({ id, label, checked, onChange, disabled, className, ..
         disabled={disabled}
         aria-describedby={aria['aria-describedby']}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded-sm border-edge-strong accent-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        className="h-4 w-4 rounded-sm border-edge-strong accent-accent focus:outline-none"
       />
       <span>{label}</span>
     </label>

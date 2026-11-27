@@ -351,6 +351,16 @@ body {
   .focus-visible\:ring-inset:focus-visible { outline-offset: -2px; }
 }
 
+/* Native checkboxes and radios (`appearance: auto`) take their focus indicator
+   as an outline, never a `ring-*` box-shadow: WebKit neither computes nor paints
+   a box-shadow on a native control, so a Safari keyboard user saw no focus on
+   any of them (#1416, WCAG 2.4.7). Unlayered for the same reason as the block
+   above — it outranks the `focus:outline-none` beside it. */
+input:is([type="checkbox"], [type="radio"]):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 /* Kiosk idle cursor (shell spec §5): `shell/useIdleCursor` sets the attribute
    after 5 s without input on a wall display; any input clears it. */
 html[data-idle] { cursor: none; }

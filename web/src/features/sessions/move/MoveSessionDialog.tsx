@@ -96,7 +96,7 @@ function Consent({ label, checked, onChange }: { label: string; checked: boolean
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 h-4 w-4 flex-shrink-0 rounded-sm border-edge-strong accent-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        className="mt-0.5 h-4 w-4 flex-shrink-0 rounded-sm border-edge-strong accent-accent focus:outline-none"
       />
       <span className="min-w-0">{label}</span>
     </label>

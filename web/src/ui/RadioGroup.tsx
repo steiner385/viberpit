@@ -59,7 +59,7 @@ export function RadioGroup<V extends string>({
                 disabled={o.disabled}
                 aria-describedby={reasonId}
                 onChange={() => onChange(o.value)}
-                className="h-4 w-4 shrink-0 accent-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                className="h-4 w-4 shrink-0 accent-accent focus:outline-none"
               />
               <span className="min-w-0 [overflow-wrap:anywhere]">{o.label}</span>
             </label>
