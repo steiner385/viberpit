@@ -58,6 +58,10 @@ VNC/x11 relay is bridged across the daemon↔edge boundary so it never assumes e
 share loopback (#204). Mobile gets a soft-keyboard toggle for virtual X sessions (#339). On
 insecure origins the paste button falls back to a capture field (#541).
 
+**Access model** — `/ws/vnc` requires a verified, allowlisted identity but performs no per-session
+ownership check: any allowlisted identity may view any session's display. This is intentional and
+matches every other session API (owner ruling 2026-11-27, #3533; see `tailnet-identity-auth.md`).
+
 **Evidence** —
 - Relay: `server/bridge/vnc_ws.py` (WebSocket↔x11vnc RFB byte relay, identity-gated),
   `server/ipc/x11_rpc.py` (daemon-side `/vnc` endpoint + x11 RPCs across the edge split).

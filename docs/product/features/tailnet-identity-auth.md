@@ -47,6 +47,14 @@ single allowlist (any allowlisted identity has full access); terminating TLS in-
 fronted by `tailscale serve` / an nginx tailnet vhost, PR #811).
 
 **Notes** —
+- **No per-session ownership — owner ruling, 2026-11-27 (#3533).** The tailnet allowlist is the
+  trust boundary: every allowlisted identity may list, read, drive and — via `/ws/vnc` — view the
+  display of every session. Sessions deliberately have no owner model (`sessions.owner_identity`
+  exists only to key assistant threads), and `/ws/vnc` is not gated more tightly than the session
+  APIs that already expose the same content. Do not add a one-off ownership check to a single
+  surface; if the allowlist ever holds mutually untrusted users, the decision to revisit is a
+  full owner model enforced on every session route (rejected for now as out of proportion for a
+  single-operator deployment).
 - **Identity resolution** (`server/auth/identity.py`): reads `Tailscale-User-Login` (or the
   `X-Tailscale-User-Login` alternate), falling back to a best-effort `tailscale whois` on the peer
   IP. If `Settings.tailnet_allowlist` is non-empty the identity must be on it or the request is
