@@ -466,3 +466,21 @@ or anything named preview (GraphQL check, 2026-11-05). No open issue matches "de
 - **rocky's unit sandbox**: dobby's `viberpit-daemon.service` has `ProtectProc=default`, `ProcSubset=all` (`systemctl
   show`), so the daemon sees every same-uid `/proc/<pid>/fd`, and the P1 scan ran from a shell inside that same
   cgroup. rocky's unit settings were not read; the read-only scan there ran over `ssh`, outside the unit.
+
+## Live hand-checks after shipping (#3547, 2026-11-26 and 2026-11-27)
+
+Run against the deployed build. Full evidence is in the comments on #3350 and #3547.
+
+| Check | Result |
+|---|---|
+| Owner's phone loads a Vite server on thready over the tailnet (2026-11-26) | Loads |
+| dobby's edge detects a thready server over the worker RPC | `host: "thready"`, `bind: "all"` |
+| Route for a dobby viewer (`GET /api/sessions/{id}/dev-servers`) | `tailnet-link`, the host's tailnet IP |
+| Browser tab in dobby's Chrome lists the server; **Open** clicked | New tab at the tailnet-IP URL; page loads |
+
+The 2026-11-27 server was `python3 -m http.server`, started by a thready session's own agent; an agent drove the
+owner's Chrome with the owner's approval. Stock Vite answers 403 to the MagicDNS name, so use the IP link.
+
+**Correction to the #3547 premise.** **Open** calls `POST …/dev-servers/{port}/open` only on the `vnc` route. On
+`tailnet-link` and `local-link` it is a plain link, so these checks did not exercise that endpoint or its
+person-only gate live. **The `vnc` route was not hand-checked here.**
