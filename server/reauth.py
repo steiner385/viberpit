@@ -56,9 +56,10 @@ class ReauthNoDesktop(Exception):
 MODE_LOGIN = "login"
 #: Code paste: a long-lived setup-token for an EXISTING account (``/accounts/{name}/reauth``).
 MODE_SETUP_TOKEN = "setup_token"
-#: Code paste: the full claude.ai login for an EXISTING account, in the operator's own
-#: browser (``/accounts/{name}/browser-login``, Remote Control). The signed-in identity
-#: must be the account's own, or nothing is written.
+#: Code paste: the full claude.ai login, in the operator's own browser. For an EXISTING
+#: account (``/accounts/{name}/browser-login``, Remote Control) the signed-in identity
+#: must be the account's own, or nothing is written; for a NEW account (``/accounts/add``)
+#: the slot is bootstrapped from the identity the login names (``complete_code_login``).
 MODE_CLAUDE_LOGIN = "claude_login"
 #: The modes that wait for a pasted code instead of running a login runner.
 CODE_PASTE_MODES = (MODE_SETUP_TOKEN, MODE_CLAUDE_LOGIN)

@@ -8,6 +8,11 @@ import * as hooks from '@/api/hooks'
 import type { Account, ReauthState } from '@/api/types'
 import { appSettings } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
+import { useSubmitAddAccountCode } from '@/features/accounts/useAddAccountCode'
+
+vi.mock('@/features/accounts/useAddAccountCode', () => ({
+  useSubmitAddAccountCode: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+}))
 
 vi.mock('@/api/hooks', () => ({
   useAllPrs: vi.fn(() => ({ data: [] })),
@@ -174,18 +179,42 @@ describe('AccountsManager — Add account', () => {
     expect(screen.getByRole('button', { name: /^add$/i })).toBeDisabled()
   })
 
-  it('shows the host-machine sign-in hint while the login is running', async () => {
+  it('shows the claude.ai code paste once the add is awaiting its code', async () => {
     const user = userEvent.setup()
     // The status query is only enabled once the add has started; model that so
-    // the running state appears after clicking Add, not before.
-    vi.mocked(hooks.useAddAccountStatus).mockImplementation((enabled: boolean) => (queryResult(makeReauthState({ state: enabled ? 'running' : 'idle' }))))
+    // the paste step appears after clicking Add, not before.
+    const authUrl = 'https://claude.com/cai/oauth/authorize?code=true'
+    vi.mocked(hooks.useAddAccountStatus).mockImplementation((enabled: boolean) => (queryResult(makeReauthState({
+      state: enabled ? 'awaiting_code' : 'idle', authUrl,
+    } as Partial<ReauthState>))))
 
     render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /add account/i }))
     await user.type(screen.getByLabelText(/account name/i), 'work')
     await user.click(screen.getByRole('button', { name: /^add$/i }))
 
-    expect(screen.getByText(/on the host screen/i)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: authUrl })).toHaveAttribute('href', authUrl)
+    expect(screen.getByLabelText('Authorization code for work')).toBeInTheDocument()
+    expect(screen.queryByText(/on the host screen/i)).not.toBeInTheDocument()
+  })
+
+  it('submitting the pasted code goes to the add code route, not the per-account route', async () => {
+    const user = userEvent.setup()
+    const submitMutate = vi.fn()
+    vi.mocked(useSubmitAddAccountCode).mockReturnValue(
+      { ...NOOP_MUTATION, mutate: submitMutate } as unknown as ReturnType<typeof useSubmitAddAccountCode>)
+    vi.mocked(hooks.useAddAccountStatus).mockImplementation((enabled: boolean) => (queryResult(makeReauthState({
+      state: enabled ? 'awaiting_code' : 'idle', authUrl: 'https://claude.com/cai/oauth/authorize?code=true',
+    } as Partial<ReauthState>))))
+
+    render(<AccountsManager />, { wrapper })
+    await user.click(screen.getByRole('button', { name: /add account/i }))
+    await user.type(screen.getByLabelText(/account name/i), 'work')
+    await user.click(screen.getByRole('button', { name: /^add$/i }))
+    await user.type(screen.getByLabelText('Authorization code for work'), ' AUTHCODE#STATE ')
+    await user.click(screen.getByRole('button', { name: /submit code/i }))
+
+    expect(submitMutate).toHaveBeenCalledWith('AUTHCODE#STATE', expect.anything())
   })
 
   it('clicking Cancel during a running add calls the cancel mutation', async () => {

@@ -33,6 +33,7 @@ import type { AccountUpdate } from '@/api/hooks'
 import { AddAccountDialog } from './AddAccountDialog'
 import { DeviceCodePanel } from './DeviceCodePanel'
 import { useBrowserLoginAccount } from './useBrowserLogin'
+import { CodePastePanel } from './CodePastePanel'
 import type { Account, LiveSessionCounts, Session } from '@/api/types'
 import { reserveWindow, usageUnavailableReason, usageWindows } from '@/lib/usageWindows'
 
@@ -273,8 +274,6 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
   const [reauthStarted, setReauthStarted] = useState(false)
   // Optimistic local idle override — set when user cancels
   const [reauthOptimisticIdle, setReauthOptimisticIdle] = useState(false)
-  // Code input for awaiting_code state
-  const [code, setCode] = useState('')
 
   const [modelApprovalDraft, setModelApprovalDraft] = useState<string>(
     account.accountDefaults?.modelApprovalAction ?? '',
@@ -775,71 +774,16 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
         </p>
       )}
       {!editing && isAwaitingCode && reauthStatus?.authUrl && (
-        <div className="flex flex-col gap-2 mt-1">
-          <p className="text-xs text-warning">
-            {browserLoginStarted
-              ? "Open this link in your browser, where you're signed in to claude.ai as this account, approve, then paste the code below."
-              : 'Open this URL, approve, then paste the code below.'}
-          </p>
-          <div className="flex items-center gap-2 min-w-0">
-            <a
-              href={reauthStatus.authUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={cn(
-                'text-xs text-accent underline truncate min-w-0 flex-1',
-              )}
-            >
-              {reauthStatus.authUrl}
-            </a>
-            <button
-              type="button"
-              className={cn(
-                'rounded px-2 py-1 text-xs flex-shrink-0',
-                'border border-edge-strong',
-                'text-ink',
-                'hover:bg-surface-raised',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-              )}
-              onClick={() => { void navigator.clipboard.writeText(reauthStatus.authUrl!) }}
-            >
-              Copy
-            </button>
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              aria-label={`Authorization code for ${account.name}`}
-              placeholder="Paste authorization code…"
-              className={cn(
-                'flex-1 min-w-0 rounded border border-edge-strong',
-                'bg-surface text-ink',
-                'px-2 py-1 text-xs',
-                'focus:outline-none focus:ring-2 focus:ring-accent',
-              )}
-            />
-            <button
-              type="button"
-              className={cn(
-                'rounded px-2 py-1 text-xs font-medium flex-shrink-0',
-                'bg-accent text-accent-ink hover:bg-accent/90',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-                'disabled:opacity-40',
-              )}
-              disabled={!code.trim()}
-              onClick={() => {
-                submitCode.mutate(
-                  { name: account.name, code: code.trim() },
-                  { onSuccess: () => setCode('') },
-                )
-              }}
-            >
-              Submit code
-            </button>
-          </div>
-        </div>
+        <CodePastePanel
+          authUrl={reauthStatus.authUrl}
+          instructions={browserLoginStarted
+            ? "Open this link in your browser, where you're signed in to claude.ai as this account, approve, then paste the code below."
+            : 'Open this URL, approve, then paste the code below.'}
+          inputLabel={`Authorization code for ${account.name}`}
+          onSubmit={(pasted, onAccepted) => {
+            submitCode.mutate({ name: account.name, code: pasted }, { onSuccess: onAccepted })
+          }}
+        />
       )}
       {!editing && isReauthSuccess && (
         <p className="text-xs text-success">

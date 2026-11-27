@@ -1141,7 +1141,13 @@ async def add_account_start(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
-    """Start an interactive login that creates a new account slot.
+    """Start the sign-in that creates a new account slot.
+
+    The claude.ai sign-in is a code paste in the operator's own browser (``ReauthManager``
+    ``mode="claude_login"``): the returned state is ``awaiting_code`` with an ``authUrl``,
+    and the pasted code goes to ``POST /accounts/add/code``. The slot is bootstrapped from
+    the captured identity (``auth_login.complete_code_login``) only once that code is
+    exchanged; nothing is written before it.
 
     Returns 202 + state dict on success.
     Returns 400 if the requested name is malformed (bad chars, path traversal).
@@ -1175,7 +1181,7 @@ async def add_account_start(
 
     reauth = _get_reauth(request)
     try:
-        state = await reauth.start(name, identity)
+        state = await reauth.start(name, identity, mode=MODE_CLAUDE_LOGIN)
     except ReauthBusy as exc:
         raise HTTPException(
             status_code=409,
@@ -1213,6 +1219,29 @@ async def add_account_status(
     """
     reauth = _get_reauth(request)
     return (await reauth.status("")).to_dict()
+
+
+class AddAccountCodeBody(BaseModel):
+    code: str
+
+
+@router.post("/add/code")
+async def add_account_submit_code(
+    body: AddAccountCodeBody,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """Submit the pasted authorization code of the in-flight add.
+
+    The account is the one the running add was started for (``state.account``), so the
+    client never names a slot. With no add awaiting a code this is a no-op snapshot.
+    """
+    reauth = _get_reauth(request)
+    current = await reauth.status("")
+    if not current.account:
+        return current.to_dict()
+    state = await reauth.submit_code(current.account, body.code)
+    return state.to_dict()
 
 
 @router.post("/add/cancel")
