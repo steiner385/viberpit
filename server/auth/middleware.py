@@ -266,6 +266,10 @@ DISPLAY_FORBIDDEN_CODE = "DISPLAY_SCOPE_FORBIDDEN"
 # Where the exchange authenticates by its body token, so it cannot demand an identity.
 # It is NOT exempt from the Origin guard, which wraps the whole app.
 KIOSK_EXCHANGE_PATH = "/api/kiosk/session"
+# The standalone page a display link opens (``server/api/kiosk.py``). It is the ONLY
+# non-API path that loads without an identity: a device with no tailnet identity and no
+# display cookie yet must be able to reach the exchange (#3543). It serves no SPA code.
+KIOSK_PAGE_PATH = "/kiosk"
 
 
 def display_cookie(conn) -> str | None:
@@ -418,6 +422,14 @@ class IdentityMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if request.method == "POST" and request.url.path == KIOSK_EXCHANGE_PATH:
+            request.state.identity = None
+            request.state.scope = "full"
+            request.state.app_session_id = None
+            return await call_next(request)
+
+        if request.method == "GET" and request.url.path == KIOSK_PAGE_PATH:
+            # Before the display-cookie branch: a stale cookie from a revoked link must
+            # not stop the next link from opening.
             request.state.identity = None
             request.state.scope = "full"
             request.state.app_session_id = None

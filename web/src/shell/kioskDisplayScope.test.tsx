@@ -9,6 +9,9 @@
 // Every absence is paired with the "neither" control, where the same thing is
 // present — so a spy that could never see a socket fails there.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider, type RouteObject } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -23,29 +26,26 @@ const SESSIONS: Session[] = [{
   status: 'idle', createdAt: '2026-06-19T10:00:00Z', prs: [],
 }]
 
-vi.mock('@/api/client', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/api/client')>()
-  return {
-    ...actual,
-    api: {
-      get: vi.fn(async (path: string): Promise<unknown> => {
-        if (path === '/auth/me') {
-          if (me instanceof Promise) return me
-          if (me instanceof Error) throw me
-          return me
-        }
-        if (path === '/sessions' || path === '/sessions?viewing=1') return SESSIONS
-        if (path === '/fleet/hosts') return { hosts: [] }
-        if (path === '/config') return { adoptionEnabled: false }
-        return []
-      }),
-      post: vi.fn(async () => ({})),
-      put: vi.fn(async () => ({})),
-      patch: vi.fn(async () => ({})),
-      del: vi.fn(async () => undefined),
-    },
+// The REAL api client runs; only `fetch` is faked, so the request gate (#3544) is in play and
+// the fetch log below is the shell's actual wire traffic.
+const fetched: string[] = []
+function respond(path: string): unknown {
+  if (path === '/sessions' || path === '/sessions?viewing=1') return SESSIONS
+  if (path === '/fleet/hosts') return { hosts: [] }
+  if (path === '/config') return { adoptionEnabled: false }
+  return []
+}
+async function fakeFetch(url: string, init?: RequestInit): Promise<Response> {
+  fetched.push(`${init?.method ?? 'GET'} ${url}`)
+  const path = url.replace(/^\/api/, '')
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+  if (path === '/auth/me') {
+    const value = me instanceof Promise ? await me : me
+    return value instanceof Error ? json({}, 502) : json(value)
   }
-})
+  return json(init?.method && init.method !== 'GET' ? {} : respond(path))
+}
 
 import { LAYOUT_MODE_QUERIES, MEDIA, stubMatchMedia } from '@/test/matchMedia'
 import { regionCounts } from '@/test/regions'
@@ -53,6 +53,7 @@ import { ThemeProvider } from '@/shell/theme'
 import { buildRoutes } from '@/shell/routes'
 import { ApiBaseProvider } from '@/pipeline/ApiBaseContext'
 import { PrRow } from '@/pipeline/PrRow'
+import { setDisplayReads } from '@/api/displayGate'
 import { __resetSocketsForTest, getSessionSocket } from '@/ws/client'
 import { AppShell } from './AppShell'
 import { useInteractive } from './InteractionContext'
@@ -93,6 +94,16 @@ function probeRoutes(): RouteObject[] {
   return [{ ...root, children: [{ ...layout, children: pages }] }]
 }
 
+/** `DISPLAY_ROUTE_ALLOW`'s GET rows, read from the ONE source (`server/assistant/policy.py`) —
+ *  the same read `PipelinePage.test.tsx` does. The server publishes exactly these, as
+ *  anchored regex sources, in `GET /api/auth/me` (`display_read_patterns()`). */
+function displayReads(): string[] {
+  const policy = readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../server/assistant/policy.py'), 'utf-8')
+  const block = policy.slice(policy.indexOf('DISPLAY_ROUTE_ALLOW'), policy.indexOf('def display_read_patterns'))
+  return [...block.matchAll(/\("GET", r"([^"]+)"\)/g)].map((m) => `${m[1]}$`)
+}
+
 const opened: string[] = []
 class CountingWebSocket {
   static readonly OPEN = 1
@@ -105,7 +116,9 @@ class CountingWebSocket {
 }
 
 function renderApp({ scope, kioskParam, meFails = false }: { scope: 'full' | 'display'; kioskParam: boolean; meFails?: boolean }) {
-  me = meFails ? new Error('502') : { identity: scope === 'display' ? 'display:Wall' : 'alice@example.com', scope, authMode: scope === 'display' ? 'display' : 'tailscale' }
+  me = meFails ? new Error('502') : scope === 'display'
+    ? { identity: 'display:Wall', scope, authMode: 'display', allowedReads: displayReads() }
+    : { identity: 'alice@example.com', scope, authMode: 'tailscale' }
   // A display is an ordinary desktop browser; only the URL or the scope makes it a kiosk.
   stubMatchMedia([...LAYOUT_MODE_QUERIES.desktop, MEDIA.drawerPush])
   window.history.replaceState(null, '', kioskParam ? '/?kiosk=1' : '/')
@@ -123,12 +136,15 @@ function renderApp({ scope, kioskParam, meFails = false }: { scope: 'full' | 'di
 
 beforeEach(() => {
   opened.length = 0
+  fetched.length = 0
+  vi.stubGlobal('fetch', vi.fn(fakeFetch))
   __resetSocketsForTest()
   vi.stubGlobal('WebSocket', CountingWebSocket)
   localStorage.clear()
 })
 
 afterEach(() => {
+  setDisplayReads(null)
   __resetSocketsForTest()
   vi.unstubAllGlobals()
   window.history.replaceState(null, '', '/')
@@ -193,5 +209,35 @@ describe('display scope drives kiosk (AC-G10.8)', () => {
     await act(async () => { fail(new Error('502')); await refetch.catch(() => {}) })
     expect(getSessionSocket()).toBe(held)
     expect(opened.length).toBe(before)
+  })
+
+  // #3544: the shell's own list/badge/workspace queries must not poll routes the display
+  // allowlist refuses — each is a 403 on every tick. One gate at the request layer, fed by
+  // the server's own list (`allowedReads`), so a hook added tomorrow is covered unseen.
+  const wirePaths = () => [...new Set(fetched.filter((l) => l.startsWith('GET '))
+    .map((l) => new URL(l.slice(4), 'http://edge').pathname))]
+
+  it('a display session polls only allowlisted routes, not the shell\'s own queries', async () => {
+    const { qc } = renderApp({ scope: 'display', kioskParam: true })
+    await screen.findByTestId('probe-page')
+    await waitFor(() => expect(qc.getQueryData(['auth', 'me'])).toBeTruthy())
+    // The scope is known from here on; whatever the first paint raced is not the claim.
+    fetched.length = 0
+    await act(async () => { await qc.refetchQueries({ type: 'all' }) })
+    const allow = displayReads().map((src) => new RegExp(`^${src}$`))
+    expect(allow.length).toBeGreaterThan(0)
+    const paths = wirePaths()
+    // Lower bound: the poll really ran (/auth/me is on the list), so an empty log cannot pass.
+    expect(paths).toContain('/api/auth/me')
+    for (const p of paths) expect(allow.some((rx) => rx.test(p)), `${p} is not in DISPLAY_ROUTE_ALLOW`).toBe(true)
+  })
+
+  it('a full session still polls the shell\'s queries (control: the spy can see them)', async () => {
+    const { qc } = renderApp({ scope: 'full', kioskParam: false })
+    await screen.findByTestId('probe-page')
+    await waitFor(() => expect(qc.getQueryData(['auth', 'me'])).toBeTruthy())
+    fetched.length = 0
+    await act(async () => { await qc.refetchQueries({ type: 'all' }) })
+    expect(wirePaths().some((p) => p === '/api/sessions' || p === '/api/fleet/hosts')).toBe(true)
   })
 })

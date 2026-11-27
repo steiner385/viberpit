@@ -118,7 +118,8 @@ def test_display_session_reads_feed_and_me_hides_the_minting_operator(client):
     me = client.get("/api/auth/me")
     assert me.status_code == 200
     body = me.json()
-    assert body == {"identity": "display:lobby", "scope": "display", "authMode": "display"}
+    assert {k: body[k] for k in ("identity", "scope", "authMode")} == {
+        "identity": "display:lobby", "scope": "display", "authMode": "display"}
     assert "owner@example.com" not in json.dumps(body)
     assert client.get("/api/pipeline/snapshot").status_code == 200
     assert "repoRoot" in client.get("/api/config").json()
@@ -231,3 +232,95 @@ def test_projection_removes_identity_goal_and_hostname():
     out = json.dumps(project_for_display(frame))
     assert not re.search(r"@|\.ts\.net|secret thing|do x", out)
     assert '"green"' in out and '"acme/app"' in out and '"n": 3' in out
+
+
+# --- #3543: the exchange page loads on a device with no identity --------------------
+# A display link must open on a device the tailnet does not identify. `GET /kiosk` is
+# a small standalone page the server renders itself (not the SPA shell), and it is the
+# ONLY path that opens up: every other route still demands an identity.
+
+_ANON_STILL_401 = ["/", "/pipeline", "/index.html", "/assets/index-abc123.js", "/kiosk/",
+                   "/api/config", "/api/auth/me", "/api/pipeline/snapshot", "/ws"]
+
+
+def test_kiosk_page_loads_without_any_identity(client):
+    r = client.get("/kiosk?token=ccas2:whatever")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert "ccas2:whatever" not in r.text  # never reflected back
+    assert "/api/kiosk/session" in r.text
+
+
+def test_kiosk_page_is_locked_down_and_uncacheable(client):
+    h = client.get("/kiosk?token=x").headers
+    assert h["cache-control"] == "no-store"
+    assert h["referrer-policy"] == "no-referrer"
+    csp = h["content-security-policy"]
+    assert "default-src 'none'" in csp and "connect-src 'self'" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert "unsafe-inline" not in csp and "unsafe-eval" not in csp
+
+
+def test_kiosk_page_csp_hashes_match_the_inline_script_and_style(client):
+    import base64
+    import hashlib
+    r = client.get("/kiosk?token=x")
+    csp = r.headers["content-security-policy"]
+    for tag in ("script", "style"):
+        body = re.search(rf"<{tag}>(.*?)</{tag}>", r.text, re.S).group(1)
+        digest = base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()
+        assert f"'sha256-{digest}'" in csp, tag
+
+
+def test_kiosk_page_without_a_token_says_the_link_is_incomplete(client):
+    r = client.get("/kiosk")
+    assert r.status_code == 200
+    assert "incomplete" in r.text.lower()
+    assert "<script" not in r.text
+
+
+@pytest.mark.parametrize("path", _ANON_STILL_401)
+def test_only_the_kiosk_page_opened_to_an_anonymous_peer(client, path):
+    assert client.get(path).status_code == 401
+
+
+def test_kiosk_page_does_not_open_other_methods(client):
+    assert client.post("/kiosk").status_code == 401
+    assert client.put("/kiosk").status_code == 401
+
+
+def test_anonymous_peer_can_exchange_and_then_load_the_wall(client):
+    """The acceptance path, end to end: no identity → page → exchange → wall."""
+    tok = _mint(client)  # minted by the operator; every call below carries no identity header
+    client.cookies.clear()
+    assert client.get("/kiosk?token=" + tok["token"]).status_code == 200
+    assert _exchange(client, tok["token"]).status_code == 303
+    assert client.get("/api/pipeline/snapshot").status_code == 200
+    assert client.get("/api/config").status_code == 200
+    assert client.get("/api/sessions").status_code == 403  # a display, not an operator
+
+
+def test_stale_display_cookie_does_not_block_the_kiosk_page(client):
+    """A revoked display link's cookie must not stop the NEXT link from opening."""
+    first, second = _mint(client, label="a"), _mint(client, label="b")
+    _display_client(client, first["token"])
+    jar = dict(client.cookies)
+    client.cookies.clear()  # the operator revokes from their own browser, not the wall's
+    assert client.delete(f"/api/assistant/tokens/{first['id']}", headers=_OWNER).status_code < 300
+    client.cookies.update(jar)
+    assert client.get("/api/auth/me").status_code == 401  # the old display is dead
+    assert client.get("/kiosk?token=fresh").status_code == 200
+    assert _exchange(client, second["token"]).status_code == 303
+
+
+def test_auth_me_publishes_the_display_read_allowlist_from_policy(client):
+    from server.assistant.policy import display_read_patterns
+    _display_client(client, _mint(client)["token"])
+    body = client.get("/api/auth/me").json()
+    assert body["allowedReads"] == display_read_patterns()
+    assert "/api/pipeline/snapshot$" in body["allowedReads"]
+    assert not any("/sessions" in p for p in body["allowedReads"])
+
+
+def test_auth_me_omits_the_allowlist_for_a_full_session(client):
+    assert "allowedReads" not in client.get("/api/auth/me", headers=_OWNER).json()

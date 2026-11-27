@@ -43,6 +43,7 @@ from server.api.remote_sessions import router as remote_sessions_router
 from server.api.attachments import router as attachments_router
 from server.api.accounts import router as accounts_router
 from server.api.auth import router as auth_router
+from server.api.kiosk import page_router as kiosk_page_router
 from server.api.kiosk import router as kiosk_router
 from server.api.config import router as config_router
 from server.api.repos import router as github_router
@@ -1190,6 +1191,7 @@ def create_app(
     app.include_router(accounts_router)
     app.include_router(auth_router)
     app.include_router(kiosk_router)
+    app.include_router(kiosk_page_router)
     app.include_router(config_router)
     app.include_router(github_router)
     app.include_router(settings_router)

@@ -40,13 +40,22 @@ Each guard was broken on purpose and the test run, then restored.
 - **Live smoke (AC-X.7)** — a display link on a non-operator device, a forced mutation from
   devtools, Revoke ending the display on its next poll — needs a deployed build; recorded on the
   issue after deploy.
-- **A device with no ambient identity cannot load `/kiosk` itself**: the auth middleware 401s the
-  SPA shell for a request with neither an identity nor a display cookie, so the link only works
-  from a device the tailnet already identifies. Admitting the static shell unauthenticated is an
-  exposure-policy change, tracked in #3543.
-- **The shell's own reads still run in kiosk** (sessions, accounts, triage, …): for a display
-  they are silent 403s (4xx is never retried or logged), wasted polls rather than visible
-  breakage. Tracked in #3544.
+- **Live smoke** also covers the two follow-ups below once deployed: a display link opened from a
+  device the tailnet does not identify (#3543), and a wall's network log showing no off-allowlist
+  polls (#3544).
+
+### Follow-ups, closed
+
+- **A device with no ambient identity can open `/kiosk`** (#3543). `GET /kiosk` is a small
+  server-rendered exchange page (`server/api/kiosk.py`, CSP-hashed inline script, `no-store`,
+  `no-referrer`) — not the SPA shell — and is the only path the auth middleware opens without an
+  identity. After the exchange the display cookie admits the shell like any display request. The
+  static bundle stays behind identity (no exposure-tier change for #1410).
+- **A display shell polls only allowlisted routes** (#3544). `api.get` consults one gate
+  (`web/src/api/displayGate.ts`) fed by the server's own list (`allowedReads` in `GET /api/auth/me`
+  for a display session), so a blocked read never leaves the browser and a new hook is covered
+  without an `enabled:` copy. Residual: the first paint races `/auth/me`, so each off-list query
+  can still 403 once before the scope is known.
 
 ## G13 — Field performance and bundle budget (#1411)
 
