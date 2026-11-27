@@ -74,7 +74,7 @@ describe('WCAG 2.2 AA conformance record', () => {
   it('states totals that match its own rows', () => {
     const count = (status: string) => rows.filter((r) => r.status === status).length
     const totals = `${rows.length} criteria: ${count('Automated')} automated, ${count('Partly automated')} partly automated, `
-      + `${count('Inspected')} inspected, ${count('Gap')} gaps, ${count('Not verified')} not verified, ${count('N/A')} not applicable.`
+      + `${count('Inspected')} inspected, ${count('Gap')} with a known gap, ${count('Not verified')} not verified, ${count('N/A')} not applicable.`
     expect(record).toContain(totals)
     expect(record).toContain(`${rows.filter((r) => r.at === 'needed').length} need assistive technology or a device to confirm`)
   })

@@ -9,7 +9,7 @@ is known about it, and how it is known.
 **This is not a conformance claim.** No criterion below has been verified with a screen reader, a
 physical phone or a person who relies on assistive technology. §3 is the protocol for that and its
 results table is empty. Until it is filled in, the honest summary is: the automated half is in
-place and passing, four gaps are known and tracked, and the assistive-technology half is not done.
+place and passing, the four gaps it found have since been fixed, and the assistive-technology half is not done.
 
 ## 1. How to read the status column
 
@@ -45,7 +45,7 @@ Paths are relative to the repo root. "Matrix gate" is `web/e2e/cross-browser/she
 | 1.3.2 | Meaningful Sequence | A | Not verified | Reading order is DOM order; nobody has listened to it. | needed |
 | 1.3.3 | Sensory Characteristics | A | Not verified | Needs a read of instructional copy for "the button on the right" phrasing. | — |
 | 1.3.4 | Orientation | AA | Automated | Matrix gate runs phone-portrait and phone-landscape; no orientation lock in `web/src/pwa/manifest.ts` or in script. Left: a real rotation, mid-task. | needed |
-| 1.3.5 | Identify Input Purpose | AA | N/A | No field collects information about the user (no name, email, phone, address or password input). In flight: #3559 adds a sign-in page with an optional identity field — check its `autocomplete` when it merges. | — |
+| 1.3.5 | Identify Input Purpose | AA | Inspected | The one field that identifies the user — the optional identity on the passkey sign-in page — declares `autocomplete="username webauthn"` (`web/src/features/auth/LoginPage.tsx`). No other field collects personal information. | — |
 | 1.4.1 | Use of Color | A | Partly automated | `StatusPill` pairs icon and text (`web/src/ui/Pills.test.tsx`). The current nav item is a fill plus a colour change only (`web/src/shell/regions/NavItem.tsx`); in forced colours it now gets an outline (adaptation gate). Left: the same question for every other "selected" state. | — |
 | 1.4.2 | Audio Control | A | N/A | As 1.2.1. | — |
 | 1.4.3 | Contrast (Minimum) | AA | Automated | `web/src/__tests__/contrast.test.ts` (every token pair, both themes); matrix gate (axe `color-contrast` on rendered pages, light theme). Left: rendered dark theme is covered by arithmetic only. | — |
@@ -62,8 +62,8 @@ Paths are relative to the repo root. "Matrix gate" is `web/e2e/cross-browser/she
 |---|---|---|---|---|---|
 | 2.1.1 | Keyboard | A | Partly automated | `web/e2e/keyboard-nav.spec.ts`; adaptation gate tabs through every route. Left: every action on every screen, and a hardware keyboard on iOS and Android. | needed |
 | 2.1.2 | No Keyboard Trap | A | Inspected | `Dialog` traps focus by design and releases on Escape (`web/src/ui/Dialog.tsx`). No test proves the absence of an accidental trap. | needed |
-| 2.1.4 | Character Key Shortcuts | A | Gap | #3562. The Roadmap inbox's single-key shortcuts are page-wide and cannot be turned off or remapped (`web/src/features/roadmap/inbox/InboxScopeBody.tsx`). Session-list keys are focus-scoped and pass. | needed |
-| 2.2.1 | Timing Adjustable | A | Gap | #3563. Undo is reachable only through a toast that dismisses itself in 6–8 s (`web/src/api/hooks.ts`). | needed |
+| 2.1.4 | Character Key Shortcuts | A | Automated | The Roadmap inbox's single-key shortcuts run from the list's own key handler, so they are active only while it has focus (`web/src/features/roadmap/inbox/InboxScopeBody.test.tsx`; was page-wide, fixed by #3562). Session-list keys were already focus-scoped. Left: a pass with speech input. | needed |
+| 2.2.1 | Timing Adjustable | A | Automated | Archive and triage Undo toasts no longer dismiss themselves (`web/src/api/__tests__/triageHooks.test.tsx`; were 6–8 s, fixed by #3563). Plain notification toasts still time out, and carry no action. | needed |
 | 2.2.2 | Pause, Stop, Hide | A | Partly automated | Adaptation gate: nothing animates under `prefers-reduced-motion`, with a control showing the same page does animate otherwise. Left: there is no pause for someone who has not set that preference, and the kiosk attract cycle (`web/src/shell/useAttractCycle.ts`) has none at all. | — |
 | 2.3.1 | Three Flashes or Below Threshold | A | Inspected | Motion is a pulse, a spinner and a shimmer; nothing flashes. | — |
 | 2.4.1 | Bypass Blocks | A | Automated | Matrix gate (axe `bypass`, `region`): landmarks and headings are the mechanism. There is no skip link. | needed |
@@ -78,7 +78,7 @@ Paths are relative to the repo root. "Matrix gate" is `web/e2e/cross-browser/she
 | 2.5.2 | Pointer Cancellation | A | Inspected | No action fires on pointer-down; down handlers only start a drag or close a menu. | — |
 | 2.5.3 | Label in Name | A | Automated | Matrix gate (axe `label-content-name-mismatch`); one real failure was fixed under #1412. | needed |
 | 2.5.4 | Motion Actuation | A | N/A | No device-motion or orientation input. | — |
-| 2.5.7 | Dragging Movements | AA | Gap | #3564. The sidebar resizer has arrow keys but no single-pointer alternative (`web/src/features/sessions/list/SidebarResizer.tsx`). Other drags have one. | needed |
+| 2.5.7 | Dragging Movements | AA | Automated | The sidebar resizer toggles narrow/wide on double-click, with Narrow/Wide buttons in Settings › Appearance, beside its arrow keys (`web/src/features/sessions/list/SidebarResizer.test.tsx`; fixed by #3564). Other drags already had an alternative. | needed |
 | 2.5.8 | Target Size (Minimum) | AA | Automated | Matrix gate (24px, and the app's own 44px on touch) and `web/e2e/touch-targets.spec.ts`. Left: real fingers. | needed |
 
 ### Principle 3 — Understandable
@@ -97,7 +97,7 @@ Paths are relative to the repo root. "Matrix gate" is `web/e2e/cross-browser/she
 | 3.3.3 | Error Suggestion | AA | Not verified | — | — |
 | 3.3.4 | Error Prevention (Legal, Financial, Data) | AA | Inspected | Destructive actions confirm, with a typed tier for the worst (`web/src/ui/ConfirmDialog.tsx`); archive is undoable — but see 2.2.1. | — |
 | 3.3.7 | Redundant Entry | A | Inspected | No flow found that asks again for something already entered. | — |
-| 3.3.8 | Accessible Authentication (Minimum) | AA | N/A | No sign-in form: identity comes from the tailnet. (In flight: #3559 adds passkey sign-in, which asks for no memorised secret or transcription; re-assess this row when it merges.) Adding an account shows a device code as selectable text with no copy button (`web/src/features/accounts/DeviceCodePanel.tsx`); the entry happens on the provider's site. | — |
+| 3.3.8 | Accessible Authentication (Minimum) | AA | Inspected | Identity is the tailnet's, or a passkey on an exposed install (`web/src/features/auth/LoginPage.tsx`): no password, CAPTCHA or code to remember or transcribe. Adding an account shows a device code as selectable text with no copy button (`web/src/features/accounts/DeviceCodePanel.tsx`); the entry happens on the provider's site. Left: the passkey prompt with a screen reader. | needed |
 
 ### Principle 4 — Robust
 
@@ -110,8 +110,8 @@ Paths are relative to the repo root. "Matrix gate" is `web/e2e/cross-browser/she
 
 ### Totals
 
-55 criteria: 12 automated, 9 partly automated, 13 inspected, 3 gaps, 9 not verified, 9 not applicable.
-27 need assistive technology or a device to confirm; 0 of those are done.
+55 criteria: 15 automated, 9 partly automated, 15 inspected, 0 with a known gap, 9 not verified, 7 not applicable.
+28 need assistive technology or a device to confirm; 0 of those are done.
 
 ## 3. Assistive technology and device verification — not yet run
 
@@ -139,7 +139,7 @@ real prompt, account name or transcript in the results.
 | J2 | Start a session: choose a repo, type a prompt, Create. | Every control has a name. The new session is announced. Focus lands somewhere sensible. |
 | J3 | Open a working session; wait for output; answer a permission request. | New output is announced once, not per token and not twice. The permission request interrupts. The answer buttons are reachable and named. |
 | J4 | A session hands back with a question; answer it. | The hand-back is announced. The question and its options read in order. |
-| J5 | Archive a session, then undo. | The toast is announced. Can Undo be reached before it goes? (Expected to fail — #3563.) |
+| J5 | Archive a session, then undo. | The toast is announced, stays until dismissed, and Undo can be reached. |
 | J6 | Settings: change a value, trigger a validation error, fix it, save. | The error is announced and tied to its field. Save's result is announced. |
 | J7 | Open and close a dialog and a menu. | Focus moves in, is trapped in the dialog, and returns to the trigger. Escape closes. |
 | J8 | Lose the connection (airplane mode), then restore it. | The outage and the recovery are both announced. Nothing is lost from the composer. |
@@ -183,5 +183,5 @@ Record one row per combination × journey or check. A failure gets an issue and 
 - **The adaptation gate** — reflow, zoom, text size, text spacing, reduced motion, focus, forced
   colours — with seeded defects proving each check can fail.
 
-Three gaps were found and not fixed here, each because the fix is a design choice: #3562,
-#3563, #3564. (A fourth, #3561 — reflow at 320×256 — has since been fixed.)
+Four gaps were found and filed — #3561 (1.4.10), #3562 (2.1.4), #3563 (2.2.1), #3564 (2.5.7).
+All four were fixed while this was in review; their rows above name the test that now holds each.

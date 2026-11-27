@@ -39,13 +39,15 @@ Measured on Chromium and Firefox, seeded backend, retries off.
 | **Daemon-health pill** — `aria-label` on a role-less `<span>` (the L4 pattern), visible only with a daemon present, which the seed never had | axe "needs review", unclassified, red in 3 modes | subject is visually-hidden text; no new limitation entry |
 | **The #1412 seed rendered error pages.** `/pipeline` and `/roadmap` threw on the default `[]`; `/healthz` was unanswered. | two of five routes were scanned as "This page hit a problem"; all five wore a false daemon-outage banner | the real pages; settling refuses an error page (`web/e2e/support/routes.ts`) |
 
-### Gaps found, not fixed here
+### Gaps found
 
-Each is a design choice, so each is an issue and a "Gap" row in the record — none is silenced.
+Each was filed as an issue and a "Gap" row in the record — none was silenced. All four have since
+been fixed, and the record's rows name the test that holds each.
 
-- **#3562** — Roadmap inbox single-key shortcuts cannot be turned off or remapped (SC 2.1.4, Level A).
-- **#3563** — Undo is reachable only through a 6–8 s toast (SC 2.2.1, Level A).
-- **#3564** — the sidebar resizer has no single-pointer alternative to dragging (SC 2.5.7).
+- **#3561** — Sessions and Pipeline lost their content at 320×256 (SC 1.4.10). Fixed in #3570.
+- **#3562** — Roadmap inbox single-key shortcuts were page-wide (SC 2.1.4, Level A). Fixed in #3568.
+- **#3563** — Undo was reachable only through a 6–8 s toast (SC 2.2.1, Level A). Fixed in #3567.
+- **#3564** — the sidebar resizer had no single-pointer alternative to dragging (SC 2.5.7). Fixed in #3569.
 
 ### Known limits of this evidence
 
