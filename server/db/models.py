@@ -195,6 +195,11 @@ class Session(Base):
     # autopilot help continues). Nullable so init_db backfills without a migration.
     auto_archive_opt_out_reason: Mapped[str | None] = mapped_column(
         String, nullable=True, default=None)
+    # Per-session veto of the restart auto-resume (spec 002 FR-306): True = a restart
+    # leaves this session on its interrupted banner instead of nudging it. NULL/False =
+    # resume as usual. Nullable so init_db backfills without a migration.
+    auto_resume_opt_out: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, default=None)
     # Durable record that a session resolved it will NOT open a PR — it finished
     # without one ("not-needed"), cancelled the PR work ("cancelled"), or parked the
     # issue on a decision proposal ("awaiting-decision", spec 2026-09-18 §6). The

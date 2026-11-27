@@ -81,7 +81,7 @@ async def test_resume_interrupted_eligible_nudges():
     ("ready_review", "not-resumable-status"),
     ("waiting_question", "not-resumable-status"),
     ("waiting_input", "not-resumable-status"),
-])
+])  # no lost-hold content: nothing to re-ask, so the session stays put
 async def test_resume_interrupted_skips_non_work(from_status, reason):
     rec = _rec(status="idle", interrupted_by_restart=True, interrupted_from_status=from_status)
     orch, calls = _orch_with(rec)
@@ -128,8 +128,17 @@ async def test_resume_interrupted_draining_propagates():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_auto_resume_disabled_by_default(monkeypatch):
+async def test_auto_resume_on_by_default(monkeypatch):
     monkeypatch.delenv("VIBERPIT_AUTO_RESUME_ON_RESTART", raising=False)
+    rec = _rec(status="idle", interrupted_by_restart=True, interrupted_from_status="in_progress")
+    orch, calls = _orch_with(rec)
+    assert await orch.auto_resume_interrupted() == 1
+    assert [p for _, p in calls["prompt"]] == [RESUME_NUDGE]
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_kill_switch(monkeypatch):
+    monkeypatch.setenv("VIBERPIT_AUTO_RESUME_ON_RESTART", "false")
     rec = _rec(status="idle", interrupted_by_restart=True, interrupted_from_status="in_progress")
     orch, calls = _orch_with(rec)
     assert await orch.auto_resume_interrupted() == 0
@@ -158,3 +167,78 @@ async def test_resume_interrupted_never_sends_to_an_assistant():
     orch, calls = _orch_with(rec)
     assert await orch.resume_interrupted("s1") == "skipped:assistant"
     assert calls["ensure"] == [] and calls["prompt"] == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 (FR-306) — hold-aware eligibility, per-session veto, AUTO_RESUMED events
+# ---------------------------------------------------------------------------
+
+_HOLD = {"kind": "question", "holdId": "h1", "createdAt": "2026-11-27T00:00:00Z",
+         "content": {"questions": [{"question": "Ship it to prod?"}]}}
+
+
+@pytest.fixture
+def events(monkeypatch):
+    from server.sessions import provenance
+    got: list = []
+
+    async def fake_record(sid, kind, detail=None):
+        got.append((sid, kind, detail))
+
+    monkeypatch.setattr(provenance, "record", fake_record)
+    return got
+
+
+@pytest.mark.asyncio
+async def test_waiting_session_with_lost_hold_auto_resumes_and_reasks(events):
+    rec = _rec(status="idle", interrupted_by_restart=True,
+               interrupted_from_status="waiting_question", lost_hold=_HOLD)
+    orch, calls = _orch_with(rec)
+    assert await orch.auto_resume_interrupted() == 1
+    (_, nudge), = calls["prompt"]
+    assert nudge.startswith(RESUME_NUDGE)
+    assert "Ship it to prod?" in nudge
+    assert "do not decide it yourself" in nudge
+    assert events == [("s1", "auto_resumed", {
+        "fromStatus": "waiting_question", "holdAware": True, "holdKind": "question"})]
+
+
+@pytest.mark.asyncio
+async def test_waiting_session_without_hold_stays_put(events):
+    rec = _rec(status="idle", interrupted_by_restart=True,
+               interrupted_from_status="waiting_question", lost_hold=None)
+    orch, calls = _orch_with(rec)
+    assert await orch.auto_resume_interrupted() == 0
+    assert calls["prompt"] == [] and events == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("from_status,hold", [("working", None),
+                                              ("waiting_question", _HOLD)])
+async def test_opted_out_session_is_never_auto_resumed(events, from_status, hold):
+    rec = _rec(status="idle", interrupted_by_restart=True, interrupted_from_status=from_status,
+               lost_hold=hold, auto_resume_opt_out=True)
+    orch, calls = _orch_with(rec)
+    assert await orch.auto_resume_interrupted() == 0
+    assert calls["prompt"] == [] and events == []
+
+
+@pytest.mark.asyncio
+async def test_work_status_resume_event_is_not_hold_aware(events):
+    rec = _rec(status="idle", interrupted_by_restart=True, interrupted_from_status="working")
+    orch, _ = _orch_with(rec)
+    await orch.auto_resume_interrupted()
+    assert events == [("s1", "auto_resumed", {
+        "fromStatus": "working", "holdAware": False, "holdKind": None})]
+
+
+def test_resumable_flag_true_for_waiting_status_with_hold():
+    r = _rec(status="idle", interrupted_by_restart=True,
+             interrupted_from_status="waiting_question", lost_hold=_HOLD)
+    assert r.to_dict()["resumable"] is True
+
+
+def test_auto_resume_opt_out_round_trips():
+    r = _rec(auto_resume_opt_out=True)
+    assert r.to_dict()["autoResumeOptOut"] is True
+    assert SessionRecord.from_dict(r.to_dict()).auto_resume_opt_out is True

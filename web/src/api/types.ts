@@ -463,6 +463,10 @@ export interface Session {
   /** Per-session PR auto-fix opt-out (D-14): true = PR Doctor leaves this session's
    *  PRs alone (manual fixes still run). `POST /sessions/{id}/pr-autofix {enabled}`. */
   prAutofixPaused?: boolean
+  /** Per-session veto of the restart auto-resume (spec 002 FR-306): true = a daemon
+   *  restart leaves this session on its interrupted banner. `PATCH /sessions/{id}
+   *  {autoResumeOptOut}`. */
+  autoResumeOptOut?: boolean
   /** The sandbox (D-23): what this session asked for and where it stands. `off` also
    *  covers Codex, the assistant and the kill switch. A session whose sandbox failed is
    *  held (`needs_attention`, `pausedReason: "sandbox_failed"`). Absent from an older

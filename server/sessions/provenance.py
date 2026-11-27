@@ -44,7 +44,13 @@ HOLD_LOST = "hold_lost"
 #: poison threshold (``stuck``: the retry loop stops trying; a manual delete still may).
 DELETE_RETRY = "delete_retry"
 
-KINDS = frozenset({SPAWN_FAILED, AUTO_ARCHIVED, ROTATED_ACCOUNT, HOLD_LOST, DELETE_RETRY})
+#: A restart-interrupted session was resumed without a human asking (FR-306).
+#: detail: ``{fromStatus, holdAware, holdKind}`` — the status it was interrupted in,
+#: whether the nudge carried a lost ask (the hold-aware path) and that ask's kind.
+AUTO_RESUMED = "auto_resumed"
+
+KINDS = frozenset({SPAWN_FAILED, AUTO_ARCHIVED, ROTATED_ACCOUNT, HOLD_LOST, DELETE_RETRY,
+                   AUTO_RESUMED})
 
 #: Newest-first page size for :func:`list_events` when the caller gives none.
 DEFAULT_LIMIT = 50
