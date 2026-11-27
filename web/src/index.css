@@ -23,6 +23,18 @@
    device chrome. */
 @custom-variant short (@media (max-height: 580px));
 
+/* `tiny:` — the viewport is shorter than ANY fixed chrome can share with content.
+   `short:` above sheds optional chrome and is tuned for a phone with its keyboard
+   up (~390–480px). Below ~360px — 400% browser zoom of a 1280×1024 window is
+   320×256, the size WCAG 2.2 SC 1.4.10 names (issue #3561) — shedding is not
+   enough: the dispatch dock and the bottom nav alone leave the session list a
+   few pixels. `tiny:` is where a region that cannot shed lets the CHROME give
+   way instead: the dock is capped and scrolls internally, and the Pipeline page
+   scrolls as one column with a floor under its board. The product choice (the
+   issue's "something has to give") is that the content keeps a readable pane and
+   the secondary controls become scrollable, never unreachable. */
+@custom-variant tiny (@media (max-height: 360px));
+
 /* `narrow:` — the viewport is too narrow (a phone in portrait) to afford the
    session header's full-width chrome alongside its title.
 

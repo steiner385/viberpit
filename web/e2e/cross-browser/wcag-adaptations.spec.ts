@@ -16,9 +16,6 @@
  * only that: emulating a media feature is not running a screen reader, a
  * software keyboard or a switch. Those rows of the matrix stay "not verified"
  * until a person fills them in.
- *
- * A gap this gate found and this change did not fix is listed in `KNOWN_GAPS`
- * with its issue — asserted to still be a gap, so the entry cannot outlive the fix.
  */
 import { test, expect, type Page } from '@playwright/test'
 import { installSeededApi } from '../fixtures/seed'
@@ -28,17 +25,7 @@ import {
 } from '../support/adaptations'
 import { publishEvidence } from '../support/evidence'
 import { expectNoHorizontalOverflow, expectNoSilentTextClipping } from '../support/geometry'
-import { openSeededRoute, ROUTES, type Route } from '../support/routes'
-
-/**
- * Real, tracked, not silenced: at 320×256 the fixed chrome of these two pages
- * leaves the content pane less than one row. Each entry asserts the gap is STILL
- * there — fix the layout and the test goes red until the entry is deleted.
- */
-const KNOWN_GAPS: Partial<Record<Route['path'], string>> = {
-  '/sessions': '#3561: the dispatch dock keeps its full height and the session list gets ~8px',
-  '/pipeline': '#3561: the page header and repo tabs leave the board ~24px',
-}
+import { openSeededRoute, ROUTES } from '../support/routes'
 
 const shot = async (page: Page) => page.screenshot({ animations: 'disabled' })
 
@@ -51,12 +38,7 @@ test.describe('Reflow — 400% zoom of 1280×1024 (SC 1.4.10)', () => {
       await expectNoHorizontalOverflow(page)
       await expectContentWithinViewport(page)
 
-      const gap = KNOWN_GAPS[route.path]
-      if (gap) {
-        expect(await starvedScrollPanes(page), `known gap is fixed — delete its KNOWN_GAPS entry (${gap})`).not.toEqual([])
-      } else {
-        await expectScrollPanesUsable(page)
-      }
+      await expectScrollPanesUsable(page)
       await publishEvidence(testInfo, `${route.name}-reflow-320x256.png`, await shot(page), 'image/png')
     })
   }
