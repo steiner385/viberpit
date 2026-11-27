@@ -43,8 +43,6 @@ Measured on Chromium and Firefox, seeded backend, retries off.
 
 Each is a design choice, so each is an issue and a "Gap" row in the record — none is silenced.
 
-- **#3561** — Sessions and Pipeline lose their content at 320×256 (SC 1.4.10). Pinned in the gate's
-  `KNOWN_GAPS`, which asserts the gap still exists so the entry cannot outlive the fix.
 - **#3562** — Roadmap inbox single-key shortcuts cannot be turned off or remapped (SC 2.1.4, Level A).
 - **#3563** — Undo is reachable only through a 6–8 s toast (SC 2.2.1, Level A).
 - **#3564** — the sidebar resizer has no single-pointer alternative to dragging (SC 2.5.7).

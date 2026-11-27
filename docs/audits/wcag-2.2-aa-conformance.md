@@ -51,7 +51,7 @@ Paths are relative to the repo root. "Matrix gate" is `web/e2e/cross-browser/she
 | 1.4.3 | Contrast (Minimum) | AA | Automated | `web/src/__tests__/contrast.test.ts` (every token pair, both themes); matrix gate (axe `color-contrast` on rendered pages, light theme). Left: rendered dark theme is covered by arithmetic only. | — |
 | 1.4.4 | Resize Text | AA | Automated | Adaptation gate: 200% browser zoom (640×400) and text-only 200% on all five routes — nothing off-screen, clipped or squeezed out. | needed |
 | 1.4.5 | Images of Text | AA | Inspected | Only the logo (exempt) and Mermaid diagrams, which are rendered images containing text; the source is shown only if rendering fails. Open question, not a decided pass. | — |
-| 1.4.10 | Reflow | AA | Gap | #3561. Adaptation gate: all five routes hold at 320×568; at 320×256 (400% of 1280×1024) Sessions and Pipeline squeeze their content pane to 8px and 24px. Roadmap, Delivery and Settings pass at both. | needed |
+| 1.4.10 | Reflow | AA | Automated | Adaptation gate: all five routes hold at 320×568 and at 320×256 (400% of 1280×1024). Below 360px of height (`tiny:`, `index.css`, #3561) the Sessions dock is capped at 34vh and scrolls, and Pipeline scrolls as one column with a 12rem floor under the board. | needed |
 | 1.4.11 | Non-text Contrast | AA | Not verified | No tool here measures control borders, icons or the focus ring against their backgrounds. | — |
 | 1.4.12 | Text Spacing | AA | Automated | Adaptation gate: the criterion's four overrides on a 390px phone, all five routes. | — |
 | 1.4.13 | Content on Hover or Focus | AA | Inspected | One custom tooltip (`web/src/shell/regions/NavItem.tsx`): Escape dismisses it, it persists until blur or mouse-leave; "hoverable" is inferred from the markup, not tested. Native `title` tooltips are user-agent controlled. | — |
@@ -110,7 +110,7 @@ Paths are relative to the repo root. "Matrix gate" is `web/e2e/cross-browser/she
 
 ### Totals
 
-55 criteria: 11 automated, 9 partly automated, 13 inspected, 4 gaps, 9 not verified, 9 not applicable.
+55 criteria: 12 automated, 9 partly automated, 13 inspected, 3 gaps, 9 not verified, 9 not applicable.
 27 need assistive technology or a device to confirm; 0 of those are done.
 
 ## 3. Assistive technology and device verification — not yet run
@@ -152,7 +152,7 @@ real prompt, account name or transcript in the results.
 | D2 | Software keyboard | Focus the composer and each Settings field. | The focused field and the page header stay visible above the keyboard. |
 | D3 | Safe areas | Notched iPhone, portrait and both landscapes. | Nothing sits under the notch, the home indicator or the rounded corners. |
 | D4 | Large text | iOS Larger Text and Android font size at maximum; desktop browser at 200%. | No clipped or overlapping text; every control still reachable. |
-| D5 | 400% zoom | Desktop browser, 1280×1024 window, 400%. | One-direction scrolling only. (Sessions and Pipeline expected to fail — #3561.) |
+| D5 | 400% zoom | Desktop browser, 1280×1024 window, 400%. | One-direction scrolling only. |
 | D6 | Reduced motion | The OS setting, on each platform. | No pulse, shimmer or slide. |
 | D7 | Forced colours | Windows contrast themes, light and dark. | Focus is always visible; the current section and selected tab are distinguishable; no control disappears. |
 | D8 | Hardware keyboard | Bluetooth keyboard on iPhone and Android. | J1–J7 complete without touching the screen. |
@@ -183,5 +183,5 @@ Record one row per combination × journey or check. A failure gets an issue and 
 - **The adaptation gate** — reflow, zoom, text size, text spacing, reduced motion, focus, forced
   colours — with seeded defects proving each check can fail.
 
-Four gaps were found and not fixed here, each because the fix is a design choice: #3561, #3562,
-#3563, #3564.
+Three gaps were found and not fixed here, each because the fix is a design choice: #3562,
+#3563, #3564. (A fourth, #3561 — reflow at 320×256 — has since been fixed.)

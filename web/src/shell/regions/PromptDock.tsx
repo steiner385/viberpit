@@ -121,7 +121,9 @@ export interface PromptDockProps {
 export function PromptDock(props: PromptDockProps) {
   const openSessionId = useOpenSessionId()
   return (
-    <div data-region="app.dock" className="shrink-0">
+    // `tiny:` (index.css, #3561): at 400% zoom the dock would keep ~165px and
+    // leave the list 8px. Capped, it scrolls internally and stays reachable.
+    <div data-region="app.dock" className="shrink-0 tiny:max-h-[34vh] tiny:overflow-y-auto">
       {openSessionId ? <LiveComposer /> : <NewSessionBar {...props} />}
     </div>
   )

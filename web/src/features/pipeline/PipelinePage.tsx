@@ -98,7 +98,9 @@ function Inner() {
   }, [navigate, state, focused, focus])
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-page-variant="workspace">
+    // `tiny:` (index.css, #3561): at 400% zoom the header and repo tabs would leave
+    // the board ~24px, so the page scrolls as one column with a floor under the board.
+    <div className="flex h-full min-h-0 flex-col tiny:overflow-y-auto" data-page-variant="workspace">
       <PageHeader
         title="Pipeline"
         meta={state ? (
@@ -149,7 +151,7 @@ function Inner() {
           className="shrink-0 px-4 md:px-6"
         />
       )}
-      <PageContent scroll={false} busy={!state}>
+      <PageContent scroll={false} busy={!state} className="tiny:min-h-48 tiny:shrink-0">
         {stale && !state && !connected && (
           <Banner
             tone="danger"
