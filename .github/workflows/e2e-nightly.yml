@@ -15,7 +15,9 @@ name: E2E nightly (broad cross-browser)
 #   node web/scripts/check-e2e-flake.mjs --strict /tmp/nightly/**/e2e.json
 #
 # Schedule/dispatch only - no push or pull_request trigger - so it can never hold a
-# commit's required contexts, and needs no concurrency group (server/tests/
+# commit's required contexts. The concurrency group below only supersedes an older
+# run of this workflow (a manual dispatch overlapping the nightly), which a 60-minute
+# three-engine suite should not burn runner time on (server/tests/
 # test_workflow_concurrency.py only constrains workflows that run on pushes/PRs).
 # NOT a required check, and a red run here is information, not a merge blocker: the
 # first nights are EXPECTED to surface engine gaps in specs that have only ever run
@@ -28,6 +30,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: e2e-nightly-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   e2e-broad:
