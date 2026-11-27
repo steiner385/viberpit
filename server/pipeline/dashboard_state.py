@@ -367,8 +367,13 @@ def dashboard_state(
         prs = []
         for p in prs_by_repo[repo]:
             position = pos.get(p.pr.number)
+            own_group = group_progress_by_pr.get(p.pr.number)
+            # A PR on the lane's red "✗ failing" car (queue snapshot) is
+            # group-failed even when its own merge-check group is absent or
+            # lags — otherwise the Failed tile undercounts the lane.
             qs: str | None = (
-                "unmergeable" if p.pr.number in unmergeable_set
+                "group-failed" if own_group and own_group["failed"]
+                else "unmergeable" if p.pr.number in unmergeable_set
                 else "queue-blocked" if p.pr.number in blocked_set
                 else None
             )
@@ -380,7 +385,7 @@ def dashboard_state(
                 merge_eta_sim=sim_by_pr.get(p.pr.number),
                 timeline=repo_timelines.get(p.pr.number),
                 workflow_impact=repo_impacts.get(p.pr.number),
-                queue_progress=group_progress_by_pr.get(p.pr.number),
+                queue_progress=own_group,
             ))
         repo_deploy = deploy_ctx.get(repo)
         entry = {
