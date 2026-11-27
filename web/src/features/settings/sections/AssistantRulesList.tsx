@@ -59,7 +59,7 @@ export function AssistantRulesList() {
         Actions the assistant may take without a confirmation card. Only you can add one — choose{' '}
         <strong>Always allow…</strong> on a card — and deploys, deletes, merges, fan-outs and account
         or product changes always ask. See every rule in{' '}
-        <Link to="/settings/always-allow" className="text-accent hover:underline">Always allow</Link>.
+        <Link to="/settings/always-allow" className="text-accent underline">Always allow</Link>.
       </p>
       {isLoading ? (
         <p className="mt-1 text-xs text-ink-muted">Loading rules…</p>

@@ -25,9 +25,15 @@ export interface Box { x: number; y: number; width: number; height: number }
 
 /** The element's rendered box, failing loudly (not with a null deref) when it has none. */
 export async function boxOf(locator: Locator, what = 'control'): Promise<Box> {
-  const box = await locator.first().boundingBox()
-  if (!box) throw new Error(`${what} has no box — it is not rendered or is display:none`)
-  return box
+  // A remount between `toBeVisible()` and the read (the open-session hand-off swaps
+  // the pane) momentarily yields no box on webkit/firefox, so poll before failing (#3542).
+  let box: Box | null = null
+  await expect
+    .poll(async () => (box = await locator.first().boundingBox()), {
+      message: `${what} has no box — it is not rendered or is display:none`,
+    })
+    .not.toBeNull()
+  return box as unknown as Box
 }
 
 /** How far the page scrolls sideways beyond the viewport. 0 when it does not. */
