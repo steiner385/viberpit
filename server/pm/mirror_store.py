@@ -208,6 +208,7 @@ def upsert_project_items(db: Session, gh_project_db_id: str,
                 if own_write_key(view.item_node_id, field, new) not in own_writes:
                     edits.append(HumanEdit(f"{view.repo}#{view.number}", field, old, new))
         row.work_item_id = _work_item_id(db, view.repo, view.number, view.kind)
+        _heal_closed_work_item(db, row.work_item_id, view, now)
         row.status = view.status
         row.score = view.score
         row.stage = view.stage
@@ -221,6 +222,19 @@ def upsert_project_items(db: Session, gh_project_db_id: str,
         gh.last_synced_at = now
         gh.watermark = now
     return edits
+
+
+def _heal_closed_work_item(db: Session, work_item_id: str | None,
+                           view: GhProjectItemView, now: datetime) -> None:
+    """An item the board reports closed/merged is never left open in the mirror,
+    whatever its board column (a Done card on a closed issue is the common case).
+    The repo sync's incremental read can miss a close; the board read cannot."""
+    if work_item_id is None or view.content_state not in ("closed", "merged"):
+        return
+    item = db.get(WorkItem, work_item_id)
+    if item is not None and (item.state or "open") == "open":
+        item.state = view.content_state
+        item.gh_closed_at = item.gh_closed_at or now
 
 
 def back_sync_stage(db: Session, edits: Sequence[HumanEdit]) -> int:

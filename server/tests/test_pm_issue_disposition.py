@@ -179,16 +179,19 @@ async def test_remote_transport_and_unavailable():
 # close() — the assistant's close_issue (Refs #2979)
 # --------------------------------------------------------------------------
 
-async def run_close(item, reason="completed", *, duplicate_of=None, remote=None, response=None):
+async def run_close(item, reason="completed", *, duplicate_of=None, remote=None, response=None,
+                    comment=None, post_comment=None):
     from server.pm.issue_disposition import IssueClose, close
     fetch = AsyncMock(return_value={"data": {"node": remote or node()}})
     mutate = AsyncMock(return_value=response or {"data": {"m0": {"issue": {
         **node(), "state": "CLOSED", "stateReason": reason.upper()}}}})
     async with db_session() as db:
         row = await db.get(WorkItem, item)
-        result = await close(db, src=row, request=IssueClose(reason=reason, duplicate_of=duplicate_of),
+        result = await close(db, src=row, request=IssueClose(reason=reason, duplicate_of=duplicate_of,
+                                            comment=comment),
                              fetch=fetch, mutate=mutate, now=NOW,
-                             ownership=await ownership_snapshot(db, "o/r"))
+                             ownership=await ownership_snapshot(db, "o/r"),
+                             post_comment=post_comment)
     return result, fetch, mutate
 
 
@@ -241,6 +244,33 @@ async def test_close_refuses_an_issue_closed_on_github_meanwhile(item):
     mutate.assert_not_called()
     async with db_session() as db:
         assert (await db.get(WorkItem, item)).state == "closed"
+
+
+@pytest.mark.asyncio
+async def test_close_posts_no_comment_on_an_issue_already_closed_on_github(item):
+    post = AsyncMock(return_value="https://c/1")
+    result, _, mutate = await run_close(item, remote={**node(), "state": "CLOSED"},
+                                        comment="Closing: done", post_comment=post)
+    assert result["step"] == "conflict"
+    post.assert_not_called()
+    mutate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_close_posts_the_comment_after_the_live_check_then_closes(item):
+    post = AsyncMock(return_value="https://c/1")
+    result, _, mutate = await run_close(item, comment="Closing: done", post_comment=post)
+    assert result["ok"] and result["commentUrl"] == "https://c/1"
+    post.assert_awaited_once_with("Closing: done")
+    mutate.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_close_stops_when_github_rejects_the_comment(item):
+    post = AsyncMock(return_value=None)
+    result, _, mutate = await run_close(item, comment="c", post_comment=post)
+    assert result["step"] == "comment"
+    mutate.assert_not_called()
 
 
 @pytest.mark.asyncio

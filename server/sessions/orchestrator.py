@@ -17481,10 +17481,19 @@ class SessionOrchestrator:
         seam, like ``_pm_issue_decision`` — the router decides a person asked, this
         owns the transport and the journal."""
         from server.pm.issue_disposition import IssueClose, close as close_issue
+        from server.github import ci_issues
         request = IssueClose.model_validate(close)
+
+        def post_comment(src):
+            async def post(text: str) -> str | None:
+                return await asyncio.to_thread(
+                    ci_issues.comment_on_issue, src.repo or "", int(src.number or 0), text,
+                    automation=False)
+            return post
         return await self._pm_issue_write(work_item_id, lambda db, src, ownership: close_issue(
             db, src=src, request=request, fetch=self._pm_sync_fetch_projects,
-            mutate=self._pm_reconcile_mutate, now=self._pm_sync_now_utc(), ownership=ownership))
+            mutate=self._pm_reconcile_mutate, now=self._pm_sync_now_utc(), ownership=ownership,
+            post_comment=post_comment(src)))
 
     async def _pm_board_status(self, work_item_id: str, request: dict) -> dict:
         """Set one issue's board Status (adding it to its product's board first when
