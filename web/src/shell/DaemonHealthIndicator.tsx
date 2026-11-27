@@ -30,7 +30,6 @@ export function DaemonHealthIndicator() {
     <span
       data-testid="daemon-health"
       title={daemonHealthTooltip(data)}
-      aria-label={`Daemon health: ${label}`}
       className={cn(
         'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-2xs font-medium',
         flapping
@@ -39,7 +38,9 @@ export function DaemonHealthIndicator() {
       )}
     >
       <Icon size={12} aria-hidden="true" className={flapping ? 'motion-safe:animate-pulse' : undefined} />
-      <span>{label}</span>
+      {/* What the figure is about, as text: `aria-label` is not permitted on a
+          role-less span, so a reader that follows the spec heard only "up 6h" (#1416). */}
+      <span><span className="sr-only">Daemon health: </span>{label}</span>
     </span>
   )
 }

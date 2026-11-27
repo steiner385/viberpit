@@ -70,6 +70,13 @@ export const SEED_SETTINGS = {
   about: { gitSha: null, hostName: 'demo-host' },
 } as const
 
+/** One repo with nothing in flight: the Pipeline board's real empty state, not its error page. */
+export const SEED_PIPELINE = {
+  generatedAt: SEED_NOW,
+  staleSince: null,
+  repos: [{ repo: 'demo-org/demo-repo', hasDeploy: false, prs: [], queue: null }],
+} as const
+
 type Json = unknown
 /** Per-path response overrides; a path not listed falls through to the seeded default. */
 export type SeedOverrides = Record<string, Json>
@@ -82,7 +89,17 @@ function seededResponse(path: string, overrides: SeedOverrides): Json {
     case '/api/accounts': return SEED_ACCOUNTS
     case '/api/settings': return SEED_SETTINGS
     case '/api/config': return { repoRoot: '', adoptionEnabled: false }
-    case '/api/daemon/health': return { status: 'ok' }
+    case '/api/daemon/health':
+      return {
+        available: true, epoch: 'seed-epoch', startedAt: '2026-11-01T06:00:00Z', uptimeSec: 21600,
+        restartCount24h: 0, lastRestartAt: null, lastSeenAgoSec: 1,
+      }
+    // Object-shaped reads. Left to the `[]` default these two pages threw on first
+    // render and every cell scanned the route error fallback instead of the page
+    // (found by the G18 adaptation gate, #1416).
+    case '/api/pipeline/snapshot': return SEED_PIPELINE
+    case '/api/pipeline/repos': return {}
+    case '/api/pm/map': return { products: [], generatedAt: SEED_NOW }
     case '/api/x11/metrics': return { enabled: false }
     case '/api/deploy/status':
       return { pending: null, deploy: { running: false, phases: {}, error: null, warnings: [], targetSha: '' } }
@@ -117,8 +134,16 @@ export async function installSeededApi(page: Page, overrides: SeedOverrides = {}
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.route('**/api/**', (route) => {
     const path = new URL(route.request().url()).pathname
+    // The board's live feed is an EventSource: JSON here is a MIME error and a retry loop.
+    if (path === '/api/pipeline/events' && !(path in overrides)) {
+      return route.fulfill({ contentType: 'text/event-stream', body: `data: ${JSON.stringify(SEED_PIPELINE)}\n\n` })
+    }
     return route.fulfill({ json: seededResponse(path, overrides) })
   })
+  // `/healthz` is the edge's own probe, outside `/api`. Unanswered, `vite preview` serves the
+  // SPA shell for it, the JSON parse fails, and every page wears a "Can't reach the session
+  // daemon" banner that no real healthy install shows.
+  await page.route('**/healthz', (route) => route.fulfill({ json: { status: 'ok', daemon: 'ok' } }))
   // Accept the socket, stay silent: no server frames, so no reconnect churn.
   await page.routeWebSocket('**/ws', (ws) => { ws.onMessage(() => {}) })
 }

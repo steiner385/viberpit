@@ -1,7 +1,7 @@
 # UI conformance scorecard
 
 The in-repo "root scorecard/conformance record" that the UI-audit child issues (#1411–#1415,
-epic #1398) ask each leaf to update. It replaces the audit's local report
+epic #1398; G18 #1416, epic #1395) ask each leaf to update. It replaces the audit's local report
 (`~/Documents/ViberPit-UI-Review-2026-09-07/report.html`), which automation cannot read, as the
 thing those acceptance lines point at (E5 plan §WS-6, spec §7 P5).
 
@@ -9,7 +9,54 @@ One table per leaf, updated by the PR that moves it. Evidence is sanitized: the 
 specs run on a synthetic, frozen-clock backend (`web/e2e/fixtures/seed.ts`), so no screenshot,
 trace or axe report carries a real account, prompt or transcript.
 
-Last updated: 2026-11-27 (G12, #1410).
+Last updated: 2026-11-27 (G18, #1416; G12, #1410).
+
+## G18 — WCAG 2.2 AA with assistive technology and physical devices (#1416)
+
+**Open.** The automated half is done; the half the issue is named for — a person, a screen reader,
+a phone — is not, and cannot be done by an agent. The criterion-level record is
+[`wcag-2.2-aa-conformance.md`](wcag-2.2-aa-conformance.md); it makes no conformance claim.
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| WCAG 2.2 AA as the benchmark | Done | Already the constitution's bar (v1.2.0); no amendment needed. |
+| Criterion-level conformance matrix | Done | All 55 Level A/AA criteria, each with a status and how it is known. `web/src/__tests__/wcagConformanceMatrix.test.ts` fails if a criterion goes missing, a gap loses its issue, or a cited evidence file stops existing. |
+| 200% text, 400% zoom/reflow, reduced motion, forced colours, focus | Done (emulated) | `web/e2e/cross-browser/wcag-adaptations.spec.ts`, all five top-level routes, three engines in CI. |
+| Rotation, software keyboards, safe areas | **Not done** | Emulated geometry only (`shell-modes.spec.ts`, `short-viewport.spec.ts`). Needs devices: record §3, checks D1–D3. |
+| VoiceOver/Safari, NVDA/Firefox or Chrome, TalkBack/Chrome | **Not done** | Protocol and empty results table in record §3 (journeys J1–J8). |
+| Announcements, focus and recovery | **Not done** | Live regions exist (record, SC 4.1.3); whether they are spoken is unknown until J3–J8 are run. |
+| Sibling audit, existing source of truth | Done | See below. |
+
+### Before / after
+
+Measured on Chromium and Firefox, seeded backend, retries off.
+
+| Finding | Before | After |
+|---|---|---|
+| **Focus in forced colours** (SC 2.4.7). Every ring is a box-shadow next to `outline-none` (193 uses, 0 `outline-hidden`); forced colours drops shadows. | 0 of 81 tab stops across the five routes had any indicator | every stop has an outline — one unlayered rule in `web/src/index.css`, no per-component edits |
+| **Current section in forced colours** — a background fill only | indistinguishable | outlined; selected tab takes the highlight colour |
+| **Pipeline health lanes** (found once the seed rendered the real page). Unwired lanes dimmed with `opacity-60`; every lane named by an `aria-label` that dropped its visible text. | title 4.3:1, summary 2.4:1 (SC 1.4.3); axe `label-content-name-mismatch` on all 7 lanes (SC 2.5.3) — red on both engines, 3 of 4 modes | muted ink token; named by content, title first |
+| **Daemon-health pill** — `aria-label` on a role-less `<span>` (the L4 pattern), visible only with a daemon present, which the seed never had | axe "needs review", unclassified, red in 3 modes | subject is visually-hidden text; no new limitation entry |
+| **The #1412 seed rendered error pages.** `/pipeline` and `/roadmap` threw on the default `[]`; `/healthz` was unanswered. | two of five routes were scanned as "This page hit a problem"; all five wore a false daemon-outage banner | the real pages; settling refuses an error page (`web/e2e/support/routes.ts`) |
+
+### Gaps found
+
+Each was filed as an issue and a "Gap" row in the record — none was silenced. All four have since
+been fixed, and the record's rows name the test that holds each.
+
+- **#3561** — Sessions and Pipeline lost their content at 320×256 (SC 1.4.10). Fixed in #3570.
+- **#3562** — Roadmap inbox single-key shortcuts were page-wide (SC 2.1.4, Level A). Fixed in #3568.
+- **#3563** — Undo was reachable only through a 6–8 s toast (SC 2.2.1, Level A). Fixed in #3567.
+- **#3564** — the sidebar resizer had no single-pointer alternative to dragging (SC 2.5.7). Fixed in #3569.
+
+### Known limits of this evidence
+
+- **WebKit was not run locally** (as for G14); it runs in CI, where the job is advisory.
+- **Forced colours is not testable in WebKit** — it has no such mode; those tests skip there.
+- **The gates cover five routes on a seeded backend**, not every screen: an open session's
+  transcript, dialogs and the drawer are not walked.
+- **Emulation is not a device.** `forced-colors`, `prefers-reduced-motion` and a 320px viewport are
+  what the engine is told, not what Windows, iOS or a zoomed browser does.
 
 ## G10 — Server-enforced read-only kiosk identity (#1408)
 

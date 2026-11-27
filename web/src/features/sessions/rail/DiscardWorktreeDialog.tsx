@@ -212,7 +212,7 @@ export default function DiscardWorktreeDialog({ sessionId, onClose, onDiscarded 
             // Not while a fresh answer is on its way: a tick must answer the facts shown.
             disabled={blocked !== null || pending || checking}
             onChange={(e) => setAckFor(e.target.checked ? pf ?? null : null)}
-            className="mt-0.5 h-4 w-4 flex-shrink-0 rounded-sm border-edge-strong accent-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            className="mt-0.5 h-4 w-4 flex-shrink-0 rounded-sm border-edge-strong accent-accent focus:outline-none"
           />
           <span className="min-w-0">End the session and delete its worktree</span>
         </label>

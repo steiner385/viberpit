@@ -125,6 +125,12 @@ is `text-accent-ink` (`bg-accent` itself flips per theme, so plain white text on
 guaranteed AA). `eslint-rules/no-raw-palette.js`'s `whiteOnFill` check reports a bare `text-white`
 beside either kind of fill rather than silently accepting it.
 
+**Forced colours** (Windows contrast themes) has one home too: the `@media (forced-colors: active)`
+block in `index.css`. The UA drops every `box-shadow` there, and the app's focus ring is a
+box-shadow beside `outline-none`, so without that block nothing marks focus. It is unlayered on
+purpose — it outranks every utility without `!important` — and restores an outline for any focused
+control, so do not add per-component forced-colours focus styles.
+
 `prefers-reduced-motion` has one **layout media-query subscriber**: `useViewport().reducedMotion`
 (`web/src/shell/useViewport.tsx`). `SessionCard`/`CardFrame` degrade their pulse animation and swipe
 transition to static by reading that, rather than each subscribing to the media query themselves.
@@ -166,6 +172,19 @@ at `index.css:266` that stops the working-shimmer animation. This matches `web/R
   disabled — see [`docs/product/ui-a11y-analyzer-limitations.md`](product/ui-a11y-analyzer-limitations.md)
   for the five classified entries — and `seeded-defects.spec.ts` proves each gate can fail. The
   record is [`docs/audits/ui-conformance-scorecard.md`](audits/ui-conformance-scorecard.md).
+- **Adaptation gate (#1416)**: `web/e2e/cross-browser/wcag-adaptations.spec.ts` covers what the
+  reader changes rather than what we designed for — 400% zoom (320×256) and a 320px-wide window,
+  200% browser zoom and text-only 200%, the SC 1.4.12 text-spacing overrides, `prefers-reduced-motion`
+  (with a control proving the page animates otherwise), a tab-walk asserting every stop paints a
+  focus indicator and is not covered, and the same walk in forced colours, where the indicator must
+  be a real outline. Helpers are in `web/e2e/support/adaptations.ts`; the routes and "settled" are
+  shared with the matrix through `web/e2e/support/routes.ts`. A gap the gate found and nobody has
+  fixed lives in the spec's `KNOWN_GAPS` with its issue, asserted to still be a gap.
+- **Conformance record**: [`docs/audits/wcag-2.2-aa-conformance.md`](audits/wcag-2.2-aa-conformance.md)
+  lists every Level A/AA criterion with a status and how it is known, and holds the
+  assistive-technology and device protocol — **which has not been run**. Nothing in this document or
+  that one is a conformance claim. `web/src/__tests__/wcagConformanceMatrix.test.ts` keeps the record
+  complete and its evidence paths real.
 - **Touch targets**: `touch-targets.spec.ts` is the one spec that additionally sets
   `hasTouch`/`isMobile` (393×852) rather than only a phone-sized viewport — the default `Desktop
   Chrome` device reports `hover: hover`/`pointer: fine` regardless of viewport width, so a

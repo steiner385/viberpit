@@ -72,16 +72,21 @@ describe('HealthHeader', () => {
   it('dims lanes with no data source (not-wired)', () => {
     render(<HealthHeader state={greenState()} onJumpToLane={vi.fn()} />);
     // no repo ships deploy/scheduled data and no rates → those lanes are not-wired
-    expect(screen.getByTestId('health-lane-deploy')).toHaveClass('opacity-60');
-    expect(screen.getByTestId('health-lane-cost')).toHaveClass('opacity-60');
+    // …through the muted ink token: `opacity-*` on text measured 2.4–4.3:1 (#1416)
+    expect(screen.getByTestId('health-lane-deploy')).toHaveClass('text-ink-muted');
+    expect(screen.getByTestId('health-lane-cost')).toHaveClass('text-ink-muted');
+    expect(screen.getByTestId('health-lane-deploy')).not.toHaveClass('opacity-60');
     // a wired lane is not dimmed
-    expect(screen.getByTestId('health-lane-main')).not.toHaveClass('opacity-60');
+    expect(screen.getByTestId('health-lane-main')).not.toHaveClass('text-ink-muted');
   });
 
-  it('lane chip exposes its title + summary to assistive tech via aria-label', () => {
+  it('lane chip is named by its content: the visible title, then status and summary', () => {
     render(<HealthHeader state={redState()} onJumpToLane={vi.fn()} />);
-    expect(screen.getByTestId('health-lane-pr-ci'))
-      .toHaveAttribute('aria-label', expect.stringContaining('PR CI'));
+    const chip = screen.getByTestId('health-lane-pr-ci');
+    // No `aria-label`: it would replace the content, and the name must START with the
+    // title a sighted voice-control user reads off the chip (#1416, SC 2.5.3).
+    expect(chip).not.toHaveAttribute('aria-label');
+    expect(chip).toHaveAccessibleName(expect.stringMatching(/^PR CI: red — \S/));
   });
 
   it('surfaces the lane summary inline on a non-green chip (#189)', () => {
@@ -109,7 +114,7 @@ describe('HealthHeader', () => {
       const title = Array.from(red.querySelectorAll('span')).find((s) => s.textContent === 'PR CI');
       expect(title).toHaveClass('inline');
       expect(title).not.toHaveClass('hidden');
-      expect(red).toHaveAttribute('aria-label', expect.stringContaining('PR CI'));
+      expect(red).toHaveAccessibleName(expect.stringContaining('PR CI'));
       const quietChip = screen.getByTestId('health-lane-merge-queue');
       expect(quietChip.closest('li')).toHaveClass('hidden', 'md:block');
       const quietTitle = Array.from(quietChip.querySelectorAll('span')).find((s) => s.textContent === 'Merge queue');

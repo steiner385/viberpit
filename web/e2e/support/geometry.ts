@@ -92,6 +92,9 @@ export async function silentlyClippedText(page: Page, root = 'body'): Promise<st
       if (!el.childNodes.length || ![...el.childNodes].some((n) => n.nodeType === 3 && n.textContent?.trim())) continue
       const style = getComputedStyle(el)
       if (style.visibility === 'hidden' || style.display === 'none') continue
+      // Visually-hidden text (`sr-only`: a 1px clipped box) is clipped on purpose — it is
+      // for a screen reader, and no sighted reader loses characters from it.
+      if (el.clientWidth <= 1 && el.clientHeight <= 1) continue
       const clips = style.overflowX === 'hidden' || style.overflowX === 'clip'
       if (!clips || style.textOverflow === 'ellipsis') continue
       if (el.scrollWidth > el.clientWidth + 1 && el.clientWidth > 0) {

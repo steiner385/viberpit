@@ -22,6 +22,7 @@ import { test, expect } from '@playwright/test'
 import { installSeededApi } from '../fixtures/seed'
 import { expectNoA11yViolations } from '../support/a11y'
 import { publishEvidence } from '../support/evidence'
+import { openSeededRoute, ROUTES } from '../support/routes'
 import {
   expectInViewport, expectMinTarget, expectNoHorizontalOverflow, expectNoOverlap,
   MIN_TARGET_AA_PX, MIN_TARGET_TOUCH_PX,
@@ -41,29 +42,15 @@ const MODES: readonly Mode[] = [
   { name: 'phone-landscape', viewport: { width: 844, height: 390 }, touch: true },
 ]
 
-const ROUTES = [
-  { path: '/sessions', name: 'Sessions' },
-  { path: '/pipeline', name: 'Pipeline' },
-  { path: '/roadmap', name: 'Roadmap' },
-  { path: '/delivery', name: 'Delivery' },
-  { path: '/settings/general', name: 'Settings' },
-] as const
-
 for (const mode of MODES) {
   test.describe(`${mode.name} (${mode.viewport.width}×${mode.viewport.height})`, () => {
     test.use({ viewport: mode.viewport, hasTouch: mode.touch })
 
     for (const route of ROUTES) {
       test(`${route.name}: structure, geometry and a11y`, async ({ page }, testInfo) => {
-        await installSeededApi(page)
-        await page.goto(route.path)
-
-        // The shell is up: one content landmark and a way to reach the other sections.
-        await expect(page.locator('main')).toHaveCount(1)
-        // Settled, not just mounted: the pages are lazy chunks plus queries, and a scan of
-        // a skeleton passes for the wrong reason (and fails differently on a slower engine).
-        await expect(page.locator('[aria-busy="true"]')).toHaveCount(0)
-        if (route.path === '/sessions') await expect(page.getByText('Refactor the importer')).toBeVisible()
+        // The shell is up and settled: one content landmark, no skeleton, no error page.
+        await openSeededRoute(page, route)
+        // …and there is a way to reach the other sections.
         const sections = page.getByRole('navigation', { name: 'Sections', exact: true })
         await expect(sections).toBeVisible()
 

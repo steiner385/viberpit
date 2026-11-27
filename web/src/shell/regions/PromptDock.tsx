@@ -121,7 +121,13 @@ export interface PromptDockProps {
 export function PromptDock(props: PromptDockProps) {
   const openSessionId = useOpenSessionId()
   return (
-    <div data-region="app.dock" className="shrink-0">
+    // `tiny:` (index.css, #3561): at 400% zoom the dock would keep ~165px and
+    // leave the list 8px. Capped, it scrolls internally and stays reachable.
+    // `flex-col-reverse` anchors that scroll at the BOTTOM: the prompt is the
+    // bar's last row (pickers sit above it), so a top-anchored cap showed the
+    // pickers and hid the textarea below the fold (short-viewport.spec.ts,
+    // 852×240). Its only child, so the visual order is unchanged.
+    <div data-region="app.dock" className="shrink-0 tiny:flex tiny:max-h-[34vh] tiny:flex-col-reverse tiny:overflow-y-auto">
       {openSessionId ? <LiveComposer /> : <NewSessionBar {...props} />}
     </div>
   )
