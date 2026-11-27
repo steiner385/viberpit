@@ -222,7 +222,8 @@ _PER_SESSION: frozenset[str] = frozenset({
     # D-14 PR auto-fix opt-out: the row is shared, but the live record mirror is the
     # owning host's.
     "set_pr_autofix_paused",
-    "set_auto_archive_opt_out", "dismiss_suspected_complete", "interrupt",
+    "set_auto_archive_opt_out", "set_auto_resume_opt_out",
+    "dismiss_suspected_complete", "interrupt",
     # Session snooze: the live record mirror and the wake prompt are the owning host's.
     "snooze_session", "wake_session",
     "stop_subagent", "mcp_status_for", "mcp_reconnect", "mcp_toggle",
@@ -302,7 +303,7 @@ _MOVE_BLOCKED: frozenset[str] = frozenset({
     # Live-record writes on the source host: landed mid-move, they would be lost with
     # the source's record (a worker forgets it) or race the target's import.
     "rename_session", "set_pr_autofix_paused", "set_auto_archive_opt_out",
-    "snooze_session", "wake_session",
+    "set_auto_resume_opt_out", "snooze_session", "wake_session",
     "dismiss_suspected_complete", "interrupt", "stop_subagent",
     # D-19: removing or recreating the worktree a move is carrying.
     "discard_worktree", "repair_worktree",

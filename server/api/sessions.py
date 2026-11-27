@@ -42,7 +42,7 @@ from server.sessions.search import (
     session_matches,
 )
 from server.sessions.types import (
-    ASSISTANT_KIND, AUTO_ARCHIVE_OPT_OUT_CREATE, RESUME_ELIGIBLE_STATUSES, is_assistant,
+    ASSISTANT_KIND, AUTO_ARCHIVE_OPT_OUT_CREATE, is_assistant, is_resumable,
 )
 from server.sessions.usage_stall import is_usage_stalled
 from server.audit import record_audit
@@ -142,7 +142,9 @@ class CreateSessionRequest(BaseModel):
 
 
 class RenameSessionRequest(BaseModel):
-    name: str
+    """PATCH body: any subset of the editable fields (a rename, the auto-resume veto)."""
+    name: str | None = None
+    autoResumeOptOut: bool | None = None
 
 
 class AutopilotPauseRequest(BaseModel):
@@ -392,6 +394,7 @@ def _record_to_dict(
         "goalSource": goal_source,
         "autopilotPaused": getattr(record, "autopilot_paused", False),
         "prAutofixPaused": getattr(record, "pr_autofix_paused", False),
+        "autoResumeOptOut": bool(getattr(record, "auto_resume_opt_out", None)),
         "autopilotCooldownUntil": cooldown_until,
         "autoArchiveOptOut": getattr(record, "auto_archive_opt_out_reason", None),
         "prs": [p.to_dict() for p in (prs or [])],
@@ -427,9 +430,9 @@ def _record_to_dict(
         # Snooze overlay ({at, until, reason, by} | null). Same two-serializer rule:
         # SessionRecord.to_dict carries it daemon→edge, this carries it to the browser.
         "snooze": getattr(record, "snooze", None) or None,
-        "resumable": bool(getattr(record, "interrupted_by_restart", False)
-                          and getattr(record, "interrupted_from_status", None)
-                          in RESUME_ELIGIBLE_STATUSES),
+        "resumable": is_resumable(bool(getattr(record, "interrupted_by_restart", False)),
+                                  getattr(record, "interrupted_from_status", None),
+                                  getattr(record, "lost_hold", None)),
         "summary": summary or "",
         "queuePosition": queue_position,
         "queueStallReason": queue_stall_reason,
@@ -1671,7 +1674,7 @@ async def rename_session(
     request: Request,
     _identity: str = Depends(current_identity),
 ) -> dict:
-    """Rename a session. Returns 404 if unknown."""
+    """Update a session's editable fields (name, autoResumeOptOut). 404 if unknown."""
     orch = _get_orchestrator(request)
     record = await orch.get_session(session_id)
     if record is None:
@@ -1679,8 +1682,16 @@ async def rename_session(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
         )
-    await orch.rename_session(session_id, body.name)
-    # Re-fetch (rename_session updates in place)
+    if body.name is None and body.autoResumeOptOut is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "empty_update", "message": "Nothing to update"},
+        )
+    if body.name is not None:
+        await orch.rename_session(session_id, body.name)
+    if body.autoResumeOptOut is not None:
+        await orch.set_auto_resume_opt_out(session_id, body.autoResumeOptOut)
+    # Re-fetch (both update in place)
     updated = await orch.get_session(session_id)
     final = updated or record
     return _record_to_dict(final, repo=await _resolve_repo(final))

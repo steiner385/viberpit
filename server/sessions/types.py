@@ -26,6 +26,22 @@ SYSTEM_IDENTITY = "system"
 # waiting_question / ready_review, which normalize identically but must NOT be nudged).
 RESUME_ELIGIBLE_STATUSES = frozenset({"in_progress", "working", "condensing"})
 
+
+def is_resumable(interrupted_by_restart: bool, interrupted_from_status: str | None,
+                 lost_hold: dict | None) -> bool:
+    """Whether a restart-interrupted session may be resumed (spec 002 FR-306).
+
+    The one predicate behind ``_resume_eligible``, the ``resumable`` flag of both
+    serializers and the card's Resume button. Dropped WORK always qualifies; an
+    awaiting-human status qualifies only when the restart left the lost ask's content
+    (``lost_hold``) — then the nudge can hand it back and have the agent re-raise it.
+    Without that content the session has nothing to re-ask and stays put."""
+    if not interrupted_by_restart:
+        return False
+    if interrupted_from_status in RESUME_ELIGIBLE_STATUSES:
+        return True
+    return bool(lost_hold and lost_hold.get("content"))
+
 # The full ViberPit session permission-mode vocabulary — the single source of
 # truth for "what modes exist". The first four are ViberPit-native (gated by
 # PermissionRegistry.request); the last two share the Claude Agent SDK's own
@@ -132,6 +148,9 @@ class SessionRecord:
     initial_prompt: str | None = None
     autopilot_paused: bool = False    # per-session autopilot opt-out (True = pinned to manual)
     pr_autofix_paused: bool = False   # per-session PR Doctor opt-out (D-14); the row is authoritative
+    # Per-session veto of the restart auto-resume (spec 002 FR-306). None/False = resume
+    # normally; True = leave this session on its interrupted banner. The row is authoritative.
+    auto_resume_opt_out: bool | None = None
     kind: str | None = None           # "assistant" for the AI-drawer session; None = coding session
     owner_identity: str | None = None # identity owning an assistant thread (idempotency key)
     # Monotonic time of the last prompt or `activity` WS frame. In-memory only — drives
@@ -434,8 +453,9 @@ class SessionRecord:
             "interruptedByRestart": self.interrupted_by_restart,
             "interruptedFromStatus": self.interrupted_from_status,
             "lostHold": self.lost_hold,
-            "resumable": (self.interrupted_by_restart
-                          and self.interrupted_from_status in RESUME_ELIGIBLE_STATUSES),
+            "autoResumeOptOut": bool(self.auto_resume_opt_out),
+            "resumable": is_resumable(self.interrupted_by_restart,
+                                      self.interrupted_from_status, self.lost_hold),
             "pausedReason": self.paused_reason,
             "pausedUntil": iso_utc(self.paused_until),
             "usageStalled": is_usage_stalled(self.status, self.paused_reason),
@@ -512,6 +532,7 @@ class SessionRecord:
             inferred_goal=d.get("inferredGoal"),
             autopilot_paused=bool(d.get("autopilotPaused", False)),
             pr_autofix_paused=bool(d.get("prAutofixPaused", False)),
+            auto_resume_opt_out=bool(d.get("autoResumeOptOut")) or None,
             auto_archive_opt_out_reason=d.get("autoArchiveOptOut"),
             pr_resolution=d.get("prResolution"),
             pr_resolution_source=d.get("prResolutionSource"),

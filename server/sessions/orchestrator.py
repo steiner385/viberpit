@@ -17,6 +17,7 @@ import errno
 import functools
 import hashlib
 import logging
+import json
 import os
 import re
 import shutil
@@ -201,7 +202,7 @@ from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import (
     ASSISTANT_KIND, ASSISTANT_PLACEHOLDER_NAME, AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE, SessionRecord, SYSTEM_IDENTITY,
-    RESUME_ELIGIBLE_STATUSES, PROMPT_UUID_CAP, TURN_ANCHOR_CAP, is_assistant, is_assistant_kind,
+    RESUME_ELIGIBLE_STATUSES, PROMPT_UUID_CAP, is_resumable, TURN_ANCHOR_CAP, is_assistant, is_assistant_kind,
 )
 from server.auth.identity import OPEN_LAN_IDENTITY
 from server.sessions.usage_stall import is_usage_stalled
@@ -341,6 +342,21 @@ RESUME_NUDGE = (f"{RESUME_NUDGE_HEAD} Any command that was still running then �
                 "a build, a long script — was killed by the restart, not by a failure "
                 "of its own (it may show as signal 15 or exit 143), so re-run it rather "
                 "than trusting a partial result. Please continue where you left off.")
+
+#: Appended to RESUME_NUDGE when the restart orphaned a pending ask (FR-306): the
+#: agent gets WHAT it was asking back and must re-raise it, never answer it itself.
+RESUME_HOLD_NUDGE = ("\n\nYou were asking the user:\n{content}\nRe-raise the question if "
+                     "it is still relevant — do not decide it yourself.")
+
+
+def resume_nudge_for(rec: "SessionRecord") -> str:
+    """The resume prompt for *rec*: the plain nudge for dropped work, plus the lost
+    ask's content when the session was interrupted while waiting on a human."""
+    if rec.interrupted_from_status in RESUME_ELIGIBLE_STATUSES or not rec.lost_hold:
+        return RESUME_NUDGE
+    content = json.dumps(rec.lost_hold.get("content") or {}, indent=2, default=str)
+    return RESUME_NUDGE + RESUME_HOLD_NUDGE.format(content=content)
+
 
 # Bounded auto-recovery attempts for a session that failed to resume after a
 # daemon-affecting deploy. Past this the session is kept visible (flagged gave-up)
@@ -22628,6 +22644,7 @@ class SessionOrchestrator:
             autopilot_paused=bool(getattr(row, "autopilot_paused", False)),
             pr_autofix_paused=bool(getattr(row, "pr_autofix_paused", False)),
             auto_archive_opt_out_reason=getattr(row, "auto_archive_opt_out_reason", None),
+            auto_resume_opt_out=bool(getattr(row, "auto_resume_opt_out", None)) or None,
             authored_branches=list(getattr(row, "authored_branches", None) or []),
             context_used_tokens=getattr(row, "context_used_tokens", None),
             context_max_tokens=getattr(row, "context_max_tokens", None),
@@ -25719,7 +25736,7 @@ class SessionOrchestrator:
         shared by the batch endpoint, the auto pass, and resume_interrupted itself."""
         if not rec.interrupted_by_restart:
             return "not-interrupted"
-        if rec.interrupted_from_status not in RESUME_ELIGIBLE_STATUSES:
+        if not is_resumable(True, rec.interrupted_from_status, rec.lost_hold):
             return "not-resumable-status"
         return None
 
@@ -25742,7 +25759,7 @@ class SessionOrchestrator:
             return "no_driver"
         # RESUME_NUDGE is a fixed prose prompt, never an app command (D-16a): any other
         # status, APP_COMMAND_REFUSED included, is passed back as-is.
-        result = await self.send_prompt(session_id, RESUME_NUDGE, replayable=False)
+        result = await self.send_prompt(session_id, resume_nudge_for(rec), replayable=False)
         return "resumed" if result == "sent" else result
 
     async def reload_session(self, session_id: str,
@@ -26622,10 +26639,12 @@ class SessionOrchestrator:
 
     async def auto_resume_interrupted(self) -> int:
         """Opt-in: resume every eligible restart-interrupted session on startup.
-        Off unless VIBERPIT_AUTO_RESUME_ON_RESTART is truthy. Bounded by
+        On unless VIBERPIT_AUTO_RESUME_ON_RESTART is explicitly falsy (the kill
+        switch); a session with ``auto_resume_opt_out`` is left on its banner. Bounded by
         VIBERPIT_REARM_CONCURRENCY. Run AFTER rearm so replayed pending_prompt
         sessions are already un-interrupted and skip naturally."""
-        if not self._env_truthy("VIBERPIT_AUTO_RESUME_ON_RESTART"):
+        if os.environ.get("VIBERPIT_AUTO_RESUME_ON_RESTART", "").strip().lower() in {
+                "0", "false", "no", "off"}:
             return 0
         # Assistants excluded for the same reason as _recover_undelivered_prompts: an
         # assistant "turn" is an answer to something the user asked before the restart,
@@ -26633,7 +26652,8 @@ class SessionOrchestrator:
         enabled_hosts = await self._enabled_host_names()
         eligible = [sid for sid, rec in list(self._records.items())
                     if self._owns_record(rec, enabled_hosts)
-                    and not is_assistant(rec) and self._resume_eligible(rec) is None]
+                    and not is_assistant(rec) and not rec.auto_resume_opt_out
+                    and self._resume_eligible(rec) is None]
         if not eligible:
             return 0
         sem = asyncio.Semaphore(int(os.environ.get("VIBERPIT_REARM_CONCURRENCY", "3")))
@@ -26641,7 +26661,16 @@ class SessionOrchestrator:
         async def _one(sid: str) -> bool:
             async with sem:
                 try:
-                    return await self.resume_interrupted(sid, SYSTEM_IDENTITY) == "resumed"
+                    rec = self._records[sid]
+                    from_status = rec.interrupted_from_status
+                    hold_kind = (rec.lost_hold or {}).get("kind")
+                    hold_aware = from_status not in RESUME_ELIGIBLE_STATUSES
+                    if await self.resume_interrupted(sid, SYSTEM_IDENTITY) != "resumed":
+                        return False
+                    await _provenance.record(sid, _provenance.AUTO_RESUMED, {
+                        "fromStatus": from_status, "holdAware": hold_aware,
+                        "holdKind": hold_kind if hold_aware else None})
+                    return True
                 except Exception:
                     log.warning("auto-resume: session %s failed", sid, exc_info=True)
                     return False
@@ -31086,6 +31115,20 @@ class SessionOrchestrator:
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id)
                 .values(pr_autofix_paused=paused)
+            )
+
+    async def set_auto_resume_opt_out(self, session_id: str, opted_out: bool) -> None:
+        """Veto (opted_out=True) or restore the restart auto-resume of this session
+        (FR-306). The ROW is authoritative — it survives rehydrate; the record mirror
+        feeds the payload and the live auto-resume pass."""
+        record = self._records.get(session_id)
+        if record is not None:
+            record.auto_resume_opt_out = opted_out or None
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id)
+                .values(auto_resume_opt_out=opted_out or None)
             )
 
     async def _pr_autofix_paused_session(self, repo: str, branch: str) -> str | None:

@@ -1061,6 +1061,10 @@ class RemoteOrchestrator:
         return await self._client.call(
             "set_auto_archive_opt_out", session_id=session_id, opted_out=opted_out)
 
+    async def set_auto_resume_opt_out(self, session_id, opted_out):
+        return await self._client.call(
+            "set_auto_resume_opt_out", session_id=session_id, opted_out=opted_out)
+
     async def snooze_session(self, session_id, snooze, identity="system"):
         return await self._client.call("snooze_session", session_id=session_id,
                                        snooze=snooze, identity=identity)
