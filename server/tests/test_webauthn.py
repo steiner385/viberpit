@@ -401,3 +401,20 @@ def test_spa_shell_loads_without_identity_only_when_passkeys_are_on(tmp_path, mo
             assert c.post("/login").status_code == 401
             monkeypatch.setenv("VIBERPIT_WEBAUTHN_ENABLED", "false")
             assert c.get("/login").status_code == 401
+
+
+def test_passkey_session_enrols_only_right_after_sign_in(client, authn):
+    """A stolen passkey cookie must not mint a credential that outlives it: enrolment
+    from a passkey session needs a sign-in within ENROL_REAUTH_WINDOW (ASVS V3.7)."""
+    from server.auth.webauthn import ENROL_REAUTH_WINDOW
+    from server.db.clock import naive_utc_now
+    _enrol(client, authn)
+    _login(client, authn)
+    fresh = client.post("/api/auth/webauthn/register/begin", json={})
+    assert fresh.status_code == 200, fresh.text
+    _age_passkey_session(client, created_at=naive_utc_now() - ENROL_REAUTH_WINDOW
+                         - timedelta(seconds=1))
+    stale = client.post("/api/auth/webauthn/register/begin", json={})
+    assert stale.status_code == 403
+    assert stale.json()["detail"]["code"] == "PASSKEY_REAUTH_REQUIRED"
+    assert client.get("/api/auth/me").status_code == 200   # the session itself still works

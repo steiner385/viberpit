@@ -35,7 +35,14 @@ function enrolFailure(err: unknown): string {
   if (err instanceof DOMException && err.name === 'InvalidStateError') {
     return 'This device already has a passkey for your account.'
   }
-  if (err instanceof ApiRequestError && err.status === 403) return 'You cannot add a passkey from this session.'
+  if (err instanceof ApiRequestError && err.status === 403) {
+    // A passkey session may enrol only right after its sign-in (server: PASSKEY_REAUTH_REQUIRED).
+    const detail = err.body.detail as { code?: unknown } | undefined
+    if (detail?.code === 'PASSKEY_REAUTH_REQUIRED') {
+      return 'Sign in again with your passkey, then add the new one.'
+    }
+    return 'You cannot add a passkey from this session.'
+  }
   return extractMutationErrorMessage(err, 'Could not add the passkey.')
 }
 

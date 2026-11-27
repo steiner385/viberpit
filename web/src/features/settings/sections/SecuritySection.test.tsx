@@ -124,6 +124,17 @@ describe('SecuritySection (#1410 AC-G12.11)', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('The passkey was not saved. The prompt was cancelled or timed out.')
   })
 
+  it('asks a stale passkey session to sign in again before enrolling', async () => {
+    const { ApiRequestError } = await import('@/api/client')
+    vi.mocked(api.post).mockRejectedValueOnce(new ApiRequestError(403, {
+      detail: { code: 'PASSKEY_REAUTH_REQUIRED', message: 'sign in again' },
+    }))
+    mount()
+    await screen.findByText('MacBook')
+    fireEvent.click(screen.getByRole('button', { name: 'Add a passkey' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Sign in again with your passkey, then add the new one.')
+  })
+
   it('is a note, and fetches nothing, when passkeys are off', async () => {
     config = { repoRoot: '/r', adoptionEnabled: false, webauthnEnabled: false }
     mount()

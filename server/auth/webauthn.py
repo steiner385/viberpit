@@ -16,8 +16,8 @@ cryptographic is hand-rolled here. This module owns:
 
 Bootstrapping (FR-G12.8): a passkey is bound to the identity string the tailnet path
 produces, so the allowlist governs both. Only a full-scope caller already signed in as
-that identity — over the tailnet, or with one of its passkeys — and attested as a person
-(``identity.human_sender``) may enrol one. Recovery (FR-G12.11) is the tailnet path:
+that identity — over the tailnet, or with one of its passkeys within the last
+``ENROL_REAUTH_WINDOW`` — and attested as a person (``identity.human_sender``) may enrol one. Recovery (FR-G12.11) is the tailnet path:
 sign in over Tailscale, revoke the lost passkey, enrol a new one.
 """
 from __future__ import annotations
@@ -69,6 +69,10 @@ CEREMONY_TTL_S = 300.0
 _MAX_CEREMONIES = 1024
 #: Passkey session lifetime (absolute); the idle timeout is VIBERPIT_SESSION_IDLE_S.
 SESSION_TTL = timedelta(hours=24)
+#: A passkey session may enrol another passkey only this soon after its sign-in
+#: (recent authentication, ASVS V3.7): otherwise a stolen session cookie, good for up to
+#: 24 h, could mint a credential that outlives it.
+ENROL_REAUTH_WINDOW = timedelta(minutes=5)
 
 
 class PasskeyError(Exception):
@@ -189,6 +193,15 @@ def may_enrol(*, identity: str | None, scope: str | None, auth_method: str | Non
     return bool(identity) and (scope or "full") == "full" \
         and auth_method in ("tailscale", PASSKEY) and human \
         and identity_allowed(identity or "")
+
+
+async def passkey_session_is_fresh(db: AsyncSession, session_id: str | None) -> bool:
+    """True when *session_id* is a passkey session minted within ENROL_REAUTH_WINDOW."""
+    if not session_id:
+        return False
+    row = (await db.execute(select(AppSession).where(
+        AppSession.id == session_id, AppSession.auth_method == PASSKEY))).scalar_one_or_none()
+    return row is not None and naive_utc_now() - row.created_at <= ENROL_REAUTH_WINDOW
 
 
 async def begin_registration(db: AsyncSession, identity: str) -> dict:

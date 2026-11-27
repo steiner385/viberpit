@@ -153,7 +153,7 @@ async def _audit_failure(db, request: Request, identity: str | None, reason: str
     await db.commit()
 
 
-async def _enrolling_identity(request: Request) -> str:
+async def _enrolling_identity(request: Request, db) -> str:
     identity = getattr(request.state, "identity", None)
     human = await asyncio.to_thread(human_sender, request)
     if not webauthn.may_enrol(identity=identity,
@@ -163,13 +163,19 @@ async def _enrolling_identity(request: Request) -> str:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
             "code": "PASSKEY_ENROL_FORBIDDEN",
             "message": "sign in over Tailscale (or with a passkey) as yourself to add a passkey"})
+    if getattr(request.state, "auth_method", None) == webauthn.PASSKEY and \
+            not await webauthn.passkey_session_is_fresh(
+                db, getattr(request.state, "app_session_id", None)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+            "code": "PASSKEY_REAUTH_REQUIRED",
+            "message": "sign in again with your passkey, then add the new one"})
     return str(identity)
 
 
 @router.post("/webauthn/register/begin", dependencies=[Depends(_require_passkeys)])
 async def passkey_register_begin(request: Request, db=Depends(get_db),
                                  _identity: str = Depends(current_identity)):
-    identity = await _enrolling_identity(request)
+    identity = await _enrolling_identity(request, db)
     try:
         return await webauthn.begin_registration(db, identity)
     except webauthn.PasskeyError as exc:
@@ -181,7 +187,7 @@ async def passkey_register_begin(request: Request, db=Depends(get_db),
 async def passkey_register_complete(request: Request, payload: dict = Body(...),
                                     db=Depends(get_db),
                                     _identity: str = Depends(current_identity)):
-    identity = await _enrolling_identity(request)
+    identity = await _enrolling_identity(request, db)
     try:
         row = await webauthn.complete_registration(
             db, identity, str(payload.get("ceremonyId") or ""),
