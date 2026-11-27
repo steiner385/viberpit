@@ -468,6 +468,12 @@ PY
 - [ ] GitHub authentication works for the service user; verify access to the target repository
       as well. A successful `viewer` query alone does not prove push permission.
 - [ ] A loopback listener opens (HTTP integration tests and local browser tests need it).
+- [ ] Native display: `VIBERPIT_NATIVE_DISPLAY_ENABLED` defaults to `true`, so the daemon logs
+      `native display: no Chromium-family binary on PATH` at every boot when none is installed,
+      and "Open a browser" fails for native sessions. Either install a Chromium-family browser
+      (`chromium`, `chromium-browser`, `google-chrome`, or `google-chrome-stable`) on a host with
+      a logged-in desktop, or set `VIBERPIT_NATIVE_DISPLAY_ENABLED=false` on a headless worker.
+      The choice depends on whether the host has a desktop; the operator decides it.
 - [ ] The worktree's actual Git metadata is writable. Linked worktrees store this outside the
       visible `.git` file, so checking only the project directory is insufficient.
 - [ ] Install locked project dependencies and run its documented build/setup sequence and
