@@ -12,9 +12,16 @@ from collections.abc import Sequence
 
 from server.github.merge_queue import QueueEntry
 from server.github.pr_status import CheckGroup, CheckRow, PipelinePr, PullRequestInfo
-from server.pipeline.deploy_status import backlog_from_prs
+from server.github.deploy_envs import EnvCategory
+from server.pipeline.deploy_status import (
+    awaiting_categories,
+    backlog_from_prs,
+    deploy_wait,
+    env_categories_present,
+)
 from server.pipeline.merge_sim import simulate_merge_eta
 from server.pipeline.merge_train import MergeTrainState
+from server.pipeline.stage import is_required_ci_red
 
 # Plotroom's default merge-queue batch size (config.example.json). Becomes a
 # real setting in Phase 4 (spec §5); a constant until then.
@@ -58,42 +65,81 @@ def _group_failed(pr: PullRequestInfo) -> bool:
     return bool(g and any(c.conclusion == "failure" for c in g.checks))
 
 
-def stage_result(pr: PullRequestInfo, timeline: dict | None = None) -> dict:
+_WAIT_STAGE = {"qa": "qa-deploy", "prod": "awaiting-prod", None: "merged"}
+
+
+def _merged_stage(
+    pr: PullRequestInfo,
+    timeline: dict | None,
+    newest_prod_merged_at: str | None,
+    env_categories: set[EnvCategory] | None,
+) -> str:
+    """Deploy stage of a merged PR, by the SAME rule as the backlog it feeds.
+
+    Deploy-config repos carry qa/prod-live facts via ``timeline`` and read
+    ``deploy_wait`` — the rule behind the deploy block's awaitingQa/awaitingProd,
+    supersession included. Other repos read ``awaiting_categories`` — the rule
+    behind ``deployBacklog``. Either way the Deploying tile and the backlog line
+    count one set; before, a superseded PR read awaiting-prod here while the
+    block counted it done, and a PR not yet on QA read plain merged.
+    """
+    if timeline is not None:
+        return _WAIT_STAGE[deploy_wait(
+            timeline.get("mergedAt"), timeline.get("qaLiveAt"),
+            timeline.get("prodLiveAt"), newest_prod_merged_at)]
+    if env_categories is None:
+        env_categories = env_categories_present([pr])
+    awaiting = awaiting_categories(pr, env_categories)
+    if "qa" in awaiting:
+        return "qa-deploy"
+    if "prod" in awaiting:
+        return "awaiting-prod"
+    return "merged"
+
+
+def _parked_substate(pr: PullRequestInfo) -> str | None:
+    """Why an open PR is parked. CI red outranks a conflict: a red PR that also
+    conflicts still needs its CI fixed, and filing it as "conflicting" dropped it
+    from the Failed tile and the header's red count. ``is_required_ci_red`` is the
+    rule ``derive_open_stage`` parked it by, so an advisory red (UNSTABLE) parked
+    for a conflict never reads ci-failed."""
+    if pr.is_draft or pr.state == "draft":
+        return "draft"
+    if is_required_ci_red(pr.checks, pr.merge_state_status or None, pr.in_merge_queue):
+        return "ci-failed"
+    if pr.mergeable == "CONFLICTING" or pr.merge_state_status == "DIRTY":
+        return "conflicting"
+    return None
+
+
+def stage_result(
+    pr: PullRequestInfo,
+    timeline: dict | None = None,
+    *,
+    in_queue: bool | None = None,
+    newest_prod_merged_at: str | None = None,
+    env_categories: set[EnvCategory] | None = None,
+) -> dict:
+    """``in_queue`` overrides ``pr.in_merge_queue`` with the queue snapshot the
+    lane draws (dashboard_state), so the In queue tile and the lane agree."""
+    queued = pr.in_merge_queue if in_queue is None else in_queue
     if pr.merged or pr.state == "merged":
-        # Deploy-config repos carry real qa/prod-live facts via ``timeline``
-        # (only populated for configured repos, SPEC §3): qa live + prod not →
-        # awaiting-prod; prod live (or neither) → plain merged (the deploy block
-        # carries the backlog truth). Non-configured repos keep the legacy
-        # deployed_envs fallback: a merged PR live in some env but not prod is
-        # awaiting-prod, everything else plain merged.
-        if timeline is not None:
-            stage = (
-                "awaiting-prod"
-                if (timeline.get("qaLiveAt") and not timeline.get("prodLiveAt"))
-                else "merged"
-            )
-        else:
-            stage = "awaiting-prod" if (pr.deployed_envs and not pr.deployed) else "merged"
+        stage = _merged_stage(pr, timeline, newest_prod_merged_at, env_categories)
         substate = None
-    elif pr.in_merge_queue:
+    elif queued:
         stage = "queue"
         substate = "group-failed" if _group_failed(pr) else None
     else:
         stage = pr.stage or "ready"
         substate = None
         if stage == "parked":
-            if pr.is_draft or pr.state == "draft":
-                substate = "draft"
-            elif pr.mergeable == "CONFLICTING":
-                substate = "conflicting"
-            elif pr.checks == "failing":
-                substate = "ci-failed"
+            substate = _parked_substate(pr)
         elif stage == "ready":
             # Armed + BLOCKED + not queued = GitHub silently refused to enqueue
             # (e.g. a shadowed required check). Bucket with "failed" in the UI
             # so the tile signals it needs attention, not idle.
             if (pr.auto_merge_enabled and pr.merge_state_status == "BLOCKED"
-                    and not pr.in_merge_queue):
+                    and not queued):
                 substate = "stuck-enqueue"
     rng = (
         [pr.eta_low_seconds, pr.eta_high_seconds]
@@ -125,8 +171,12 @@ def pr_view(
     timeline: dict | None = None,
     workflow_impact: dict | None = None,
     queue_progress: dict | None = None,
+    in_queue: bool | None = None,
+    newest_prod_merged_at: str | None = None,
+    env_categories: set[EnvCategory] | None = None,
 ) -> dict:
     pr = p.pr
+    queued = pr.in_merge_queue if in_queue is None else in_queue
     head = next((g for g in pr.check_groups if g.kind == "head"), None)
     merge = _merge_group(pr)
     is_merged = bool(pr.merged or pr.state == "merged")
@@ -134,7 +184,9 @@ def pr_view(
     # for merged PRs, stay None for open PRs even if a dict was passed. The
     # merged-stage refinement (SPEC §3) also consumes it, so gate both on merge.
     pr_timeline = timeline if (is_merged and timeline is not None) else None
-    stage = stage_result(pr, pr_timeline)
+    stage = stage_result(pr, pr_timeline, in_queue=in_queue,
+                         newest_prod_merged_at=newest_prod_merged_at,
+                         env_categories=env_categories)
     # Inject queue substate when stage_result left it None (group-failed wins).
     if queue_substate and stage["stage"] == "queue" and stage["substate"] is None:
         stage["substate"] = queue_substate
@@ -171,7 +223,7 @@ def pr_view(
         # Impact card is computed upstream only for workflow-touching PRs with a
         # known head sha (SPEC §4); None otherwise (honest null, no card).
         "workflowImpact": workflow_impact if pr.touches_workflows else None,
-        "groupChecks": [check_view(c) for c in merge.checks] if (merge and pr.in_merge_queue) else None,
+        "groupChecks": [check_view(c) for c in merge.checks] if (merge and queued) else None,
         "mergeEtaSim": merge_eta_sim,
         "costMinutes": None, "costDollars": None, "costDollarsPartial": False,
         # ViberPit extension (spec §6): the authoring session + Fix eligibility.
@@ -349,7 +401,26 @@ def dashboard_state(
         repo_sim_ctx = (sim_ctx or {}).get(repo)
         # Compute queue_view once per repo; reuse for the queue value and per-PR
         # substate lookup (avoids calling queue_view N times, once per PR).
-        qv = queue_view(entries, trains.get(repo), sim_ctx=repo_sim_ctx) if entries else None
+        # PRs GitHub says are queued (mergeQueueEntry on the PR record) that the
+        # queue snapshot does not hold yet — the two are polled separately, so a
+        # just-enqueued PR shows up in one before the other. The lane draws the
+        # snapshot and the In queue tile counts stages: join them by adding these
+        # to the waiting line (behind every snapshot entry, position unknown) so
+        # tile and lane count one set of PRs.
+        unseen = [
+            p.pr.number for p in prs_by_repo[repo]
+            if p.pr.in_merge_queue and p.pr.number not in pos
+            and not (p.pr.merged or p.pr.state in ("merged", "closed"))
+        ]
+        qv = (queue_view(entries, trains.get(repo), sim_ctx=repo_sim_ctx)
+              if entries or unseen else None)
+        if qv is not None:
+            qv["waiting"].extend({"prNumber": n, "position": None, "sim": None} for n in unseen)
+        in_queue = set(pos) | set(unseen)
+        # The supersession cut and tracked env categories, once per repo, so each
+        # merged PR's deploy stage reads the same rule as the backlog it feeds.
+        newest_prod_at = (deploy_ctx.get(repo) or {}).get("newestProdMergedAt")
+        env_cats = env_categories_present([p.pr for p in prs_by_repo[repo]])
         unmergeable_set: set[int] = set(qv["unmergeable"]) if qv else set()
         blocked_set: set[int] = set(qv["queueBlocked"]) if qv else set()
         # Waiting entries carry the mergeEtaSim; the same sim lands on the
@@ -386,6 +457,9 @@ def dashboard_state(
                 timeline=repo_timelines.get(p.pr.number),
                 workflow_impact=repo_impacts.get(p.pr.number),
                 queue_progress=own_group,
+                in_queue=p.pr.number in in_queue,
+                newest_prod_merged_at=newest_prod_at,
+                env_categories=env_cats,
             ))
         repo_deploy = deploy_ctx.get(repo)
         entry = {

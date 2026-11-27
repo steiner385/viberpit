@@ -29,7 +29,7 @@ function inCohort(pr: PrView): boolean {
  *  the board for the 7-day retention window (`server/pipeline/stage.py`). Live
  *  they were 147 of 170 rows, 132px each, in the lead ahead of nothing but
  *  the deploy cohort (2026-09-30 Pipeline critique, P1). Draft / conflicting
- *  rows share the strip's "Merged / other" bucket but are NOT ledger: a
+ *  rows share the strip's "Merged / parked" bucket but are NOT ledger: a
  *  conflicting PR needs a rebase, so it stays in the lead. An overdue merged
  *  row stays too, for the same reason the overdue cohort row does. */
 function inLedger(pr: PrView): boolean {

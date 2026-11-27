@@ -13,7 +13,10 @@ export function bucketPr(pr: PrView): Bucket {
   const { stage, substate } = pr.stage;
   if (stage === 'ci') return 'running';
   if (stage === 'queue') {
-    if (substate === 'group-failed') return 'failed';
+    // The lane's red cars: a failing merge group, and the front-most conflict
+    // ("✗ unmergeable") GitHub will eject. Cascade victims behind it
+    // (queue-blocked, the amber car) are still queued — they rebuild once it goes.
+    if (substate === 'group-failed' || substate === 'unmergeable') return 'failed';
     return 'queued';
   }
   // qa-deploy / awaiting-prod only exist for repos with deploy environments;
@@ -30,7 +33,8 @@ export function bucketPr(pr: PrView): Bucket {
     if (substate === 'stuck-enqueue') return 'failed';
     return 'ready';
   }
-  // merged stage (7-day retention window) + any other unknown stage
+  // merged stage (7-day retention window). Every StageId is handled above, so
+  // nothing unclassified can hide in this tile.
   return 'merged';
 }
 
@@ -39,6 +43,13 @@ export function bucketPr(pr: PrView): Bucket {
  *  disagree about what "failed" means. */
 export function isFailedPr(pr: PrView): boolean {
   return bucketPr(pr) === 'failed';
+}
+
+/** Is the PR's head CI red? The header's PR CI "N red" — a SUBSET of the Failed
+ *  tile, which also holds queue failures and armed-but-not-enqueued PRs. The one
+ *  predicate the lane summary and its jump target read. */
+export function isCiRedPr(pr: PrView): boolean {
+  return pr.stage.stage === 'parked' && pr.stage.substate === 'ci-failed';
 }
 
 /** Is the PR moving through an active pipeline stage (CI → queue → QA deploy)?
@@ -65,17 +76,17 @@ interface TileConfig { bucket: Bucket; label: string; tone: Tone; title: string;
  *  operator first — Failed, then Ready — then work in motion, then inventory. */
 export const TILE_DEFINITIONS: TileConfig[] = [
   { bucket: 'failed',  label: 'Failed',          tone: TILE_TONE.failed,
-    title: 'CI failed, merge-group build failed, or armed but stuck (not enqueued)' },
+    title: 'Head CI red, merge-group build failed, unmergeable in the queue, or armed but not enqueued' },
   { bucket: 'ready',   label: 'Ready',           tone: TILE_TONE.ready,
     title: 'Open, checks green — actionable (ready to arm auto-merge or merge directly)' },
   { bucket: 'running', label: 'CI running',     tone: TILE_TONE.running,
     title: 'CI running on the head commit' },
   { bucket: 'queued',  label: 'In queue',        tone: TILE_TONE.queued,
-    title: 'In the merge queue — building or waiting for a slot' },
+    title: 'In the merge queue — building, waiting for a slot, or blocked behind an unmergeable PR' },
   { bucket: 'deploy',  label: 'Deploying',       tone: TILE_TONE.deploy,
-    title: 'Merged — deploying to QA or awaiting production deploy' },
-  { bucket: 'merged',  label: 'Merged / other',  tone: TILE_TONE.merged,
-    title: 'Recently merged (7-day retention), draft, or conflicting — no action needed' },
+    title: 'Merged — awaiting the QA deploy or the production deploy (merges a newer prod deploy already shipped are done)' },
+  { bucket: 'merged',  label: 'Merged / parked', tone: TILE_TONE.merged,
+    title: 'Merged with nothing left to deploy (7-day window), plus open drafts and PRs with a merge conflict' },
 ];
 
 /** The tile box: one wash-on-edge card per bucket, interactive or not. */
@@ -85,11 +96,14 @@ const TILES = TILE_DEFINITIONS;
 
 interface StatusStripProps {
   prs: PrView[];
+  /** The repo the tiles count, named when the board holds several (the
+   *  header's lanes are cross-repo; the tiles are not). */
+  scope?: string;
   activeFilter: Bucket | null;
   onFilter: (bucket: Bucket | null) => void;
 }
 
-export function StatusStrip({ prs, activeFilter, onFilter }: StatusStripProps) {
+export function StatusStrip({ prs, scope, activeFilter, onFilter }: StatusStripProps) {
   // false in kiosk mode (issue #20), via InteractionContext: tiles render as
   // plain glanceable divs instead of filter buttons.
   const interactive = useInteractive();
@@ -137,7 +151,10 @@ export function StatusStrip({ prs, activeFilter, onFilter }: StatusStripProps) {
   );
 
   return (
-    <div className="mb-3 flex flex-wrap gap-2" role="group" aria-label="Status overview">
+    <>
+    {scope && <p className="mb-1 text-2xs text-ink-muted" data-testid="status-scope">Counts for {scope}</p>}
+    <div className="mb-3 flex flex-wrap gap-2" role="group"
+      aria-label={scope ? `Status overview — ${scope}` : 'Status overview'}>
       {TILES.map(({ bucket, label, tone, title }) => {
         const count = counts.get(bucket) ?? 0;
         if (!interactive) {
@@ -173,5 +190,6 @@ export function StatusStrip({ prs, activeFilter, onFilter }: StatusStripProps) {
         );
       })}
     </div>
+    </>
   );
 }

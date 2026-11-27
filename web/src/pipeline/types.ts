@@ -150,7 +150,9 @@ export interface QueueGroupView {
 }
 export interface RepoQueueView {
   groups: QueueGroupView[];
-  waiting: { prNumber: number; position: number; sim?: MergeEtaSimulation | null }[];
+  /** position is null for a PR GitHub reports queued (PR record) that the queue
+   *  snapshot does not hold yet — appended behind every snapshot entry. */
+  waiting: { prNumber: number; position: number | null; sim?: MergeEtaSimulation | null }[];
   /** PR numbers of GENUINELY conflicting UNMERGEABLE entries (DIRTY against the
    *  base — needs a rebase) — excluded from group coverage and waiting. */
   unmergeable: number[];

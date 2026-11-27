@@ -11,7 +11,7 @@ const redState = (): DashboardState => ({
   generatedAt: '', staleSince: null,
   repos: [{ repo: 'acme/widgets', hasDeploy: false, queue: null,
     prs: [{ number: 1, title: 't', url: 'u',
-      stage: { stage: 'ci', substate: 'ci-failed', percent: null, etaSeconds: null,
+      stage: { stage: 'parked', substate: 'ci-failed', percent: null, etaSeconds: null,
         etaRangeSeconds: null, overdue: false }, queueAheadCount: null, checks: [] }] }],
 }) as unknown as DashboardState;
 

@@ -1,4 +1,4 @@
-import { bucketPr, type Bucket } from '@/pipeline/StatusStrip'
+import { bucketPr, isCiRedPr, type Bucket } from '@/pipeline/StatusStrip'
 import type { LaneStatus, PrView } from '@/pipeline/types'
 
 /**
@@ -19,7 +19,7 @@ export function laneJumpRepo(
   repos: readonly { repo: string; prs: readonly PrView[] }[], focused: string | null,
 ): string | null {
   const attention = laneId === 'pr-ci' && status === 'red'
-    ? (pr: PrView) => pr.stage.substate === 'ci-failed'
+    ? isCiRedPr
     : (pr: PrView) => bucketPr(pr) === bucket
   const owns = (r: { prs: readonly PrView[] }) => r.prs.some(attention)
   const current = repos.find((r) => r.repo === focused)
