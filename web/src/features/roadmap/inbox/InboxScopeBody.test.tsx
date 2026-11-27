@@ -95,6 +95,9 @@ function mount(over: Partial<React.ComponentProps<typeof InboxScopeBody>> = {}) 
 // `a` safe (see the cursor test below).
 const scrollIntoView = vi.fn()
 
+// The keys are focus-scoped to the list (WCAG 2.1.4), so tests dispatch from it.
+const inList = () => screen.getByTestId('inbox-keys')
+
 describe('InboxScopeBody', () => {
   beforeEach(() => {
     accept.mockReset(); reject.mockReset(); bulk.mockReset(); bulkReject.mockReset(); undo.mockReset()
@@ -145,11 +148,11 @@ describe('InboxScopeBody', () => {
   it('j/k move the cursor, a accepts the cursor row, r rejects', () => {
     mount()
     // Cursor starts on the first ordered row (First); `j` lands it on Third.
-    fireEvent.keyDown(window, { key: 'j' })
-    fireEvent.keyDown(window, { key: 'a' })
+    fireEvent.keyDown(inList(), { key: 'j' })
+    fireEvent.keyDown(inList(), { key: 'a' })
     expect(accept).toHaveBeenCalledWith({ id: 'Third' })
-    fireEvent.keyDown(window, { key: 'k' })
-    fireEvent.keyDown(window, { key: 'r' })
+    fireEvent.keyDown(inList(), { key: 'k' })
+    fireEvent.keyDown(inList(), { key: 'r' })
     expect(reject).toHaveBeenCalledWith({ id: 'First' })
   })
 
@@ -158,10 +161,10 @@ describe('InboxScopeBody', () => {
     // already had its one decision, so the keys that make a decision or select
     // for a bulk one must not treat the cursor landing there as a request.
     mount({ proposals: [p({ id: 'First', status: 'accepted', classifiedBy: 'auto', resolvedAt: '2026-09-12T10:00:00Z' }), p({ id: 'Second' })] })
-    fireEvent.keyDown(window, { key: 'a' })
-    fireEvent.keyDown(window, { key: 'r' })
-    fireEvent.keyDown(window, { key: 'x' })
-    fireEvent.keyDown(window, { key: 'e' })
+    fireEvent.keyDown(inList(), { key: 'a' })
+    fireEvent.keyDown(inList(), { key: 'r' })
+    fireEvent.keyDown(inList(), { key: 'x' })
+    fireEvent.keyDown(inList(), { key: 'e' })
     expect(accept).not.toHaveBeenCalled()
     expect(reject).not.toHaveBeenCalled()
     expect(screen.queryByRole('region', { name: 'Bulk actions' })).toBeNull()
@@ -170,7 +173,7 @@ describe('InboxScopeBody', () => {
   it('scrolls the cursor row into view — `a` must never accept a row off-screen', () => {
     mount()
     scrollIntoView.mockReset()
-    fireEvent.keyDown(window, { key: 'j' })
+    fireEvent.keyDown(inList(), { key: 'j' })
     // The row `j` landed on is the one that scrolled, and it is the one `a`
     // would accept.
     const row = screen.getByTestId('row-proposal:Third')
@@ -181,9 +184,9 @@ describe('InboxScopeBody', () => {
 
   it('x selects and A accepts exactly the selection through the bulk bar', () => {
     mount()
-    fireEvent.keyDown(window, { key: 'x' })
-    fireEvent.keyDown(window, { key: 'j' })
-    fireEvent.keyDown(window, { key: 'x' })
+    fireEvent.keyDown(inList(), { key: 'x' })
+    fireEvent.keyDown(inList(), { key: 'j' })
+    fireEvent.keyDown(inList(), { key: 'x' })
     expect(screen.getByText('2 selected')).toBeInTheDocument()
     // In the pinned controls strip, not inside the scroll band — a bulk bar
     // below the rows scrolls away from the selection that summoned it.
@@ -200,9 +203,9 @@ describe('InboxScopeBody', () => {
     // (the PM Triage loop landing between polls). Its tick then renders both
     // checked and disabled, and the bulk bar counts a row nothing can act on.
     const { rerender } = mount()
-    fireEvent.keyDown(window, { key: 'x' })
-    fireEvent.keyDown(window, { key: 'j' })
-    fireEvent.keyDown(window, { key: 'x' })
+    fireEvent.keyDown(inList(), { key: 'x' })
+    fireEvent.keyDown(inList(), { key: 'j' })
+    fireEvent.keyDown(inList(), { key: 'x' })
     expect(screen.getByText('2 selected')).toBeInTheDocument()
 
     const autoAccepted = (id: string) => ROWS.map((r) => (
@@ -221,16 +224,16 @@ describe('InboxScopeBody', () => {
 
   it('A with nothing selected accepts nothing', () => {
     mount()
-    fireEvent.keyDown(window, { key: 'A' })
+    fireEvent.keyDown(inList(), { key: 'A' })
     expect(bulk).not.toHaveBeenCalled()
   })
 
   it('R rejects exactly the selection, and the bar has the same button', () => {
     mount()
-    fireEvent.keyDown(window, { key: 'x' })
-    fireEvent.keyDown(window, { key: 'j' })
-    fireEvent.keyDown(window, { key: 'x' })
-    fireEvent.keyDown(window, { key: 'R' })
+    fireEvent.keyDown(inList(), { key: 'x' })
+    fireEvent.keyDown(inList(), { key: 'j' })
+    fireEvent.keyDown(inList(), { key: 'x' })
+    fireEvent.keyDown(inList(), { key: 'R' })
     expect(bulkReject).toHaveBeenCalledTimes(1)
     expect(bulkReject.mock.calls[0][0]).toEqual(['First', 'Third'])
     // Neither sweep reached the other endpoint.
@@ -241,30 +244,30 @@ describe('InboxScopeBody', () => {
 
   it('R with nothing selected rejects nothing', () => {
     mount()
-    fireEvent.keyDown(window, { key: 'R' })
+    fireEvent.keyDown(inList(), { key: 'R' })
     expect(bulkReject).not.toHaveBeenCalled()
   })
 
   it('d dismisses the cursor row — its own endpoint, never reject', () => {
     mount()
-    fireEvent.keyDown(window, { key: 'j' })
-    fireEvent.keyDown(window, { key: 'd' })
+    fireEvent.keyDown(inList(), { key: 'j' })
+    fireEvent.keyDown(inList(), { key: 'd' })
     expect(dismiss).toHaveBeenCalledWith({ id: 'Third' })
     expect(reject).not.toHaveBeenCalled()
   })
 
   it('d does nothing on a non-pending row', () => {
     mount({ proposals: [p({ id: 'First', status: 'accepted', classifiedBy: 'auto' }), p({ id: 'Second' })] })
-    fireEvent.keyDown(window, { key: 'd' })
+    fireEvent.keyDown(inList(), { key: 'd' })
     expect(dismiss).not.toHaveBeenCalled()
   })
 
   it('D dismisses exactly the selection, and the bar has the same button', () => {
     mount()
-    fireEvent.keyDown(window, { key: 'x' })
-    fireEvent.keyDown(window, { key: 'j' })
-    fireEvent.keyDown(window, { key: 'x' })
-    fireEvent.keyDown(window, { key: 'D' })
+    fireEvent.keyDown(inList(), { key: 'x' })
+    fireEvent.keyDown(inList(), { key: 'j' })
+    fireEvent.keyDown(inList(), { key: 'x' })
+    fireEvent.keyDown(inList(), { key: 'D' })
     expect(bulkDismiss).toHaveBeenCalledTimes(1)
     expect(bulkDismiss.mock.calls[0][0]).toEqual(['First', 'Third'])
     expect(bulkReject).not.toHaveBeenCalled()
@@ -277,7 +280,7 @@ describe('InboxScopeBody', () => {
 
   it('D with nothing selected dismisses nothing', () => {
     mount()
-    fireEvent.keyDown(window, { key: 'D' })
+    fireEvent.keyDown(inList(), { key: 'D' })
     expect(bulkDismiss).not.toHaveBeenCalled()
   })
 
@@ -387,7 +390,7 @@ describe('InboxScopeBody', () => {
     expect(all).toBeChecked()
     expect(screen.getByText('3 selected')).toBeInTheDocument()
     // What it ticked is what a sweep sends, in rendered order.
-    fireEvent.keyDown(window, { key: 'A' })
+    fireEvent.keyDown(inList(), { key: 'A' })
     expect(bulk.mock.calls[0][0]).toEqual(['First', 'Third', 'Second'])
     fireEvent.click(all)
     expect(all).not.toBeChecked()
@@ -397,7 +400,7 @@ describe('InboxScopeBody', () => {
   it('Select all is indeterminate with a partial selection, and follows the search', () => {
     mount()
     const all = screen.getByRole('checkbox', { name: 'Select all' }) as HTMLInputElement
-    fireEvent.keyDown(window, { key: 'x' })
+    fireEvent.keyDown(inList(), { key: 'x' })
     expect(all.indeterminate).toBe(true)
     expect(all).not.toBeChecked()
     // Narrowed to one row that is already ticked: the header reads "all".
@@ -414,7 +417,7 @@ describe('InboxScopeBody', () => {
     ] })
     expect(screen.getByText('Select all (1)')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }))
-    fireEvent.keyDown(window, { key: 'A' })
+    fireEvent.keyDown(inList(), { key: 'A' })
     expect(bulk.mock.calls[0][0]).toEqual(['Second'])
     rerender({ proposals: [
       p({ id: 'First', status: 'accepted', classifiedBy: 'auto', resolvedAt: '2026-09-12T10:00:00Z' }),
@@ -447,7 +450,7 @@ describe('InboxScopeBody', () => {
 
   it('e opens the cursor row for editing', () => {
     const { onOpen } = mount()
-    fireEvent.keyDown(window, { key: 'e' })
+    fireEvent.keyDown(inList(), { key: 'e' })
     expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: 'First' }), { edit: true })
   })
 
@@ -457,7 +460,14 @@ describe('InboxScopeBody', () => {
     expect(accept).not.toHaveBeenCalled()
 
     overlayOpen.mockReturnValue(true)
+    fireEvent.keyDown(inList(), { key: 'a' })
+    expect(accept).not.toHaveBeenCalled()
+  })
+
+  it('does not act on single-character keys pressed outside the list (WCAG 2.1.4)', () => {
+    mount()
     fireEvent.keyDown(window, { key: 'a' })
+    fireEvent.keyDown(document.body, { key: 'j' })
     expect(accept).not.toHaveBeenCalled()
   })
 
@@ -557,7 +567,7 @@ describe('InboxScopeBody', () => {
       // There is no undo window on a decision, so one keystroke must not take
       // it. `a` puts the options on screen; the pane sends the chosen key.
       const { onOpen } = mount({ proposals: MIXED })
-      fireEvent.keyDown(window, { key: 'a' })
+      fireEvent.keyDown(inList(), { key: 'a' })
       expect(accept).not.toHaveBeenCalled()
       expect(onOpen).toHaveBeenCalledWith(MIXED[1])
     })
@@ -568,7 +578,7 @@ describe('InboxScopeBody', () => {
       // can re-propose. Same hazard as `a`, so the same answer — the pane, where
       // the Reject button carries the consequence copy.
       const { onOpen } = mount({ proposals: MIXED })
-      fireEvent.keyDown(window, { key: 'r' })
+      fireEvent.keyDown(inList(), { key: 'r' })
       expect(rejectDecision).not.toHaveBeenCalled()
       expect(reject).not.toHaveBeenCalled()
       expect(onOpen).toHaveBeenCalledWith(MIXED[1])
@@ -587,12 +597,12 @@ describe('InboxScopeBody', () => {
 
     it('x and e are inert on a decision, so A/R can never send one to a bulk sweep', () => {
       const { onOpen } = mount({ proposals: MIXED })
-      fireEvent.keyDown(window, { key: 'x' })
-      fireEvent.keyDown(window, { key: 'e' })
+      fireEvent.keyDown(inList(), { key: 'x' })
+      fireEvent.keyDown(inList(), { key: 'e' })
       expect(screen.queryByRole('button', { name: /Accept selected/ })).toBeNull()
       expect(onOpen).not.toHaveBeenCalled()
-      fireEvent.keyDown(window, { key: 'A' })
-      fireEvent.keyDown(window, { key: 'R' })
+      fireEvent.keyDown(inList(), { key: 'A' })
+      fireEvent.keyDown(inList(), { key: 'R' })
       expect(bulk).not.toHaveBeenCalled()
       expect(bulkReject).not.toHaveBeenCalled()
     })
@@ -601,22 +611,22 @@ describe('InboxScopeBody', () => {
       mount({ proposals: MIXED })
       expect(screen.getByText('Select all (1)')).toBeInTheDocument()
       fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }))
-      fireEvent.keyDown(window, { key: 'R' })
+      fireEvent.keyDown(inList(), { key: 'R' })
       expect(bulkReject.mock.calls[0][0]).toEqual(['First'])
     })
 
     it('a bulk sweep carries only the classification rows', () => {
       mount({ proposals: MIXED })
       // `j` off the decision and onto First (a classification): tick it, sweep.
-      fireEvent.keyDown(window, { key: 'j' })
-      fireEvent.keyDown(window, { key: 'x' })
-      fireEvent.keyDown(window, { key: 'A' })
+      fireEvent.keyDown(inList(), { key: 'j' })
+      fireEvent.keyDown(inList(), { key: 'x' })
+      fireEvent.keyDown(inList(), { key: 'A' })
       expect(bulk).toHaveBeenCalledWith(['First'], expect.anything())
     })
 
     it('d is inert on a decision — it has no dismiss route', () => {
       const { onOpen } = mount({ proposals: MIXED })
-      fireEvent.keyDown(window, { key: 'd' })
+      fireEvent.keyDown(inList(), { key: 'd' })
       expect(dismiss).not.toHaveBeenCalled()
       expect(onOpen).not.toHaveBeenCalled()
     })

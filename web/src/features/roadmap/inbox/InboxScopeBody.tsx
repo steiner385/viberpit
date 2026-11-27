@@ -35,8 +35,9 @@
  * form the way the old page did: it opens the row with `edit`, and the pane
  * puts the caret in the score fields.
  *
- * The LISTENER is local to this component rather than installed by the shell:
- * these keys exist only while the Inbox scope is on screen, and `a`/`r` are
+ * The LISTENER is local to this component rather than installed by the shell,
+ * and focus-scoped to the list (WCAG 2.1.4): these keys exist only while focus is
+ * inside the Inbox list, and `a`/`r` are
  * irreversible enough that they must not survive it. Both guards from the old
  * page come along — `overlayIsOpen()` (a modal sheet parks focus on its Close
  * BUTTON, which is not a typing target) and `isTypingTarget` (the listener is on
@@ -50,7 +51,7 @@
  * rows does NOT hand them to the shell's dispatcher: that can only fire a row
  * whose id has a handler in `AppShellInner`, and none of these do.
  */
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import {
   isDecisionProposal, isTriageProposal, type InboxProposal, type TriageProposal,
 } from '@/api/triage'
@@ -273,82 +274,78 @@ export function InboxScopeBody({
     else dispatch({ type: 'selectAll', ids: pendingIds })
   }, [allSelected, pendingIds])
 
-  useEffect(() => {
-    function onKey(ev: KeyboardEvent) {
-      // Somebody else already claimed this keydown; an overlay is up; or the
-      // key is part of a chord that belongs to the browser (Ctrl+A, Cmd+R —
-      // every `roadmap-inbox` row uses `plain()`, which bails on those anyway).
-      // Shift is allowed through — it is how `A` is typed.
-      if (ev.defaultPrevented || overlayIsOpen()) return
-      if (isTypingTarget(ev.target)) return
-      // No context argument: a `roadmap-inbox` row carries no `when` (the guards
-      // above are this scope's, not the registry's), and passing a fabricated
-      // context is how a `when` comes to be evaluated against a lie.
-      const row = matchShortcut(ev, inGroup('roadmap-inbox'))
-      switch (row?.id) {
-        case 'inbox.next': dispatch({ type: 'move', delta: 1, ids }); break
-        case 'inbox.prev': dispatch({ type: 'move', delta: -1, ids }); break
-        // A row past `pending` (a fresh auto-accept, still shown for the undo
-        // window) has already had its one decision — none of these keys have
-        // anything left to act on, so the cursor sitting on it is inert.
-        case 'inbox.select':
-          // A decision cannot go into a bulk accept (see `pendingIds`).
-          if (!isPending(current) || isDecisionProposal(current)) return
-          dispatch({ type: 'toggleSelect', id: current.id })
-          break
-        // Neither key DECIDES a decision from the list — both open the pane.
-        // Accept carries the option the person chose, and reject is terminal
-        // (`_require_pending`: a rejected proposal can never be accepted, the
-        // drafted options are gone and only a new session can re-propose). With
-        // no undo window behind either, a one-keystroke accept of the machine's
-        // own recommendation and a one-keystroke discard are the same hazard, so
-        // both land in the pane, where the options and the consequence copy are
-        // and the real Accept/Reject buttons live.
-        case 'inbox.accept':
-          if (!isPending(current)) return
-          if (isDecisionProposal(current)) onOpen(current)
-          else acceptOne(current)
-          break
-        case 'inbox.reject':
-          if (!isPending(current)) return
-          if (isDecisionProposal(current)) onOpen(current)
-          else rejectOne(current)
-          break
-        // Classification rows only: a decision has no dismiss route, and
-        // opening it here would make `d` a second spelling of `a`/`r`.
-        case 'inbox.dismiss':
-          if (!isPending(current) || isDecisionProposal(current)) return
-          dismissOne(current)
-          break
-        case 'inbox.edit':
-          // Nothing to edit on a decision: the scores are the classifier's.
-          if (!isPending(current) || isDecisionProposal(current)) return
-          onOpen(current, { edit: true })
-          break
-        case 'inbox.acceptSelected':
-          if (state.selected.size === 0) return
-          acceptSelected()
-          break
-        case 'inbox.rejectSelected':
-          if (state.selected.size === 0) return
-          rejectSelected()
-          break
-        case 'inbox.dismissSelected':
-          if (state.selected.size === 0) return
-          dismissSelected()
-          break
-        // Every other key is somebody else's; fall through WITHOUT
-        // preventDefault so typing, tabbing and browser shortcuts still work.
-        default: return
-      }
-      ev.preventDefault()
+  // Focus-scoped (WCAG 2.1.4, Character Key Shortcuts): bound to the list's own
+  // `onKeyDown`, so a single-character key only acts while focus is inside the
+  // list — never page-wide, where a dictated word becomes a burst of keys.
+  function onKey(ev: ReactKeyboardEvent<HTMLElement>) {
+    // Somebody else already claimed this keydown; an overlay is up; or the
+    // key is part of a chord that belongs to the browser (Ctrl+A, Cmd+R —
+    // every `roadmap-inbox` row uses `plain()`, which bails on those anyway).
+    // Shift is allowed through — it is how `A` is typed.
+    if (ev.defaultPrevented || overlayIsOpen()) return
+    if (isTypingTarget(ev.target)) return
+    // No context argument: a `roadmap-inbox` row carries no `when` (the guards
+    // above are this scope's, not the registry's), and passing a fabricated
+    // context is how a `when` comes to be evaluated against a lie.
+    const row = matchShortcut(ev, inGroup('roadmap-inbox'))
+    switch (row?.id) {
+      case 'inbox.next': dispatch({ type: 'move', delta: 1, ids }); break
+      case 'inbox.prev': dispatch({ type: 'move', delta: -1, ids }); break
+      // A row past `pending` (a fresh auto-accept, still shown for the undo
+      // window) has already had its one decision — none of these keys have
+      // anything left to act on, so the cursor sitting on it is inert.
+      case 'inbox.select':
+        // A decision cannot go into a bulk accept (see `pendingIds`).
+        if (!isPending(current) || isDecisionProposal(current)) return
+        dispatch({ type: 'toggleSelect', id: current.id })
+        break
+      // Neither key DECIDES a decision from the list — both open the pane.
+      // Accept carries the option the person chose, and reject is terminal
+      // (`_require_pending`: a rejected proposal can never be accepted, the
+      // drafted options are gone and only a new session can re-propose). With
+      // no undo window behind either, a one-keystroke accept of the machine's
+      // own recommendation and a one-keystroke discard are the same hazard, so
+      // both land in the pane, where the options and the consequence copy are
+      // and the real Accept/Reject buttons live.
+      case 'inbox.accept':
+        if (!isPending(current)) return
+        if (isDecisionProposal(current)) onOpen(current)
+        else acceptOne(current)
+        break
+      case 'inbox.reject':
+        if (!isPending(current)) return
+        if (isDecisionProposal(current)) onOpen(current)
+        else rejectOne(current)
+        break
+      // Classification rows only: a decision has no dismiss route, and
+      // opening it here would make `d` a second spelling of `a`/`r`.
+      case 'inbox.dismiss':
+        if (!isPending(current) || isDecisionProposal(current)) return
+        dismissOne(current)
+        break
+      case 'inbox.edit':
+        // Nothing to edit on a decision: the scores are the classifier's.
+        if (!isPending(current) || isDecisionProposal(current)) return
+        onOpen(current, { edit: true })
+        break
+      case 'inbox.acceptSelected':
+        if (state.selected.size === 0) return
+        acceptSelected()
+        break
+      case 'inbox.rejectSelected':
+        if (state.selected.size === 0) return
+        rejectSelected()
+        break
+      case 'inbox.dismissSelected':
+        if (state.selected.size === 0) return
+        dismissSelected()
+        break
+      // Every other key is somebody else's; fall through WITHOUT
+      // preventDefault so typing, tabbing and browser shortcuts still work.
+      default: return
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [
-    ids, current, state.selected, acceptOne, rejectOne, dismissOne,
-    acceptSelected, rejectSelected, dismissSelected, onOpen,
-  ])
+    ev.preventDefault()
+  }
 
   const emptyTitle = q
     ? 'No matches'
@@ -504,6 +501,7 @@ export function InboxScopeBody({
         <div role="status" aria-label="Loading inbox"><Skeleton lines={5} /></div>
       )}
       {!isLoading && visible.length === 0 && <EmptyState title={emptyTitle} />}
+      <div data-testid="inbox-keys" className="contents" onKeyDown={onKey}>
       <GroupedList<InboxProposal>
         groups={ordering.groups}
         collapsedKeys={ordering.collapsedKeys}
@@ -531,6 +529,7 @@ export function InboxScopeBody({
           />
         )}
       />
+      </div>
     </ScopeBody>
   )
 }
