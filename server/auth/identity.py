@@ -81,10 +81,11 @@ def host_is_loopback(host: str | None) -> bool:
     return addr.is_loopback
 
 
-# Synthetic identity handed to unidentified clients when LAN-open mode is enabled
-# (VIBERPIT_ALLOW_UNAUTHENTICATED). Recognisable in logs/session authorship as a
-# non-Tailscale, deliberately-unauthenticated caller.
-OPEN_LAN_IDENTITY = "lan@local"
+# The synthetic guest the removed LAN-open mode (VIBERPIT_ALLOW_UNAUTHENTICATED,
+# deleted in #1410: constitution IV admits no unidentified caller) handed to callers
+# with no identity. Nothing mints it any more; it survives only so rows it already
+# authored (session owners, hold actors) keep reading as "nobody in particular".
+LEGACY_LAN_IDENTITY = "lan@local"
 
 
 def verify_identity(request: Request | WebSocket) -> str | None:
@@ -100,9 +101,8 @@ def verify_identity(request: Request | WebSocket) -> str | None:
 
     # The header is only evidence when the peer is entitled to stamp it. From anyone
     # else it is an unverified claim, so drop it and carry on as if it were absent —
-    # `whois` below is peer-verified and may still identify the caller, and LAN-open
-    # mode must still be able to admit them as a guest. Denying outright here would
-    # turn a stray header into a lockout.
+    # `whois` below is peer-verified and may still identify the caller. Denying
+    # outright here would turn a stray header into a lockout.
     if identity and not _peer_is_trusted(request):
         # The asserted value is deliberately NOT logged: it is either attacker-chosen
         # text or a real person's email address, and neither belongs in a log line
@@ -125,20 +125,17 @@ def verify_identity(request: Request | WebSocket) -> str | None:
         identity = _whois_identity(request)
 
     if not identity:
-        # No Tailscale identity. In LAN-open mode (opt-in, off by default) admit the
-        # caller as an unauthenticated guest rather than denying. The allowlist below
-        # is intentionally NOT applied to the guest — this branch IS the "no auth" path.
-        if get_settings().allow_unauthenticated:
-            return OPEN_LAN_IDENTITY
+        # No Tailscale identity: unidentified, in every exposure tier (#1410). A device
+        # without Tailscale signs in with a passkey instead (server/auth/webauthn.py).
         return None
+    return identity if identity_allowed(identity) else None
 
-    # Allowlist check (real, presented identities only — unaffected by LAN-open mode)
-    settings = get_settings()
-    allowlist = settings.tailnet_allowlist_items
-    if allowlist and identity not in allowlist:
-        return None
 
-    return identity
+def identity_allowed(identity: str) -> bool:
+    """THE allowlist rule, shared by the tailnet and passkey paths (FR-G12.8): an empty
+    ``VIBERPIT_TAILNET_ALLOWLIST`` admits any verified identity, else it must be listed."""
+    allowlist = get_settings().tailnet_allowlist_items
+    return not allowlist or identity in allowlist
 
 
 def _self_tailscale_ips() -> frozenset[_AnyAddress]:
@@ -416,11 +413,17 @@ def human_gate_via(conn: Request | WebSocket) -> str | None:
     ``attested_front_end_hop`` vouches that a remote person is behind this request
     (#2980). With ``rules_trust_local_host`` on, that unattested local caller is
     ``LOCAL_TRUSTED_VIA`` instead; a recorded (token-borne) ``via`` is never upgraded.
+    A passkey-authenticated caller is a person (#1410).
     Reads ``/proc``, so call it only on the rare writes it guards.
     """
     via = getattr(conn.state, "via", None)
     if via is not None:
         return via
+    if getattr(conn.state, "auth_method", None) == "passkey":
+        # A passkey session was minted by a user-verified WebAuthn ceremony, and only a
+        # person may enrol one (server/auth/webauthn.py:may_enrol): it attests a human
+        # wherever the browser is, including a LAN device no front-end can vouch for.
+        return None
     if attested_front_end_hop(conn):
         return None
     return LOCAL_TRUSTED_VIA if get_settings().rules_trust_local_host else LOCAL_PROCESS_VIA
@@ -527,7 +530,7 @@ def _front_end_origin(conn: Request | WebSocket) -> str | None:
 
 
 # Tailscale's address ranges: CGNAT for IPv4, its ULA prefix for IPv6.
-_TAILNET_NETS = (ipaddress.ip_network("100.64.0.0/10"),
+TAILNET_NETS = (ipaddress.ip_network("100.64.0.0/10"),
                  ipaddress.ip_network("fd7a:115c:a1e0::/48"))
 
 
@@ -563,7 +566,7 @@ def _is_another_tailnet_device(host: str) -> bool:
     except ValueError:
         return False
     addr = getattr(addr, "ipv4_mapped", None) or addr
-    return any(addr in net for net in _TAILNET_NETS) and not _is_this_host(str(addr))
+    return any(addr in net for net in TAILNET_NETS) and not _is_this_host(str(addr))
 
 
 def _whois(request: Request | WebSocket) -> dict | None:

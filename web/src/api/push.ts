@@ -1,13 +1,5 @@
 import { api } from '@/api/client'
-
-export function urlBase64ToUint8Array(base64: string): Uint8Array {
-  const padding = '='.repeat((4 - (base64.length % 4)) % 4)
-  const b64 = (base64 + padding).replace(/-/g, '+').replace(/_/g, '/')
-  const raw = atob(b64)
-  const out = new Uint8Array(raw.length)
-  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i)
-  return out
-}
+import { base64urlToBytes } from '@/lib/base64url'
 
 export function pushSupported(): boolean {
   return typeof window !== 'undefined'
@@ -26,7 +18,7 @@ export async function enablePush(): Promise<'subscribed' | 'denied' | 'unsupport
   const existing = await reg.pushManager.getSubscription()
   const sub = existing ?? await reg.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(cfg.vapidPublicKey) as unknown as ArrayBuffer,
+    applicationServerKey: base64urlToBytes(cfg.vapidPublicKey),
   })
   await api.post('/push/subscribe', sub.toJSON())
   return 'subscribed'

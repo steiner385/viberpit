@@ -26,6 +26,12 @@ CLIENT_LOGS_REFILL_PER_SEC = 1.0
 WEB_VITALS_CAPACITY = 30.0
 WEB_VITALS_REFILL_PER_SEC = 0.5
 
+# Policy for passkey sign-in (#1410, FR-G12.10): keyed per peer address AND per claimed
+# identity, consumed on every login attempt. A burst of 10, then one attempt per 30 s,
+# so a guessing run is locked out for minutes while a fumbled sign-in still gets through.
+PASSKEY_LOGIN_CAPACITY = 10.0
+PASSKEY_LOGIN_REFILL_PER_SEC = 1.0 / 30.0
+
 
 class TokenBucketRateLimiter:
     """Per-key token bucket. O(1) per check; one (tokens, last_refill) pair per key.
@@ -88,6 +94,11 @@ _client_logs_limiter = TokenBucketRateLimiter(
 
 _web_vitals_limiter = TokenBucketRateLimiter(
     WEB_VITALS_CAPACITY, WEB_VITALS_REFILL_PER_SEC
+)
+
+
+passkey_login_limiter = TokenBucketRateLimiter(
+    PASSKEY_LOGIN_CAPACITY, PASSKEY_LOGIN_REFILL_PER_SEC
 )
 
 

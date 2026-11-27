@@ -8,6 +8,7 @@ links:
     - server/auth/identity.py
     - server/auth/middleware.py
     - server/auth/webauthn.py
+    - server/auth/exposure.py
     - server/api/auth.py
     - server/mcp_auth.py
     - server/audit.py
@@ -41,8 +42,9 @@ once); credential-shaped strings never appear in logs, audit rows, or forwarded 
 (redaction is applied at record, structured-field, and audit-write layers); `app_sessions` table
 stays small under sustained cookie-less polling (session reuse + janitor prune).
 
-**Non-goals** — passwords or a bespoke account system (identity is delegated to Tailscale in v1); a
-passkey/WebAuthn login path (scaffolded but disabled — see Notes); authorization/RBAC beyond the
+**Non-goals** — passwords or a bespoke account system (identity is delegated to Tailscale, or to a
+passkey bound to the same identity — see Notes); an email/SMS/recovery-code channel (recovery is the
+tailnet path); authorization/RBAC beyond the
 single allowlist (any allowlisted identity has full access); terminating TLS in-process (HTTPS is
 fronted by `tailscale serve` / an nginx tailnet vhost, PR #811).
 
@@ -59,15 +61,31 @@ fronted by `tailscale serve` / an nginx tailnet vhost, PR #811).
   `X-Tailscale-User-Login` alternate), falling back to a best-effort `tailscale whois` on the peer
   IP. If `Settings.tailnet_allowlist` is non-empty the identity must be on it or the request is
   denied; an empty allowlist (dev default) admits any identity.
-- **LAN-open mode** (PR #632): opt-in `VIBERPIT_ALLOW_UNAUTHENTICATED` admits unidentified callers
-  as a synthetic `lan@local` guest — deliberately the "no auth" branch, recognizable in logs and
-  session authorship. Off by default. A `SECURITY 0.0.0.0` warning is gated to once per process
-  (PR #673).
+- **Exposure tiers** (`server/auth/exposure.py`, #1410): `VIBERPIT_EXPOSURE` is one of `loopback`,
+  `tailnet` (default), `lan` or `public`, validated fail-closed when the edge starts. A broken rule is
+  a `RuntimeError` naming the tier, the rule and the fix:
+
+  | Tier | Bind (`VIBERPIT_HOST`) | Requires |
+  |---|---|---|
+  | `loopback` | loopback | — |
+  | `tailnet` | loopback or a tailnet IP | `VIBERPIT_TAILNET_ALLOWLIST`; `VIBERPIT_PUBLIC_ORIGIN` or `VIBERPIT_ALLOWED_ORIGINS` |
+  | `lan` | a private address | tailnet's, plus `VIBERPIT_WEBAUTHN_ENABLED=true` with ≥1 registered passkey, `VIBERPIT_SESSION_SECRET` or `VIBERPIT_MASTER_KEY`, and no `VIBERPIT_DEV_INSECURE_COOKIE` |
+  | `public` | any | lan's, plus `VIBERPIT_SESSION_SECRET` itself, an https `VIBERPIT_PUBLIC_ORIGIN` and `VIBERPIT_INGRESS_HSTS=true` (the operator attests the ingress sends HSTS) |
+
+  `VIBERPIT_DEV=1` turns `loopback`/`tailnet` refusals into one warning; it never relaxes `lan` or
+  `public`. This replaced the old "empty allowlist on a non-loopback bind" guard in `server/app.py`.
+- **No anonymous path** (#1410): LAN-open mode (`VIBERPIT_ALLOW_UNAUTHENTICATED`, PR #632) is
+  deleted. It admitted unidentified callers as a full-scope `lan@local` guest, which constitution IV
+  forbids. An unidentified caller now gets 401 in every tier, and a device without Tailscale signs in
+  with a passkey. `lan@local` survives only as `identity.LEGACY_LAN_IDENTITY`, so rows it already
+  authored (session owners, hold actors) still read as agent-class "nobody in particular".
+- **`authMode`**: `GET /api/auth/me` reports how the request actually authenticated:
+  `tailscale | passkey | display | bearer` (`request.state.auth_method`, set by the middleware).
 - **Session cookie** (`server/auth/middleware.py`): `IdentityMiddleware` get-or-creates a
   server-side `AppSession` and issues an `itsdangerous`-signed cookie (24h absolute expiry). The
   signing secret comes from `VIBERPIT_SESSION_SECRET` → `MASTER_KEY` → envelope key, with a warned
   ephemeral per-process fallback (cookies simply reset on restart — identity is re-verified from the
-  header every request, so the cookie is bookkeeping only). Cookie-less callers reuse the identity's
+  header every request, so for a tailnet session the cookie is bookkeeping only). Cookie-less callers reuse the identity's
   newest live session instead of minting a row per request (PR #830 — prod was minting ~45k rows/day
   for one identity). `/healthz` is exempt so the deploy health-check can probe unauthenticated.
 - **Session hygiene**: `prune_app_sessions` janitor reclaims rows expired/revoked past a 7-day grace
@@ -82,21 +100,44 @@ fronted by `tailscale serve` / an nginx tailnet vhost, PR #811).
   fields, audit rows, and outbound WS events. The base64 pattern is anchored with a negative
   lookbehind to stay linear-time (PR #144 — an unanchored pattern ReDoS-hung the event loop on a
   ~200KB base64 image in a transcript).
-- **Passkey / WebAuthn path — deferred.** `server/auth/webauthn.py` is a scaffold: every function
-  raises `NotImplementedError` and endpoints are 404 unless `WEBAUTHN_ENABLED=true`. It is intended
-  for the public-hosting phase (P4). Whether it ships, and its exact UX, is `(unknown — needs owner
-  input)`.
+- **Passkeys (WebAuthn)** (`server/auth/webauthn.py`, `server/api/auth.py`, #1410): when
+  `VIBERPIT_WEBAUTHN_ENABLED=true`, py_webauthn ceremonies sit behind
+  `POST /api/auth/webauthn/{register,login}/{begin,complete}`, `GET /api/auth/credentials` and
+  `DELETE /api/auth/credentials/{id}`. All of them 404 while the flag is off. The relying-party id is
+  the host of `VIBERPIT_PUBLIC_ORIGIN` (else the first `VIBERPIT_ALLOWED_ORIGINS` entry), and the
+  expected origins are the Origin allowlist's own list. Challenges are single-use and expire after
+  5 minutes, and user verification is required.
+  - *Enrolment*: only a full-scope caller already signed in as that identity (over the tailnet, or
+    with one of its passkeys) and attested as a person (`identity.human_sender`) may enrol. The
+    passkey is bound to that same identity string, so `VIBERPIT_TAILNET_ALLOWLIST` governs both paths.
+  - *Login*: login/begin+complete need no identity (they are exempt from the identity middleware,
+    not from the Origin guard). They are rate-limited per peer and per claimed identity through
+    `server/api/ratelimit.py:passkey_login_limiter` (429 + `Retry-After`), and every failure writes
+    an `auth.passkey.fail` audit row. A sign-count regression (a cloned authenticator) is refused
+    and audited.
+  - *Session*: a passkey login mints an `AppSession` with `auth_method="passkey"`, and its signed
+    cookie is the authenticator. It has a 24 h absolute expiry and an idle timeout
+    (`VIBERPIT_SESSION_IDLE_S`, default 8 h, touched per request). The ambient path never adopts a
+    passkey session row. Turning the flag off ends every passkey session. A passkey caller counts as
+    a person for human-only gates.
+  - *Revocation and recovery*: deleting a credential revokes it and every session it minted.
+    Recovery from a lost passkey is the tailnet path: sign in over Tailscale, revoke, re-enrol.
+    There is no other recovery channel.
+  - *Client*: `/login` drives `navigator.credentials.get`. An unauthenticated 401 carries
+    `error.login: "passkey"` when passkeys are on, which is what sends the SPA there.
+    Settings › Security lists, enrols and revokes passkeys.
 - HTTPS/trusted-proxy hardening for tailnet fronting is in flight in open PR #811 (nginx vhost +
   tailscale cert + `X-Real-IP` trusted-proxy fix), building on PR #648 (loopback bind + documented
   `tailscale serve`).
 
 **Evidence** —
-- `server/auth/identity.py` — Tailscale header/`whois` identity resolution + allowlist + LAN-open guest.
+- `server/auth/identity.py` — Tailscale header/`whois` identity resolution + the one allowlist rule.
+- `server/auth/exposure.py` — the exposure tier validator.
 - `server/auth/middleware.py` — `IdentityMiddleware`, signed cookie, `AppSession` reuse, janitor prune.
-- `server/auth/webauthn.py` — disabled passkey scaffold (`WEBAUTHN_ENABLED`, `NotImplementedError`).
+- `server/auth/webauthn.py` — passkey ceremonies, credentials, passkey sessions (#1410).
 - `server/api/auth.py` — `GET /api/auth/me`, `POST /api/auth/logout`.
 - `server/mcp_auth.py` — `McpAuthManager` paste-back MCP OAuth.
 - `server/audit.py` — redaction patterns + `record_audit`.
-- PRs: #632 (LAN-open), #673 (0.0.0.0 warning gate), #837 (app_sessions index + prune), #830 (session
+- PRs: #632 (LAN-open, removed in #1410), #673 (0.0.0.0 warning gate), #837 (app_sessions index + prune), #830 (session
   reuse + prune), #877 (headless MCP OAuth), #232 (no MCP prompt in permissive setup), #648 (loopback +
   tailscale serve), #811 (open — HTTPS via tailnet). Related: #144 (redaction ReDoS fix).

@@ -160,6 +160,14 @@ RECONCILE_EXEMPT: set[str] = {
     "session_holds.session_id",
     "session_holds.kind",
     "session_holds.created_at",
+    # webauthn_credentials (#1410): a NEW table (create_all builds it; Alembic
+    # 0121_webauthn_credentials is the record). webauthn.complete_registration supplies
+    # every NOT NULL column at INSERT; a passkey with no owner, id or key is meaningless.
+    "webauthn_credentials.identity",
+    "webauthn_credentials.credential_id",
+    "webauthn_credentials.public_key",
+    "webauthn_credentials.sign_count",
+    "webauthn_credentials.created_at",
 }
 
 

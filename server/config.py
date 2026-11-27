@@ -164,7 +164,7 @@ def _dotenv_file() -> str | None:
     ``env_file`` against the working directory, which for the deployed edge and
     daemon is the deploy checkout: writable by the operator's user, so by every
     agent session. Read live, that file would let a session change security
-    settings (VIBERPIT_ALLOW_UNAUTHENTICATED, the allowlist, …) on the running
+    settings (VIBERPIT_EXPOSURE, the allowlist, …) on the running
     edge. systemd sets ``INVOCATION_ID`` for every unit it starts, so a managed
     process takes its config from the root-owned EnvironmentFile alone; dev runs
     from a shell keep the ``.env`` convenience.
@@ -208,12 +208,18 @@ try:
         # there); this adds addresses for any other front-end that stamps the header,
         # e.g. a container gateway. Empty = loopback only.
         trusted_proxy_ips: str = Field(default="", alias="VIBERPIT_TRUSTED_PROXY_IPS")
-        # Opt-in LAN-open mode: admit clients that present NO Tailscale identity as a
-        # synthetic guest instead of 401'ing them. Defaults OFF so the deployed,
-        # Tailscale-fronted posture stays locked down — only flip it on a trusted,
-        # isolated network where the LAN itself is the trust boundary (issue: dobby.local).
-        allow_unauthenticated: bool = Field(
-            default=False, alias="VIBERPIT_ALLOW_UNAUTHENTICATED")
+        # Exposure tier (#1410, server/auth/exposure.py): loopback | tailnet | lan |
+        # public. Validated fail-closed at edge startup; each tier names what it
+        # requires. A device without Tailscale signs in with a passkey — there is no
+        # anonymous path in any tier (constitution IV).
+        exposure: str = Field(default="tailnet", alias="VIBERPIT_EXPOSURE")
+        # App-level strong authentication (passkeys / WebAuthn, server/auth/webauthn.py).
+        # Off = no /api/auth/webauthn/* or /api/auth/credentials* route exists. Required
+        # in the lan and public tiers.
+        webauthn_enabled: bool = Field(default=False, alias="VIBERPIT_WEBAUTHN_ENABLED")
+        # Idle timeout for a passkey session: untouched this long, the cookie stops
+        # authenticating (the 24 h absolute expiry still applies).
+        session_idle_s: int = Field(default=28800, alias="VIBERPIT_SESSION_IDLE_S")
         github_app_id: int | None = Field(default=None, alias="VIBERPIT_GITHUB_APP_ID")
         github_app_installation_id: int | None = Field(
             default=None, alias="VIBERPIT_GITHUB_APP_INSTALLATION_ID")
@@ -668,9 +674,15 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         trusted_proxy_ips: str = dataclasses.field(
             default_factory=lambda: os.environ.get("VIBERPIT_TRUSTED_PROXY_IPS", "")
         )
-        allow_unauthenticated: bool = dataclasses.field(
+        exposure: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_EXPOSURE", "tailnet")
+        )
+        webauthn_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get(
-                "VIBERPIT_ALLOW_UNAUTHENTICATED", "false").lower() in ("1", "true", "yes", "on")
+                "VIBERPIT_WEBAUTHN_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+        )
+        session_idle_s: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("VIBERPIT_SESSION_IDLE_S", "28800"))
         )
         github_app_id: int | None = dataclasses.field(
             default_factory=lambda: (

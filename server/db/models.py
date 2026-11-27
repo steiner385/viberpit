@@ -451,6 +451,32 @@ class AppSession(Base):
     # `token_id` names the AssistantToken whose revocation/expiry ends the session.
     scope: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     token_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # How the session was established (#1410): NULL ⇒ "tailscale" (ambient identity,
+    # re-verified on every request — the cookie is bookkeeping); "passkey" ⇒ the signed
+    # cookie IS the authenticator, bound by `credential_id` to the WebAuthnCredential
+    # that minted it, and subject to the idle timeout through `last_seen_at`.
+    auth_method: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    credential_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+
+
+class WebAuthnCredential(Base):
+    """A registered passkey (#1410, server/auth/webauthn.py). Public key only — nothing
+    secret is at rest. `identity` is the same string the tailnet path produces, so
+    VIBERPIT_TAILNET_ALLOWLIST governs both. Binary values are stored base64url."""
+
+    __tablename__ = "webauthn_credentials"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    identity: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    credential_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    public_key: Mapped[str] = mapped_column(String, nullable=False)
+    sign_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    transports: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    label: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 
 
 class AuditEvent(Base):

@@ -14,26 +14,26 @@ from server.config import get_settings
 @pytest.fixture
 def hostile_dotenv(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text(
-        "VIBERPIT_ALLOW_UNAUTHENTICATED=true\n"
+        "VIBERPIT_EXPOSURE=public\n"
         "VIBERPIT_TAILNET_ALLOWLIST=attacker@example.com\n"
     )
     monkeypatch.chdir(tmp_path)
     for prefix in (brand.ENV_PREFIX, brand.LEGACY_ENV_PREFIX):
-        for name in ("ALLOW_UNAUTHENTICATED", "TAILNET_ALLOWLIST"):
+        for name in ("EXPOSURE", "TAILNET_ALLOWLIST"):
             monkeypatch.delenv(f"{prefix}{name}", raising=False)
 
 
 def test_systemd_service_ignores_dotenv(hostile_dotenv, monkeypatch):
     monkeypatch.setenv("INVOCATION_ID", "0123456789abcdef0123456789abcdef")
     settings = get_settings()
-    assert settings.allow_unauthenticated is False
+    assert settings.exposure == "tailnet"
     assert settings.tailnet_allowlist == ""
 
 
 def test_dev_run_still_reads_dotenv(hostile_dotenv, monkeypatch):
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     settings = get_settings()
-    assert settings.allow_unauthenticated is True
+    assert settings.exposure == "public"
     assert settings.tailnet_allowlist == "attacker@example.com"
 
 

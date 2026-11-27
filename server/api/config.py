@@ -113,6 +113,8 @@ async def get_config(request: Request, _identity: str = Depends(current_identity
         # One-tap MCP sign-in needs the edge's own https origin for the OAuth callback;
         # without VIBERPIT_PUBLIC_ORIGIN every server signs in by paste-back.
         "oneTapEnabled": settings.public_origin is not None,
+        # Passkey sign-in (#1410): the SPA offers Settings › Security only when on.
+        "webauthnEnabled": bool(settings.webauthn_enabled),
         # Per-engine offerability + capabilities. The browser renders the Agent
         # selector and every engine-conditional control from THIS, so a runner that
         # cannot start Codex is never offered as a Codex choice.

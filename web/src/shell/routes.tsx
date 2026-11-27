@@ -82,6 +82,7 @@ import {
 import { Skeleton } from '@/ui/Skeleton'
 import { PageContent } from '@/ui/PageContent'
 import { RouteErrorFallback } from './RouteErrorFallback'
+import { LOGIN_PATH } from '@/lib/loginRedirect'
 
 /**
  * ## Which pages are code-split, and why not all of them (#1411)
@@ -118,6 +119,9 @@ const SettingsPage = lazy(() => import('@/features/settings/SettingsPage')
  *  opened rarely, and `initialJs` has no headroom for it. */
 const RemoteSessionPage = lazy(() => import('@/features/sessions/remote')
   .then((m) => ({ default: m.RemoteSessionPage })))
+/** Passkey sign-in (#1410). Only reached on a server with passkeys on, after a 401 — never on the critical path. */
+const LoginPage = lazy(() => import('@/features/auth/LoginPage')
+  .then((m) => ({ default: m.LoginPage })))
 const SettingsIndexPage = lazy(() => import('@/features/settings/SettingsIndexPage')
   .then((m) => ({ default: m.SettingsIndexPage })))
 
@@ -439,6 +443,13 @@ export function buildRoutes(layout: ReactElement): RouteObject[] {
         element: layout,
         children: PAGES.map((page) => ({ ...page, errorElement: <RouteErrorFallback /> })),
       }],
+    },
+    // Passkey sign-in (#1410) sits OUTSIDE the layout: the shell polls, badges and
+    // opens `/ws` on mount, and all of that would 401 before there is a session.
+    {
+      path: LOGIN_PATH,
+      element: <Suspense fallback={null}><LoginPage /></Suspense>,
+      errorElement: <RouteErrorFallback />,
     },
   ]
 }

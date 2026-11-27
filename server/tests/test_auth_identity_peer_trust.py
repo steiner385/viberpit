@@ -8,9 +8,8 @@ other caller presenting that header is asserting an identity it was never given,
 the header must be ignored unless the peer is trusted.
 
 An untrusted header is treated as *absent*, not as an error: it falls through to the
-peer-verified `tailscale whois` path and then to the existing LAN-open / deny logic.
-Hard-denying would break the documented `allow_unauthenticated` guest posture for any
-client that happens to send the header.
+peer-verified `tailscale whois` path and then to deny (#1410 removed the LAN-open
+guest: an unidentified caller is refused in every exposure tier).
 """
 import ipaddress
 import logging
@@ -19,7 +18,7 @@ import pytest
 from starlette.requests import Request
 from starlette.websockets import WebSocket
 
-from server.auth.identity import OPEN_LAN_IDENTITY, verify_identity
+from server.auth.identity import verify_identity
 
 IDENTITY = "tony@example.com"
 LOOPBACK = ("127.0.0.1", 51000)
@@ -58,9 +57,8 @@ def _no_tailscale_binary(cmd, **kwargs):
 
 @pytest.fixture(autouse=True)
 def _locked_down(monkeypatch):
-    """Deployed posture: an allowlist is set and LAN-open mode is off."""
+    """Deployed posture: an allowlist is set."""
     monkeypatch.setenv("VIBERPIT_TAILNET_ALLOWLIST", IDENTITY)
-    monkeypatch.setenv("VIBERPIT_ALLOW_UNAUTHENTICATED", "false")
     monkeypatch.delenv("VIBERPIT_TRUSTED_PROXY_IPS", raising=False)
     # `tailscale whois` shells out to the host daemon; stub it so these tests exercise
     # the header-trust decision rather than the machine's real tailnet membership.
@@ -114,10 +112,11 @@ def test_header_from_an_untrusted_peer_that_merely_resembles_a_self_ip_is_reject
     assert verify_identity(_http(UNTRUSTED, Tailscale_User_Login=IDENTITY)) is None
 
 
-def test_untrusted_header_is_ignored_not_fatal_in_lan_open_mode(monkeypatch):
-    """LAN-open admits the caller as a guest — it must not inherit the spoofed identity."""
+def test_untrusted_header_is_unidentified_even_with_the_deleted_lan_open_flag(monkeypatch):
+    """The removed LAN-open flag, still present in a stale env file, admits nobody: the
+    spoofed header is dropped and the caller stays unidentified (#1410, AC-G12.3)."""
     monkeypatch.setenv("VIBERPIT_ALLOW_UNAUTHENTICATED", "true")
-    assert verify_identity(_http(UNTRUSTED, Tailscale_User_Login=IDENTITY)) == OPEN_LAN_IDENTITY
+    assert verify_identity(_http(UNTRUSTED, Tailscale_User_Login=IDENTITY)) is None
 
 
 def test_request_without_a_peer_address_is_rejected():

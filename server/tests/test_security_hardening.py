@@ -329,7 +329,9 @@ def test_cookie_secure_true_when_var_absent():
 
 
 # ---------------------------------------------------------------------------
-# Part E — boot gate: non-loopback bind + empty allowlist + no VIBERPIT_DEV
+# Part E — boot gate: the lifespan enforces the exposure policy (#1410). The
+# tier × rule matrix itself lives in test_exposure_policy.py; these prove the
+# lifespan actually runs it, fail-closed, before serving.
 # ---------------------------------------------------------------------------
 
 
@@ -343,111 +345,56 @@ def _run_async(coro):
         loop.close()
 
 
-def test_boot_gate_raises_on_non_loopback_empty_allowlist():
-    """_lifespan raises RuntimeError when binding non-loopback without allowlist or VIBERPIT_DEV."""
+def _boot(env: dict[str, str]) -> None:
     from server.app import _lifespan
     from fastapi import FastAPI
 
-    env = {
-        "VIBERPIT_HOST": "0.0.0.0",
-        "VIBERPIT_TAILNET_ALLOWLIST": "",
-        "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
-    }
-    # Remove VIBERPIT_DEV if set
-    clean_env = {k: v for k, v in os.environ.items() if k != "VIBERPIT_DEV"}
-    clean_env.update(env)
-
+    clean_env = {k: v for k, v in os.environ.items()
+                 if k not in ("VIBERPIT_DEV", "VIBERPIT_EXPOSURE")}
+    clean_env.update({"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:", **env})
     with patch.dict(os.environ, clean_env, clear=True):
         from server.sessions.orchestrator import SessionOrchestrator
         from server.reauth import ReauthManager
-        orch = SessionOrchestrator(poll_interval=9999.0)
         app = FastAPI(lifespan=_lifespan)
-        app.state.orchestrator = orch
+        app.state.orchestrator = SessionOrchestrator(poll_interval=9999.0)
         app.state.reauth = ReauthManager()
 
         async def _run():
             async with _lifespan(app):
                 pass
 
-        with pytest.raises(RuntimeError, match="refusing to start"):
-            _run_async(_run())
-
-
-def test_boot_gate_allows_non_loopback_with_allowlist():
-    """Non-loopback bind is allowed when tailnet_allowlist is set."""
-    from server.app import _lifespan
-    from fastapi import FastAPI
-
-    env = {
-        "VIBERPIT_HOST": "0.0.0.0",
-        "VIBERPIT_TAILNET_ALLOWLIST": "user@example.com",
-        "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
-    }
-    clean_env = {k: v for k, v in os.environ.items() if k != "VIBERPIT_DEV"}
-    clean_env.update(env)
-
-    with patch.dict(os.environ, clean_env, clear=True):
-        from server.sessions.orchestrator import SessionOrchestrator
-        from server.reauth import ReauthManager
-        orch = SessionOrchestrator(poll_interval=9999.0)
-        app = FastAPI(lifespan=_lifespan)
-        app.state.orchestrator = orch
-        app.state.reauth = ReauthManager()
-
-        async def _run():
-            async with _lifespan(app):
-                pass
-
-        # Should not raise
         _run_async(_run())
+
+
+def test_boot_gate_raises_on_non_loopback_empty_allowlist():
+    """The default (tailnet) tier refuses a wildcard bind with no allowlist."""
+    with pytest.raises(RuntimeError, match="refusing to start: exposure=tailnet"):
+        _boot({"VIBERPIT_HOST": "0.0.0.0", "VIBERPIT_TAILNET_ALLOWLIST": ""})
+
+
+def test_boot_gate_refuses_wildcard_bind_even_with_allowlist():
+    """An allowlist no longer makes a 0.0.0.0 bind acceptable in the tailnet tier: the
+    old guard let it start silently (spec §G12 current state)."""
+    with pytest.raises(RuntimeError, match="neither loopback nor a tailnet address"):
+        _boot({"VIBERPIT_HOST": "0.0.0.0", "VIBERPIT_TAILNET_ALLOWLIST": "user@example.com",
+               "VIBERPIT_PUBLIC_ORIGIN": "https://edge.example.test"})
+
+
+def test_boot_gate_allows_loopback_bind_with_allowlist_and_origin():
+    _boot({"VIBERPIT_HOST": "127.0.0.1", "VIBERPIT_TAILNET_ALLOWLIST": "user@example.com",
+           "VIBERPIT_PUBLIC_ORIGIN": "https://edge.example.test"})
 
 
 def test_boot_gate_allows_non_loopback_with_dev_flag():
-    """Non-loopback bind + empty allowlist is allowed when VIBERPIT_DEV=1."""
-    from server.app import _lifespan
-    from fastapi import FastAPI
-
-    env = {
-        "VIBERPIT_HOST": "0.0.0.0",
-        "VIBERPIT_TAILNET_ALLOWLIST": "",
-        "VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:",
-        "VIBERPIT_DEV": "1",
-    }
-    with patch.dict(os.environ, env):
-        from server.sessions.orchestrator import SessionOrchestrator
-        from server.reauth import ReauthManager
-        orch = SessionOrchestrator(poll_interval=9999.0)
-        app = FastAPI(lifespan=_lifespan)
-        app.state.orchestrator = orch
-        app.state.reauth = ReauthManager()
-
-        async def _run():
-            async with _lifespan(app):
-                pass
-
-        # Should not raise (just warn)
-        _run_async(_run())
+    """VIBERPIT_DEV=1 relaxes the tailnet tier to a warning."""
+    _boot({"VIBERPIT_HOST": "0.0.0.0", "VIBERPIT_TAILNET_ALLOWLIST": "", "VIBERPIT_DEV": "1"})
 
 
-def test_security_warning_fires_at_most_once_per_process(tmp_path):
-    """SECURITY/0.0.0.0 warning fires exactly once even when _lifespan is entered twice.
-
-    Regression guard for issue #669: the module-level _security_warned flag must
-    suppress duplicate emissions that arise from hot-reload cycles or rapid watchdog
-    restarts re-entering _lifespan within the same Python process.
-    """
+def test_security_warning_fires_at_most_once_per_process():
+    """The relaxed-tier SECURITY warning fires once even when _lifespan re-enters
+    (issue #669: hot reload and watchdog restarts re-enter it in one process)."""
     import logging
-    import server.app as _app_module
-    from server.app import _lifespan
-    from fastapi import FastAPI
-    from unittest.mock import patch as _patch
-
-    env = {
-        "VIBERPIT_HOST": "0.0.0.0",
-        "VIBERPIT_TAILNET_ALLOWLIST": "",
-        "VIBERPIT_DB_URL": f"sqlite+aiosqlite:///{tmp_path / 'warn_test.db'}",
-        "VIBERPIT_DEV": "1",
-    }
+    from server.auth import exposure
 
     captured: list[str] = []
 
@@ -458,27 +405,15 @@ def test_security_warning_fires_at_most_once_per_process(tmp_path):
     handler = _CapturingHandler()
     server_log = logging.getLogger("server")
     server_log.addHandler(handler)
+    exposure._warned_dev.clear()
     try:
-        # Reset the module flag so this test is independent of run order.
-        with patch.dict(os.environ, env), \
-             _patch.object(_app_module, "_security_warned", False):
-            from server.sessions.orchestrator import SessionOrchestrator
-            from server.reauth import ReauthManager
-
-            async def _run_twice():
-                for _ in range(2):
-                    orch = SessionOrchestrator(poll_interval=9999.0)
-                    app = FastAPI(lifespan=_lifespan)
-                    app.state.orchestrator = orch
-                    app.state.reauth = ReauthManager()
-                    async with _lifespan(app):
-                        pass
-
-            _run_async(_run_twice())
+        for _ in range(2):
+            _boot({"VIBERPIT_HOST": "0.0.0.0", "VIBERPIT_TAILNET_ALLOWLIST": "",
+                   "VIBERPIT_DEV": "1"})
     finally:
         server_log.removeHandler(handler)
 
-    security_lines = [m for m in captured if "SECURITY" in m and "EMPTY tailnet" in m]
+    security_lines = [m for m in captured if "SECURITY" in m and "exposure=tailnet" in m]
     assert len(security_lines) == 1, (
         f"Expected exactly 1 SECURITY warning, got {len(security_lines)}: {security_lines}"
     )

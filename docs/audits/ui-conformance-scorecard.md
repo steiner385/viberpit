@@ -9,7 +9,7 @@ One table per leaf, updated by the PR that moves it. Evidence is sanitized: the 
 specs run on a synthetic, frozen-clock backend (`web/e2e/fixtures/seed.ts`), so no screenshot,
 trace or axe report carries a real account, prompt or transcript.
 
-Last updated: 2026-11-26 (G10, #1408).
+Last updated: 2026-11-27 (G12, #1410).
 
 ## G10 — Server-enforced read-only kiosk identity (#1408)
 
@@ -56,6 +56,37 @@ Each guard was broken on purpose and the test run, then restored.
   for a display session), so a blocked read never leaves the browser and a new hook is covered
   without an `enabled:` copy. Residual: the first paint races `/auth/me`, so each off-list query
   can still 403 once before the scope is known.
+
+## G12 — Exposure policy and strong authentication (#1410)
+
+Server, web and docs in one PR (plan PR-E/F/G folded together). Gate decisions taken at the plan's
+recommended defaults, as G10 did: P2 (a) remove the anonymous LAN branch, P5 tailnet-only recovery,
+Q6 ASVS L2 for `lan`/`public` and L1 for `tailnet`.
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| Fail-closed exposure policy (FR-G12.1/.2, AC-G12.1) | Done | `server/tests/test_exposure_policy.py`: every tier's satisfied config starts; 20 refusal cells each raise naming tier + rule + fix; `VIBERPIT_DEV=1` relaxes only loopback/tailnet (one warning) and never lan/public. The lifespan runs it (`test_security_hardening.py` Part E). |
+| One loopback predicate (FR-G12.4, AC-G12.2) | Done | AST guard `test_no_loopback_literal_comparisons_outside_identity`, proven able to fail on the old `app.py` shape. The one other hit, `library/plugin_policy.py`'s SSRF refusal of the hostname `localhost`, is a DNS-name rule `host_is_loopback` (IP-only) cannot answer, so it stays. |
+| No unidentified caller in any tier (FR-G12.3, AC-G12.3) | Done | `test_auth.py::test_unidentified_caller_is_401_in_every_tier` (with the deleted flag still in env); `allow_unauthenticated` and `OPEN_LAN_IDENTITY` gone; tests that used LAN-open to stand for an agent-class caller now assert as `lan@local` explicitly. |
+| Real `authMode` (FR-G12.5) | Done | `/api/auth/me` reads `request.state.auth_method` (`tailscale`/`passkey`/`display`/`bearer`), set where identity is resolved. |
+| Passkey ceremonies with a software authenticator (AC-G12.4) | Done | `server/tests/test_webauthn.py` with `_soft_authenticator.py` (ES256, `none` attestation) driving real py_webauthn verification: register as a tailnet identity → login with no ambient identity → `Secure; HttpOnly; SameSite=Strict` cookie → cookie-only `/me` = `passkey`. |
+| Negative identity paths (AC-G12.5) | Done | Same file: enrol refused for unidentified (401), display scope, and a non-person local caller (403); replayed challenge 400; revoked credential 401; foreign-origin assertion 401 + audit; sign-count regression 401 + audit; tampered cookie 401. |
+| Login rate limit (AC-G12.6) | Done | 429 + `Retry-After` after the burst; the limiter is `server/api/ratelimit.py`'s (asserted by identity); one `auth.passkey.fail` audit row per failure. |
+| Idle/absolute expiry (AC-G12.7) | Done | Touch advances `last_seen_at`; idle + 1 s → 401; past the 24 h absolute → 401. |
+| Revocation and tailnet recovery (AC-G12.8) | Done | Delete revokes the credential and its sessions; the same identity still signs in over Tailscale. |
+| Off means absent (AC-G12.10) | Done | Flag off → all six routes 404, `/api/config.webauthnEnabled=false`, passkey sessions stop authenticating; `grep NotImplementedError server/auth/` empty. |
+| Persistent secret in lan/public (AC-G12.9) | Done | `test_lan_and_public_require_persistent_secret`; tailnet keeps the one-shot warning. |
+| Shell reachable for passkey sign-in (FR-G12.12) | Done | With passkeys on, a GET/HEAD the SPA mount answers loads without identity (exact route match: `/docs`, `/openapi.json`, every `/api` route stay 401). Without this a LAN device could not reach `/login`. |
+| Web: `/login`, 401 → `/login`, Settings › Security (AC-G12.11) | Done | See the PR's web test list; e2e `web/e2e/passkey-login.spec.ts` uses a CDP virtual authenticator. |
+
+### Not done here (and why)
+
+- **Real-device passkey verification and the live smoke (AC-X.7).** Registration, login, recovery
+  and revocation with a real platform authenticator on the deployed edge need a person and a
+  deployed build. The issue stays open for that.
+- **`public` is not turned on anywhere.** HSTS is attested by the operator
+  (`VIBERPIT_INGRESS_HSTS=true`), not probed. No ingress evidence exists, because no public ingress
+  exists.
 
 ## G13 — Field performance and bundle budget (#1411)
 

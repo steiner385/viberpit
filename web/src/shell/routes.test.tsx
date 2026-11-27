@@ -726,3 +726,19 @@ describe('/kiosk', () => {
     expect(isAppRoute('/kiosk')).toBe(false)
   })
 })
+
+// #1410: passkey sign-in renders OUTSIDE the layout too — the shell's polls and
+// `/ws` would all 401 before there is a session.
+describe('/login', () => {
+  it('matches the login route, not the layout catch-all', () => {
+    const matched = matchRoutes(buildRoutes(<TestLayout />), '/login')!
+    expect(matched).toHaveLength(1)
+    expect(matched[0].route.path).toBe('/login')
+  })
+
+  it('renders the sign-in page without the layout', async () => {
+    renderAt('/login?next=%2Fpipeline')
+    expect(await screen.findByRole('button', { name: 'Sign in with a passkey' })).toBeInTheDocument()
+    expect(screen.queryByTestId('url')).toBeNull()
+  })
+})

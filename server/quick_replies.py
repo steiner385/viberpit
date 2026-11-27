@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.aio import run_to_completion
 from server.audit import redact_text
-from server.auth.identity import OPEN_LAN_IDENTITY
+from server.auth.identity import LEGACY_LAN_IDENTITY
 from server.db import db_session, dialect_insert
 from server.db.models import QuickReplyProfile
 from server.pm.fenced_json import extract_fenced_json
@@ -49,7 +49,7 @@ counts or add examples. An empty array is valid when no reusable replies exist."
 
 
 def _personal(identity: str) -> bool:
-    return bool(identity and identity not in {SYSTEM_IDENTITY, OPEN_LAN_IDENTITY})
+    return bool(identity and identity not in {SYSTEM_IDENTITY, LEGACY_LAN_IDENTITY})
 
 
 def _candidate(text: str, *, limit: int = _MAX_TEXT) -> bool:

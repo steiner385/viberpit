@@ -82,7 +82,7 @@ def test_bearer_response_sets_no_cookie():
 # fleet-shared master key, so a daemon that only has the master key (the runbook's
 # "must match on every host" secret) and an edge that additionally has a session
 # secret sign with DIFFERENT keys: every assistant token fails signature at the edge
-# and, in LAN-open mode, the call is silently admitted as the `lan@local` guest.
+# and, in the since-removed LAN-open mode, the call was silently admitted as the `lan@local` guest.
 # Sessions the drawer created were then owned by `lan@local`, so the real user's
 # AskUserQuestion answers were rejected as an identity mismatch ("That question is
 # no longer pending" over a card that was very much pending).
@@ -121,34 +121,21 @@ def test_internal_token_minted_with_master_key_only_verifies_where_session_secre
     assert internal_token.verify_token(tok) is True
 
 
-class _LanOpen:
-    """The real settings with LAN-open mode switched on."""
-
-    def __init__(self, inner):
-        self._inner = inner
-
-    def __getattr__(self, name):
-        if name == "allow_unauthenticated":
-            return True
-        return getattr(self._inner, name)
-
-
-def test_invalid_assistant_bearer_from_loopback_is_401_not_lan_guest(monkeypatch):
+def test_invalid_assistant_bearer_from_loopback_is_401_not_ambient(monkeypatch):
     """A PRESENTED `ccas1:` token that fails verification must be refused outright.
 
-    Falling through to the ordinary identity resolution let the bad token pick up
-    the LAN-open guest identity — full guest privileges on every route, and session
-    ownership stamped `lan@local` — with nothing in the logs. The control half shows
-    the guest path itself still works for a caller that presents no token at all."""
-    from server.auth import identity as _identity
+    Falling through to the ordinary identity resolution once let the bad token pick up
+    the (since removed, #1410) LAN-open guest identity — full privileges on every route
+    and session ownership stamped `lan@local` — with nothing in the logs. It must fail
+    with its own code even where an ambient identity WOULD resolve; the control half
+    shows that ambient identity really does resolve for a caller with no token."""
     with patch.dict(os.environ, _ENV):
-        real = _identity.get_settings
-        monkeypatch.setattr(_identity, "get_settings", lambda: _LanOpen(real()))
         c = TestClient(_client().app, client=("127.0.0.1", 5000))
-        r = c.get("/api/auth/me", headers={"Authorization": "Bearer ccas1:not-a-real-token"})
+        owner = {"Tailscale-User-Login": "owner@example.com"}
+        r = c.get("/api/auth/me", headers={
+            **owner, "Authorization": "Bearer ccas1:not-a-real-token"})
         assert r.status_code == 401
         assert r.json()["error"]["code"] == "ASSISTANT_TOKEN_INVALID"
-        # Control: LAN-open mode is on, so a token-less loopback caller IS a guest.
-        r2 = c.get("/api/auth/me")
+        r2 = c.get("/api/auth/me", headers=owner)
         assert r2.status_code == 200
-        assert r2.json()["identity"] == "lan@local"
+        assert r2.json()["identity"] == "owner@example.com"

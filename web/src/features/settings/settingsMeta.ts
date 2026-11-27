@@ -54,6 +54,10 @@ const META = [
   // people — a display link is another way the workspace is shown.
   { id: 'displays',      group: 'workspace', label: 'Display links',
     description: 'Read-only links for wall displays: each shows the pipeline and nothing else, and can be revoked.', keywords: ['kiosk', 'wall', 'tv', 'token', 'display'] },
+  // #1410: how you sign in when Tailscale cannot vouch for you. Beside Display
+  // links — both are ways into this install from outside the tailnet.
+  { id: 'security',      group: 'workspace', label: 'Security',
+    description: 'Passkeys that can sign you in to this server, and revoking one you no longer use.', keywords: ['passkey', 'webauthn', 'sign in', 'login', 'security key'] },
   { id: 'sessions',      group: 'sessions',  label: 'Defaults',
     // Names the three groups AND keeps the section's own "these are defaults, not
     // locks" caveat, which the registry sentence had dropped.
