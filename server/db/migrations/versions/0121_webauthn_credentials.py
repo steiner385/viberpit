@@ -1,7 +1,7 @@
 """webauthn_credentials + passkey session columns (#1410, G12).
 
-Revision ID: 0120_webauthn_credentials
-Revises: 0119_session_holds
+Revision ID: 0121_webauthn_credentials
+Revises: 0120_auto_resume_opt_out
 
 A new table (``create_all`` installs it whole on both dialects) plus three nullable
 ``app_sessions`` columns (auto-reconciled); this revision is the reviewable record.
@@ -10,8 +10,8 @@ Written by ``server/auth/webauthn.py`` only.
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0120_webauthn_credentials"
-down_revision = "0119_session_holds"
+revision = "0121_webauthn_credentials"
+down_revision = "0120_auto_resume_opt_out"
 branch_labels = None
 depends_on = None
 

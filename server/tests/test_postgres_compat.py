@@ -224,7 +224,7 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     # session_holds (#947, 0119) joins the sweep via created_at/resolved_at; session_id
     # and kind are supplied at INSERT by holds.open_hold and have no default.
     "session_holds": {"session_id": "dtcheck-session", "kind": "question"},
-    # webauthn_credentials (#1410, 0120) joins the sweep via created_at/last_used_at/
+    # webauthn_credentials (#1410, 0121) joins the sweep via created_at/last_used_at/
     # revoked_at; its owner, credential id and public key have no default.
     "webauthn_credentials": {"identity": "dtcheck@example.invalid",
                              "credential_id": "dtcheck-cred", "public_key": "dtcheck-key"},

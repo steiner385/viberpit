@@ -87,8 +87,6 @@ Q6 ASVS L2 for `lan`/`public` and L1 for `tailnet`.
 - **`public` is not turned on anywhere.** HSTS is attested by the operator
   (`VIBERPIT_INGRESS_HSTS=true`), not probed. No ingress evidence exists, because no public ingress
   exists.
-- **`/kiosk` on a device with no identity (#3543)** is only partly addressed. With passkeys on, the
-  shell loads; with them off, a display link still needs a tailnet-identified device.
 
 ## G13 — Field performance and bundle budget (#1411)
 
