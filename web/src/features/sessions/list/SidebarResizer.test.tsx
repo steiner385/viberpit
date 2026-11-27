@@ -46,4 +46,16 @@ describe('SidebarResizer', () => {
     fireEvent.pointerMove(window, { clientX: 250 })
     expect(onResize).not.toHaveBeenCalled()
   })
+
+  it('toggles between max and min on double-click (no drag needed)', () => {
+    const narrow = renderResizer(SIDEBAR_MIN)
+    fireEvent.doubleClick(narrow.handle)
+    expect(narrow.onResize).toHaveBeenCalledWith(SIDEBAR_MAX)
+  })
+
+  it('double-click on a wide panel goes narrow', () => {
+    const { onResize, handle } = renderResizer(SIDEBAR_MAX)
+    fireEvent.doubleClick(handle)
+    expect(onResize).toHaveBeenCalledWith(SIDEBAR_MIN)
+  })
 })

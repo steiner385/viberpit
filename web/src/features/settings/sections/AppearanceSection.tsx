@@ -2,9 +2,9 @@ import * as React from 'react'
 import { useTheme, type ThemeChoice } from '@/shell/theme'
 import { useRailExpanded } from '@/shell/railExpanded'
 import { useNotifyPref } from '@/pipeline/notifyPref'
-import { SIDEBAR_DEFAULT } from '@/lib/sidebarWidth'
+import { SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX } from '@/lib/sidebarWidth'
 import { useSidebarWidth } from '@/lib/useSidebarWidth'
-import { DRAWER_DEFAULT, useDrawerWidth } from '@/shell/drawerWidth'
+import { DRAWER_DEFAULT, DRAWER_MIN, DRAWER_MAX, useDrawerWidth } from '@/shell/drawerWidth'
 import { RadioGroup } from '@/ui/RadioGroup'
 import { Switch } from '@/ui/Switch'
 import { Button } from '@/ui/Button'
@@ -116,7 +116,7 @@ export function AppearanceSection() {
         </SettingRow>
       </SettingsGroup>
 
-      <SettingsGroup legend="Layout" description="Set by dragging the dividers; reset here.">
+      <SettingsGroup legend="Layout" description="Set by dragging the dividers, or with the buttons here (no dragging needed).">
         <SettingRow
           label="Session list width"
           htmlFor="appearance-list-width"
@@ -125,6 +125,24 @@ export function AppearanceSection() {
         >
           <span className="flex items-center gap-2">
             <span className="text-sm text-ink-muted tabular-nums">{listWidth} px</span>
+            <Button
+              type="button"
+              variant="ghost"
+              aria-label="Make session list narrowest"
+              disabled={listWidth === SIDEBAR_MIN}
+              onClick={() => setListWidth(SIDEBAR_MIN)}
+            >
+              Narrow
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              aria-label="Make session list widest"
+              disabled={listWidth === SIDEBAR_MAX}
+              onClick={() => setListWidth(SIDEBAR_MAX)}
+            >
+              Wide
+            </Button>
             <Button
               type="button"
               variant="ghost"
@@ -144,6 +162,24 @@ export function AppearanceSection() {
         >
           <span className="flex items-center gap-2">
             <span className="text-sm text-ink-muted tabular-nums">{drawerWidth} px</span>
+            <Button
+              type="button"
+              variant="ghost"
+              aria-label="Make assistant drawer narrowest"
+              disabled={drawerWidth === DRAWER_MIN}
+              onClick={() => setDrawerWidth(DRAWER_MIN)}
+            >
+              Narrow
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              aria-label="Make assistant drawer widest"
+              disabled={drawerWidth === DRAWER_MAX}
+              onClick={() => setDrawerWidth(DRAWER_MAX)}
+            >
+              Wide
+            </Button>
             <Button
               type="button"
               variant="ghost"
