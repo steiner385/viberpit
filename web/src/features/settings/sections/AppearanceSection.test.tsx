@@ -14,7 +14,7 @@ import { ThemeProvider } from '@/shell/theme'
 import { THEME_STORAGE_KEY } from '@/shell/themeKey'
 import { RAIL_EXPANDED_KEY } from '@/shell/railExpanded'
 import { NOTIFY_PREF_KEY } from '@/pipeline/notifyPref'
-import { SIDEBAR_STORAGE_KEY, SIDEBAR_DEFAULT } from '@/lib/sidebarWidth'
+import { SIDEBAR_STORAGE_KEY, SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX } from '@/lib/sidebarWidth'
 import { useSidebarWidth } from '@/lib/useSidebarWidth'
 import { stubMatchMedia } from '@/test/matchMedia'
 import { AppearanceSection } from './AppearanceSection'
@@ -71,5 +71,13 @@ describe('AppearanceSection', () => {
     // The live column moved too — not just the stored key.
     expect(screen.getByTestId('live-list-width')).toHaveTextContent(String(SIDEBAR_DEFAULT))
     expect(localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe(String(SIDEBAR_DEFAULT))
+  })
+
+  it('widths can be set with single clicks, no dragging (WCAG 2.5.7, #3564)', async () => {
+    mount(<ListColumnProbe />)
+    await userEvent.click(screen.getByRole('button', { name: 'Make session list widest' }))
+    expect(screen.getByTestId('live-list-width')).toHaveTextContent(String(SIDEBAR_MAX))
+    await userEvent.click(screen.getByRole('button', { name: 'Make session list narrowest' }))
+    expect(screen.getByTestId('live-list-width')).toHaveTextContent(String(SIDEBAR_MIN))
   })
 })
