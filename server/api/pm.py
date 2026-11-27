@@ -3329,8 +3329,9 @@ async def close_issues(body: IssueCloseBody, request: Request,
     """Close up to 20 open issues with a stated reason, each after posting the
     operator's short comment on it (signed when the assistant posts it).
 
-    Comment first, then close: an issue is never closed without the explanation,
-    and a comment GitHub rejects stops that ref's close. The close itself is the
+    Live-state check, then comment, then close: an issue is never closed without
+    the explanation, a comment GitHub rejects stops that ref's close, and an issue
+    already closed on GitHub is refused before any comment is posted. The close itself is the
     journaled ``closeIssue`` write (``issue_disposition.close``) through the
     orchestrator seam; ``duplicate`` passes the canonical issue's id along so
     GitHub links the two. Per-ref results, partial success visible."""
@@ -3354,20 +3355,16 @@ async def close_issues(body: IssueCloseBody, request: Request,
             except RepoRetired as exc:
                 why = str(exc)
         result: dict
-        comment_url: str | None = None
         if why is not None:
             result = {"ok": False, "step": "refused", "error": why}
         else:
             assert wi is not None
-            comment_url = await asyncio.to_thread(
-                ci_issues.comment_on_issue, wi.repo or "", int(wi.number or 0), text,
-                automation=False)
-            if comment_url is None:
-                result = {"ok": False, "step": "comment",
-                          "error": "GitHub rejected the comment; the issue was not closed"}
-            else:
-                result = await request.app.state.sessions.pm_issue_close(
-                    wi.id, {"reason": body.reason, "duplicate_of": dup.id if dup else None})
+            # The comment rides in the close request: the seam posts it only after
+            # the live state check, so an already-closed issue gets no stray comment.
+            result = await request.app.state.sessions.pm_issue_close(
+                wi.id, {"reason": body.reason, "duplicate_of": dup.id if dup else None,
+                        "comment": text})
+        comment_url = result.get("commentUrl")
         await record_audit(db=db, type="pm.workitem.close", identity=identity,
                            via=getattr(request.state, "via", None),
                            detail={"ref": ref, "workItemId": wi.id if wi else None,

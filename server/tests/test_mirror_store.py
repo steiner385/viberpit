@@ -61,6 +61,23 @@ def test_upsert_project_items_resolves_work_items_and_prunes_gone():
     assert db.query(GhProjectItem).count() == 0
 
 
+def test_board_item_closed_on_github_closes_the_mirrored_issue_even_when_done():
+    db = _db()
+    project = _seed(db)
+    gid = mirror_store.upsert_gh_project(db, project.id, GhProjectView(
+        node_id="PVT_1", number=7, title="x", updated_at=None))
+    items = [GhProjectItemView(item_node_id="PVTI_1", repo=REPO, number=950, kind="issue",
+                               status="Done", score=None, stage=None, updated_at=None,
+                               content_state="closed"),
+             GhProjectItemView(item_node_id="PVTI_2", repo=REPO, number=951, kind="issue",
+                               status="Done", score=None, stage=None, updated_at=None,
+                               content_state="open")]
+    mirror_store.upsert_project_items(db, gid, items, datetime.now(timezone.utc))
+    db.commit()
+    assert db.query(WorkItem).filter_by(number=950).one().state == "closed"
+    assert db.query(WorkItem).filter_by(number=951).one().state == "open"
+
+
 def test_upsert_relations_sets_parents_and_plans_deps():
     db = _db()
     _seed(db)

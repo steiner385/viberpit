@@ -4,7 +4,7 @@
 The orchestrator seams (``pm_board_status`` / ``pm_issue_close``) and the comment
 helper are stubbed: their own suites pin the journal and the GitHub documents. What
 is pinned here is what the ROUTE decides — per-ref refusals before any write, the
-board's real Status options, comment-before-close, the audit row per ref, and the
+board's real Status options, the comment handed to the close seam, the audit row per ref, and the
 request-level 422s (bulk cap, duplicate without duplicateOf).
 """
 from __future__ import annotations
@@ -112,31 +112,27 @@ def test_board_status_request_validation():
                                                     "status": "Ready"}).status_code == 401
 
 
-def _comment(sink, result="https://github.com/o/r/issues/5#c1"):
-    def fake(repo, number, body, *, automation=True, **kw):
-        sink.append((repo, number, body, automation))
-        return result
-    return fake
-
-
-def test_close_comments_then_closes_each_ref_and_audits():
+def test_close_hands_the_comment_to_the_seam_per_ref_and_audits():
+    """The route no longer posts the comment itself (#3528): it rides in the close
+    request so the seam posts it only after the live state check."""
     with _client() as c:
         ids = seed(c)
-        calls, comments = [], []
+        calls = []
 
         async def seam(work_item_id, request):
             calls.append((work_item_id, request))
-            return {"ok": True, "item": {}}
+            return {"ok": True, "item": {}, "commentUrl": "https://github.com/o/r/issues/5#c1"}
         c.app.state.sessions.pm_issue_close = seam
-        with patch.object(ci_issues, "comment_on_issue", _comment(comments)):
+        with patch.object(ci_issues, "comment_on_issue",
+                          side_effect=AssertionError("route must not comment")):
             r = c.post("/api/pm/issues/close", headers=IDENTITY_HEADERS, json={
                 "refs": ["o/r#5", "o/r#7", "o/r#8"], "reason": "not_planned",
                 "comment": "Not doing this."})
         assert r.status_code == 200, r.text
         body = r.json()
         assert (body["closed"], body["refused"]) == (1, 2)
-        assert comments == [("o/r", 5, "Not doing this.", False)]
-        assert calls == [(ids["o/r#5"], {"reason": "not_planned", "duplicate_of": None})]
+        assert calls == [(ids["o/r#5"], {"reason": "not_planned", "duplicate_of": None,
+                                         "comment": "Not doing this."})]
         rows = {row["ref"]: row for row in body["results"]}
         assert rows["o/r#5"]["commentUrl"].endswith("#c1")
         assert "already closed" in rows["o/r#7"]["error"]
@@ -155,29 +151,27 @@ def test_close_as_duplicate_passes_the_canonical_id_and_refuses_self():
             calls.append((work_item_id, request))
             return {"ok": True}
         c.app.state.sessions.pm_issue_close = seam
-        with patch.object(ci_issues, "comment_on_issue", _comment([])):
-            r = c.post("/api/pm/issues/close", headers=IDENTITY_HEADERS, json={
-                "refs": ["o/r#5", "o/r#6"], "reason": "duplicate", "duplicateOf": "o/r#6",
-                "comment": "Tracked in #6."})
+        r = c.post("/api/pm/issues/close", headers=IDENTITY_HEADERS, json={
+            "refs": ["o/r#5", "o/r#6"], "reason": "duplicate", "duplicateOf": "o/r#6",
+            "comment": "Tracked in #6."})
         rows = {row["ref"]: row for row in r.json()["results"]}
         assert rows["o/r#5"]["ok"] and "itself" in rows["o/r#6"]["error"]
-        assert calls == [(ids["o/r#5"], {"reason": "duplicate", "duplicate_of": ids["o/r#6"]})]
+        assert calls == [(ids["o/r#5"], {"reason": "duplicate", "duplicate_of": ids["o/r#6"],
+                                         "comment": "Tracked in #6."})]
 
 
-def test_close_rejected_comment_never_closes():
+def test_close_passes_the_seams_comment_refusal_through():
     with _client() as c:
         seed(c)
-        calls = []
 
         async def seam(*args):
-            calls.append(args)
-            return {"ok": True}
+            return {"ok": False, "step": "comment",
+                    "error": "GitHub rejected the comment; the issue was not closed"}
         c.app.state.sessions.pm_issue_close = seam
-        with patch.object(ci_issues, "comment_on_issue", _comment([], result=None)):
-            r = c.post("/api/pm/issues/close", headers=IDENTITY_HEADERS, json={
-                "refs": ["o/r#5"], "reason": "completed", "comment": "Done."})
-        assert r.json()["results"][0]["step"] == "comment"
-        assert calls == []
+        r = c.post("/api/pm/issues/close", headers=IDENTITY_HEADERS, json={
+            "refs": ["o/r#5"], "reason": "completed", "comment": "Done."})
+        row = r.json()["results"][0]
+        assert row["step"] == "comment" and row.get("commentUrl") is None
         assert _audits(c, "pm.workitem.close")[0]["ok"] is False
 
 

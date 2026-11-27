@@ -26,6 +26,10 @@ class GhProjectItemView:
     score: float | None
     stage: str | None
     updated_at: str | None
+    #: The content's own GitHub state, lowercased (open | closed | merged). The board
+    #: read is independent of the repo sync's ``since`` watermark, so it is the second
+    #: witness that heals a mirrored issue stuck open after GitHub closed it.
+    content_state: str | None = None
 
 
 def _after(cursor: str | None) -> str:
@@ -169,8 +173,8 @@ def build_project_items_query(project_node_id: str, cursor: str | None) -> str:
         " pageInfo { endCursor hasNextPage }"
         " nodes { id updatedAt"
         " content { __typename"
-        " ... on Issue { number repository { nameWithOwner } }"
-        " ... on PullRequest { number repository { nameWithOwner } } }"
+        " ... on Issue { number state repository { nameWithOwner } }"
+        " ... on PullRequest { number state repository { nameWithOwner } } }"
         " fieldValues(first: 20) { nodes {"
         " ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }"
         " ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2FieldCommon { name } } }"
@@ -203,7 +207,9 @@ def parse_project_items(payload: dict) -> tuple[list[GhProjectItemView], str | N
             repo=(content.get("repository") or {}).get("nameWithOwner") if kind else None,
             number=content.get("number") if kind else None,
             kind=kind, status=status, score=score, stage=stage,
-            updated_at=node.get("updatedAt")))
+            updated_at=node.get("updatedAt"),
+            content_state=(str(content["state"]).lower()
+                           if kind and content.get("state") else None)))
     page = conn.get("pageInfo") or {}
     return items, page.get("endCursor"), bool(page.get("hasNextPage"))
 

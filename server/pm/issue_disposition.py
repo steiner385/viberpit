@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Literal, Self, get_args
 from uuid import uuid4
@@ -167,6 +167,9 @@ class IssueClose(BaseModel):
     reason: CloseReason
     #: Work item id of the canonical issue; required for, and only for, ``duplicate``.
     duplicate_of: str | None = None
+    #: Optional explanation posted on the issue — only after the live state check
+    #: shows it is still open, so a refused close never leaves a stray comment.
+    comment: str | None = None
 
     @model_validator(mode="after")
     def validate_duplicate(self) -> Self:
@@ -177,8 +180,12 @@ class IssueClose(BaseModel):
 
 async def close(db: AsyncSession, *, src: WorkItem, request: IssueClose,
                 fetch: Mutate, mutate: Mutate, now: datetime,
-                ownership: RepoOwnershipSnapshot | None = None) -> dict:
-    """Close *src* with ``request.reason`` through the journal. Caller commits."""
+                ownership: RepoOwnershipSnapshot | None = None,
+                post_comment: Callable[[str], Awaitable[str | None]] | None = None) -> dict:
+    """Close *src* with ``request.reason`` through the journal. Caller commits.
+
+    ``request.comment`` is posted through *post_comment* after the live state check,
+    never before: an already-closed issue is refused without a comment."""
     try:
         project = await require_mutation_owner(db, src.repo or "", snapshot=ownership, allow_missing=True)
     except OwnershipConflict as exc:
@@ -199,13 +206,20 @@ async def close(db: AsyncSession, *, src: WorkItem, request: IssueClose,
         return _FETCH_FAILED
     if src.state != "open":
         return {"ok": False, "step": "conflict", "error": "Issue is already closed on GitHub"}
+    comment_url: str | None = None
+    if request.comment and post_comment is not None:
+        comment_url = await post_comment(request.comment)
+        if comment_url is None:
+            return {"ok": False, "step": "comment",
+                    "error": "GitHub rejected the comment; the issue was not closed"}
     values: dict[str, str] = {"stateReason": request.reason.upper()}
     if duplicate_node:
         values["duplicateIssueId"] = duplicate_node
     mutation = Mutation("close_issue", src.gh_node_id, None,
                         {"title": src.title, "body": src.body, "state": src.state}, values,
                         f"issue-close:{src.repo}#{src.number}")
-    return await _write(db, src=src, mutation=mutation, batch="issue-close",
-                        confirms=lambda issue: (issue["state"] == "CLOSED"
-                                                and issue.get("stateReason") == values["stateReason"]),
-                        mutate=mutate, now=now, project=project)
+    result = await _write(db, src=src, mutation=mutation, batch="issue-close",
+                          confirms=lambda issue: (issue["state"] == "CLOSED"
+                                                  and issue.get("stateReason") == values["stateReason"]),
+                          mutate=mutate, now=now, project=project)
+    return {**result, "commentUrl": comment_url} if comment_url else result
