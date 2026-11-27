@@ -20,6 +20,43 @@ from typing import Any
 from server.github.deploy_envs import EnvCategory, classify_env
 
 
+def env_categories_present(prs: Sequence[Any]) -> set[EnvCategory]:
+    """The deploy categories a repo is tracked in: those at least one merged PR
+    in the window is live in (``backlog_from_prs``'s "present" rule)."""
+    present: set[EnvCategory] = set()
+    for pr in prs:
+        if getattr(pr, "merged", False) or pr.state == "merged":
+            present |= {c for e in pr.deployed_envs if (c := classify_env(e))}
+    return present
+
+
+def awaiting_categories(pr: Any, present: set[EnvCategory]) -> set[EnvCategory]:
+    """The tracked categories merged ``pr`` is not live in yet — THE per-PR rule
+    behind both ``backlog_from_prs`` and the board's deploy stage."""
+    live = {c for e in pr.deployed_envs if (c := classify_env(e))}
+    return present - live
+
+
+def deploy_wait(
+    merged_at: str | None,
+    qa_live_at: str | None,
+    prod_live_at: str | None,
+    newest_prod_merged_at: str | None,
+) -> str | None:
+    """What a configured repo's merged PR waits on: ``'qa'``, ``'prod'`` or None.
+
+    THE rule behind ``compute_repo_deploy``'s awaitingQa/awaitingProd and the
+    board's qa-deploy/awaiting-prod stages, so the deploy block and the Deploying
+    tile count the same PRs. None = live in prod, or superseded (#205): merged
+    before the newest prod-live merge, so it rolled out with it.
+    """
+    if prod_live_at:
+        return None
+    if newest_prod_merged_at and merged_at and merged_at < newest_prod_merged_at:
+        return None
+    return "prod" if qa_live_at else "qa"
+
+
 def backlog_from_prs(prs: Sequence[Any]) -> dict | None:
     """Per-repo qa/prod/admin deploy backlog from GitHub-Deployments data.
 
@@ -36,19 +73,13 @@ def backlog_from_prs(prs: Sequence[Any]) -> dict | None:
     (no backlog line). Always returns all three keys when non-None.
     """
     merged = [p for p in prs if getattr(p, "merged", False) or p.state == "merged"]
-    live_per_pr: list[set[EnvCategory]] = []
-    present: set[EnvCategory] = set()
-    for pr in merged:
-        cats = {c for e in pr.deployed_envs if (c := classify_env(e))}
-        present |= cats
-        live_per_pr.append(cats)
+    present = env_categories_present(merged)
     if not present:
         return None
     counts = {"qa": 0, "prod": 0, "admin": 0}
-    for cats in live_per_pr:
-        for cat in present:
-            if cat not in cats:
-                counts[cat] += 1
+    for pr in merged:
+        for cat in awaiting_categories(pr, present):
+            counts[cat] += 1
     return {"awaitingQa": counts["qa"], "awaitingProd": counts["prod"],
             "awaitingAdmin": counts["admin"]}
 
@@ -62,15 +93,13 @@ def compute_repo_deploy(
     """
     ordered = sorted(merges, key=lambda m: m.merged_at, reverse=True)
     newest_prod = next((m for m in ordered if m.prod_live_at), None)
+    newest_prod_at = newest_prod.merged_at if newest_prod else None
     awaiting_qa = awaiting_prod = 0
     for m in ordered:
-        if m.prod_live_at:
-            continue
-        if newest_prod and m.merged_at < newest_prod.merged_at:
-            continue                        # superseded (#205): rolled into a newer prod deploy
-        if m.qa_live_at:
+        wait = deploy_wait(m.merged_at, m.qa_live_at, m.prod_live_at, newest_prod_at)
+        if wait == "prod":
             awaiting_prod += 1
-        else:
+        elif wait == "qa":
             awaiting_qa += 1
     entries = []
     for m in ordered[:chain_limit]:
@@ -84,5 +113,8 @@ def compute_repo_deploy(
     in_flight = next(({"prNumber": e["prNumber"], "sha": e["sha"], "stage": e["stage"]}
                       for e in entries if e["stage"] != "prod" and not e["superseded"]), None)
     return {"envs": envs, "awaitingQa": awaiting_qa, "awaitingProd": awaiting_prod,
+            # The supersession cut the board's per-PR deploy stage applies too
+            # (dashboard_state), so the Deploying tile matches these counts.
+            "newestProdMergedAt": newest_prod_at,
             "chain": {"entries": entries, "inFlight": in_flight,
                       "supersededCount": sum(1 for e in entries if e["superseded"])}}

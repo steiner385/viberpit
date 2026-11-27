@@ -153,7 +153,7 @@ describe('LegendPanel', () => {
     // (each row is its own grid) — lost once in row 5, caught by review.
     expect(swatches[0]!.closest('dl > div')!.className).toMatch(/grid-cols-\[minmax\(/);
     const dtLabels = swatches.map((s) => s.parentElement!.textContent!.trim());
-    expect(dtLabels).toEqual(['Failed', 'Ready', 'CI running', 'In queue', 'Deploying', 'Merged / other']);
+    expect(dtLabels).toEqual(['Failed', 'Ready', 'CI running', 'In queue', 'Deploying', 'Merged / parked']);
   });
 });
 

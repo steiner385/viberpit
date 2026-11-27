@@ -13,7 +13,10 @@ export function nextToMerge(queue: RepoQueueView | null): NextToMerge | null {
     const front = building.reduce((a, b) => ((b.percent ?? 0) > (a.percent ?? 0) ? b : a));
     return { prNumbers: front.prNumbers, percent: front.percent, etaSeconds: front.etaSeconds, building: true };
   }
-  const w = [...queue.waiting].sort((a, b) => a.position - b.position)[0];
+  // A null position (queued per the PR record, not yet in the queue snapshot)
+  // sorts behind every known position.
+  const pos = (p: number | null) => p ?? Number.POSITIVE_INFINITY;
+  const w = [...queue.waiting].sort((a, b) => pos(a.position) - pos(b.position))[0];
   if (w) return { prNumbers: [w.prNumber], percent: null, etaSeconds: w.sim?.p50Secs ?? null, building: false };
   return null;
 }

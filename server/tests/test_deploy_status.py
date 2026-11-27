@@ -38,6 +38,7 @@ def test_empty_merges():
     d = compute_repo_deploy([], _ENVS)
     assert d == {
         "envs": _ENVS, "awaitingQa": 0, "awaitingProd": 0,
+        "newestProdMergedAt": None,
         "chain": {"entries": [], "inFlight": None, "supersededCount": 0},
     }
 

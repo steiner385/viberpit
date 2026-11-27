@@ -135,7 +135,7 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
       expect(screen.getByText('landed c')).toBeInTheDocument();
     });
 
-    it('lists the merged rows in the lead when the Merged / other tile is the active filter', () => {
+    it('lists the merged rows in the lead when the Merged / parked tile is the active filter', () => {
       render(<PipelineView state={withLedger()} focusedRepo={null} activeFilter="merged" onFilter={() => {}} />);
       expect(screen.getByText('landed a')).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /merged in the last 7 days/i })).toBeNull();
@@ -159,59 +159,59 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
     expect(screen.getByRole('button', { name: /3 merged · 1 awaiting QA · 2 awaiting prod/i })).toBeInTheDocument();
   });
 
+  // The backlog note counts the rows' own deploy stages — the Deploying tile's
+  // source — so a disagreeing deploy block (9s below) never reaches it.
+  const block9 = { envs: [], awaitingQa: 9, awaitingProd: 9, chain: { entries: [], supersededCount: 0, inFlight: null } };
+
   it('surfaces the awaiting-QA and awaiting-prod metric distinctly (not lumped)', () => {
     const st = state({ repos: [{ repo: 'acme/alpha', hasDeploy: true, queue: null,
-      prs: [pr('acme/alpha', 1, 'running pr', 'ci')],
-      deploy: { envs: [], awaitingQa: 2, awaitingProd: 10, chain: { entries: [], supersededCount: 0, inFlight: null } } }] } as never);
+      prs: [pr('acme/alpha', 1, 'a', 'qa-deploy'), pr('acme/alpha', 2, 'b', 'qa-deploy'),
+        pr('acme/alpha', 3, 'c', 'awaiting-prod'), pr('acme/alpha', 4, 'd', 'awaiting-prod'),
+        pr('acme/alpha', 5, 'e', 'awaiting-prod')],
+      deploy: block9 }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
     // deploy-backlog is a labeled note, not a live announcement (#171) — and not a landmark
     const summary = screen.getByRole('note', { name: /deploy backlog/i });
     expect(summary).toHaveTextContent(/2 awaiting QA/);
-    expect(summary).toHaveTextContent(/10 awaiting prod/);
+    expect(summary).toHaveTextContent(/3 awaiting prod/);
+    expect(summary).not.toHaveTextContent(/9 awaiting/);
+    // ...and the Deploying tile counts the same five rows.
+    const tile = screen.getByText('Deploying').closest('button')!;
+    expect(tile.querySelector('b')).toHaveTextContent('5');
   });
 
   it('omits an awaiting-QA segment when nothing is awaiting QA', () => {
     const st = state({ repos: [{ repo: 'acme/alpha', hasDeploy: true, queue: null,
-      prs: [pr('acme/alpha', 1, 'running pr', 'ci')],
-      deploy: { envs: [], awaitingQa: 0, awaitingProd: 4, chain: { entries: [], supersededCount: 0, inFlight: null } } }] } as never);
+      prs: [pr('acme/alpha', 1, 'running pr', 'ci'), pr('acme/alpha', 2, 'p', 'awaiting-prod')],
+      deploy: block9 }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
-    // deploy-backlog is a labeled note, not a live announcement (#171) — and not a landmark
     const summary = screen.getByRole('note', { name: /deploy backlog/i });
-    expect(summary).toHaveTextContent(/4 awaiting prod/);
+    expect(summary).toHaveTextContent(/1 awaiting prod/);
     expect(summary).not.toHaveTextContent(/awaiting QA/);
   });
 
-  it('renders the flat 3-way backlog (qa · prod · admin) from deployBacklog', () => {
-    const st = state({ repos: [{ repo: 'cairnea/KinDash', hasDeploy: false, queue: null,
-      prs: [pr('cairnea/KinDash', 1, 'running pr', 'ci')],
-      deployBacklog: { awaitingQa: 1, awaitingProd: 2, awaitingAdmin: 3 } }] } as never);
+  it('renders the flat 3-way backlog: qa · prod from the rows, admin from deployBacklog', () => {
+    const st = state({ repos: [{ repo: 'cairnea/KinDash', hasDeploy: true, queue: null,
+      prs: [pr('cairnea/KinDash', 1, 'q', 'qa-deploy'),
+        pr('cairnea/KinDash', 2, 'p', 'awaiting-prod'), pr('cairnea/KinDash', 3, 'p2', 'awaiting-prod')],
+      deploy: block9,
+      deployBacklog: { awaitingQa: 9, awaitingProd: 9, awaitingAdmin: 3 } }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
     const summary = screen.getByRole('note', { name: /deploy backlog/i });
     expect(summary).toHaveTextContent(/1 awaiting QA/);
     expect(summary).toHaveTextContent(/2 awaiting prod/);
     expect(summary).toHaveTextContent(/3 awaiting admin/);
+    expect(summary).not.toHaveTextContent(/9 awaiting/);
   });
 
   it('omits the admin segment when nothing is awaiting admin', () => {
     const st = state({ repos: [{ repo: 'cairnea/KinDash', hasDeploy: false, queue: null,
-      prs: [pr('cairnea/KinDash', 1, 'running pr', 'ci')],
-      deployBacklog: { awaitingQa: 0, awaitingProd: 5, awaitingAdmin: 0 } }] } as never);
+      prs: [pr('cairnea/KinDash', 1, 'p', 'awaiting-prod')],
+      deployBacklog: { awaitingQa: 0, awaitingProd: 1, awaitingAdmin: 0 } }] } as never);
     render(<PipelineView state={st} focusedRepo={null} />);
     const summary = screen.getByRole('note', { name: /deploy backlog/i });
-    expect(summary).toHaveTextContent(/5 awaiting prod/);
+    expect(summary).toHaveTextContent(/1 awaiting prod/);
     expect(summary).not.toHaveTextContent(/awaiting admin/);
-  });
-
-  it('prefers deployBacklog over the legacy deploy block when both are present', () => {
-    const st = state({ repos: [{ repo: 'cairnea/KinDash', hasDeploy: true, queue: null,
-      prs: [pr('cairnea/KinDash', 1, 'running pr', 'ci')],
-      deploy: { envs: [], awaitingQa: 9, awaitingProd: 9, chain: { entries: [], supersededCount: 0, inFlight: null } },
-      deployBacklog: { awaitingQa: 1, awaitingProd: 2, awaitingAdmin: 3 } }] } as never);
-    render(<PipelineView state={st} focusedRepo={null} />);
-    const summary = screen.getByRole('note', { name: /deploy backlog/i });
-    expect(summary).toHaveTextContent(/1 awaiting QA/);
-    expect(summary).toHaveTextContent(/3 awaiting admin/);
-    expect(summary).not.toHaveTextContent(/9 awaiting/);
   });
 
   it('surfaces the deploy chain: the in-flight SHA + superseded count (roadmap 4.4c)', () => {

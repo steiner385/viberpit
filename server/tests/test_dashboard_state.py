@@ -93,9 +93,16 @@ def test_stage_result_queue_from_merge_queue_flag():
 
 def test_stage_result_merged_and_awaiting_prod():
     assert stage_result(_pr(state="merged", merged=True, deployed=True))["stage"] == "merged"
+    # Live on QA, not prod, in a repo tracked in both → awaiting-prod (the
+    # deployBacklog rule: tracked categories the PR is not live in yet).
     s = stage_result(_pr(state="merged", merged=True, deployed=False,
-                         deployed_envs=("qa",)))
+                         deployed_envs=("qa",)), env_categories={"qa", "prod"})
     assert s["stage"] == "awaiting-prod"
+    # Live nowhere yet in a QA-tracked repo → qa-deploy, which the backlog line
+    # counts as awaiting QA (it used to read plain merged — "Merged / other").
+    s = stage_result(_pr(state="merged", merged=True, deployed=False),
+                     env_categories={"qa", "prod"})
+    assert s["stage"] == "qa-deploy"
     # merged, no deploy pipeline at all → plain merged
     assert stage_result(_pr(state="merged", merged=True))["stage"] == "merged"
 
@@ -176,9 +183,16 @@ def test_dashboard_state_assembly_sets_queue_ahead():
     assert repo["repo"] == "o/r" and repo["hasDeploy"] is False
     assert repo["prs"][0]["queueAheadCount"] == 2      # position - 1
     assert repo["queue"]["depth"] == 1
-    # repo with no queue entries → queue is null (QueueTrain renders nothing)
+    # No snapshot entries, but the PR record says queued → the lane gains a
+    # waiting entry for it, so the In queue tile never counts a PR the lane hides.
     st2 = dashboard_state(prs, {}, {}, {"o/r": False}, generated_at="x")
-    assert st2["repos"][0]["queue"] is None
+    assert st2["repos"][0]["queue"]["waiting"] == [
+        {"prNumber": 14, "position": None, "sim": None}]
+    assert st2["repos"][0]["prs"][0]["stage"]["stage"] == "queue"
+    # repo with no queued PRs at all → queue is null (QueueTrain renders nothing)
+    idle = {"o/r": [PipelinePr(pr=_pr(number=14))]}
+    st3 = dashboard_state(idle, {}, {}, {"o/r": False}, generated_at="x")
+    assert st3["repos"][0]["queue"] is None
 
 
 def test_dashboard_state_injects_queue_substates():
@@ -434,9 +448,18 @@ def test_stage_result_merged_uses_timeline_facts_for_configured_repo():
     # prod live → plain merged even though qa live too.
     tl2 = {"qaLiveAt": "2026-07-12T01:00:00Z", "prodLiveAt": "2026-07-12T02:00:00Z"}
     assert stage_result(_pr(state="merged", merged=True), tl2)["stage"] == "merged"
-    # neither live → plain merged (deploy block carries the truth).
-    tl3 = {"qaLiveAt": None, "prodLiveAt": None}
-    assert stage_result(_pr(state="merged", merged=True), tl3)["stage"] == "merged"
+    # neither live → qa-deploy: the deploy block counts it awaitingQa, and the
+    # Deploying tile must count it too (it used to read plain merged).
+    tl3 = {"qaLiveAt": None, "prodLiveAt": None, "mergedAt": "2026-07-12T00:00:00Z"}
+    assert stage_result(_pr(state="merged", merged=True), tl3)["stage"] == "qa-deploy"
+    # ...unless superseded: merged before the newest prod-live merge, it rolled
+    # out with it (compute_repo_deploy's #205 cut) → plain merged.
+    assert stage_result(_pr(state="merged", merged=True), tl3,
+                        newest_prod_merged_at="2026-07-12T05:00:00Z")["stage"] == "merged"
+    tl4 = {"qaLiveAt": "2026-07-12T01:00:00Z", "prodLiveAt": None,
+           "mergedAt": "2026-07-12T00:00:00Z"}
+    assert stage_result(_pr(state="merged", merged=True), tl4,
+                        newest_prod_merged_at="2026-07-12T05:00:00Z")["stage"] == "merged"
     # timeline facts win over the deployed_envs fallback: env-live but prod-facts
     # say merged → merged (not awaiting-prod).
     assert stage_result(

@@ -108,7 +108,7 @@ describe('StatusStrip', () => {
     expect(countFor('Deploying')).toBe('2');
     expect(countFor('Failed')).toBe('2');
     expect(countFor('Ready')).toBe('1');
-    expect(countFor('Merged / other')).toBe('2');
+    expect(countFor('Merged / parked')).toBe('2');
   });
 
   it('empty buckets still render but are disabled', () => {
@@ -202,12 +202,12 @@ describe('StatusStrip', () => {
       const titles = screen.getAllByRole('button').map((b) => b.getAttribute('title'));
       // Needs-the-operator buckets lead (Failed, Ready), then work in motion.
       expect(titles).toEqual([
-        'CI failed, merge-group build failed, or armed but stuck (not enqueued)',
+        'Head CI red, merge-group build failed, unmergeable in the queue, or armed but not enqueued',
         'Open, checks green — actionable (ready to arm auto-merge or merge directly)',
         'CI running on the head commit',
-        'In the merge queue — building or waiting for a slot',
-        'Merged — deploying to QA or awaiting production deploy',
-        'Recently merged (7-day retention), draft, or conflicting — no action needed',
+        'In the merge queue — building, waiting for a slot, or blocked behind an unmergeable PR',
+        'Merged — awaiting the QA deploy or the production deploy (merges a newer prod deploy already shipped are done)',
+        'Merged with nothing left to deploy (7-day window), plus open drafts and PRs with a merge conflict',
       ]);
     });
   });

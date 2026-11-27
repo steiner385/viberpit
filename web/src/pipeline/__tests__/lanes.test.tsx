@@ -15,7 +15,7 @@ const repo = (over: object) => ({ repo: 'acme/widgets', hasDeploy: false, prs: [
 describe('prCiLane', () => {
   it('is idle with no PRs, red when a required check failed', () => {
     expect(prCiLane([repo({})] as unknown as DashboardState['repos']).status).toBe('idle');
-    const withFail = [repo({ prs: [{ number: 1, stage: { stage: 'ci', substate: 'ci-failed' } }] })];
+    const withFail = [repo({ prs: [{ number: 1, stage: { stage: 'parked', substate: 'ci-failed' } }] })];
     expect(prCiLane(withFail as unknown as DashboardState['repos']).status).toBe('red');
   });
 });

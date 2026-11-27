@@ -1,5 +1,5 @@
 // Ported from plotroom@5166b52 frontend/src/QueueTrain.tsx; edits: simText/simTooltip live in @/pipeline/format; blocked-queue ETAs (#3196)
-import type { RepoQueueView, QueueGroupView, MergeEtaSimulation, QueueHealthState } from '@/pipeline/types';
+import type { RepoQueueView, QueueGroupView, QueueHealthState } from '@/pipeline/types';
 import { blockedEtaText, formatDur, simText, simTooltip } from '@/pipeline/format';
 import { scrollBehavior } from '@/pipeline/motion';
 import { DEFS, defTitle } from '@/pipeline/definitions';
@@ -68,7 +68,7 @@ function BuildingCar({ repo, g }: { repo: string; g: QueueGroupView }) {
   );
 }
 
-function WaitingCars({ repo, waiting, batchSize }: { repo: string; waiting: { prNumber: number; position: number; sim?: MergeEtaSimulation | null }[]; batchSize: number }) {
+function WaitingCars({ repo, waiting, batchSize }: { repo: string; waiting: RepoQueueView['waiting']; batchSize: number }) {
   if (waiting.length === 0) return null;
 
   // First car: "next batch" — up to batchSize entries

@@ -113,10 +113,8 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
   );
   // Tile counts reflect the focused repo so the strip answers "what's happening
   // in the repo I'm looking at?" rather than a global cross-repo aggregate.
-  const allPrs = useMemo(
-    () => (repos.find((r) => r.repo === focusedRepo) ?? repos[0])?.prs ?? [],
-    [repos, focusedRepo],
-  );
+  const tileRepo = repos.find((r) => r.repo === focusedRepo) ?? repos[0];
+  const allPrs = useMemo(() => tileRepo?.prs ?? [], [tileRepo]);
 
   const toggle = (repo: string) => setCollapsed((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); writeCollapsedSet(n); return n; }); // eslint-disable-line @typescript-eslint/no-unused-expressions -- ternary-as-statement, verbatim from the plotroom source (port fidelity)
   const toggleCohort = (repo: string) => setOpenCohorts((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); return n; }); // eslint-disable-line @typescript-eslint/no-unused-expressions -- ternary-as-statement, verbatim from the plotroom source (port fidelity)
@@ -130,7 +128,10 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
     // PageContent, so the pane itself is what scrolls.
     <div className={`flex h-full min-h-0 flex-col overflow-y-auto px-4 py-3 md:px-6${portrait ? ' pipeline-portrait' : ''}`}>
       <h2 className="sr-only">Pipeline</h2>
-      <StatusStrip prs={allPrs} activeFilter={activeFilter} onFilter={setFilter} />
+      {/* The header's lanes count every repo; with more than one on the board the
+          strip names the one its tiles count, so "4 red" beside "3 Failed" reads. */}
+      <StatusStrip prs={allPrs} activeFilter={activeFilter} onFilter={setFilter}
+        scope={repos.length > 1 ? tileRepo?.repo : undefined} />
       {repos.map((r) => {
         const isCollapsed = collapsed.has(r.repo);
         const visiblePrs = activeFilter ? r.prs.filter((pr) => bucketPr(pr) === activeFilter) : r.prs;
@@ -165,7 +166,7 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
             {!isCollapsed && (() => {
               const split = splitCohort(visiblePrs);
               // The merged ledger folds to one line unless the operator asked
-              // for exactly those rows (the Merged / other tile), in which case
+              // for exactly those rows (the Merged / parked tile), in which case
               // they ARE the lead. Overdue merged rows never fold (`inLedger`).
               const ledgerFolded = activeFilter !== 'merged';
               const lead = ledgerFolded ? split.lead : [...split.lead, ...split.merged];
@@ -174,11 +175,15 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
               const cohortOpen = openCohorts.has(r.repo);
               const ledgerOpen = openLedgers.has(r.repo);
               const newest = newestMergedAt(ledger);
-              // Deploy backlog (flat 3-way): prefer the GitHub-Deployments-derived
-              // deployBacklog (adds admin, no config needed); fall back to the
-              // config/timeline deploy block (qa/prod only) for configured repos.
-              const backlog = r.deployBacklog
-                ?? (r.deploy ? { awaitingQa: r.deploy.awaitingQa, awaitingProd: r.deploy.awaitingProd, awaitingAdmin: 0 } : null);
+              // Deploy backlog: QA/prod counted from the rows' own deploy stages —
+              // the server derives qa-deploy/awaiting-prod by the same rule as the
+              // deploy block / deployBacklog, and counting the rows here keeps this
+              // line equal to the Deploying tile (it used to read deployBacklog
+              // while the tile read stages, and the two disagreed). Admin has no
+              // stage, so it still comes from GitHub-Deployments.
+              const backlog = (r.deployBacklog || r.deploy)
+                ? { ...deployBreakdown(r.prs), awaitingAdmin: r.deployBacklog?.awaitingAdmin ?? 0 }
+                : null;
               const next = nextToMerge(r.queue);
               const liveSet = new Set(next?.prNumbers ?? []);
               // The notes are role="note", not "region": a region is a landmark,
