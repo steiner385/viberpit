@@ -888,7 +888,12 @@ async def test_initial_catch_up_is_paced() -> None:
                              for s in ids), timeout=5.0)
     assert len(starts) == 5 and inflight["max"] == 1
     gaps = [b - a for a, b in zip(starts, starts[1:])]
-    assert min(gaps) >= 0.07
+    # The service stamps the 0.08 s stagger when it grants the slot; ``starts`` is
+    # stamped later, inside the handler, after httpx's variable dispatch overhead,
+    # so on a loaded runner a measured gap can undershoot 0.08 by >10 ms (0.067 seen
+    # in CI). Unstaggered, concurrency=1 alone gives ~0.03 (the handler's sleep), so
+    # 0.055 still proves the stagger is applied without timing the scheduler.
+    assert min(gaps) >= 0.055
     await svc.aclose()
 
 
