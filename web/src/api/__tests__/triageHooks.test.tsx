@@ -154,7 +154,7 @@ describe('useAcceptBulk', () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(mocked.acceptBulk).toHaveBeenCalledWith(['p1', 'p2'])
-    expect(toast.success).toHaveBeenCalledWith('Accepted 2', expect.objectContaining({ duration: 6000 }))
+    expect(toast.success).toHaveBeenCalledWith('Accepted 2', expect.objectContaining({ duration: Infinity }))
     expect(rowIds(qc)).toEqual([])
   })
 })
@@ -190,7 +190,7 @@ describe('useRejectBulk', () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(mocked.rejectBulk).toHaveBeenCalledWith(['p1', 'p2'])
-    expect(toast.success).toHaveBeenCalledWith('Rejected 1', expect.objectContaining({ duration: 6000 }))
+    expect(toast.success).toHaveBeenCalledWith('Rejected 1', expect.objectContaining({ duration: Infinity }))
     // The toast's Undo puts back what landed — not the id the server refused.
     const call = vi.mocked(toast.success).mock.calls.at(-1)!
     await act(async () => { (call[1] as unknown as { action: { onClick: () => void } }).action.onClick() })
@@ -238,7 +238,7 @@ describe('useDismissProposal', () => {
     expect(mocked.rejectProposal).not.toHaveBeenCalled()
     expect(rowIds(qc)).toEqual(['p2'])
     expect(toast.success).toHaveBeenCalledWith(
-      'Dismissed', expect.objectContaining({ duration: 6000, action: expect.objectContaining({ label: 'Undo' }) }),
+      'Dismissed', expect.objectContaining({ duration: Infinity, action: expect.objectContaining({ label: 'Undo' }) }),
     )
     mocked.undoProposal.mockResolvedValueOnce({ id: 'p1', status: 'pending', workItemId: 'w1', triageState: 'proposed' })
     const call = vi.mocked(toast.success).mock.calls.at(-1)![1] as unknown as { action: { onClick: () => void } }
@@ -285,7 +285,7 @@ describe('useDismissBulk', () => {
     await act(async () => { result.current.mutate(['p1', 'p2']) })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(mocked.dismissBulk).toHaveBeenCalledWith(['p1', 'p2'])
-    expect(toast.success).toHaveBeenCalledWith('Dismissed 1', expect.objectContaining({ duration: 6000 }))
+    expect(toast.success).toHaveBeenCalledWith('Dismissed 1', expect.objectContaining({ duration: Infinity }))
     const call = vi.mocked(toast.success).mock.calls.at(-1)!
     await act(async () => { (call[1] as unknown as { action: { onClick: () => void } }).action.onClick() })
     await waitFor(() => expect(mocked.undoProposal).toHaveBeenCalledTimes(1))
@@ -355,7 +355,7 @@ describe('undo', () => {
 
     expect(toast.success).toHaveBeenCalledWith(
       'Accepted',
-      expect.objectContaining({ duration: 6000, action: expect.objectContaining({ label: 'Undo' }) }),
+      expect.objectContaining({ duration: Infinity, action: expect.objectContaining({ label: 'Undo' }) }),
     )
 
     mocked.undoProposal.mockResolvedValueOnce({ id: 'p1', status: 'pending', workItemId: 'w1', triageState: 'proposed' })

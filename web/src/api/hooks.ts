@@ -942,7 +942,7 @@ export function useCloseSession() {
     },
     onSuccess: (_data, id, ctx) => {
       toast.success(`Archived ${ctx?.removed?.name ?? 'session'}`, {
-        duration: 8000,
+        duration: Infinity, // SC 2.2.1: Undo must not expire; closeButton dismisses
         action: {
           label: 'Undo',
           onClick: () => {
@@ -969,7 +969,7 @@ export function useCloseSession() {
       if (!stillLive) {
         // Archive succeeded — daemon lost the response. Show success with undo.
         toast.success(`Archived ${ctx?.removed?.name ?? 'session'}`, {
-          duration: 8000,
+          duration: Infinity, // SC 2.2.1: Undo must not expire; closeButton dismisses
           action: {
             label: 'Undo',
             onClick: () => {
@@ -3254,7 +3254,7 @@ export function useTriageLive() {
  * rather than twice.
  */
 
-/** Six seconds to change your mind — same shape as the archive toast in
+/** Stays until dismissed (WCAG SC 2.2.1) — same shape as the archive toast in
  *  `useCloseSession`. `ids` are the landed proposal ids; every one is undone. */
 function triageUndoToast(qc: QueryClient, message: string, ids: string[], projectSlug?: string) {
   const refresh = () => {
@@ -3263,7 +3263,7 @@ function triageUndoToast(qc: QueryClient, message: string, ids: string[], projec
     if (projectSlug) void qc.invalidateQueries({ queryKey: QK.onboarding(projectSlug) })
   }
   toast.success(message, {
-    duration: 6000,
+    duration: Infinity, // SC 2.2.1: Undo must not expire; closeButton dismisses
     action: {
       label: 'Undo',
       onClick: () => {
