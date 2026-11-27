@@ -11,15 +11,13 @@ cannot leave this module testing a different app (constitution VI).
 from __future__ import annotations
 
 import asyncio
-import os
-from unittest.mock import patch
 
 import pytest
 
 from server.tests.pm_ownership_fixtures import identity_repositories
 from server.tests.test_pm_api import (
+    AGENT_HEADERS,
     IDENTITY_HEADERS,
-    LAN_OPEN,
     _client,
     _register,
     _seed_one_pending,
@@ -300,10 +298,11 @@ def test_an_agent_may_propose_but_may_not_resolve(monkeypatch):
 
 
 def test_an_unattributed_loopback_caller_may_not_resolve(monkeypatch):
-    """The LAN-open edge is the concrete hole: `lan@local` is agent class, and it
-    is how spec §6 has Codex sessions call these routes."""
+    """An agent-class caller (`lan@local` here) may not resolve: spec §6 has Codex
+    sessions call these routes."""
     _stub_announce(monkeypatch)
-    with patch.dict(os.environ, LAN_OPEN), _client() as c:
+    with _client() as c:
+        c.headers.update(AGENT_HEADERS)
         _register(c, "Viberpit", repo="o/r")
         _pid, wid = _seed_one_pending(c, feature_slug="sessions")
         pid = _propose(c, wid).json()["id"]
@@ -449,11 +448,11 @@ def test_automation_trigger_accepts_the_recommendation_as_the_person(monkeypatch
         monkeypatch.setattr(loop, "_read_config", _notify_mode)
         monkeypatch.setattr(loop, "_notify", lambda *a, **k: asyncio.sleep(0))
         c.portal.call(loop.tick)
-        with patch.dict(os.environ, LAN_OPEN):
-            r = c.post("/api/automations/decision-escalation/trigger",
-                       json={"item_id": "o/r#1", "kind": "accept_recommended"})
-            assert r.status_code == 200, r.text
-            assert r.json()["status"] == "forbidden"
+        r = c.post("/api/automations/decision-escalation/trigger",
+                   json={"item_id": "o/r#1", "kind": "accept_recommended"},
+                   headers=AGENT_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "forbidden"
         r = c.post("/api/automations/decision-escalation/trigger",
                    json={"item_id": "o/r#1", "kind": "accept_recommended"},
                    headers=IDENTITY_HEADERS)

@@ -153,11 +153,6 @@ _SHUTDOWN_PHASE_TIMEOUT_S = 5.0
 _SHUTDOWN_STOP_TIMEOUT_S = 20.0
 _SHUTDOWN_DB_TIMEOUT_S = 10.0
 
-# Gate the SECURITY/0.0.0.0 warning to at most once per process lifetime.
-# Hot-reload and rapid watchdog restarts can re-enter _lifespan many times within
-# the same Python interpreter, producing hundreds of identical log lines (issue #669).
-_security_warned = False
-
 
 async def _mcp_oauth_tick(orch_getter: Callable[[], Any]) -> "list[grant_health.Transition]":
     """One refresher tick: reconcile grants onto their CLI keys, then refresh and republish,
@@ -266,38 +261,24 @@ async def _lifespan(app: FastAPI):
     # persists across the yield, so the shutdown branch reads it too.
     remote_mode = getattr(app.state, "remote_mode", False)
 
-    # F1: the identity header is only trustworthy behind `tailscale serve` on a
-    # loopback bind.  Hard-fail if neither an allowlist nor a loopback host is set
-    # (unless the operator explicitly opts out with VIBERPIT_DEV=1).
+    # Exposure policy (#1410): one fail-closed validator for the configured tier
+    # (server/auth/exposure.py) — the only startup rule about who may reach the edge.
     import logging as _logging
 
+    from server.auth.exposure import validate_exposure
     from server.config import get_settings as _get_settings
-
+    validate_exposure()
     _s = _get_settings()
-    _is_loopback = _s.host in ("127.0.0.1", "localhost", "::1")
-    _is_dev = os.environ.get("VIBERPIT_DEV") == "1"
-
-    if not _s.tailnet_allowlist_items and not _is_loopback:
-        if not _is_dev:
-            raise RuntimeError(
-                "refusing to start: empty tailnet_allowlist on a non-loopback bind "
-                "(set VIBERPIT_DEV=1 to override, or set VIBERPIT_TAILNET_ALLOWLIST)."
-            )
-        global _security_warned
-        if not _security_warned:
-            _security_warned = True
-            _logging.getLogger("server").warning(
-                "SECURITY: binding to %s with an EMPTY tailnet allowlist. The "
-                "Tailscale-User-Login header is trusted unconditionally — only safe "
-                "behind `tailscale serve` (which sets/strips it). Set "
-                "VIBERPIT_TAILNET_ALLOWLIST and/or bind 127.0.0.1.",
-                _s.host,
-            )
 
     _log_rules_trust_local_host()
 
     db_url = os.environ.get("VIBERPIT_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
+    # The DB half of the exposure policy: a passkey tier needs a registered passkey.
+    from server.auth.exposure import validate_exposure_credentials
+    from server.db import db_session as _exposure_db
+    async with _exposure_db() as _db:
+        await validate_exposure_credentials(_db)
 
     # Error-triage capture: the sink itself was installed by configure_logging();
     # its flusher needs the DB, so it starts here and stops in the shutdown branch.

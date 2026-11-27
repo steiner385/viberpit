@@ -90,47 +90,42 @@ async def test_non_allowlisted_identity_returns_401(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Open-LAN mode (VIBERPIT_ALLOW_UNAUTHENTICATED) — opt-in, fail-closed by default
+# No anonymous path in any tier (#1410, AC-G12.3). VIBERPIT_ALLOW_UNAUTHENTICATED
+# (LAN-open mode, which admitted unidentified callers as a full-scope `lan@local`
+# guest) is deleted: constitution IV admits no unidentified caller. A device without
+# Tailscale signs in with a passkey instead.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_no_identity_admitted_when_open_lan_enabled(monkeypatch):
-    """With VIBERPIT_ALLOW_UNAUTHENTICATED=1, a request with no Tailscale identity
-    is admitted (as the synthetic LAN guest) instead of 401'd."""
+@pytest.mark.parametrize("tier", ["loopback", "tailnet", "lan", "public"])
+async def test_unidentified_caller_is_401_in_every_tier(monkeypatch, tier):
+    """Even with the deleted flag still present in a stale env file."""
+    monkeypatch.setenv("VIBERPIT_EXPOSURE", tier)
     monkeypatch.setenv("VIBERPIT_ALLOW_UNAUTHENTICATED", "1")
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/health")
-    assert response.status_code == 200
-    monkeypatch.delenv("VIBERPIT_ALLOW_UNAUTHENTICATED", raising=False)
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "UNAUTHORIZED"
+
+
+def test_lan_open_setting_and_identity_are_gone():
+    from server.auth import identity
+    from server.config import get_settings
+    assert not hasattr(get_settings(), "allow_unauthenticated")
+    assert not hasattr(identity, "OPEN_LAN_IDENTITY")
 
 
 @pytest.mark.asyncio
-async def test_open_lan_default_off_still_401(monkeypatch):
-    """The flag is fail-closed: unset (the default) keeps the missing-identity 401."""
-    monkeypatch.delenv("VIBERPIT_ALLOW_UNAUTHENTICATED", raising=False)
+async def test_unidentified_401_names_passkey_login_only_when_enabled(monkeypatch):
+    """The SPA routes a 401 to /login only when the edge can actually take a passkey."""
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.get("/api/health")
-    assert response.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_open_lan_does_not_bypass_allowlist_for_real_identity(monkeypatch):
-    """Open-LAN mode only admits *unidentified* clients as guests; a real presented
-    identity is still subject to the allowlist (prod stays protected)."""
-    monkeypatch.setenv("VIBERPIT_ALLOW_UNAUTHENTICATED", "1")
-    monkeypatch.setenv("VIBERPIT_TAILNET_ALLOWLIST", "alice@example.com")
-    app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.get(
-            "/api/health",
-            headers={"Tailscale-User-Login": "eve@evil.com"},
-        )
-    assert response.status_code == 401
-    monkeypatch.delenv("VIBERPIT_ALLOW_UNAUTHENTICATED", raising=False)
-    monkeypatch.delenv("VIBERPIT_TAILNET_ALLOWLIST", raising=False)
+        monkeypatch.delenv("VIBERPIT_WEBAUTHN_ENABLED", raising=False)
+        assert "login" not in (await client.get("/api/health")).json()["error"]
+        monkeypatch.setenv("VIBERPIT_WEBAUTHN_ENABLED", "true")
+        assert (await client.get("/api/health")).json()["error"]["login"] == "passkey"
 
 
 # ---------------------------------------------------------------------------

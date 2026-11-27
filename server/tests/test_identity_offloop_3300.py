@@ -7,6 +7,7 @@ connection behind it and stacked onto the model-catalog stall after a restart.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 import time
 
 from starlette.requests import Request
@@ -51,6 +52,7 @@ def test_ws_identity_resolves_off_the_loop(monkeypatch):
     class _WS:
         headers: dict[str, str] = {}
         cookies: dict[str, str] = {}  # real WebSockets always carry .cookies (display check, #1408)
+        state = SimpleNamespace()  # …and .state, where auth_method is recorded (#1410)
 
     got, worst = asyncio.run(_worst_tick_delay(middleware.require_ws_identity(_WS())))
     assert got == "alice@example.com"

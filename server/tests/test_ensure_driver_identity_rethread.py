@@ -136,7 +136,7 @@ def test_ensure_driver_upgrades_lan_guest_identity_to_real_user(tmp_path):
     a session built under it (2026-09-22: the assistant drawer's create call was
     mis-attributed to the guest, see test_assistant_token.py) must hand ownership to
     the first verified user who attaches, or every answer they give is rejected."""
-    from server.auth.identity import OPEN_LAN_IDENTITY
+    from server.auth.identity import LEGACY_LAN_IDENTITY
     db_url = f"sqlite+aiosqlite:///{tmp_path/'viberpit.db'}"
 
     async def run():
@@ -145,7 +145,7 @@ def test_ensure_driver_upgrades_lan_guest_identity_to_real_user(tmp_path):
                           engine_session_id="cs4", status="idle", cwd=str(tmp_path))])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         await orch.rehydrate()
-        d_guest = await _ensure(orch, tmp_path, "s4", OPEN_LAN_IDENTITY)
+        d_guest = await _ensure(orch, tmp_path, "s4", LEGACY_LAN_IDENTITY)
         qid, fut = d_guest._qreg.request("s4", "t1", "H", "Q?", [{"label": "A"}], False,
                                          d_guest.identity)
         d_user = await _ensure(orch, tmp_path, "s4", "user@example.test")

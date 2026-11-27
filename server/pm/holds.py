@@ -46,8 +46,9 @@ SYSTEM_PREFIXES: tuple[str, ...] = ("automation:",)
 SESSION_PREFIX = "session:"
 ASSISTANT_PREFIX = "assistant:"
 AGENT_PREFIXES: tuple[str, ...] = (SESSION_PREFIX, ASSISTANT_PREFIX)
-#: The synthetic identity handed to an unattributed loopback caller
-#: (server/auth/identity.py:OPEN_LAN_IDENTITY). Spelled here as a literal so this
+#: The synthetic guest the removed LAN-open mode handed to an unattributed caller
+#: (server/auth/identity.py:LEGACY_LAN_IDENTITY, #1410); rows it already authored
+#: still classify as agent. Spelled here as a literal so this
 #: module stays free of the auth package.
 OPEN_LAN_ACTOR = "lan@local"
 

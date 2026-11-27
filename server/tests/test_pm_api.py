@@ -18,7 +18,6 @@ import tempfile
 from contextlib import contextmanager
 from unittest.mock import patch
 
-from server.config import Settings
 
 @pytest.fixture(autouse=True)
 def canonical_mutation_repositories(monkeypatch):
@@ -1295,7 +1294,11 @@ def test_overlay_patch_manual_classify():
         assert bad_feat.json()["detail"]["error"] == "feature_not_found"
 
 
-LAN_OPEN = {Settings.model_fields["allow_unauthenticated"].alias: "1"}
+#: An unattributed agent-class caller (spec §8). The LAN-open guest that used to stand
+#: for one is gone (#1410: no unidentified caller in any tier), but ``lan@local`` still
+#: classifies as agent for the rows it authored, and a loopback peer asserts it like any
+#: tailnet identity — so the actor rules under test see the same actor they always did.
+AGENT_HEADERS = {"Tailscale-User-Login": "lan@local"}
 
 
 def test_overlay_owner_evidence_hold_by_a_person_carries_the_reason_as_the_request():
@@ -1362,10 +1365,11 @@ def test_overlay_hold_by_person_any_kind_with_audit():
 
 
 def test_overlay_hold_by_loopback_caller_is_limited_and_never_human():
-    with patch.dict(os.environ, LAN_OPEN), _client() as c:
+    with _client() as c:
+        c.headers.update(AGENT_HEADERS)
         _register(c, "Viberpit", repo="o/r")
         _pid, wid = _seed_one_pending(c, feature_slug="sessions")
-        # no identity header → lan@local (LAN-open mode); an agent-class actor
+        # AGENT_HEADERS → lan@local, an agent-class actor
         r = c.patch(f"/api/pm/work-items/{wid}/overlay",
                     json={"holdKind": "evidence", "holdReason": "correlate with #2"})
         assert r.status_code == 200, r.text
@@ -1401,7 +1405,7 @@ def test_overlay_hold_by_loopback_caller_is_limited_and_never_human():
 
 def test_reject_by_loopback_caller_records_agent_actor():
     """Rejecting is one of the two flows spec §8 authorises to write ``owner_action``
-    regardless of actor class, so a LAN-open (agent-class) rejection must SUCCEED —
+    regardless of actor class, so an agent-class rejection must SUCCEED —
     the Reject button has to work there — while recording the truth about who did it:
     ``hold_by == "lan@local"`` and ``actorClass == "agent"``, never a person's login
     (final-review F4)."""
@@ -1409,7 +1413,8 @@ def test_reject_by_loopback_caller_records_agent_actor():
     from sqlalchemy import select
     from server.db.models import AuditEvent, TriageProposal, WorkItem
 
-    with patch.dict(os.environ, LAN_OPEN), _client() as c:
+    with _client() as c:
+        c.headers.update(AGENT_HEADERS)
         _register(c, "Viberpit", repo="o/r")
         pid, wid = _seed_one_pending(c, feature_slug="sessions")
         r = c.post(f"/api/pm/triage/{pid}/reject")
@@ -3270,13 +3275,14 @@ def test_hold_release_refuses_a_decision_hold():
 
 
 def test_hold_release_refused_for_agent_class_caller():
-    with patch.dict(os.environ, LAN_OPEN), _client() as c:
+    with _client() as c:
+        c.headers.update(AGENT_HEADERS)
         _register(c, "Viberpit", repo="o/r")
         _pid, wid = _seed_one_pending(c, feature_slug="sessions")
         c.patch(f"/api/pm/work-items/{wid}/overlay",
                 json={"holdKind": "owner_action", "holdReason": "owner only"},
                 headers=IDENTITY_HEADERS)
-        r = c.post(f"/api/pm/work-items/{wid}/hold/release")   # lan@local, no header
+        r = c.post(f"/api/pm/work-items/{wid}/hold/release")   # AGENT_HEADERS: lan@local
         assert r.status_code == 422 and r.json()["detail"]["error"] == "hold_not_permitted"
 
 

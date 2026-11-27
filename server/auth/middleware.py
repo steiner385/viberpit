@@ -1,8 +1,10 @@
 """Identity middleware + FastAPI dependency (T029).
 
-Every HTTP route and WebSocket upgrade requires a verified Tailscale identity.
-On success the identity is:
-  1. Attached to request.state.identity
+Every HTTP route and WebSocket upgrade requires a verified identity: a Tailscale
+identity, a passkey session (server/auth/webauthn.py, when VIBERPIT_WEBAUTHN_ENABLED), a
+display cookie, or a bearer token. On success the identity is:
+  1. Attached to request.state.identity, with request.state.auth_method naming how it
+     was established (tailscale | passkey | display | bearer — GET /api/auth/me)
   2. Backed by a server-side AppSession (signed HttpOnly cookie, 24h absolute expiry)
 
 HTTP 401 is returned when identity cannot be verified.
@@ -142,8 +144,8 @@ def _cross_process_signing_secret() -> str | bytes:
     reads a dedicated env file (runbook: onboarding-a-session-runner) that carries
     only the master key, the ONE secret the runbook requires to match on every host. A daemon with the master key alone and an edge with both
     therefore signed with different keys: every assistant token failed signature at
-    the edge and, in LAN-open mode, the call was silently admitted as the ``lan@local``
-    guest (2026-09-22 — sessions the drawer created were owned by the guest and the
+    the edge and, in the since-removed LAN-open mode, the call was silently admitted as
+    the ``lan@local`` guest (2026-09-22 — sessions the drawer created were owned by the guest and the
     real user's every AskUserQuestion answer was refused). Prefer the fleet-shared
     master key; fall back to the cookie chain only when no master key is configured.
     """
@@ -266,10 +268,60 @@ DISPLAY_FORBIDDEN_CODE = "DISPLAY_SCOPE_FORBIDDEN"
 # Where the exchange authenticates by its body token, so it cannot demand an identity.
 # It is NOT exempt from the Origin guard, which wraps the whole app.
 KIOSK_EXCHANGE_PATH = "/api/kiosk/session"
-# The standalone page a display link opens (``server/api/kiosk.py``). It is the ONLY
-# non-API path that loads without an identity: a device with no tailnet identity and no
-# display cookie yet must be able to reach the exchange (#3543). It serves no SPA code.
+# The standalone page a display link opens (``server/api/kiosk.py``). With passkeys off it
+# is the ONLY non-API path that loads without an identity: a device with no tailnet
+# identity and no display cookie yet must be able to reach the exchange (#3543). It serves
+# no SPA code. (With passkeys on, the SPA shell loads too, so /login is reachable: see
+# ``is_spa_shell``.)
 KIOSK_PAGE_PATH = "/kiosk"
+# Passkey sign-in starts with no identity by definition (#1410). Exempt from identity
+# only: the Origin guard still wraps them, and the routes 404 while passkeys are off.
+PASSKEY_LOGIN_PATHS = frozenset({"/api/auth/webauthn/login/begin",
+                                 "/api/auth/webauthn/login/complete"})
+
+
+def unauthorized_response() -> JSONResponse:
+    """THE 401 for a request with no valid identity. With passkeys enabled it says so
+    (``login: "passkey"``), which is how the SPA knows to show /login instead of an
+    error (FR-G12.12)."""
+    error: dict[str, str] = {"code": "UNAUTHORIZED", "message": "No valid identity"}
+    if get_settings().webauthn_enabled:
+        error["login"] = "passkey"
+    return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": error})
+
+
+def is_spa_shell(request: Request) -> bool:
+    """True for a GET/HEAD the built SPA mount (``server/spa.py``) answers: the first
+    route that fully matches is the ``spa`` mount itself. Exact by construction —
+    ``/docs``, ``/openapi.json``, ``/healthz`` and every ``/api`` route match a route of
+    their own first, and so would any route added later."""
+    if request.method not in ("GET", "HEAD"):
+        return False
+    from starlette.routing import Match, Mount  # noqa: PLC0415
+    app = request.scope.get("app")
+    for route in getattr(getattr(app, "router", None), "routes", []):
+        match, _ = route.matches(request.scope)
+        if match == Match.FULL:
+            return isinstance(route, Mount) and route.name == "spa"
+    return False
+
+
+async def resolve_passkey_cookie(conn) -> tuple[str, str] | None:
+    """``(identity, session_id)`` when *conn* carries a live passkey session cookie, else
+    None. Free when passkeys are off: no DB read, and a passkey cookie stops working
+    the moment VIBERPIT_WEBAUTHN_ENABLED is turned off (the kill switch)."""
+    if not get_settings().webauthn_enabled:
+        return None
+    signed = conn.cookies.get(_COOKIE_NAME)
+    session_id = _unsign_session_id(signed) if signed else None
+    if not session_id:
+        return None
+    from server.auth.webauthn import resolve_passkey_session  # noqa: PLC0415
+    from server.db import db_session as _passkey_db_session  # noqa: PLC0415
+    async with _passkey_db_session() as db:
+        row = await resolve_passkey_session(db, session_id)
+        await db.commit()
+        return (row.identity, row.id) if row is not None else None
 
 
 def display_cookie(conn) -> str | None:
@@ -345,6 +397,7 @@ async def _dispatch_user_token(request: Request, call_next, token: str):
             "message": "this token may not call this route"}})
 
     request.state.identity = claims.identity
+    request.state.auth_method = "bearer"
     request.state.via = "mcp-external"
     request.state.assistant_scope = claims.scope
     request.state.app_session_id = None
@@ -381,6 +434,7 @@ async def _dispatch_internal_token(request: Request, call_next, token: str):
             "code": "INTERNAL_ROUTE_FORBIDDEN",
             "message": "this token may not call this route"}})
     request.state.identity = SYSTEM_IDENTITY
+    request.state.auth_method = "bearer"
     request.state.via = "internal"
     request.state.app_session_id = None
     return await call_next(request)
@@ -413,6 +467,7 @@ class IdentityMiddleware(BaseHTTPMiddleware):
                 "message": "a display session may not call this route"}})
         request.state.identity, request.state.app_session_id = resolved
         request.state.scope = "display"
+        request.state.auth_method = "display"
         request.state.via = None
         return await call_next(request)
 
@@ -421,7 +476,8 @@ class IdentityMiddleware(BaseHTTPMiddleware):
         if request.url.path in _EXEMPT_PATHS:
             return await call_next(request)
 
-        if request.method == "POST" and request.url.path == KIOSK_EXCHANGE_PATH:
+        if request.method == "POST" and (request.url.path == KIOSK_EXCHANGE_PATH
+                                          or request.url.path in PASSKEY_LOGIN_PATHS):
             request.state.identity = None
             request.state.scope = "full"
             request.state.app_session_id = None
@@ -445,8 +501,8 @@ class IdentityMiddleware(BaseHTTPMiddleware):
             # the daemon and edge signing with different keys —, expired, or sent
             # from a non-loopback peer) is refused here. Falling through to the
             # ordinary identity resolution below let it collect the LAN-open guest
-            # identity instead: every route open, sessions owned by `lan@local`,
-            # and not one log line (2026-09-22). Loud and closed, like ccsys1.
+            # identity instead (since removed, #1410): every route open, sessions owned
+            # by `lan@local`, and not one log line (2026-09-22). Loud and closed, like ccsys1.
             peer = request.client.host if request.client else "<unknown>"
             log.warning("assistant token refused (invalid, expired, or non-loopback peer %s) "
                         "path=%s", peer, request.url.path)
@@ -470,6 +526,7 @@ class IdentityMiddleware(BaseHTTPMiddleware):
                     "code": "ASSISTANT_ROUTE_FORBIDDEN",
                     "message": "the assistant may not call this route"}})
             request.state.identity = claims.identity
+            request.state.auth_method = "bearer"
             request.state.via = "assistant"
             request.state.assistant_session_id = claims.session_id
             request.state.app_session_id = None      # no cookie session for a bearer call
@@ -486,17 +543,36 @@ class IdentityMiddleware(BaseHTTPMiddleware):
             return await _dispatch_internal_token(
                 request, call_next, auth_header[len("Bearer "):])
 
+        # A passkey session's cookie authenticates on its own (#1410, FR-G12.9).
+        try:
+            passkey = await resolve_passkey_cookie(request)
+        except Exception:
+            log.warning("passkey session lookup failed; falling back to ambient identity",
+                        exc_info=True)
+            passkey = None
+        if passkey is not None:
+            request.state.identity, request.state.app_session_id = passkey
+            request.state.scope = "full"
+            request.state.auth_method = "passkey"
+            return await call_next(request)
+
         # Off the loop: with no identity header this spawns `tailscale whois`
         # (2 s timeout), which stalled every connection behind it (#3300).
         identity = await asyncio.to_thread(verify_identity, request)
         if identity is None:
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"error": {"code": "UNAUTHORIZED", "message": "No valid identity"}},
-            )
+            if get_settings().webauthn_enabled and is_spa_shell(request):
+                # The static shell is the same public JS/CSS for every caller, and a
+                # device signing in with a passkey must load it to reach /login. Every
+                # /api read it then makes still needs an identity (FR-G12.12).
+                request.state.identity = None
+                request.state.scope = "full"
+                request.state.app_session_id = None
+                return await call_next(request)
+            return unauthorized_response()
 
         request.state.identity = identity
         request.state.scope = "full"
+        request.state.auth_method = "tailscale"
 
         # Get-or-create AppSession via cookie
         # We handle DB session manually here since we're in middleware (no DI)
@@ -515,29 +591,35 @@ class IdentityMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
 
-        # Set/renew cookie on response.
-        # secure=True by default — set VIBERPIT_DEV_INSECURE_COOKIE=1 only for
-        # plain-HTTP local dev or tests that inspect cookie attributes.
         session_id = getattr(request.state, "app_session_id", None)
         if session_id:
-            signed = _sign_session_id(session_id)
-            _secure = os.environ.get("VIBERPIT_DEV_INSECURE_COOKIE") != "1"
-            response.set_cookie(
-                _COOKIE_NAME,
-                signed,
-                httponly=True,
-                samesite="strict",
-                secure=_secure,
-                max_age=int(_SESSION_TTL.total_seconds()),
-            )
+            set_session_cookie(response, session_id)
 
         return response
+
+
+def set_session_cookie(response, session_id: str) -> None:
+    """Set/renew THE signed session cookie — ambient and passkey sessions alike.
+
+    HttpOnly, SameSite=Strict, 24 h. secure=True by default; VIBERPIT_DEV_INSECURE_COOKIE=1
+    is only for plain-HTTP local dev or tests that inspect cookie attributes, and the
+    exposure policy refuses it in the lan and public tiers (server/auth/exposure.py).
+    """
+    response.set_cookie(
+        _COOKIE_NAME,
+        _sign_session_id(session_id),
+        httponly=True,
+        samesite="strict",
+        secure=os.environ.get("VIBERPIT_DEV_INSECURE_COOKIE") != "1",
+        max_age=int(_SESSION_TTL.total_seconds()),
+    )
 
 
 async def _resolve_or_create_app_session(
     request: Request, db: AsyncSession, identity: str
 ) -> AppSession:
     """Look up an existing valid AppSession from the signed cookie, or create one."""
+    from server.auth.webauthn import not_passkey  # noqa: PLC0415
     now = datetime.now(timezone.utc).replace(tzinfo=None)  # naive UTC for DB
 
     # Try to resolve from cookie
@@ -551,6 +633,7 @@ async def _resolve_or_create_app_session(
                     AppSession.identity == identity,
                     AppSession.revoked_at.is_(None),
                     AppSession.expires_at > now,
+                    not_passkey(),
                 )
             )
             existing = result.scalar_one_or_none()
@@ -568,6 +651,7 @@ async def _resolve_or_create_app_session(
             AppSession.identity == identity,
             AppSession.revoked_at.is_(None),
             AppSession.expires_at > now,
+            not_passkey(),
         )
         .order_by(AppSession.created_at.desc())
         .limit(1)
@@ -670,11 +754,23 @@ async def require_ws_identity(websocket: WebSocket) -> str:
             raise HTTPException(status_code=403,
                                  detail="WebSocket: invalid, expired, or read-scope token")
         websocket.state.via = "cli"
+        websocket.state.auth_method = "bearer"
         return claims.identity
+
+    try:
+        passkey = await resolve_passkey_cookie(websocket)
+    except Exception:
+        log.warning("passkey session lookup failed on a socket; trying ambient identity",
+                    exc_info=True)
+        passkey = None
+    if passkey is not None:
+        websocket.state.auth_method = "passkey"
+        return passkey[0]
 
     # WebSocket also has .headers; off the loop for the same whois reason (#3300).
     identity = await asyncio.to_thread(verify_identity, websocket)
     if identity is None:
         await websocket.close(code=1008)
         raise HTTPException(status_code=403, detail="WebSocket: no valid identity")
+    websocket.state.auth_method = "tailscale"
     return identity

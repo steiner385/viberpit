@@ -83,14 +83,19 @@ def _hostname(netloc: str) -> str:
     return netloc.split(":", 1)[0]
 
 
-def configured_origins() -> frozenset[str]:
-    """The explicit allowlist, read from settings on each call (tests patch env)."""
+def configured_origins(*, include_dev: bool = True) -> frozenset[str]:
+    """The explicit allowlist, read from settings on each call (tests patch env).
+
+    ``include_dev=False`` leaves out the Vite origins ``VIBERPIT_DEV=1`` adds: the
+    exposure policy asks whether an origin is CONFIGURED, and DEV may not satisfy a
+    lan/public prerequisite (server/auth/exposure.py).
+    """
     settings = get_settings()
     raw: list[str] = []
     if settings.public_origin:
         raw.append(settings.public_origin)
     raw.extend(item.strip() for item in (settings.allowed_origins or "").split(","))
-    if os.environ.get("VIBERPIT_DEV") == "1":
+    if include_dev and os.environ.get("VIBERPIT_DEV") == "1":
         raw.extend(DEV_ORIGINS)
     return frozenset(o for o in (normalize_origin(r) for r in raw) if o is not None)
 

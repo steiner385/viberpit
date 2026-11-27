@@ -46,7 +46,8 @@ _MAX_ARCHIVED_CEILING = 100_000
 # not named here is never sent, so secrets and allowlists cannot leak by accident.
 # (config attribute, env var name, one-sentence description)
 _MANAGED: tuple[tuple[str, str, str], ...] = (
-    ("allow_unauthenticated", "VIBERPIT_ALLOW_UNAUTHENTICATED", "Admit clients with no Tailscale identity as a guest"),
+    ("exposure", "VIBERPIT_EXPOSURE", "Network exposure tier (loopback, tailnet, lan or public)"),
+    ("webauthn_enabled", "VIBERPIT_WEBAUTHN_ENABLED", "Passkey sign-in for devices without Tailscale"),
     ("enable_adoption", "VIBERPIT_ENABLE_ADOPTION", f"Allow adopting sessions started outside {brand.NAME}"),
     ("enable_copilot", "VIBERPIT_ENABLE_COPILOT", "Enable GitHub Copilot accounts"),
     ("enable_xvfb", "VIBERPIT_ENABLE_XVFB", "Virtual displays for browser-using sessions"),

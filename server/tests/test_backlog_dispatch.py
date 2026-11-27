@@ -11,7 +11,6 @@ import pytest
 import pytest_asyncio
 
 from server.tests._trust_ids import TONY_ID, TONY_ENTRY
-from server.config import Settings
 
 H = {"Tailscale-User-Login": "testuser@example.com"}
 
@@ -401,10 +400,7 @@ def test_manual_dispatch_refuses_a_decision_hold():
         assert c.portal.call(_check) == "decision"
 
 
-#: LAN-open mode: an unattributed loopback caller is `lan@local`, an agent-class
-#: actor (spec §8). The env name comes off the settings field so no literal of it
-#: lives in this file.
-LAN_OPEN = {Settings.model_fields["allow_unauthenticated"].alias: "1"}
+from server.tests.test_pm_api import AGENT_HEADERS  # noqa: E402
 
 
 def test_manual_dispatch_refused_for_an_agent_class_caller():
@@ -424,11 +420,12 @@ def test_manual_dispatch_refused_for_an_agent_class_caller():
         orch._backlog_spawn = AsyncMock(return_value=rec)
         orch._backlog_query_queue = AsyncMock(return_value=_CANDIDATES)
 
-    with patch.dict(os.environ, LAN_OPEN), _api_client(patch_orch) as c:
+    with _api_client(patch_orch) as c:
+        c.headers.update(AGENT_HEADERS)
         _seed(c)
         c.portal.call(_seed_held_issue)
         r = c.post("/api/automations/backlog-runner/dispatch",
-                   json={"refs": ["o/r#7"]})   # no identity header → lan@local
+                   json={"refs": ["o/r#7"]})   # AGENT_HEADERS → lan@local
         assert r.status_code == 422, r.text
         assert r.json()["detail"]["error"] == "hold_not_permitted"
         c.app.state.orchestrator._backlog_spawn.assert_not_awaited()

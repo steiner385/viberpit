@@ -204,7 +204,7 @@ from server.sessions.types import (
     ASSISTANT_KIND, ASSISTANT_PLACEHOLDER_NAME, AUTO_ARCHIVE_OPT_OUT_SESSION_TOGGLE, SessionRecord, SYSTEM_IDENTITY,
     RESUME_ELIGIBLE_STATUSES, PROMPT_UUID_CAP, is_resumable, TURN_ANCHOR_CAP, is_assistant, is_assistant_kind,
 )
-from server.auth.identity import OPEN_LAN_IDENTITY
+from server.auth.identity import LEGACY_LAN_IDENTITY
 from server.sessions.usage_stall import is_usage_stalled
 from server.config import env_float
 from server.time_iso import iso_utc
@@ -503,12 +503,12 @@ class _RowEngineRef:
 
 #: Owners that are "nobody in particular": a driver under one of these hands itself
 #: to the first real user who attaches. ``SYSTEM_IDENTITY`` is the internal paths
-#: (rehydrate, dispatch, eager re-launch); ``OPEN_LAN_IDENTITY`` is the LAN-open
-#: guest — deliberately unauthenticated, so it protects no boundary a verified user
+#: (rehydrate, dispatch, eager re-launch); ``LEGACY_LAN_IDENTITY`` is the removed
+#: LAN-open guest (#1410), kept for sessions it already owns — unauthenticated, so it protects no boundary a verified user
 #: could cross (2026-09-22: the assistant drawer's create call was mis-attributed to
 #: the guest and the real user's every answer was refused; see
 #: test_ensure_driver_identity_rethread.py).
-_UNOWNED_IDENTITIES: frozenset[str] = frozenset({SYSTEM_IDENTITY, OPEN_LAN_IDENTITY})
+_UNOWNED_IDENTITIES: frozenset[str] = frozenset({SYSTEM_IDENTITY, LEGACY_LAN_IDENTITY})
 
 
 def _rethread_identity(driver, identity: str) -> None:

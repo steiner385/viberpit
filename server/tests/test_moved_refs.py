@@ -648,14 +648,13 @@ def test_moved_refs_post_refuses_agent_callers_but_not_the_assistant(monkeypatch
     """Recording a pair releases holds, so it follows the hold routes' actor rule: an
     unattributed loopback caller (``lan@local``, agent class) is refused; the
     assistant acting for its operator (``assistant:<identity>``) is admitted."""
-    import os
-    from unittest.mock import patch
 
     from server.tests.pm_ownership_fixtures import identity_repositories
-    from server.tests.test_pm_api import IDENTITY_HEADERS as H, LAN_OPEN, _client
+    from server.tests.test_pm_api import AGENT_HEADERS, IDENTITY_HEADERS as H, _client
     monkeypatch.setattr("server.automations.target_identity.resolve_repositories",
                         identity_repositories)
-    with patch.dict(os.environ, LAN_OPEN), _client() as c:
+    with _client() as c:
+        c.headers.update(AGENT_HEADERS)
         c.post("/api/pm/projects", json={"name": "Ghost", "repos": [
             {"repo": NEW_REPO, "isPrimary": True}, {"repo": OLD_REPO, "isPrimary": False}]},
             headers=H)
