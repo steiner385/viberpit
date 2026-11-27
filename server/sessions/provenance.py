@@ -49,8 +49,23 @@ DELETE_RETRY = "delete_retry"
 #: whether the nudge carried a lost ask (the hold-aware path) and that ask's kind.
 AUTO_RESUMED = "auto_resumed"
 
+#: The session's turn (or its wait on a human) was cut off by something other than
+#: its own doing (FR-203). detail: ``{kind, fromStatus, host}`` — ``kind`` is
+#: :data:`INTERRUPTED_HOST_LOST` when the host running it stopped heartbeating and
+#: the primary adopted the session off it; ``fromStatus`` the status it was in;
+#: ``host`` the host that was lost.
+INTERRUPTED = "interrupted"
+INTERRUPTED_HOST_LOST = "host_lost"
+#: The session now runs on a different fleet host (FR-204). detail: ``{from, to,
+#: reason, resume}`` — ``reason`` is ``host_lost`` for an adoption; ``resume`` says how
+#: the new host took it: ``transcript`` (the conversation resumed from its transcript),
+#: ``fresh`` (no transcript was reachable; a new conversation with a continuity
+#: prompt), ``queued`` (the host was at capacity; it starts when a slot frees),
+#: ``deferred`` (a resting session; it resumes on its next prompt) or ``failed``.
+MOVED_HOST = "moved_host"
+
 KINDS = frozenset({SPAWN_FAILED, AUTO_ARCHIVED, ROTATED_ACCOUNT, HOLD_LOST, DELETE_RETRY,
-                   AUTO_RESUMED})
+                   AUTO_RESUMED, INTERRUPTED, MOVED_HOST})
 
 #: Newest-first page size for :func:`list_events` when the caller gives none.
 DEFAULT_LIMIT = 50

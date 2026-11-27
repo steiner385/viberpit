@@ -158,3 +158,71 @@ def test_an_unreachable_profile_keeps_the_slots_plan(existing):
     assert slot["accessToken"] == "NEW-AT"
     assert slot["subscriptionType"] == "pro"
     assert "rateLimitTier" not in slot
+
+
+# ── Bootstrap: a brand-new account's first claude.ai sign-in (no slot yet) ──────
+
+
+@pytest.fixture
+def fresh(tmp_path, monkeypatch):
+    """No account ``acct`` yet — only the home dirs and an encryption key."""
+    monkeypatch.setenv("VIBERPIT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "dotclaude"))
+    monkeypatch.setenv("VIBERPIT_MASTER_KEY", base64.b64encode(b"k" * 32).decode())
+    paths.store_dir().mkdir(parents=True, exist_ok=True)
+
+
+def test_a_new_account_is_bootstrapped_from_the_captured_identity(fresh):
+    assert not paths.slot_path("acct").exists()
+    with _profile():
+        auth_login.complete_code_login("acct", _resp())
+    slot = read_credentials(paths.slot_path("acct"))
+    assert slot["accessToken"] == "NEW-AT" and slot["refreshToken"] == "NEW-RT"
+    assert slot["scopes"] == FULL.split()
+    assert slot["subscriptionType"] == "max"
+    assert crypto.is_encrypted(json.loads(paths.slot_path("acct").read_text())["refreshToken"])
+    stored = json.loads(paths.store_claude_json_path("acct").read_text())
+    assert stored["oauthAccount"] == {
+        "accountUuid": "uuid-A", "emailAddress": "a@example.com",
+        "organizationUuid": "org-A", "organizationName": "A's org", "displayName": "A"}
+    assert paths.account_cfg_dir("acct").exists()
+    assert ledger.read_ledger()["accounts"]["acct"]["status"] == "ok"
+
+
+def test_a_failed_bootstrap_identity_leaves_no_slot(fresh):
+    with _profile(oauth.TransientError("503")):
+        with pytest.raises(auth_login.LoginIdentityUnavailable):
+            auth_login.complete_code_login("acct", _resp(account=None, organization=None))
+    assert not paths.slot_path("acct").exists()
+    assert not paths.store_claude_json_path("acct").exists()
+    assert not paths.account_cfg_dir("acct").exists()
+
+
+def test_a_bootstrap_write_failure_removes_the_half_created_slot(fresh, monkeypatch):
+    def _boom(name):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("viberpit.configdir.compose", _boom)
+    with _profile():
+        with pytest.raises(OSError):
+            auth_login.complete_code_login("acct", _resp())
+    assert not paths.slot_path("acct").exists()
+    assert not paths.store_claude_json_path("acct").exists()
+
+
+def test_a_bootstrap_still_needs_the_identity_to_be_readable(fresh):
+    """No stored identity to compare against is fine for a NEW slot — but the login
+    must still name an account, or the slot would be written with nobody's identity."""
+    with _profile({}):
+        with pytest.raises(auth_login.LoginIdentityUnavailable):
+            auth_login.complete_code_login("acct", _resp(account=None, organization=None))
+    assert not paths.slot_path("acct").exists()
+
+
+def test_an_existing_slot_without_an_identity_still_refuses(existing):
+    """Only a slot that does NOT exist is bootstrapped; an existing one keeps the
+    same-identity check, and fails closed when it cannot be read."""
+    existing(uuid=None, email=None)
+    with _profile():
+        with pytest.raises(auth_login.WrongAccountLogin):
+            auth_login.complete_code_login("acct", _resp())

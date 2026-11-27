@@ -240,3 +240,46 @@ def test_add_cancel_returns_idle():
 
     assert resp.status_code == 200
     assert resp.json()["state"] == "idle"
+
+
+# ---------------------------------------------------------------------------
+# New accounts sign in by code paste (mode="claude_login"), not the login browser
+# ---------------------------------------------------------------------------
+
+
+def test_add_start_runs_the_code_paste_sign_in_not_the_login_browser():
+    fake_rm = FakeReauthManager()
+    with temp_env():
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            client = _make_client(fake_rm)
+        with client:
+            resp = client.post("/api/accounts/add", json={"name": "newacct"},
+                               headers=IDENTITY_HEADERS)
+    assert resp.status_code == 202
+    assert fake_rm.last_start_mode == "claude_login"
+
+
+def test_add_code_submits_the_pasted_code_for_the_in_flight_account():
+    fake_rm = FakeReauthManager()
+    with temp_env():
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            client = _make_client(fake_rm)
+        with client:
+            client.post("/api/accounts/add", json={"name": "newacct"},
+                        headers=IDENTITY_HEADERS)
+            resp = client.post("/api/accounts/add/code", json={"code": "AUTHCODE#STATE"},
+                               headers=IDENTITY_HEADERS)
+    assert resp.status_code == 200
+    assert fake_rm.last_submit_code == ("newacct", "AUTHCODE#STATE")
+
+
+def test_add_code_with_no_add_in_flight_is_a_no_op():
+    fake_rm = FakeReauthManager()
+    with temp_env():
+        with patch.dict(os.environ, {"VIBERPIT_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            client = _make_client(fake_rm)
+        with client:
+            resp = client.post("/api/accounts/add/code", json={"code": "AUTHCODE#STATE"},
+                               headers=IDENTITY_HEADERS)
+    assert resp.status_code == 200
+    assert fake_rm.last_submit_code is None

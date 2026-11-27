@@ -24,7 +24,8 @@ interface SidebarResizerProps {
  * Vertical drag handle between a resizable panel and the pane beside it. It is
  * the visual divider too (replacing that panel's border). Pointer-drag to
  * resize; when focused, ← / → nudge by 16px and Home / End jump to the
- * min / max. Exposes ARIA separator semantics with valuenow/min/max so assistive
+ * min / max; a double-click toggles between min and max (the single-pointer
+ * alternative to dragging, WCAG 2.5.7). Exposes ARIA separator semantics with valuenow/min/max so assistive
  * tech announces the current width.
  *
  * The defaults are the sidebar's, which is what every existing caller wants;
@@ -70,6 +71,14 @@ export function SidebarResizer({
     else if (e.key === 'End') { e.preventDefault(); onResize(max) }
   }, [width, onResize, dir, min, max])
 
+  // SC 2.5.7 (#3564): resizing must not need a drag, so a double-click/tap flips
+  // between the two ends of the band. Settings › Appearance has the same two
+  // presets as plain buttons, which is the path for pointers that cannot
+  // double-click (and for iOS, which does not reliably emit `dblclick`).
+  const onDoubleClick = useCallback(() => {
+    onResize(width <= (min + max) / 2 ? max : min)
+  }, [width, onResize, min, max])
+
   return (
     <div
       role="separator"
@@ -79,9 +88,10 @@ export function SidebarResizer({
       aria-valuemin={min}
       aria-valuemax={max}
       tabIndex={0}
-      title="Drag to resize · ← → to nudge"
+      title="Drag to resize · double-click to toggle narrow/wide · ← → to nudge"
       onPointerDown={onPointerDown}
       onKeyDown={onKeyDown}
+      onDoubleClick={onDoubleClick}
       className={cn(
         'group relative shrink-0 w-1.5 cursor-col-resize self-stretch select-none touch-none',
         'bg-surface-raised hover:bg-accent',

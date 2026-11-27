@@ -143,9 +143,29 @@ workers (the primary is the sole refresher to avoid racing shared token files).
     because a pushed commit would be readable by anyone with its SHA.
   - **API / switch:** `POST /api/sessions/{id}/move` and `GET /api/sessions/{id}/move/preflight`,
     both human-only; kill switch `VIBERPIT_SESSION_MOVE_ENABLED` (default on).
-  - **Not built:** a "Drain host" action, adoption of a dead host's sessions (#949), a UI to
-    clear a claim stuck on a host removed from the fleet for good (manual DB clear for now), and
-    a check of org rulesets on private repos (`cairnea/KinDash`).
+  - **Not built:** a "Drain host" action, a UI to clear a claim stuck on a host removed from
+    the fleet for good (manual DB clear for now), and a check of org rulesets on private repos
+    (`cairnea/KinDash`).
+- **Dead-host adoption** (spec 002 Phase 4, #949; `server/sessions/adoption.py`): when a host
+  stops heartbeating for `VIBERPIT_HOST_DEAD_AFTER_S` (default 300 s, measured on the DB clock)
+  and still owns non-terminal sessions, the **primary** — and only while it holds a fresh primary
+  lease and its own heartbeat is registered — fences that host first (`host_heartbeat.declare_dead`,
+  a compare-and-swap with exactly one winner; a host that beat again meanwhile is never fenced) and
+  then, per session: records `interrupted{host_lost, fromStatus}`, applies the same idle
+  normalization a daemon restart does, and restamps `sessions.host` to the best healthy host by
+  the fleet's ranked-host logic (a host with a stale heartbeat of its own is never a target), with
+  `adopted_from` as the hand-over marker. Every daemon's always-on tick then **takes** the rows
+  stamped for it: a session that was mid-turn or waiting on a human is resumed from its transcript
+  (the per-account config dir is one shared tree across hosts — `specs/002-session-continuity/
+  research.md`) and nudged, or, with no transcript reachable (a Codex thread stays in the dead host's
+  `CODEX_HOME`), started fresh with a continuity prompt naming the lost host, repo, branch, goal and
+  last prompt; a resting session is left to resume on its next prompt; a host at capacity queues it
+  (`session_queue` entry with `adopted_resume`) and its drain resumes it when a slot frees. Each
+  outcome records one `moved_host{from, to, reason, resume}` event. The fenced host, when it
+  returns, has its next beat refused and **stands down** (`_on_fenced`, FR-202): drivers closed as
+  a restart, leases released, nothing persisted, re-registered at the new fence, rehydrated to only
+  what is still stamped to it — no session is ever driven by two hosts. Drill:
+  `scripts/verify-cross-host-resume.sh` (manual, real binary).
 
 **Known gaps (open issues)** —
 - **#840 — worker role incomplete.** `orchestrator.start()` still launches all fleet-global

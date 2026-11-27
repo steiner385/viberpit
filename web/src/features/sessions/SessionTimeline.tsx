@@ -48,6 +48,32 @@ function describeEvent(e: SessionTimelineEvent): string {
     const error = str(d.error)
     return `Delete retry${strike}${d.stuck === true ? ' — stuck' : ''}${error ? `: ${error}` : ''}`
   }
+  if (e.kind === 'interrupted') {
+    // Spec 002 FR-203: the host running the session stopped heartbeating and the
+    // primary adopted the session off it.
+    const from = str(d.fromStatus)
+    const cause = d.kind === 'host_lost'
+      ? `host ${str(d.host) ?? '(unknown)'} became unreachable`
+      : str(d.kind)?.replace(/_/g, ' ') ?? 'interrupted'
+    return `Interrupted: ${cause}${from ? ` (was ${from.replace(/_/g, ' ')})` : ''}`
+  }
+  if (e.kind === 'moved_host') {
+    // FR-204: how the new host took it — resumed from its transcript, started over
+    // with a continuity prompt, queued for a slot, left for its next prompt, or failed.
+    const from = str(d.from)
+    const to = str(d.to)
+    const where = from && to ? ` from ${from} to ${to}` : to ? ` to ${to}` : ''
+    const how: Record<string, string> = {
+      transcript: 'conversation resumed',
+      fresh: 'conversation could not be recovered — started over with context',
+      queued: 'waiting for a slot there',
+      deferred: 'resumes on its next prompt',
+      failed: 'could not be resumed there',
+    }
+    const resume = str(d.resume)
+    const outcome = resume ? how[resume] ?? resume : null
+    return `Moved${where}${outcome ? `: ${outcome}` : ''}`
+  }
   return e.kind.replace(/_/g, ' ')
 }
 
