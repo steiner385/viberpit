@@ -20,7 +20,7 @@ log = logging.getLogger("server.ipc.daemon")
 # Refusals the edge matches by ``err_type`` as an expected outcome (ws.py: the
 # stale-ownership banner, ``_worker_start_timed_out``) though they carry no
 # ``error_data``. Logging them at WARNING auto-files an issue per attach (#3079).
-_EXPECTED_RPC_ERRORS = frozenset({"StaleOwnership", "DriverStartTimeout"})
+_EXPECTED_RPC_ERRORS = frozenset({"StaleOwnership", "DriverStartTimeout", "PreflightFailed"})
 
 
 def _is_unknown_session(exc: Exception) -> bool:

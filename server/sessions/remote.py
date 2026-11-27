@@ -1331,7 +1331,7 @@ class RemoteOrchestrator:
                 raise KeyError(exc.message) from exc
             if exc.err_type == "ModelBlockedError":
                 raise ModelBlockedError((exc.data or {}).get("model", exc.message)) from exc
-            if exc.err_type == "AllAccountsBusy":
+            if exc.err_type in ("AllAccountsBusy", "PreflightFailed"):
                 raise reconstruct_create_session_error(exc) from exc
             code = (exc.data or {}).get("code")
             if exc.err_type == "ForkError" and code in fk.FORK_CODES:
@@ -1648,6 +1648,8 @@ class RemoteOrchestrator:
                 raise ValueError(exc.message) from exc
             if exc.err_type == "ModelBlockedError":
                 raise ModelBlockedError(exc.message) from exc
+            if exc.err_type == "PreflightFailed":
+                raise reconstruct_create_session_error(exc) from exc
             raise
         return SessionRecord.from_dict(r["session"])
 

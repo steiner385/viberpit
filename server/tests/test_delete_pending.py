@@ -411,3 +411,52 @@ def test_archiving_a_session_in_a_hold_status_resolves_the_hold(tmp_path):
     assert before == [None], "the question hold must be open before the archive"
     assert len(after) == 1 and after[0] is not None, "archive must resolve the hold"
     assert open_kinds == {}
+
+
+# ---------------------------------------------------------------------------
+# Delete state survives a daemon restart (FR-404 "never resurrects silently")
+# ---------------------------------------------------------------------------
+
+
+async def _record_retry(sid: str, *, strike: int, stuck: bool) -> None:
+    await provenance.record(sid, provenance.DELETE_RETRY,
+                            {"strike": strike, "error": _STALE, "stuck": stuck})
+
+
+def test_rehydrate_seeds_pending_and_stuck_from_the_newest_delete_retry_event(tmp_path):
+    async def run():
+        await init_db(db_url=_db_url(tmp_path))
+        await _seed([_legacy_row("p1", tmp_path / "arch"), _legacy_row("s1", tmp_path / "arch"),
+                     _legacy_row("ok", tmp_path / "arch")])
+        await _record_retry("p1", strike=1, stuck=False)
+        await _record_retry("s1", strike=2, stuck=False)
+        await _record_retry("s1", strike=3, stuck=True)          # newest wins
+        await _record_retry("gone", strike=1, stuck=False)       # row no longer exists
+        orch = _orch()                                           # a fresh process
+        await orch.start()
+        try:
+            await orch.rehydrate()
+            return (orch.delete_state("p1"), orch.delete_state("s1"), orch.delete_state("ok"),
+                    orch.delete_state("gone"), dict(orch._archive_purge_strikes),
+                    orch.pending_delete_states())
+        finally:
+            await orch.stop()
+
+    p1, s1, ok, gone, strikes, states = asyncio.run(run())
+    assert (p1, s1, ok, gone) == ("pending", "stuck", None, None)
+    assert strikes == {"p1": 1, "s1": 3}
+    assert states == {"p1": "pending", "s1": "stuck"}
+
+
+def test_seeded_pending_delete_is_retried_and_cleared_by_the_loop_tick(tmp_path):
+    async def run():
+        await init_db(db_url=_db_url(tmp_path))
+        await _seed([_legacy_row("p1", tmp_path / "arch")])
+        await _record_retry("p1", strike=1, stuck=False)
+        orch = _orch()
+        await orch.rehydrate()
+        healed = await orch._retry_pending_deletes()          # the dir removes fine now
+        return healed, orch.delete_state("p1"), await _row("p1")
+
+    healed, state, row = asyncio.run(run())
+    assert healed == 1 and state is None and row is None

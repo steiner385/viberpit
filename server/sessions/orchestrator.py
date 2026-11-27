@@ -4932,7 +4932,7 @@ class SessionOrchestrator:
                     auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                     queue_reason=queue_reason, platform=platform, sandbox=sandbox)
             try:
-                return await self._spawn_session(
+                return await self._spawn_rotating_on_preflight(
                     session_id, name=name, account=account, initial_prompt=initial_prompt,
                     cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
                     identity=identity, permission_mode=permission_mode,
@@ -5711,8 +5711,9 @@ class SessionOrchestrator:
                         session_id, model=approved_model, replace_row=row is not None,
                         **spawn_kwargs)
                 else:
-                    launched = await self._spawn_session(
-                        session_id, model=approved_model, preexisting_row=row is not None,
+                    launched = await self._spawn_rotating_on_preflight(
+                        session_id, account=spawn_kwargs.pop("account", None),
+                        model=approved_model, preexisting_row=row is not None,
                         **spawn_kwargs)
             except Exception as exc:
                 if session_id in self._drivers:
@@ -6880,6 +6881,29 @@ class SessionOrchestrator:
         if rec is not None and rec.status == "ended":
             return "failed"
         return "not_queued"
+
+    async def _spawn_rotating_on_preflight(self, session_id: str, *, account: str | None,
+                                           **kw: Any) -> SessionRecord:
+        """``_spawn_session`` for a DIRECT launch (create, model approval), retried ONCE
+        on a rotated account when the auto-picked account fails credential preflight
+        (FR-304): the failed account is hard-excluded from the second pick and the move
+        is on the timeline (``ROTATED_ACCOUNT``). The queue drain does not use this —
+        it rotates through its own re-enqueue. A pinned *account* is never moved and a
+        second failure is not retried: the typed ``PreflightFailed`` propagates and the
+        API answers 409 with its reason. When that second attempt fails too, the
+        ``ROTATED_ACCOUNT`` row stays behind for an id that never got a session row —
+        orphan provenance, harmless (no FK, nothing reads an unknown id's timeline)."""
+        try:
+            return await self._spawn_session(session_id, account=account, **kw)
+        except _preflight.PreflightFailed as exc:
+            if account is not None:
+                raise
+            log.info("session.start_rotated_preflight id=%s from=%s reason=%s",
+                     session_id, exc.account, exc.reason)
+            await _provenance.record(session_id, _provenance.ROTATED_ACCOUNT, {
+                "from": exc.account, "reason": exc.reason, "attempt": 1})
+            return await self._spawn_session(
+                session_id, account=None, exclude_accounts=frozenset({exc.account}), **kw)
 
     async def _spawn_session(
         self,
@@ -8703,6 +8727,26 @@ class SessionOrchestrator:
                 sa_update(DbSession).where(DbSession.id == session_id).values(**values)
             )
 
+    # Lazily-created bookkeeping (#662 pattern, like _queue_drain_lock): several tests
+    # build the orchestrator with ``__new__`` and no ``__init__``, and a hold / dirty-
+    # status / delete-state read on the hot paths below must not raise — or WARN on
+    # every call — there. Each returns the __init__-owned attribute, creating it once.
+
+    def _hold_kinds(self) -> dict[str, str]:
+        if not hasattr(self, "_open_hold_kind"):
+            self._open_hold_kind = {}
+        return self._open_hold_kind
+
+    def _dirty_ids(self) -> set[str]:
+        if not hasattr(self, "_dirty_status"):
+            self._dirty_status = set()
+        return self._dirty_status
+
+    def _pending_delete_errors(self) -> dict[str, str]:
+        if not hasattr(self, "_pending_deletes"):
+            self._pending_deletes = {}
+        return self._pending_deletes
+
     async def _track_hold(self, session_id: str, status: str) -> None:
         """Keep the durable hold (FR-305) in step with the status being persisted.
 
@@ -8718,12 +8762,13 @@ class SessionOrchestrator:
         """
         try:
             kind = _holds.HOLD_KIND_BY_STATUS.get(status)
-            current = self._open_hold_kind.get(session_id)
+            open_kinds = self._hold_kinds()
+            current = open_kinds.get(session_id)
             if kind is None:
                 if current is None or self._shutting_down:
                     return
                 await _holds.resolve_open(session_id)
-                self._open_hold_kind.pop(session_id, None)
+                open_kinds.pop(session_id, None)
                 return
             if current == kind:
                 return
@@ -8735,9 +8780,9 @@ class SessionOrchestrator:
             # At most one open hold per session: close whatever is open (a different
             # kind, or a row an earlier failed open left behind) before the new one.
             await _holds.resolve_open(session_id)
-            self._open_hold_kind.pop(session_id, None)
+            open_kinds.pop(session_id, None)
             if await _holds.open_hold(session_id, kind, content) is not None:
-                self._open_hold_kind[session_id] = kind
+                open_kinds[session_id] = kind
         except Exception:  # noqa: BLE001 - provenance must never break the status path
             log.warning("holds.track_failed session=%s status=%s", session_id, status,
                         exc_info=True)
@@ -8751,7 +8796,7 @@ class SessionOrchestrator:
         during shutdown: archive/close is the user's (or automation's) decision to end
         the session, not the daemon dying under it. Never raises
         (``holds.resolve_open`` swallows and logs)."""
-        kind = self._open_hold_kind.pop(session_id, None)
+        kind = self._hold_kinds().pop(session_id, None)
         status = getattr(record, "status", None)
         if kind is None and status not in _holds.HOLD_KIND_BY_STATUS:
             return
@@ -8935,9 +8980,9 @@ class SessionOrchestrator:
             # _flush_dirty_status re-writes the row within DIRTY_FLUSH_INTERVAL_S.
             log.warning("persist.status_db_failed session=%s status=%s",
                         session_id, status, exc_info=True)
-            self._dirty_status.add(session_id)
+            self._dirty_ids().add(session_id)
         else:
-            self._dirty_status.discard(session_id)
+            self._dirty_ids().discard(session_id)
         # Child sessions (spec §4.4): tell the parent about a stop transition. The
         # decision and the persisted guard live in child_sessions.notify_decision.
         if _cs.steering_parent(rec):
@@ -22763,6 +22808,8 @@ class SessionOrchestrator:
         # Only rows this daemon OWNS: the worker filter above is enough for a worker,
         # but the primary loads every host's rows, and a worker's hold is live there.
         await self._reconcile_holds(rebuilt)
+        # A delete the last process could not finish stays pending/stuck (FR-404).
+        await self._seed_delete_states()
         log.info("rehydrate: %d session(s) restored (%d branch backfilled, %d status healed)",
                  added, len(backfilled), len(healed))
         self._startup_note("rehydrated", added)
@@ -25807,7 +25854,7 @@ class SessionOrchestrator:
                 rec.host = owner
         # The hold row itself stays open — the ask is still pending, on the new owner,
         # whose _track_hold now dedupes it. Only this host's dedupe entry goes.
-        self._open_hold_kind.pop(session_id, None)
+        self._hold_kinds().pop(session_id, None)
         self._worktrees.pop(session_id, None)
         self._pending_prompt_preambles.pop(session_id, None)
         self._resume_recovery.pop(session_id, None)
@@ -32110,7 +32157,7 @@ class SessionOrchestrator:
         one strike (the cap purge's counter — poisoned = "stuck"), and say so on the
         session's timeline. The strike WARNING at poison time is the only WARNING: each
         retry would otherwise auto-file an issue."""
-        self._pending_deletes[sid] = err
+        self._pending_delete_errors()[sid] = err
         self._note_purge_failure(sid)
         await _provenance.record(sid, _provenance.DELETE_RETRY, {
             "strike": self._archive_purge_strikes.get(sid, 0),
@@ -32121,9 +32168,48 @@ class SessionOrchestrator:
     def _clear_delete_failure(self, sid: str) -> None:
         """The row is gone (deleted here, or found already missing): nothing is
         pending or stuck about it any more."""
-        self._pending_deletes.pop(sid, None)
+        self._pending_delete_errors().pop(sid, None)
         self._archive_purge_strikes.pop(sid, None)
         self._archive_purge_poisoned.discard(sid)
+
+    async def _seed_delete_states(self) -> int:
+        """Rebuild ``_pending_deletes`` / the strike counter / the poisoned set from the
+        newest ``delete_retry`` event of every session whose row still exists (FR-404:
+        a delete the last process could not finish must not come back as a plain
+        archived row after a restart — the chip and the retry loop would both forget
+        it). Only rows this daemon owns by stamp (#852): the directory a delete could
+        not remove is on the owning host. Returns how many were seeded. Never raises."""
+        from sqlalchemy import select as sa_select
+        from server.db.models import SessionEvent
+        seeded = 0
+        try:
+            enabled_hosts = await self._enabled_host_names()
+            async with db_session() as db:
+                rows = (await db.execute(
+                    sa_select(SessionEvent.session_id, SessionEvent.detail, DbSession.host)
+                    .join(DbSession, DbSession.id == SessionEvent.session_id)
+                    .where(SessionEvent.kind == _provenance.DELETE_RETRY)
+                    .order_by(SessionEvent.ts.desc(), SessionEvent.id.desc()))).all()
+            seen: set[str] = set()
+            for sid, detail, host in rows:
+                if sid in seen:
+                    continue           # newest event per session wins
+                seen.add(sid)
+                if not self._owns_record_by_stamp(host, enabled_hosts):
+                    continue
+                detail = detail if isinstance(detail, dict) else {}
+                self._pending_delete_errors()[sid] = str(detail.get("error") or "")
+                strike = detail.get("strike")
+                if isinstance(strike, int) and strike > 0:
+                    self._archive_purge_strikes[sid] = strike
+                if detail.get("stuck"):
+                    self._archive_purge_poisoned.add(sid)
+                seeded += 1
+        except Exception:  # noqa: BLE001 - provenance must never break rehydrate
+            log.warning("delete_state.seed_failed", exc_info=True)
+        if seeded:
+            log.info("rehydrate: %d pending delete(s) restored from the timeline", seeded)
+        return seeded
 
     def delete_state(self, session_id: str) -> str | None:
         """What a permanent delete left behind for *session_id* (FR-404): ``"stuck"``
@@ -32132,7 +32218,7 @@ class SessionOrchestrator:
         no delete has kept its row. The API answers 202 with this instead of 404."""
         if session_id in self._archive_purge_poisoned:
             return "stuck"
-        if session_id in self._pending_deletes:
+        if session_id in self._pending_delete_errors():
             return "pending"
         return None
 
@@ -32141,7 +32227,7 @@ class SessionOrchestrator:
         it. The archived list is served by the primary, whose memory knows nothing of
         a row a worker could not delete; the fleet unions this across hosts so that
         row's chip survives a refetch (FR-404)."""
-        ids = set(self._pending_deletes) | self._archive_purge_poisoned
+        ids = set(self._pending_delete_errors()) | self._archive_purge_poisoned
         out: dict[str, str] = {}
         for sid in ids:
             state = self.delete_state(sid)

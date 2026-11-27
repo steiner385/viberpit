@@ -244,6 +244,12 @@ def reconstruct_create_session_error(exc: DaemonError) -> Exception:
         reset = data.get("earliest_reset")
         earliest = datetime.fromisoformat(reset) if reset else None
         return AllAccountsBusy(earliest, data.get("kind", "at_ceiling"))
+    if exc.err_type == "PreflightFailed":
+        # FR-304: the account's composed credential cannot authenticate; the edge
+        # answers a typed 409 with the reason token, never an opaque 500.
+        from server.sessions.preflight import PreflightFailed
+        data = exc.data or {}
+        return PreflightFailed(str(data.get("account", "")), str(data.get("reason", "")))
     if exc.err_type in ("NoHostAvailable", "NoEngineHostAvailable"):
         from server.sessions.fleet_router import NoHostAvailable
         # NoEngineHostAvailable folds to its base type rather than round-tripping

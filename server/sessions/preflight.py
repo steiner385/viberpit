@@ -43,6 +43,13 @@ class PreflightFailed(Exception):
         self.reason = reason
         super().__init__(f"account {account!r} failed credential preflight ({reason})")
 
+    @property
+    def error_data(self) -> dict[str, str]:
+        """Structured payload so the typed refusal survives the daemon RPC envelope
+        (``server/ipc/client.py:reconstruct_create_session_error`` rebuilds it), the
+        same way ``AllAccountsBusy.error_data`` does."""
+        return {"account": self.account, "reason": self.reason}
+
 
 def applies(provider: str | None, cfg_dir: str | Path | None) -> bool:
     """Does the check have anything to say for this launch? Only a registered Claude

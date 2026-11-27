@@ -149,6 +149,10 @@ export function describeCreateSessionFailure(err: unknown): CreateSessionFailure
         return { kind: 'branch', message: message ?? 'Could not switch branch' }
       }
       if (code === 'accounts_need_reauth') return { kind: 'reauth', message: REAUTH_MESSAGE }
+      // The spawn-time credential preflight (#947, FR-304): the composed config cannot
+      // authenticate (no access token, or expired with nothing to refresh it) and no
+      // other account could take the session. Same remedy as a 401 — re-login.
+      if (code === 'credential_preflight_failed') return { kind: 'reauth', message: REAUTH_MESSAGE }
       if (code === 'all_accounts_limited') return { kind: 'all-limited', earliestReset }
     }
     return {

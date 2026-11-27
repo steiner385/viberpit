@@ -56,6 +56,7 @@ from server.sessions.orchestrator import (
     ModelBlockedError,
 )
 from server.sessions import session_actions
+from server.sessions.preflight import PreflightFailed
 from server.sessions import provenance as _provenance
 from server.sessions import read_state
 from server.sessions import worktree_files
@@ -1187,6 +1188,8 @@ async def create_session(
     except AllAccountsBusy as exc:
         return _all_accounts_busy_response(
             exc, limited_message="All accounts are at or above the usage ceiling")
+    except PreflightFailed as exc:
+        return _preflight_failed_response(exc)
     except sandbox_mod.SandboxError as exc:
         # D-23: the new session's sandbox could not start or be verified (the default
         # sandboxes new sessions). Nothing runs; the CLI's own reason rides along.
@@ -1897,6 +1900,23 @@ async def queue_cancel_session(
         )
 
 
+def _preflight_failed_response(exc: PreflightFailed) -> JSONResponse:
+    """The 409 for a ``PreflightFailed`` (FR-304): the account's composed credential
+    cannot authenticate, so nothing was started. ``reason`` is the typed token
+    (``credentials_expired`` / ``missing_credentials``); a pinned account names itself."""
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "error": {
+                "code": "credential_preflight_failed",
+                "message": str(exc),
+                "reason": exc.reason,
+                "account": exc.account,
+            },
+        },
+    )
+
+
 def _all_accounts_busy_response(exc: AllAccountsBusy, *, limited_message: str) -> JSONResponse:
     """The 409 for an ``AllAccountsBusy``: ``accounts_need_reauth`` when no account is
     usable at all, else ``all_accounts_limited`` with the ``earliestReset``."""
@@ -1962,6 +1982,9 @@ async def queue_start_now(
         return _all_accounts_busy_response(
             exc, limited_message="Every account is at its usage ceiling; this session "
                                  "starts automatically when quota frees.")
+    # No PreflightFailed branch: start_queued_now runs the queue drain, which classifies
+    # a preflight refusal itself (rotate once, else a typed end) — only AllAccountsBusy
+    # escapes it.
     except DaemonUnavailable:
         log.warning("queue_start_now: daemon unavailable id=%s", session_id, exc_info=True)
         return _start_now_unavailable(
@@ -2829,6 +2852,8 @@ async def fork_session(
     except AllAccountsBusy as exc:
         return _all_accounts_busy_response(
             exc, limited_message="The source's account is at or above the usage ceiling")
+    except PreflightFailed as exc:
+        return _preflight_failed_response(exc)
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     except DaemonError as exc:
@@ -3686,6 +3711,10 @@ async def model_approval(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "model_blocked", "message": f"{body.model} is blocked by policy"})
+    except PreflightFailed as exc:
+        # FR-304: the approved launch's account cannot authenticate; the hold was
+        # restored by the orchestrator, so the approver can retry on another account.
+        return _preflight_failed_response(exc)  # type: ignore[return-value]
     except ValueError:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="no pending model approval")
     return _record_to_dict(rec)
