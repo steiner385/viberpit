@@ -29,7 +29,9 @@ server = [
     "asyncpg",
     "alembic",
     "cryptography",
-    "webauthn",
+    # Passkeys (server/auth/webauthn.py, #1410) depend on the 3.x API
+    # (parse_authentication_credential_json, options_to_json); a 4.0 is a deliberate bump.
+    "webauthn>=3.0,<4",
     "httpx",
     "websockets",
     "pywebpush",
