@@ -310,6 +310,15 @@ DISPLAY_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 )
 
 
+def display_read_patterns() -> list[str]:
+    """The ``GET`` rows of ``DISPLAY_ROUTE_ALLOW`` as anchored regex sources.
+
+    Published to a display session by ``GET /api/auth/me`` so the client gates its own
+    polling on the server's list rather than keeping a second copy (#3544).
+    """
+    return [rx.pattern for m, rx in DISPLAY_ROUTE_ALLOW if m == "GET"]
+
+
 def display_route_allowed(method: str, path: str) -> bool:
     """Whether a display-scoped session may call ``method path``.
 

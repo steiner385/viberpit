@@ -5,9 +5,10 @@ import type { ThemeChoice } from './theme'
 
 export const DEFAULT_CYCLE_SECONDS = 30
 
-/** The page a display link (`/kiosk?token=…`, #1408) opens. It renders OUTSIDE
- *  the shell — see `features/kiosk/KioskExchange` — so nothing there polls or
- *  opens `/ws` before the display session exists. */
+/** The page a display link (`/kiosk?token=…`, #1408) opens. The SERVER renders it
+ *  (`GET /kiosk`, `server/api/kiosk.py`) — not the SPA — so it loads on a device with no
+ *  identity yet (#3543) and nothing polls or opens `/ws` before the display session
+ *  exists. */
 export const KIOSK_EXCHANGE_PATH = '/kiosk'
 
 /** The shareable display link for a freshly minted token. */

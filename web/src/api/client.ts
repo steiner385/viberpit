@@ -1,3 +1,5 @@
+import { displayGateBlocks } from './displayGate'
+
 export class ApiRequestError extends Error {
   readonly status: number
   readonly body: Record<string, unknown>
@@ -53,6 +55,11 @@ export function apiErrorDetail(err: unknown): ApiErrorDetail {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  // A display session's own 403 without the round trip (#3544): same error shape the
+  // server would send, so callers and the query retry policy see an ordinary refusal.
+  if (method === 'GET' && displayGateBlocks(path)) {
+    throw new ApiRequestError(403, { error: { code: 'DISPLAY_SCOPE_FORBIDDEN', message: 'a display session may not call this route' } })
+  }
   const res = await fetch(`/api${path}`, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : {},

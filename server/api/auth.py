@@ -41,11 +41,17 @@ async def auth_me(
     ``display:<label>`` — never the operator who minted the link (#1408).
     """
     scope = getattr(request.state, "scope", None) or "full"
-    return {
+    body: dict = {
         "identity": identity,
         "scope": scope,
         "authMode": "display" if scope == "display" else "tailscale",
     }
+    if scope == "display":
+        # The GET routes this session may call. The client gates its own queries on it
+        # (#3544) so a wall never polls an endpoint that can only 403.
+        from server.assistant.policy import display_read_patterns  # noqa: PLC0415
+        body["allowedReads"] = display_read_patterns()
+    return body
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

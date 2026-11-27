@@ -718,16 +718,10 @@ describe('isAppRoute', () => {
   })
 })
 
-// #1408: a display link's exchange page renders OUTSIDE the layout (no shell
-// polling or `/ws` before the display session exists), and the layout's `*`
-// catch-all must not swallow it.
+// #3543: a display link's exchange page is served by the server (`GET /kiosk`,
+// `server/api/kiosk.py`), not the SPA — a device with no identity cannot load the bundle.
+// The path is not an in-app page, so the layout catch-all does not make it one.
 describe('/kiosk', () => {
-  it('matches the exchange route, not the layout catch-all', () => {
-    const matched = matchRoutes(buildRoutes(<TestLayout />), '/kiosk')!
-    expect(matched).toHaveLength(1)
-    expect(matched[0].route.path).toBe('/kiosk')
-  })
-
   it('is not an in-app page', () => {
     expect(isAppRoute('/kiosk')).toBe(false)
   })

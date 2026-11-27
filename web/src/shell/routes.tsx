@@ -82,8 +82,6 @@ import {
 import { Skeleton } from '@/ui/Skeleton'
 import { PageContent } from '@/ui/PageContent'
 import { RouteErrorFallback } from './RouteErrorFallback'
-import { KIOSK_EXCHANGE_PATH } from './kiosk'
-import { KioskExchange } from '@/features/kiosk/KioskExchange'
 
 /**
  * ## Which pages are code-split, and why not all of them (#1411)
@@ -442,10 +440,5 @@ export function buildRoutes(layout: ReactElement): RouteObject[] {
         children: PAGES.map((page) => ({ ...page, errorElement: <RouteErrorFallback /> })),
       }],
     },
-    // A display link's exchange page (#1408) sits OUTSIDE the layout: the shell
-    // polls, badges and opens `/ws` on mount, and none of that may run before
-    // the display session exists. Not in `PAGES`, so `isAppRoute` is false for
-    // it — nothing in the app links to a token-bearing URL.
-    { path: KIOSK_EXCHANGE_PATH, element: <KioskExchange />, errorElement: <RouteErrorFallback /> },
   ]
 }
