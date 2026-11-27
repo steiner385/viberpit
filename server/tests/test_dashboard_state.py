@@ -203,6 +203,68 @@ def test_dashboard_state_group_failed_wins_over_queue_substate():
     assert st["repos"][0]["prs"][0]["stage"]["substate"] == "group-failed"
 
 
+def _failed_buckets(st: dict) -> dict[int, str]:
+    """PR number → failed-class substate, as the web Failed tile buckets them
+    (web/src/pipeline/StatusStrip.tsx bucketPr)."""
+    failed = {("parked", "ci-failed"), ("queue", "group-failed"),
+              ("ready", "stuck-enqueue")}
+    return {p["number"]: p["stage"]["substate"] for p in st["repos"][0]["prs"]
+            if (p["stage"]["stage"], p["stage"]["substate"]) in failed}
+
+
+def test_dashboard_state_queue_failed_group_members_are_group_failed():
+    # The lane's red "✗ failing" car comes from the queue snapshot
+    # (QueueEntry.group_checks); the PR's own merge-check group may be absent
+    # or lag. Every PR on a failing car must read group-failed, or the Failed
+    # tile undercounts the lane.
+    prs = {"o/r": [PipelinePr(pr=_pr(number=n, in_merge_queue=True))
+                   for n in (10, 11, 12)]}
+    queues = {"o/r": [
+        _entry(pr_number=10, position=1, batch_head_oid="a", group_checks="failing"),
+        _entry(pr_number=11, position=2, batch_head_oid="a", group_checks="failing"),
+        _entry(pr_number=12, position=3, batch_head_oid="b", group_checks="pending"),
+    ]}
+    st = dashboard_state(prs, queues, {}, {"o/r": False}, generated_at="x")
+    lane_failing = {n for g in st["repos"][0]["queue"]["groups"] if g["failed"]
+                    for n in g["prNumbers"]}
+    assert lane_failing == {10, 11}
+    assert _failed_buckets(st) == {10: "group-failed", 11: "group-failed"}
+
+
+def test_dashboard_state_failed_count_is_union_of_ci_and_queue_failures():
+    # CI-failed (parked), queue-failed via the snapshot only, and an overlap PR
+    # flagged by BOTH its merge checks and the snapshot: each counted once.
+    failing_merge = CheckGroup(kind="merge", checks=(_row(conclusion="failure"),),
+                               total_seconds=0, cost_usd=None)
+    prs = {"o/r": [
+        PipelinePr(pr=_pr(number=1, stage="parked", checks="failing")),
+        PipelinePr(pr=_pr(number=2, stage="parked", checks="failing")),
+        PipelinePr(pr=_pr(number=3, in_merge_queue=True, check_groups=(failing_merge,))),
+        PipelinePr(pr=_pr(number=4, in_merge_queue=True)),
+        PipelinePr(pr=_pr(number=5, in_merge_queue=True)),
+    ]}
+    queues = {"o/r": [
+        _entry(pr_number=3, position=1, batch_head_oid="a", group_checks="failing"),
+        _entry(pr_number=4, position=2, batch_head_oid="a", group_checks="failing"),
+        _entry(pr_number=5, position=3, batch_head_oid="b", group_checks="failing"),
+    ]}
+    st = dashboard_state(prs, queues, {}, {"o/r": False}, generated_at="x")
+    assert _failed_buckets(st) == {1: "ci-failed", 2: "ci-failed", 3: "group-failed",
+                                   4: "group-failed", 5: "group-failed"}
+
+
+def test_dashboard_state_failed_group_behind_unmergeable_is_group_failed():
+    # A failing group behind a conflict still reads group-failed (its own red car).
+    prs = {"o/r": [PipelinePr(pr=_pr(number=n, in_merge_queue=True)) for n in (1, 2)]}
+    queues = {"o/r": [
+        _entry(pr_number=1, position=1, state="UNMERGEABLE"),
+        _entry(pr_number=2, position=2, batch_head_oid="a", group_checks="failing"),
+    ]}
+    st = dashboard_state(prs, queues, {}, {"o/r": False}, generated_at="x")
+    by_num = {p["number"]: p["stage"]["substate"] for p in st["repos"][0]["prs"]}
+    assert by_num == {1: "unmergeable", 2: "group-failed"}
+
+
 def test_dashboard_state_queue_percent_tracks_group_build_not_head_eta():
     # A queued PR's head checks are all green so its head ETA is ~100% — but the
     # queue-stage bar must track the merge-group BUILD, not the head commit
