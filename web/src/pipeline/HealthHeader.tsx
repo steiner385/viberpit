@@ -69,10 +69,12 @@ export function HealthHeader({ state, onJumpToLane }: {
               type="button"
               variant="ghost"
               size="sm"
+              /* A lane with no data source recedes through the muted ink TOKEN, not
+                 `opacity-60`: opacity put the title at 4.3:1 and the summary (already
+                 muted) at 2.4:1 against the 4.5:1 floor (#1416, SC 1.4.3). */
               className={cn('gap-1.5 px-2 font-normal', TOUCH_FLOOR,
-                l.wiredness === 'not-wired' && 'opacity-60')}
+                l.wiredness === 'not-wired' && 'text-ink-muted')}
               data-testid={`health-lane-${l.id}`}
-              aria-label={`${l.title}: ${LANE_WORD[l.status]} — ${l.summary}`}
               title={`${l.title} — ${l.summary}`}
               aria-disabled={!interactive || undefined}
               onClick={() => interactive && onJumpToLane(l.id, l.status)}
@@ -90,8 +92,14 @@ export function HealthHeader({ state, onJumpToLane }: {
                   their word: the ≤2-row budget (#1555) holds with the count
                   line in place of seven titled chips. */}
               <span className={attention.has(l.id) ? 'inline' : 'hidden md:inline'}>{l.title}</span>
+              {/* The chip is named by its CONTENT — the visible title, then these words —
+                  not by an `aria-label`, which replaced the content and so dropped the
+                  title a voice-control user reads off the screen (#1416, SC 2.5.3). The
+                  status word and summary live here because the visible summary below is
+                  truncated, and absent below `md`. */}
+              <span className="sr-only">{`: ${LANE_WORD[l.status]} — ${l.summary}`}</span>
               {/* #189: surface the already-computed lane summary inline on
-                  non-green chips (was hover-only); the full text stays in aria-label. */}
+                  non-green chips (was hover-only); the full text is the sr-only span above. */}
               {l.status !== 'green' && l.summary && (
                 <span className="hidden max-w-48 truncate text-xs text-ink-muted md:inline" aria-hidden="true">{l.summary}</span>
               )}

@@ -1,6 +1,6 @@
 # UI accessibility analyzer — classified limitations
 
-Status: current as of 2026-11-26 (axe-core 4.14.1, nested under `@axe-core/playwright` 4.14.1). Owner: the
+Status: current as of 2026-11-27 (axe-core 4.14.1, nested under `@axe-core/playwright` 4.14.1). Owner: the
 cross-browser gate, #1412 (G14, part of #1398).
 
 The cross-browser E2E gate (`web/e2e/cross-browser/`) runs an axe scan in the engine under
@@ -70,6 +70,14 @@ Not limitations — fixed, with a regression each (`shell-modes.spec.ts` › "Co
 - The phone dispatch bar's **More options** button used `aria-label`, which replaced its
   content — so the "non-default option selected" hint inside it was never announced (WCAG
   2.5.3). The name now comes from content.
+
+Found later, by the same gate, once its seed stopped rendering an error page for Pipeline (#1416):
+
+- **Pipeline health lanes** dimmed an unwired lane with `opacity-60` (title 4.3:1, summary 2.4:1),
+  and named every lane with an `aria-label` that left out its visible title (WCAG 2.5.3). Now the
+  `ink-muted` token, and a name that comes from content.
+- The **daemon-health pill** put `aria-label` on a role-less `<span>` — the L4 pattern. Fixed
+  rather than classified: its subject is visually-hidden text.
 
 ## Adding or removing an entry
 

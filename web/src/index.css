@@ -313,6 +313,32 @@ body {
   .working-shimmer { animation: none; background: none; -webkit-background-clip: border-box; background-clip: border-box; color: inherit; }
 }
 
+/* Forced colours (Windows High Contrast, `forced-colors: active`).
+
+   The UA drops every `box-shadow` and repaints backgrounds with system colours,
+   so the two things the app draws state with stop existing: the focus ring
+   (`focus-visible:ring-2` is a box-shadow, and the `outline-none` beside it —
+   `outline-style: none` in Tailwind v4 — removes the one indicator the UA would
+   have kept), and a "current" fill (`bg-accent-wash`). Measured before this
+   block: 0 of 81 tab stops across the five top-level routes had any focus
+   indicator in forced colours (#1416, WCAG 2.4.7).
+
+   One rule here, deliberately NOT a per-component utility: it is unlayered, so
+   it outranks every `outline-none` in `@layer utilities` without `!important`,
+   and a control written tomorrow is covered without knowing this exists. System
+   colour keywords are the only colours the UA leaves alone in this mode.
+   `web/e2e/cross-browser/wcag-adaptations.spec.ts` walks every tab stop. */
+@media (forced-colors: active) {
+  /* The current page / selected tab, which is otherwise only a background fill. */
+  [aria-current="page"] { outline: 1px solid CanvasText; outline-offset: -1px; }
+  [role="tab"][aria-selected="true"] { border-color: Highlight; }
+  /* After the rules above: a focused current item shows focus, not "current". */
+  :focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
+  /* A control that asked for an inset ring is flush with a clipping edge (a scroll
+     pane, a tab strip): an outset outline there would be cut off. */
+  .focus-visible\:ring-inset:focus-visible { outline-offset: -2px; }
+}
+
 /* Kiosk idle cursor (shell spec §5): `shell/useIdleCursor` sets the attribute
    after 5 s without input on a wall display; any input clears it. */
 html[data-idle] { cursor: none; }

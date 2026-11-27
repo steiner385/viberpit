@@ -59,7 +59,11 @@ describe('DaemonHealthIndicator', () => {
       restartCount24h: 0, lastRestartAt: null, lastSeenAgoSec: 2,
     } })
     renderIndicator()
-    expect(screen.getByTestId('daemon-health').textContent).toContain('up 2h')
+    const pill = screen.getByTestId('daemon-health')
+    expect(pill.textContent).toContain('up 2h')
+    // Names its subject in text, not with an `aria-label` a role-less span may not carry (#1416).
+    expect(pill).not.toHaveAttribute('aria-label')
+    expect(pill.textContent).toBe('Daemon health: up 2h')
   })
 
   it('shows a restart count when the daemon has flapped', () => {
