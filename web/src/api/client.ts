@@ -1,15 +1,48 @@
+import { loginUrlFor, LOGIN_PATH } from '@/lib/loginRedirect'
 import { displayGateBlocks } from './displayGate'
 
 export class ApiRequestError extends Error {
   readonly status: number
   readonly body: Record<string, unknown>
+  /** `Retry-After` in seconds (a 429), or null when absent or an HTTP-date. */
+  readonly retryAfterS: number | null
 
-  constructor(status: number, body: Record<string, unknown>) {
+  constructor(status: number, body: Record<string, unknown>, retryAfterS: number | null = null) {
     super(`API error ${status}`)
     this.name = 'ApiRequestError'
     this.status = status
     this.body = body
+    this.retryAfterS = retryAfterS
   }
+}
+
+/** Only a 429 or 503 carries a meaningful Retry-After; nothing else is read. */
+function retryAfterSeconds(res: Response): number | null {
+  if (res.status !== 429 && res.status !== 503) return null
+  const raw = res.headers.get('Retry-After')
+  return raw !== null && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : null
+}
+
+/** Latched on the first passkey 401: the page is leaving, so a burst of failing
+ *  queries must not each restart the navigation. */
+let leavingForLogin = false
+
+/**
+ * A 401 whose body names the passkey login (`error.login === "passkey"`, sent
+ * only when the server has passkeys enabled, #1410) sends the browser to
+ * `/login?next=<here>`. A full navigation, not a router push: the shell and its
+ * query cache must remount under the new session cookie. `replace`, so Back
+ * does not return to a page that would only bounce here again. Any other 401
+ * is left to the caller, as before.
+ */
+function redirectOnPasskey401(status: number, data: Record<string, unknown>): void {
+  if (status !== 401 || leavingForLogin) return
+  const error = data.error
+  if (typeof error !== 'object' || error === null || (error as Record<string, unknown>).login !== 'passkey') return
+  const { pathname, search, hash } = window.location
+  if (pathname === LOGIN_PATH) return
+  leavingForLogin = true
+  window.location.replace(loginUrlFor(`${pathname}${search}${hash}`))
 }
 
 /**
@@ -68,7 +101,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   if (res.status === 204) return undefined as T
   const data = await res.json() as Record<string, unknown>
   if (!res.ok) {
-    throw new ApiRequestError(res.status, data)
+    redirectOnPasskey401(res.status, data)
+    throw new ApiRequestError(res.status, data, retryAfterSeconds(res))
   }
   return data as T
 }

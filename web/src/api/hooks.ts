@@ -316,6 +316,11 @@ export interface ConfigInfo {
    */
   oneTapEnabled?: boolean
   /**
+   * Passkey sign-in is on (#1410): `/login` and Settings → Security work.
+   * Absent on an older edge — treat as OFF; the passkey routes 404 there.
+   */
+  webauthnEnabled?: boolean
+  /**
    * Per-engine offerability + capabilities. Absent on an edge that predates the
    * engine registry — treat that as "Claude Code only", which is what
    * `useEngineOffers()` degrades to.

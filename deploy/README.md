@@ -90,6 +90,28 @@ and `VIBERPIT_ALLOWED_ORIGINS` (comma-separated `scheme://host[:port]`). No `Ori
 hostname is refused: set one of the two. `VIBERPIT_PUBLIC_ORIGIN` is trusted outright, so it must include the port the edge is actually served on (e.g. `https://host.ts.net:8443` behind `tailscale serve`), never a port another service owns (#3325). A Vite dev loop on a port other than 5173/4173 (e.g. `npx vite --port 5199` against a deployed edge) needs that origin in `VIBERPIT_ALLOWED_ORIGINS`. Refusals log `origin.refused` at INFO.
 First live use: the first tap per provider registers ViberPit as an OAuth client with that provider.
 
+**Exposure tier (edge, #1410).** `VIBERPIT_EXPOSURE` (default `tailnet`) says how far the edge is
+reachable, and the edge refuses to start when the tier's prerequisites are missing. The message
+names the tier, the rule and the fix, and the deploy controller's health gate rolls back.
+Before deploying this change, check that `viberpit.env` has `VIBERPIT_TAILNET_ALLOWLIST`, has
+`VIBERPIT_PUBLIC_ORIGIN` (or `VIBERPIT_ALLOWED_ORIGINS`), and sets `VIBERPIT_HOST` to `127.0.0.1` or a
+tailnet IP (or leaves it unset). The old guard let a non-empty allowlist start on `0.0.0.0`; the
+`tailnet` tier does not. `VIBERPIT_ALLOW_UNAUTHENTICATED` is gone: a stale line is ignored, and an
+unidentified caller gets 401 in every tier.
+
+- `loopback` / `tailnet`: no passkeys needed. `VIBERPIT_DEV=1` downgrades violations to one warning
+  (dev only).
+- `lan` (e.g. nginx's LAN listener for devices without Tailscale): first enrol a passkey while still
+  on `tailnet` (Settings › Security, with `VIBERPIT_WEBAUTHN_ENABLED=true`). Then set
+  `VIBERPIT_EXPOSURE=lan`. It also needs `VIBERPIT_SESSION_SECRET` or `VIBERPIT_MASTER_KEY`, and no
+  `VIBERPIT_DEV_INSECURE_COOKIE`. LAN devices sign in at `/login`.
+- `public`: everything in `lan`, plus a dedicated `VIBERPIT_SESSION_SECRET`, an https
+  `VIBERPIT_PUBLIC_ORIGIN`, and `VIBERPIT_INGRESS_HSTS=true` once the ingress sends
+  `Strict-Transport-Security`. Not enabled on any host today.
+- Lost passkey: sign in over Tailscale, revoke it in Settings › Security, enrol a new one. There is
+  no other recovery path. On a `public` host that has also lost tailnet access, recover over SSH:
+  set `VIBERPIT_EXPOSURE=tailnet` and restart the edge.
+
 ## Install
 
 ```bash

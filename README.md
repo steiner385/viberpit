@@ -184,7 +184,7 @@ reverse proxy (nginx, as configured in `deploy/viberpit-tailnet.nginx`). Binding
 - **Composed config-dir credentials** (the per-account `CLAUDE_CONFIG_DIR` assembled by
   `compose()`) are plaintext on disk at mode 0600. They are the only unencrypted secret at rest
   and are re-composed from the encrypted source on each session launch.
-- **App-level passkey/WebAuthn auth** is implemented but disabled (`VIBERPIT_WEBAUTHN_ENABLED`).
+- **App-level passkey/WebAuthn auth** is implemented, off by default, and required for the `lan` and `public` exposure tiers (`VIBERPIT_WEBAUTHN_ENABLED`, `VIBERPIT_EXPOSURE`; see `docs/product/features/tailnet-identity-auth.md`).
   It is the required gate before exposing the server to any network that is not your personal
   tailnet. This path is deferred to a future release (P4).
 
