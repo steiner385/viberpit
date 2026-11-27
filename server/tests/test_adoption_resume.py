@@ -184,7 +184,8 @@ async def test_deferred_without_transcript_forgets_the_dead_conversation_id(isol
 
 
 @pytest.mark.asyncio
-async def test_failed_resume_is_recorded_and_clears_the_marker(isolated_db, monkeypatch):
+async def test_failed_resume_is_recorded_enrolled_for_retry_and_clears_the_marker(
+        isolated_db, monkeypatch):
     orch, calls = _orch(monkeypatch, transcript=True, driver=False)
     try:
         await _adopted("a", from_status="in_progress")
@@ -192,8 +193,33 @@ async def test_failed_resume_is_recorded_and_clears_the_marker(isolated_db, monk
         assert calls["prompt"] == []
         assert (await _moved("a"))[0]["resume"] == "failed"
         assert (await _row("a")).adopted_from is None
-        # Left on its interrupted banner, resumable by a person.
+        # Left on its interrupted banner, resumable by a person — and in the capped
+        # resume-recovery retry every dropped session gets.
         assert orch._records["a"].interrupted_by_restart is True
+        assert orch._resume_recovery.get("a") == 0
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_session_already_live_here_is_left_exactly_alone(isolated_db, monkeypatch):
+    """A person opened the adopted session before the tick: its record and its open ask
+    are the truth. The pickup settles only the event and the marker."""
+    orch, calls = _orch(monkeypatch, transcript=True)
+    try:
+        await _adopted("a", from_status="waiting_question")
+        await orch.rehydrate()
+        live = orch._records["a"]
+        live.status = "waiting_question"            # the live driver's view…
+        orch._drivers["a"] = _Driver()
+        hold_id = await holds.open_hold("a", "question", {"question": "live card"})  # …and its card
+        assert await adoption.pickup_adopted(orch) == 1
+        assert orch._records["a"] is live and live.status == "waiting_question"
+        assert live.lost_hold is None and calls["ensure"] == [] and calls["prompt"] == []
+        open_now = await holds.newest_open(["a"])
+        assert open_now and open_now["a"].id == hold_id         # the card is still open
+        assert (await _moved("a"))[0]["resume"] == "deferred"
+        assert (await _row("a")).adopted_from is None
     finally:
         await orch.stop()
 
@@ -295,15 +321,38 @@ async def test_at_capacity_the_adopted_session_lands_queued_then_the_drain_resum
 
 
 @pytest.mark.asyncio
-async def test_drain_leaves_another_hosts_adopted_entry_alone(isolated_db, monkeypatch):
-    orch, calls = _orch(monkeypatch, transcript=True)
+async def test_primary_drain_leaves_a_workers_adopted_entry_alone(isolated_db, monkeypatch):
+    """The primary mirrors every row; its mirror of a worker's adopted session still
+    says `idle` (the adoption pass set it) while the worker queued the row. The
+    primary's drain must judge the entry by the ROW, not its stale mirror — the
+    stale-entry reaper would otherwise delete the worker's entry (2026-09-04 shape)."""
+    orch, calls = _orch(monkeypatch, transcript=True, role="primary")
     try:
-        await _adopted("a", from_status="in_progress", host="w3", status="queued")
+        await _adopted("a", from_status="in_progress", host="w3", status="idle")
+        await orch.rehydrate()                        # the mirror: idle, host w3
+        assert orch._records["a"].status == "idle"
         from server.sessions import session_queue as sq
+        async with db_session() as db:
+            await db.execute(__import__("sqlalchemy").update(DbSession)
+                             .where(DbSession.id == "a").values(status="queued"))
         await sq.enqueue("a", {"queue_reason": adoption.QUEUE_REASON,
                                adoption.ADOPTED_RESUME_PARAM: True})
         assert await orch._maybe_start_queued() == 0
         assert calls["ensure"] == [] and (await _row("a")).status == "queued"
-        assert await sq.entry_for("a") is not None
+        assert await sq.entry_for("a") is not None     # left for w3
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_drain_reaps_an_adopted_entry_whose_row_left_queued(isolated_db, monkeypatch):
+    orch, calls = _orch(monkeypatch, transcript=True)
+    try:
+        await _adopted("a", from_status="in_progress", status="idle")   # already taken
+        from server.sessions import session_queue as sq
+        await sq.enqueue("a", {"queue_reason": adoption.QUEUE_REASON,
+                               adoption.ADOPTED_RESUME_PARAM: True})
+        assert await orch._maybe_start_queued() == 0
+        assert calls["ensure"] == [] and await sq.entry_for("a") is None
     finally:
         await orch.stop()

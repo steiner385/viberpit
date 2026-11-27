@@ -156,18 +156,43 @@ async def test_fresh_beat_is_never_fenced(isolated_db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_no_able_host_leaves_sessions_in_place_loudly(isolated_db, monkeypatch, caplog):
+async def test_no_able_host_means_no_fence_and_no_restamp(isolated_db, monkeypatch, caplog):
+    """With nowhere to put the sessions, fencing would only churn the fence (and an
+    auto-filed WARNING) every pass: the host is left un-fenced and its rows in place."""
     orch = _primary(monkeypatch)
     try:
-        await host_heartbeat.register("w1")
+        fence = await host_heartbeat.register("w1")
         await _age("w1", 999)
         await _host_row("w2", healthy=False)   # the only other host is down
         await _session("a", host="w1")
         hb = (await host_heartbeat.snapshot()).hosts["w1"]
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("INFO"):
             assert await adoption.adopt_host(orch, hb, dead_after_s=DEAD_AFTER) == 0
         assert (await _row("a")).host == "w1"
-        assert "no healthy host can take session a" in caplog.text
+        assert (await host_heartbeat.snapshot()).hosts["w1"].fence == fence
+        assert "no healthy host can take its sessions" in caplog.text
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+        assert await provenance.list_events("a") == []        # no event it never earned
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_queued_row_is_restamped_without_a_pickup_marker(isolated_db, monkeypatch):
+    """Nothing of a still-queued session ran on the dead host: it moves to the new owner
+    for the shared drain to start, with no `adopted_from` to pick up (which would later
+    run the pickup against the session the drain started)."""
+    orch = _primary(monkeypatch)
+    try:
+        await host_heartbeat.register("w1")
+        await host_heartbeat.register("w2")
+        await _age("w1", 999)
+        await _host_row("w2", cap=6)
+        await _session("q", host="w1", status="queued", engine_session_id=None)
+        hb = (await host_heartbeat.snapshot()).hosts["w1"]
+        assert await adoption.adopt_host(orch, hb, dead_after_s=DEAD_AFTER) == 1
+        row = await _row("q")
+        assert (row.host, row.status, row.adopted_from, row.moved_from) == ("w2", "queued", None, "w1")
     finally:
         await orch.stop()
 

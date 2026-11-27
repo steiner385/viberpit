@@ -36,7 +36,6 @@ Nothing here raises into its loop: every entry point logs and returns.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -55,7 +54,7 @@ from server.sessions.fleet import HostCandidate, rank_hosts
 from server.sessions.host_engines import parse_engines_info
 from server.sessions.host_heartbeat import HeartbeatState
 from server.sessions.host_platforms import parse_platforms_info
-from server.sessions.types import RESUME_ELIGIBLE_STATUSES, SYSTEM_IDENTITY, is_assistant
+from server.sessions.types import SYSTEM_IDENTITY, is_assistant
 
 log = logging.getLogger(__name__)
 
@@ -74,12 +73,20 @@ RESUME_QUEUED = "queued"
 RESUME_DEFERRED = "deferred"
 RESUME_FAILED = "failed"
 
-#: Sent as the first prompt on the new host when the transcript was there (FR-204).
-MOVED_RESUME_NUDGE = (
-    "This session was moved from {from_host} to {to_host} after {from_host} became "
-    "unreachable. Any command that was still running there — tests, a build, a long "
-    "script — did not finish and its result is unknown; re-run it rather than trusting "
-    "a partial result. Continue where you left off.")
+#: Sent as the first prompt on the new host when the transcript was there (FR-204);
+#: the re-run sentence is the restart nudge's (``RESUME_RERUN_NOTE_TEMPLATE``), so the
+#: two cannot drift.
+MOVED_RESUME_NUDGE = ("This session was moved from {from_host} to {to_host} after "
+                      "{from_host} became unreachable. {rerun} Continue where you left off.")
+
+
+def moved_resume_nudge(*, from_host: str, to_host: str) -> str:
+    from server.sessions.orchestrator import RESUME_RERUN_NOTE_TEMPLATE
+    return MOVED_RESUME_NUDGE.format(
+        from_host=from_host, to_host=to_host,
+        rerun=RESUME_RERUN_NOTE_TEMPLATE.format(cause=f"{from_host} going down"))
+
+
 #: Sent as the first prompt of the FRESH conversation when no transcript was reachable.
 CONTINUITY_PROMPT = (
     "This session was moved from {from_host} to {to_host} after {from_host} became "
@@ -187,14 +194,19 @@ async def candidate_targets(*, dead_after_s: float, exclude: frozenset[str]) -> 
 async def _restamp_adopted(row, *, target: str, from_host: str, status: str) -> bool:
     """The one write that moves a session off a dead host: restamp + normalize +
     marker, conditional on the row still being where and what the pass read it as, so
-    a session that moved, ended or changed status meanwhile is left exactly alone."""
+    a session that moved, ended or changed status meanwhile is left exactly alone.
+
+    A row that was still ``queued`` on the dead host gets no marker: nothing of it ran
+    there, so there is nothing to pick up — the shared queue's normal drain starts it
+    on whichever host has room, exactly as it would have."""
+    marker = None if row.status == "queued" else from_host
     async with db_session() as db:
         res = await db.execute(
             sa_update(DbSession)
             .where(DbSession.id == row.id, DbSession.host == from_host,
                    DbSession.status == row.status, DbSession.moving_to.is_(None))
             .values(host=target, status=status, pid=None, background_work=None,
-                    moved_from=from_host, moved_at=db_utc_now(), adopted_from=from_host))
+                    moved_from=from_host, moved_at=db_utc_now(), adopted_from=marker))
     return (res.rowcount or 0) == 1  # type: ignore[attr-defined]  # CursorResult at runtime
 
 
@@ -203,6 +215,15 @@ async def adopt_host(orch, hb: HeartbeatState, *, dead_after_s: float) -> int:
     Returns how many sessions were restamped; 0 when the fence CAS lost (the beat
     turned out fresh, or another pass got there first) — the one-winner rule."""
     from server.sessions.orchestrator import restart_normalized_status, self_host_name
+    # Targets BEFORE the fence: with nowhere to put the sessions, fencing the host only
+    # churns its fence (and an auto-filed WARNING) every pass while changing nothing —
+    # the rows read "Unreachable" truthfully until a host is up to take them.
+    targets = await candidate_targets(dead_after_s=dead_after_s,
+                                      exclude=frozenset({hb.host}))
+    if not any(c.enabled and c.healthy for c in targets.candidates):
+        log.info("adoption: %r is past the dead threshold (%.0fs) but no healthy host can "
+                 "take its sessions — not fencing it this pass", hb.host, hb.age_s)
+        return 0
     new_fence = await host_heartbeat.declare_dead(
         hb.host, dead_after_s=dead_after_s, observed_fence=hb.fence)
     if new_fence is None:
@@ -214,30 +235,27 @@ async def adopt_host(orch, hb: HeartbeatState, *, dead_after_s: float) -> int:
     # the outage, not one per card.
     log_event(log, logging.WARNING, "host.declared_dead", host=hb.host,
               beat_age_s=round(hb.age_s), fence=new_fence, sessions=len(rows))
-    if not rows:
-        return 0
-    targets = await candidate_targets(dead_after_s=dead_after_s,
-                                      exclude=frozenset({hb.host}))
     adopted = 0
     for row in rows:
         engine = parse_agent_engine(getattr(row, "engine", None), legacy_default=True)
         target = targets.pick(engine=engine, platform=getattr(row, "platform", None))
         if target is None:
-            # No able host at all: the row stays stamped for the dead host and reads
-            # "Unreachable" truthfully; the next pass re-tries once a host is up.
-            log.warning("adoption: no healthy host can take session %s (engine=%s, "
-                        "platform=%s) off dead host %r — left in place", row.id,
-                        engine.value, getattr(row, "platform", None), hb.host)
+            # Hosts are up, but none runs this engine / platform: left in place.
+            log.info("adoption: no able host for session %s (engine=%s, platform=%s) off "
+                     "dead host %r — left in place", row.id, engine.value,
+                     getattr(row, "platform", None), hb.host)
             continue
         from_status = row.status
         normalized = restart_normalized_status(from_status)
-        await _provenance.record(row.id, _provenance.INTERRUPTED, {
-            "kind": _provenance.INTERRUPTED_HOST_LOST, "fromStatus": from_status,
-            "host": hb.host})
+        # The CAS first, the event second: a row that changed under the pass gets no
+        # `interrupted` entry it never earned.
         if not await _restamp_adopted(row, target=target, from_host=hb.host,
                                       status=normalized):
             log.info("adoption: session %s changed under the pass — not restamped", row.id)
             continue
+        await _provenance.record(row.id, _provenance.INTERRUPTED, {
+            "kind": _provenance.INTERRUPTED_HOST_LOST, "fromStatus": from_status,
+            "host": hb.host})
         adopted += 1
         # The primary's dashboard mirror of the row (it holds every host's rows) must
         # follow the stamp, or `_owns_record` keeps reading the dead host.
@@ -319,19 +337,21 @@ async def _set_status(session_id: str, status: str) -> None:
                          .values(status=status))
 
 
-def _transcript_present(orch, rec) -> bool:
+async def _transcript_present(orch, rec) -> bool:
     """Is the conversation resumable HERE? Claude: its transcript file is in the
     per-account config dir (one shared tree across hosts). Codex: a thread lives in the
     dead host's local ``CODEX_HOME`` and cannot be resumed elsewhere. A lookup that
     raises answers True: ``ensure_driver``'s own fallback then re-checks the file and
     only starts fresh once it is proven gone — a flaky mount must never orphan a
-    transcript (the 2026-09-04 lesson in that fallback)."""
+    transcript (the 2026-09-04 lesson in that fallback). Off the event loop: the glob
+    fallback walks ~1700 project dirs, over sshfs on a worker (the 2026-08-21 outage)."""
     if rec.engine is not AgentEngine.CLAUDE_CODE or not rec.engine_session_id:
         return False
     from viberpit.paths import account_cfg_dir
     try:
-        return orch._find_transcript(str(account_cfg_dir(rec.account)),
-                                     rec.engine_session_id, rec.cwd) is not None
+        return await asyncio.to_thread(
+            orch._find_transcript, str(account_cfg_dir(rec.account)),
+            rec.engine_session_id, rec.cwd) is not None
     except Exception:
         log.info("adoption: transcript lookup failed for %s — leaving the decision to "
                  "the resume", rec.id, exc_info=True)
@@ -347,7 +367,8 @@ async def _ensure_branch_here(orch, rec) -> None:
     leaves the build to say ``worktree.missing`` with its branch named."""
     import os
     from viberpit import gitrepos, worktrees
-    if not rec.repo or not rec.branch or (rec.cwd and os.path.isdir(os.path.join(rec.cwd, ".git"))):
+    # A worktree's `.git` is a FILE (its gitdir pointer): exists(), not isdir().
+    if not rec.repo or not rec.branch or (rec.cwd and os.path.exists(os.path.join(rec.cwd, ".git"))):
         return
     try:
         root = await orch._effective_repo_root()
@@ -370,14 +391,6 @@ async def _over_capacity(orch) -> bool:
     return orch._active_session_count() > await orch._max_active_sessions()
 
 
-def _hold_tail(rec) -> str:
-    from server.sessions.orchestrator import RESUME_HOLD_NUDGE
-    if rec.interrupted_from_status in RESUME_ELIGIBLE_STATUSES or not rec.lost_hold:
-        return ""
-    content = json.dumps(rec.lost_hold.get("content") or {}, indent=2, default=str)
-    return RESUME_HOLD_NUDGE.format(content=content)
-
-
 def continuity_prompt(rec, *, from_host: str, to_host: str, last_prompt: str | None) -> str:
     prompt = (last_prompt or "").strip() or "(none recorded)"
     if len(prompt) > LAST_PROMPT_MAX_CHARS:
@@ -391,12 +404,26 @@ async def take_adopted(orch, row, *, from_queue: bool = False) -> str:
     """Take one adopted row on THIS host (FR-204/205). Returns the ``moved_host.resume``
     outcome. *from_queue*: the drain popped its queued entry — capacity was already
     gated there and the row reads ``queued``."""
-    from server.sessions.orchestrator import _RESTART_TRANSIENT_STATUSES, self_host_name
+    from server.sessions.orchestrator import (
+        _RESTART_TRANSIENT_STATUSES, resume_hold_tail, self_host_name)
     from server.sessions import session_queue as sq
     me = self_host_name()
     sid = row.id
     from_host = row.adopted_from or row.moved_from or "an unreachable host"
     from_status = await _from_status(sid, from_host)
+    if sid in getattr(orch, "_drivers", {}):
+        # Already live HERE — a person opened it (ensure_driver loads a row stamped here
+        # on attach) before this tick. Its in-memory record and any open ask are the
+        # truth now; replacing the record from the row or reconciling its holds would
+        # close a live card. Settle only the hand-over bookkeeping.
+        await _provenance.record(sid, _provenance.MOVED_HOST, {
+            "from": from_host, "to": me, "reason": _provenance.INTERRUPTED_HOST_LOST,
+            "resume": RESUME_DEFERRED, "fromStatus": from_status})
+        if row.adopted_from:
+            await _clear_marker(sid, row.adopted_from)
+        log_event(log, logging.INFO, "session.adoption_taken", session_id=sid,
+                  **{"from": from_host, "to": me, "resume": RESUME_DEFERRED, "live": True})
+        return RESUME_DEFERRED
     if from_queue:
         await _set_status(sid, "idle")
         row.status = "idle"
@@ -409,22 +436,20 @@ async def take_adopted(orch, row, *, from_queue: bool = False) -> str:
     # nudge), stale bookkeeping on a resting one (FR-305).
     await orch._reconcile_holds({sid: (was_interrupted, me)})
 
-    live_here = sid in getattr(orch, "_drivers", {})
-    present = _transcript_present(orch, rec)
-    eager = (was_interrupted and not live_here and not is_assistant(rec)
+    present = await _transcript_present(orch, rec)
+    eager = (was_interrupted and not is_assistant(rec)
              and not rec.auto_resume_opt_out and orch._resume_eligible(rec) is None)
     outcome: str
     if not eager:
         outcome = RESUME_DEFERRED
-        if not live_here:
-            if not present:
-                # Nothing to resume from: the next prompt starts a new conversation,
-                # told what it lost (a Codex thread stayed in the dead host's CODEX_HOME).
-                rec.engine_session_id = ""
-            orch._queue_prompt_preamble(sid, MOVED_NOTICE.format(
-                from_host=from_host, to_host=me) + (
-                "" if present else MOVED_NOTICE_NO_TRANSCRIPT.format(
-                    from_host=from_host, branch=rec.branch or "(unknown)")))
+        if not present:
+            # Nothing to resume from: the next prompt starts a new conversation,
+            # told what it lost (a Codex thread stayed in the dead host's CODEX_HOME).
+            rec.engine_session_id = ""
+        orch._queue_prompt_preamble(sid, MOVED_NOTICE.format(
+            from_host=from_host, to_host=me) + (
+            "" if present else MOVED_NOTICE_NO_TRANSCRIPT.format(
+                from_host=from_host, branch=rec.branch or "(unknown)")))
     elif not from_queue and await _over_capacity(orch):
         # FR-205: at cap → `queued`, with its provenance intact; the drain takes it
         # back through here (from_queue=True) when a slot frees. The marker stays
@@ -448,14 +473,20 @@ async def take_adopted(orch, row, *, from_queue: bool = False) -> str:
             log.warning("adoption: resume of session %s on %s failed", sid, me,
                         exc_info=True)
         if driver is None:
+            # A refused build (lease still held by a twin, worktree not recreatable, a
+            # transient fault): the capped retry every dropped session gets
+            # (`_recover_resume_failures_once`, with its gave-up banner) owns it from
+            # here — the marker is cleared below so the pickup does not hammer it.
             outcome = RESUME_FAILED
+            if hasattr(orch, "_resume_recovery"):
+                orch._resume_recovery.setdefault(sid, 0)
         else:
             if present:
-                text = MOVED_RESUME_NUDGE.format(from_host=from_host, to_host=me)
+                text = moved_resume_nudge(from_host=from_host, to_host=me)
             else:
                 text = continuity_prompt(rec, from_host=from_host, to_host=me,
                                          last_prompt=getattr(row, "initial_prompt", None))
-            text += _hold_tail(rec)
+            text += resume_hold_tail(rec)
             sent = await orch.send_prompt(sid, text, replayable=False)
             outcome = ((RESUME_TRANSCRIPT if present else RESUME_FRESH)
                        if sent == "sent" else RESUME_FAILED)

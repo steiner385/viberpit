@@ -349,10 +349,14 @@ RESUME_NUDGE_HEAD = "Your previous turn was interrupted by a daemon restart."
 #: Says WHY and what was lost (#2910): a command running in the cut-off turn — a test
 #: suite, a build — was killed (often reported only as signal 15 / exit 143), not
 #: finished, and must be re-run rather than assumed passed.
-RESUME_NUDGE = (f"{RESUME_NUDGE_HEAD} Any command that was still running then — tests, "
-                "a build, a long script — was killed by the restart, not by a failure "
-                "of its own (it may show as signal 15 or exit 143), so re-run it rather "
-                "than trusting a partial result. Please continue where you left off.")
+#: The one sentence every "your process is gone" nudge carries — a restart's and a
+#: dead-host adoption's (server/sessions/adoption.py) alike.
+RESUME_RERUN_NOTE_TEMPLATE = (
+    "Any command that was still running then — tests, a build, a long script — was "
+    "killed by {cause}, not by a failure of its own (it may show as signal 15 or exit "
+    "143), so re-run it rather than trusting a partial result.")
+RESUME_RERUN_NOTE = RESUME_RERUN_NOTE_TEMPLATE.format(cause="the restart")
+RESUME_NUDGE = f"{RESUME_NUDGE_HEAD} {RESUME_RERUN_NOTE} Please continue where you left off."
 
 #: Appended to RESUME_NUDGE when the restart orphaned a pending ask (FR-306): the
 #: agent gets WHAT it was asking back and must re-raise it, never answer it itself.
@@ -360,13 +364,20 @@ RESUME_HOLD_NUDGE = ("\n\nYou were asking the user:\n{content}\nRe-raise the que
                      "it is still relevant — do not decide it yourself.")
 
 
+def resume_hold_tail(rec: "SessionRecord") -> str:
+    """The lost ask's content as a nudge tail (FR-306), or "" when the session was
+    interrupted mid-work (nothing to re-ask) or lost no ask. Shared by the restart
+    nudge and the adoption nudges so the wording cannot drift."""
+    if rec.interrupted_from_status in RESUME_ELIGIBLE_STATUSES or not rec.lost_hold:
+        return ""
+    content = json.dumps(rec.lost_hold.get("content") or {}, indent=2, default=str)
+    return RESUME_HOLD_NUDGE.format(content=content)
+
+
 def resume_nudge_for(rec: "SessionRecord") -> str:
     """The resume prompt for *rec*: the plain nudge for dropped work, plus the lost
     ask's content when the session was interrupted while waiting on a human."""
-    if rec.interrupted_from_status in RESUME_ELIGIBLE_STATUSES or not rec.lost_hold:
-        return RESUME_NUDGE
-    content = json.dumps(rec.lost_hold.get("content") or {}, indent=2, default=str)
-    return RESUME_NUDGE + RESUME_HOLD_NUDGE.format(content=content)
+    return RESUME_NUDGE + resume_hold_tail(rec)
 
 
 # Bounded auto-recovery attempts for a session that failed to resume after a
@@ -2340,6 +2351,14 @@ class SessionOrchestrator:
         # register without also resurrecting a fenced daemon — those two states are
         # opposites and must not share one sentinel.
         self._hb_fenced: bool = False
+        # Monotonic time of our last ACCEPTED beat/register. Beats that keep RAISING
+        # (DB unreachable from this host) for host_dead_after_s are treated as "I have
+        # been fenced" (FR-101): by then the primary, if it can reach the DB, has
+        # fenced us and is adopting our sessions, and running on is a double-drive.
+        self._hb_last_ok: float | None = None
+        # A stand-down that could not re-register (DB still down) owes a rehydrate
+        # once the register lands on the loop.
+        self._hb_rehydrate_pending: bool = False
         # Dead-host adoption pass (spec 002 FR-201, server/sessions/adoption.py):
         # primary-only, lease-gated, every ADOPTION_INTERVAL_S.
         self._adoption_task: asyncio.Task | None = None
@@ -3856,6 +3875,7 @@ class SessionOrchestrator:
         try:
             self._hb_fence = await _bounded_heartbeat_call(
                 host_heartbeat.register(self_host_name(), epoch=PROC_EPOCH))
+            self._hb_last_ok = time.monotonic()
         except Exception:
             # Left un-registered, NOT fenced — _heartbeat_tick retries register() on
             # each beat until it lands, so a DB blip at boot costs one interval rather
@@ -4557,13 +4577,40 @@ class SessionOrchestrator:
             except Exception:
                 log.warning("host-heartbeat: re-register failed (DB error) — "
                             "retrying next beat", exc_info=True)
+                return
+            self._hb_last_ok = time.monotonic()
+            if getattr(self, "_hb_rehydrate_pending", False):
+                # A stand-down ran while the DB was unreachable: it dropped every
+                # record and could not reload. Now that we are registered again, load
+                # what is still stamped here.
+                self._hb_rehydrate_pending = False
+                try:
+                    await self.rehydrate()
+                except Exception:
+                    log.warning("host-heartbeat: rehydrate after re-register failed",
+                                exc_info=True)
             return
         try:
             ok = await _bounded_heartbeat_call(host_heartbeat.beat(self_host_name(), fence))
         except Exception:
+            last_ok = getattr(self, "_hb_last_ok", None)
+            silent_s = (time.monotonic() - last_ok) if last_ok is not None else 0.0
+            if last_ok is not None and silent_s >= host_dead_after_s():
+                # FR-101: a renewal that has been failing for as long as it takes the
+                # primary to declare us dead IS a fence from our side of the partition
+                # — the primary cannot tell us, and our drivers must not keep writing
+                # into transcripts another host is now resuming (NFR-2).
+                log.warning("host-heartbeat: no beat accepted for %.0fs (DB unreachable "
+                            "from this host) — treating it as fenced", silent_s,
+                            exc_info=True)
+                self._hb_fenced = True
+                self._hb_fence = None
+                await self._on_fenced()
+                return
             log.warning("host-heartbeat: beat failed (DB error) — retrying next beat",
                         exc_info=True)
             return
+        self._hb_last_ok = time.monotonic()
         if not ok:
             # Set BEFORE the stand-down runs: every persist path checks it, so from
             # this instant on the fenced daemon writes no session status at all.
@@ -4594,6 +4641,14 @@ class SessionOrchestrator:
             "new fence, rehydrating what is still stamped here.", me,
             len(getattr(self, "_drivers", {})), len(getattr(self, "_records", {})))
         try:
+            # A driver build in flight (a rotation's `_reassign`, a spawn) would register
+            # a fresh driver AFTER the close below, for a session now stamped elsewhere.
+            # Wait it out, bounded; `_reassign_locked` itself refuses to start while
+            # fenced, so nothing new begins meanwhile.
+            for fut in [f for d in ("_swapping", "_spawning")
+                        for f in list(getattr(self, d, {}).values()) if not f.done()]:
+                await bounded_wait(asyncio.shield(fut), timeout=_STOP_TASK_TIMEOUT_S,
+                                   phase="fenced:in-flight-build")
             closed = await self._close_live_drivers_bounded(phase="fenced")
             for sid in list(getattr(self, "_session_lease_fences", {})):
                 await bounded_wait(self._release_session_lease(sid),
@@ -4608,17 +4663,24 @@ class SessionOrchestrator:
         except Exception:  # noqa: BLE001 — the stand-down must finish and re-register
             log.warning("host-heartbeat: stand-down of %r hit an error — continuing to "
                         "re-register", me, exc_info=True)
+        registered = False
         try:
             self._hb_fence = await _bounded_heartbeat_call(
                 host_heartbeat.register(me, epoch=PROC_EPOCH))
+            self._hb_last_ok = time.monotonic()
+            registered = True
         except Exception:
             log.warning("host-heartbeat: re-register after fence failed (DB error) — "
                         "retrying next beat", exc_info=True)
             self._hb_fence = None
         # From here this process is an ordinary daemon again at the new fence: the
         # rehydrate below writes (branch backfills, healed statuses) for rows that are
-        # still ours, exactly as a boot does.
+        # still ours, exactly as a boot does. If the DB is still unreachable the loop's
+        # register retry owes that rehydrate instead.
         self._hb_fenced = False
+        if not registered:
+            self._hb_rehydrate_pending = True
+            return
         try:
             await self.rehydrate()
         except Exception:
@@ -6260,25 +6322,37 @@ class SessionOrchestrator:
                         sa_select(DbSession).where(DbSession.id == sid)
                     )).scalar_one_or_none()
                 in_mem = self._records.get(sid)
+                if params.get(_adoption.ADOPTED_RESUME_PARAM):
+                    # A session adopted off a dead host that its new host queued for lack
+                    # of a slot (spec 002 FR-205). Not a spawn: an existing conversation
+                    # resumed there, by the same pickup path, once the gates above find
+                    # room. Only the host it is stamped for may take it — its worktree and
+                    # transcript decision are per-host — and it is judged BEFORE the
+                    # stale-entry check below: the primary's dashboard mirror of a worker's
+                    # row is never authoritative for it (the mirror still says `idle`
+                    # from the adoption pass), so that check would delete the worker's
+                    # entry out from under it — the 2026-09-04 shape, one row at a time.
+                    if row is None or row.status != "queued":
+                        await sq.remove(sid)
+                        log.warning("session_queue.stale_entry id=%s status=%s — skipping",
+                                    sid, row.status if row is not None else "<gone>")
+                        continue
+                    if not row_stamped_here(row.host):
+                        foreign.add(sid)
+                        continue
+                    outcome = await _adoption.take_adopted(self, row, from_queue=True)
+                    # Removed AFTER the take, like a spawn's entry: a take that dies
+                    # midway leaves a replayable entry, and the row it already moved
+                    # off `queued` is reaped by the stale-entry check next drain.
+                    await sq.remove(sid)
+                    if outcome in (_adoption.RESUME_TRANSCRIPT, _adoption.RESUME_FRESH):
+                        started += 1
+                    continue
                 if row is None or row.status != "queued" or (
                         in_mem is not None and in_mem.status != "queued"):
                     await sq.remove(sid)
                     log.warning("session_queue.stale_entry id=%s status=%s — skipping",
                                 sid, row.status if row is not None else "<gone>")
-                    continue
-                if params.get(_adoption.ADOPTED_RESUME_PARAM):
-                    # A session adopted off a dead host that this host queued for lack of
-                    # a slot (spec 002 FR-205). Not a spawn: an existing conversation
-                    # resumed here, by the same pickup path, now that the gates above
-                    # found room. Only the host it is stamped for may take it — its
-                    # worktree and transcript decision are per-host.
-                    if not row_stamped_here(row.host):
-                        foreign.add(sid)
-                        continue
-                    await sq.remove(sid)
-                    outcome = await _adoption.take_adopted(self, row, from_queue=True)
-                    if outcome in (_adoption.RESUME_TRANSCRIPT, _adoption.RESUME_FRESH):
-                        started += 1
                     continue
                 # A platform-gated entry starts only on a host advertising its
                 # platform (host-platforms spec §3) — before ownership and adoption,
@@ -31761,6 +31835,12 @@ class SessionOrchestrator:
         starts a fresh conversation on ``record.engine`` instead of resuming the old
         thread id under the new account. Returns True on success, False if the swap
         raised (the session is left parked — see the except clause below)."""
+        if getattr(self, "_hb_fenced", False):
+            # FR-202: a fenced daemon builds no driver — the session is being adopted by
+            # another host. The stand-down closes what is live; this must not re-open it.
+            log.info("reassign refused: fenced stand-down in progress session=%s",
+                     record.id)
+            return False
         # Same defer contract as a model swap: the dance below flips the session
         # through actionable statuses autopilot would otherwise act on mid-restart.
         self._turn_restart_at[record.id] = self._clock()

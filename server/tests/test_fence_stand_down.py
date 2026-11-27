@@ -112,15 +112,62 @@ async def test_persist_and_prompt_are_inert_while_fenced(isolated_db):
 
 
 @pytest.mark.asyncio
-async def test_on_fenced_survives_a_failing_reregister(isolated_db, monkeypatch):
-    """NFR-5: the stand-down never raises into the heartbeat loop, and a DB blip on
-    re-register leaves the daemon un-fenced with no fence so the next tick retries."""
+async def test_on_fenced_survives_a_failing_reregister_and_rehydrates_later(
+        isolated_db, monkeypatch):
+    """NFR-5: the stand-down never raises into the heartbeat loop. A DB blip on
+    re-register leaves the daemon un-fenced with no fence; the next tick's register
+    retry then owes the rehydrate the stand-down could not do."""
+    me = self_host_name()
+    await _seed("mine", host=me)
     orch = _new_orch()
     orch._hb_fenced = True
     orch._hb_fence = None
+    real_register = host_heartbeat.register
     monkeypatch.setattr(host_heartbeat, "register", AsyncMock(side_effect=RuntimeError("db")))
     await orch._on_fenced()
     assert orch._hb_fenced is False and orch._hb_fence is None
+    assert orch._hb_rehydrate_pending is True and orch._records == {}
+    monkeypatch.setattr(host_heartbeat, "register", real_register)
+    await orch._heartbeat_tick()                   # the register retry
+    assert orch._hb_fence == 1 and orch._hb_rehydrate_pending is False
+    assert set(orch._records) == {"mine"}
+    await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_beats_failing_past_the_dead_threshold_are_a_fence_from_our_side(
+        isolated_db, monkeypatch):
+    """FR-101: a renewal that has been failing for host_dead_after_s IS a fence — the
+    primary on the other side of the partition has declared us dead by now."""
+    import time
+    me = self_host_name()
+    await _seed("mine", host=me)
+    orch = _new_orch()
+    orch._hb_fence = await host_heartbeat.register(me)
+    await orch.rehydrate()
+    live = _Driver()
+    orch._drivers["mine"] = live
+    monkeypatch.setattr(orchestrator_module, "host_dead_after_s", lambda: 300.0)
+    monkeypatch.setattr(host_heartbeat, "beat", AsyncMock(side_effect=RuntimeError("db down")))
+    orch._hb_last_ok = time.monotonic() - 10            # a fresh failure: just retry
+    await orch._heartbeat_tick()
+    assert orch._hb_fenced is False and live.closed_with == []
+    orch._hb_last_ok = time.monotonic() - 301           # silent past the threshold
+    await orch._heartbeat_tick()
+    assert live.closed_with == [CLOSE_REASON_RESTART]   # stood down…
+    assert orch._hb_fenced is False and orch._hb_fence == 1   # …and re-registered (DB back)
+    assert set(orch._records) == {"mine"}
+    await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_reassign_is_refused_while_fenced(isolated_db):
+    orch = _new_orch()
+    await _seed("s1", host=self_host_name())
+    await orch.rehydrate()
+    orch._hb_fenced = True
+    assert await orch._reassign_locked(orch._records["s1"], "acct2", reason="rotation") is False
+    assert orch._drivers == {}
     await orch.stop()
 
 
