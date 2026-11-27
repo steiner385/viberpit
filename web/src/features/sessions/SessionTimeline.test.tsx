@@ -63,7 +63,30 @@ describe('SessionTimeline', () => {
       expect.stringContaining('Auto-archived by completion: completion marker — goal met'),
       expect.stringContaining('Failed to start (attempt 2): Could not resolve host: github.com'),
       expect.stringContaining('Failed to start (attempt 1): Could not resolve host: github.com — retrying'),
-      'moved host',
+      'Moved',
+    ])
+  })
+
+  it('words a dead-host adoption and how the new host took the session (#949)', () => {
+    respond(queryResult({
+      events: [
+        { id: 'e5', kind: 'moved_host', ts: null, detail: { from: 'rocky', to: 'dobby', reason: 'host_lost', resume: 'failed' } },
+        { id: 'e4', kind: 'moved_host', ts: null, detail: { from: 'rocky', to: 'dobby', reason: 'host_lost', resume: 'deferred' } },
+        { id: 'e3', kind: 'moved_host', ts: null, detail: { from: 'rocky', to: 'dobby', reason: 'host_lost', resume: 'queued' } },
+        { id: 'e2', kind: 'moved_host', ts: null, detail: { from: 'rocky', to: 'dobby', reason: 'host_lost', resume: 'fresh' } },
+        { id: 'e1', kind: 'moved_host', ts: null, detail: { from: 'rocky', to: 'dobby', reason: 'host_lost', resume: 'transcript' } },
+        { id: 'e0', kind: 'interrupted', ts: null, detail: { kind: 'host_lost', fromStatus: 'in_progress', host: 'rocky' } },
+      ],
+    }))
+    render(<SessionTimeline sessionId="s-1" />)
+    const items = screen.getAllByRole('listitem', { hidden: true })
+    expect(items.map((li) => li.textContent)).toEqual([
+      'Moved from rocky to dobby: could not be resumed there',
+      'Moved from rocky to dobby: resumes on its next prompt',
+      'Moved from rocky to dobby: waiting for a slot there',
+      'Moved from rocky to dobby: conversation could not be recovered — started over with context',
+      'Moved from rocky to dobby: conversation resumed',
+      'Interrupted: host rocky became unreachable (was in progress)',
     ])
   })
 

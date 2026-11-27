@@ -1552,6 +1552,46 @@ def recreate_worktree(repo_path: str, path: str, branch: str, *,
     return True
 
 
+def ensure_local_branch(repo_path: str, branch: str) -> bool:
+    """Make ``refs/heads/<branch>`` exist in the clone at *repo_path*, for a worktree
+    recreation on a host that never checked the branch out (``recreate_worktree``
+    requires a LOCAL branch — spec 002 FR-204, a session adopted off a dead host).
+
+    Already local → True, untouched (never moved: a local branch may be ahead of
+    origin). Otherwise fetch exactly that branch from origin — an explicit refspec, so
+    a clone whose fetch refspec is narrower than ``refs/heads/*`` still gets it; same
+    auth as ``create_worktree`` — and create the branch at ``origin/<branch>``. False
+    when the branch exists nowhere reachable: the caller then refuses the build loudly
+    (``worktree.missing``) rather than inventing a tree.
+    """
+    if not branch or branch.startswith("-"):
+        return False
+    top = _run(["git", "-C", repo_path, "rev-parse", "--show-toplevel"])
+    if top.returncode != 0:
+        return False
+    repo_top = top.stdout.strip()
+    if _run(["git", "-C", repo_top, "rev-parse", "--verify", "--quiet",
+             f"refs/heads/{branch}"]).returncode == 0:
+        return True
+    if not _has_origin(repo_top):
+        return False
+    with clone_lock(repo_top):
+        f = _run(["git", "-C", repo_top, "fetch", "origin",
+                  f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+                 env=git_env_for_remote(_origin_url(repo_top)))
+        if f.returncode != 0:
+            log.info("worktree.branch_fetch_failed repo=%s branch=%s: %s", repo_top, branch,
+                     f.stderr.strip())
+        if not _branch_on_origin(repo_top, branch):
+            return False
+        r = _run(["git", "-C", repo_top, "branch", "--", branch, f"origin/{branch}"])
+        if r.returncode != 0:
+            log.info("worktree.local_branch_failed repo=%s branch=%s: %s", repo_top, branch,
+                     r.stderr.strip())
+            return False
+    return True
+
+
 def remove_worktree(worktree_path: str, force: bool = False, *,
                     session_id: str | None = None,
                     owned_branch: Callable[[str], bool]) -> bool:

@@ -1539,8 +1539,10 @@ export interface SessionRecoveryRefs {
 /** One entry of a session's lifecycle timeline (server/sessions/provenance.py, #947).
  *  `detail`'s shape is per kind: `spawn_failed` → `SpawnFailure`; `auto_archived` →
  *  `{by, reason}`; `hold_lost` → `LostHold`; `rotated_account` → `{from, reason, attempt}`;
- *  `delete_retry` → `{strike, error, stuck}`. Unknown kinds are rendered by name, never
- *  dropped. */
+ *  `delete_retry` → `{strike, error, stuck}`; `interrupted` → `{kind: 'host_lost', fromStatus,
+ *  host}`; `moved_host` → `{from, to, reason, resume: 'transcript' | 'fresh' | 'queued' |
+ *  'deferred' | 'failed'}` (spec 002 FR-203/204, #949). Unknown kinds are rendered by name,
+ *  never dropped. */
 export interface SessionTimelineEvent {
   id: string
   kind: string

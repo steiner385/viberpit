@@ -95,6 +95,7 @@ from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, 
 from server.automations.claim_liveness import DEAD_CLAIM_STATUSES
 from server.pm.map_resolution import map_diff_key, parse_map_diff_key
 from server.sessions import adopt as _adopt
+from server.sessions import adoption as _adoption
 from server.sessions import branch_ownership as _branch_ownership
 from server.sessions import branch_prefix as _branch_prefix
 from server.sessions.helper_call import helper_cwd
@@ -118,7 +119,7 @@ from server.sessions import events as ev
 from server.sessions import host_heartbeat
 from server.sessions.host_platforms import (
     KNOWN_PLATFORMS, parse_platforms_info, platform_dispatchable, require_platform_routing)
-from server.sessions.liveness import heartbeat_interval_s
+from server.sessions.liveness import heartbeat_interval_s, host_dead_after_s
 from server.sessions import primary_lease
 from server.sessions import session_lease
 from server.sessions import push as push_mod
@@ -308,6 +309,16 @@ _STALLED_STATUSES = frozenset({"needs_attention", "limited"})
 # _ACTIVE_STATUSES: waiting_question / ready_review don't block the deploy drain but
 # strand identically, so they belong here even though they're absent above.
 _RESTART_TRANSIENT_STATUSES = _ACTIVE_STATUSES | frozenset({"waiting_question", "ready_review"})
+
+
+def restart_normalized_status(status: str) -> str:
+    """THE status a row takes when the process that was driving it is gone: a
+    transient (driver-derived) status becomes ``idle``, anything else stays. One rule
+    for a daemon restart (``rehydrate``), a moved row's import (``_install_row``) and a
+    dead host's adoption (``server/sessions/adoption.py``, spec 002 FR-203) — the spec
+    requires adoption to normalize "via the same rehydrate normalization", so it is
+    extracted here rather than copied."""
+    return "idle" if status in _RESTART_TRANSIENT_STATUSES else status
 
 # Wall-clock ceiling on one engine read of a session's open background work
 # (`_open_background_work`). Deliberately far below the Codex client's own
@@ -1243,7 +1254,7 @@ _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_archive_limit_task", "_recurring_task", "_mirror_task",
     "_error_triage_task", "_session_feedback_task",
     "_deploy_monitor_task", "_capacity_governor_task", "_decision_escalation_task",
-    "_needs_you_hygiene_task", "_milestones_refresh_task",
+    "_needs_you_hygiene_task", "_milestones_refresh_task", "_adoption_task",
 })
 
 
@@ -2329,6 +2340,9 @@ class SessionOrchestrator:
         # register without also resurrecting a fenced daemon — those two states are
         # opposites and must not share one sentinel.
         self._hb_fenced: bool = False
+        # Dead-host adoption pass (spec 002 FR-201, server/sessions/adoption.py):
+        # primary-only, lease-gated, every ADOPTION_INTERVAL_S.
+        self._adoption_task: asyncio.Task | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
         # Serialises the check-build-register critical section in ensure_driver
@@ -3937,6 +3951,13 @@ class SessionOrchestrator:
             self._capacity_governor_task = asyncio.create_task(
                 self._capacity_governor_tick_loop(interval=60.0), name="capacity-governor-loop"
             )
+            # Dead-host adoption (spec 002 FR-201): only the primary — and, per pass,
+            # only while it holds a fresh primary lease — may fence a silent host and
+            # hand its sessions to healthy ones (server/sessions/adoption.py).
+            self._adoption_task = asyncio.create_task(
+                self._adoption_loop(interval=_adoption.ADOPTION_INTERVAL_S),
+                name="adoption-loop",
+            )
             # Fleet-mirror reconcile: its OWN task, deliberately not folded into the
             # autopilot loop — a slow (LLM-bound) tick there used to stretch eviction
             # latency to ~110s and keep a zombie card clickable (#1033).
@@ -4544,20 +4565,116 @@ class SessionOrchestrator:
                         exc_info=True)
             return
         if not ok:
-            self._hb_fenced = True              # inert until Phase 4 stand-down
+            # Set BEFORE the stand-down runs: every persist path checks it, so from
+            # this instant on the fenced daemon writes no session status at all.
+            self._hb_fenced = True
             self._hb_fence = None
             await self._on_fenced()
 
     async def _on_fenced(self) -> None:
-        """Phase 1 stub: log-only. A fenced daemon must eventually stand down —
-        stop persisting, close its drivers, re-register at the new fence, rehydrate
-        (Phase 4 / Task 16). No fence-bumper exists yet, so in production this must
-        not fire; when it does it is loud."""
+        """Stand down (spec 002 FR-202): the primary declared this host dead and bumped
+        its fence, so its sessions are being adopted elsewhere (``adoption.adopt_host``)
+        and anything this process still does to them is a double-drive.
+
+        In order: (1) ``_hb_fenced`` is already True — ``_persist_status``,
+        ``send_prompt``, the dirty flusher and every acting loop are no-ops on it, so a
+        fenced daemon persists NOTHING; (2) every live driver is closed through the
+        same bounded close ``stop()`` uses (#846), their session leases released so the
+        adopting host need not wait out the TTL; (3) the in-memory records are dropped;
+        (4) this host re-registers, adopting the NEW fence; (5) rehydrate reloads only
+        the rows still stamped to this host (a worker's filter; the primary's rows were
+        never anyone else's to take) — anything adopted away is simply gone from here;
+        (6) the fenced flag clears and the heartbeat resumes. Never raises into the
+        heartbeat loop (NFR-5); a failed re-register is retried by the next tick."""
+        me = self_host_name()
         log.critical(
-            "host-heartbeat: FENCED — our beat was rejected, another writer bumped "
-            "the fence for host %r. Phase 1 stand-down is a no-op stub (full "
-            "stand-down is Task 16); no fence-bumper exists yet, so this should not "
-            "fire in production.", self_host_name())
+            "host-heartbeat: FENCED — our beat was rejected: the primary declared host "
+            "%r dead and its sessions are being adopted elsewhere. Standing down: "
+            "closing %d live driver(s), dropping %d record(s), re-registering at the "
+            "new fence, rehydrating what is still stamped here.", me,
+            len(getattr(self, "_drivers", {})), len(getattr(self, "_records", {})))
+        try:
+            closed = await self._close_live_drivers_bounded(phase="fenced")
+            for sid in list(getattr(self, "_session_lease_fences", {})):
+                await bounded_wait(self._release_session_lease(sid),
+                                   timeout=_STOP_TASK_TIMEOUT_S,
+                                   phase=f"fenced:session-lease-release:{sid}")
+            self._records.clear()
+            self._dirty_ids().clear()
+            if hasattr(self, "_resume_recovery"):
+                self._resume_recovery.clear()
+            log_event(log, logging.WARNING, "host.fenced_stand_down", host=me,
+                      drivers_closed=closed)
+        except Exception:  # noqa: BLE001 — the stand-down must finish and re-register
+            log.warning("host-heartbeat: stand-down of %r hit an error — continuing to "
+                        "re-register", me, exc_info=True)
+        try:
+            self._hb_fence = await _bounded_heartbeat_call(
+                host_heartbeat.register(me, epoch=PROC_EPOCH))
+        except Exception:
+            log.warning("host-heartbeat: re-register after fence failed (DB error) — "
+                        "retrying next beat", exc_info=True)
+            self._hb_fence = None
+        # From here this process is an ordinary daemon again at the new fence: the
+        # rehydrate below writes (branch backfills, healed statuses) for rows that are
+        # still ours, exactly as a boot does.
+        self._hb_fenced = False
+        try:
+            await self.rehydrate()
+        except Exception:
+            log.warning("host-heartbeat: rehydrate after fence failed for %r", me,
+                        exc_info=True)
+
+    # ── dead-host adoption (spec 002 FR-201..205, server/sessions/adoption.py) ──────
+
+    async def _adoption_loop(self, interval: float) -> None:
+        """Primary-only driver of the adoption pass; one pass per *interval*."""
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._adoption_pass_once()
+            except Exception as exc:
+                if caused_by_cancellation(exc) and current_task_cancelling():
+                    raise asyncio.CancelledError() from exc
+                log.warning("adoption: pass failed", exc_info=True)
+
+    async def _adoption_authority(self) -> bool:
+        """FR-201: adoption needs the primary role AND a fresh primary lease held by this
+        very incarnation — the same fence the autopilot authority check applies — AND a
+        heartbeat of our own that is registered and not fenced. The last leg is NFR-3's
+        "no adoption on DB-derived silence while the primary itself cannot renew": a
+        primary whose own beats are failing has no business judging anyone else's."""
+        if not drives_fleet_automations():
+            return False
+        if getattr(self, "_draining", False) or getattr(self, "_hb_fenced", False):
+            return False
+        if getattr(self, "_hb_fence", None) is None:
+            return False
+        me = self_host_name()
+        lease = await primary_lease.current()
+        return bool(lease is not None and lease.holder == me
+                    and lease.fence == getattr(self, "_lease_fence", None)
+                    and lease.age_s < PRIMARY_LEASE_TTL_S)
+
+    async def _adoption_pass_once(self) -> int:
+        """One adoption pass: fence every dead host that still owns sessions and hand
+        those sessions over (``adoption.adopt_host``). Returns how many were adopted."""
+        if not await self._adoption_authority():
+            return 0
+        dead_after = host_dead_after_s()
+        me = self_host_name()
+        from server.sessions.fleet_router import DEFAULT_HOST_NAME
+        dead = await _adoption.find_dead_hosts(
+            dead_after_s=dead_after, exclude=frozenset({me, DEFAULT_HOST_NAME}))
+        adopted = 0
+        for hb in dead:
+            adopted += await _adoption.adopt_host(self, hb, dead_after_s=dead_after)
+        return adopted
+
+    async def _pickup_adopted_once(self) -> int:
+        """Every daemon, on the always-on tick: take the rows the adoption pass stamped
+        for THIS host (``adoption.pickup_adopted``, FR-204/205)."""
+        return await _adoption.pickup_adopted(self)
 
     async def _refresh_idle_tokens_once(self) -> None:
         """Proactively refresh idle accounts' access tokens (best-effort).
@@ -4657,6 +4774,7 @@ class SessionOrchestrator:
                      "_needs_you_hygiene_task", "_milestones_refresh_task",
                      "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_snooze_wake_task", "_recurring_task",
+                     "_adoption_task",
                      "_lease_task", "_session_lease_task", "_hb_task", "_drain_timer"):
             # Default None: stop() must be safe on an orchestrator that never
             # start()ed (tests build one via __new__/without start).
@@ -4680,24 +4798,7 @@ class SessionOrchestrator:
         # callbacks that write to the DB) cannot outlive teardown. In production the
         # app shutdown closes sessions before stop(); when it doesn't (e.g. the X11
         # manager is absent, as in tests), this is the backstop.
-        for sid in list(self._drivers.keys()):
-            driver = self._drivers.pop(sid, None)
-            if driver is not None:
-                # suppress() covers the synchronous aclose() call itself (a stand-in
-                # without the method); bounded_wait never raises once awaited.
-                # A daemon stop is a restart as far as the session is concerned:
-                # its pending asks must settle as "interrupted by a restart", not as
-                # the user refusing them (#2922).
-                with contextlib.suppress(Exception):
-                    try:
-                        closing = driver.aclose(reason=CLOSE_REASON_RESTART)
-                    except TypeError:
-                        # A driver whose aclose() predates ``reason`` raises here, at
-                        # call time and inside the suppress() — it must still close.
-                        closing = driver.aclose()
-                    await bounded_wait(closing,
-                                       timeout=_STOP_DRIVER_CLOSE_TIMEOUT_S,
-                                       phase=f"stop:driver-close:{sid}")
+        await self._close_live_drivers_bounded(phase="stop")
         await bounded_wait(self._poller.stop(), timeout=_STOP_TASK_TIMEOUT_S,
                            phase="stop:usage-poller")
         await bounded_wait(self._process_quota.stop(), timeout=_STOP_TASK_TIMEOUT_S,
@@ -4728,6 +4829,30 @@ class SessionOrchestrator:
             await bounded_wait(
                 primary_lease.release(self_host_name(), fence),
                 timeout=_STOP_TASK_TIMEOUT_S, phase="stop:primary-lease-release")
+
+    async def _close_live_drivers_bounded(self, *, phase: str) -> int:
+        """Pop and close every live driver, each close bounded (#846 discipline), as a
+        restart: pending asks settle "interrupted by a restart", never as a refusal
+        (#2922). Shared by ``stop()`` and the fenced stand-down (``_on_fenced``), which
+        must close drivers exactly the way a shutdown does. Returns how many closed."""
+        closed = 0
+        for sid in list(getattr(self, "_drivers", {}).keys()):
+            driver = self._drivers.pop(sid, None)
+            if driver is None:
+                continue
+            closed += 1
+            # suppress() covers the synchronous aclose() call itself (a stand-in
+            # without the method); bounded_wait never raises once awaited.
+            with contextlib.suppress(Exception):
+                try:
+                    closing = driver.aclose(reason=CLOSE_REASON_RESTART)
+                except TypeError:
+                    # A driver whose aclose() predates ``reason`` raises here, at
+                    # call time and inside the suppress() — it must still close.
+                    closing = driver.aclose()
+                await bounded_wait(closing, timeout=_STOP_DRIVER_CLOSE_TIMEOUT_S,
+                                   phase=f"{phase}:driver-close:{sid}")
+        return closed
 
     # ------------------------------------------------------------------
     # Session CRUD
@@ -6140,6 +6265,20 @@ class SessionOrchestrator:
                     await sq.remove(sid)
                     log.warning("session_queue.stale_entry id=%s status=%s — skipping",
                                 sid, row.status if row is not None else "<gone>")
+                    continue
+                if params.get(_adoption.ADOPTED_RESUME_PARAM):
+                    # A session adopted off a dead host that this host queued for lack of
+                    # a slot (spec 002 FR-205). Not a spawn: an existing conversation
+                    # resumed here, by the same pickup path, now that the gates above
+                    # found room. Only the host it is stamped for may take it — its
+                    # worktree and transcript decision are per-host.
+                    if not row_stamped_here(row.host):
+                        foreign.add(sid)
+                        continue
+                    await sq.remove(sid)
+                    outcome = await _adoption.take_adopted(self, row, from_queue=True)
+                    if outcome in (_adoption.RESUME_TRANSCRIPT, _adoption.RESUME_FRESH):
+                        started += 1
                     continue
                 # A platform-gated entry starts only on a host advertising its
                 # platform (host-platforms spec §3) — before ownership and adoption,
@@ -8835,6 +8974,13 @@ class SessionOrchestrator:
         rec = self._records.get(session_id)
         if rec is not None and rec.status == "ended":
             return "ended"
+        if getattr(self, "_hb_fenced", False):
+            # FR-202: a fenced daemon persists NOTHING — its sessions are being adopted
+            # by another host whose writes this one must not race (the drivers being
+            # closed by the stand-down still emit through here). The stand-down drops
+            # the record right after, so the in-memory copy is not updated either.
+            log.info("persist.skip_fenced session=%s status=%s", session_id, status)
+            return status
         # A "switch after this turn" model change is in force once the turn is over.
         self._settle_model_pending(session_id, status)
         self._maybe_handle_model_request(session_id, status)
@@ -19681,6 +19827,12 @@ class SessionOrchestrator:
             except Exception:  # pragma: no cover — recovery must never stall the loop
                 log.warning("deploy.resume.recover_failed", exc_info=True)
             try:
+                # Always-on, every role: sessions the primary's adoption pass handed to
+                # THIS host off a dead one are taken here (spec 002 FR-204/205).
+                await self._pickup_adopted_once()
+            except Exception:  # pragma: no cover — pickup must never stall the loop
+                log.warning("adoption.pickup_failed", exc_info=True)
+            try:
                 # Also always-on: a `complete` session whose nudge cap is exhausted has
                 # no other trigger back to the completion gate (`_autopilot_list_governed`
                 # excludes `complete` from the mode-gated tick below), so this must not be
@@ -22751,7 +22903,7 @@ class SessionOrchestrator:
             # clears on the next turn.
             was_interrupted = row.status in _RESTART_TRANSIENT_STATUSES
             rebuilt[row.id] = (was_interrupted, getattr(row, "host", None))
-            status = "idle" if was_interrupted else row.status
+            status = restart_normalized_status(row.status)
             # Persist waiting_input → idle to DB when the backing process is gone
             # (issue #789, companion to #785). waiting_input sessions where the process
             # died between daemon runs leave the DB row stale: the in-memory normalization
@@ -25860,9 +26012,8 @@ class SessionOrchestrator:
         """THE per-row import: (re)build this session's in-memory record from its DB row
         with the rehydrate status rule — through ``_record_from_row``, the one mapper.
         Used by a move's import, ensure_driver's not-yet-rehydrated fallback, and the
-        dead-host adoption still to come (#949). Replaces a primary's mirror record."""
-        status = "idle" if row.status in _RESTART_TRANSIENT_STATUSES else row.status
-        rec = self._record_from_row(row, status=status)
+        dead-host adoption pickup (#949). Replaces a primary's mirror record."""
+        rec = self._record_from_row(row, status=restart_normalized_status(row.status))
         self._records[row.id] = rec
         return rec
 
@@ -27827,6 +27978,15 @@ class SessionOrchestrator:
             log.info("send_prompt rejected: drain in progress session=%s", session_id)
             self._publish_event({"type": "updatePending"})
             return "draining"
+        if getattr(self, "_hb_fenced", False):
+            # FR-202: a fenced daemon starts no turn — the session is being adopted by
+            # another host. Same wire answer as a drain: the browser re-queues the
+            # prompt and shows the hold banner, and the adopting host takes it from
+            # there once routing follows the restamp.
+            log.info("send_prompt rejected: fenced stand-down in progress session=%s",
+                     session_id)
+            self._publish_event({"type": "updatePending"})
+            return "draining"
         # A prompt ends the session's undoable rewind (D-9): an undo would truncate the
         # turn it starts. Before the driver lookup below: a rewind or undo in flight is
         # waited out first, and an undo replaces the driver.
@@ -29479,6 +29639,8 @@ class SessionOrchestrator:
         """
         if not self._dirty_status:
             return 0
+        if getattr(self, "_hb_fenced", False):
+            return 0   # FR-202: a fenced daemon heals nothing — the rows are not its own
         healed = 0
         enabled_hosts = await self._enabled_host_names()
         for session_id in list(self._dirty_status):
